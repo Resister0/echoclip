@@ -46,7 +46,11 @@ Builds you make yourself have version `0.1.0` and never update themselves.
 | `src-tauri/` | The app: recorder, hotkeys, clip library, cloud sync (Rust) |
 | `ui/` | The app's interface (HTML / CSS / JavaScript) |
 | `cloud/` | Echo Cloud: the server (Cloudflare Worker) and the echoclip.link website |
-| `ci/` | The GitHub Actions build recipe |
+| `ci/` | The GitHub Actions build recipes (`public-build.yml` builds every release in this repository) |
+
+## How releases are built
+
+Every file on echoclip.link and every automatic update is built by GitHub Actions in this repository from the code you see here (`.github/workflows/build.yml`). What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 ## Licence
 
