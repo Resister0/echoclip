@@ -175,7 +175,7 @@
   #stres .str { display:flex; gap:10px; align-items:baseline; padding:6px 2px; border-top:1px solid var(--line); font-size:13px; }
   #stres .str b { min-width:190px; font-weight:600; } #stres .str span { color:var(--muted); }
   #stres .str i { font-style:normal; width:18px; flex:none; text-align:center; font-weight:700; }
-  .thumb .cld { position:absolute; right:9px; top:9px; background:#000b; backdrop-filter:blur(6px); border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; z-index:2; }
+  .thumb .cld { position:absolute; right:9px; top:9px; background:#000c; border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; z-index:2; }
   .thumb .cld.only { background:#4cc2ffd9; color:#001018; }
   .spin { width:26px; height:26px; margin:0 auto 8px; border:3px solid #ffffff22; border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -202,7 +202,7 @@
   .thumb video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .25s; }
   .thumb video.on { opacity:1; }
   .thumb::after { content:""; position:absolute; inset:auto 0 0 0; height:22%; background:linear-gradient(transparent,#0005); pointer-events:none; }
-  .thumb .dur { position:absolute; right:9px; bottom:9px; background:#000c; backdrop-filter:blur(6px); border-radius:6px; padding:2px 7px; font-size:11.5px; font-weight:600; z-index:2; font-variant-numeric:tabular-nums; }
+  .thumb .dur { position:absolute; right:9px; bottom:9px; background:#000d; border-radius:6px; padding:2px 7px; font-size:11.5px; font-weight:600; z-index:2; font-variant-numeric:tabular-nums; }
   .thumb .tag { position:absolute; left:9px; bottom:9px; background:rgba(var(--accent-rgb),0.85); border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; z-index:2; }
   .thumb .play { position:absolute; inset:0; display:grid; place-items:center; opacity:0; transition:.18s; z-index:1; }
   .thumb .play div { width:50px; height:50px; border-radius:50%; background:#ffffffe6; display:grid; place-items:center; transform:scale(.85); transition:.18s; box-shadow:0 8px 24px #0008; }
@@ -210,9 +210,13 @@
   .card:hover .play { opacity:1; } .card:hover .play div { transform:scale(1); }
   .ovl { display:flex; gap:4px; flex:none; }
   /* Copy + Star always visible, the rest slides in on hover */
-  /* the extra buttons always keep their space (invisible until hover), so Copy never moves under the mouse */
-  .ovl .more { display:flex; gap:2px; margin-right:6px; opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s; }
-  .card:hover .ovl .more, .card:focus-within .ovl .more { opacity:1; visibility:visible; transition:opacity .15s; }
+  /* the extra buttons take no room until hover (the name gets the full width); they open to the LEFT of Copy,
+     so Copy and Star stay exactly where they are at the right edge */
+  .ovl .more { display:flex; gap:2px; max-width:0; margin-right:0; overflow:hidden; opacity:0; visibility:hidden;
+    transition:max-width .18s ease, margin .18s ease, opacity .12s, visibility 0s .18s; }
+  .card:hover .ovl .more, .card:focus-within .ovl .more { max-width:150px; margin-right:6px; opacity:1; visibility:visible;
+    transition:max-width .18s ease, margin .18s ease, opacity .15s .05s; }
+  .ovl .more .ib { flex:none; }
   .ib { width:34px; height:34px; border-radius:9px; border:0; background:none; color:var(--muted); display:grid; place-items:center; transition:.15s; }
   .ib:hover { background:var(--panel2); color:var(--text); }
   .cgrp { display:inline-flex; border:1px solid var(--line); border-radius:10px; margin-right:4px; transition:.15s; }
@@ -645,6 +649,8 @@
   .custrow { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   .custrow label { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); cursor:pointer; }
   .custrow input[type=color] { width:34px; height:26px; border:1px solid var(--line); border-radius:7px; background:none; padding:0 2px; cursor:pointer; }
+  /* weak PCs (4 threads or 4 GB or less): no blurred overlays (expensive to draw on integrated graphics) */
+  html.lite * { backdrop-filter:none !important; }
 </style>
 </head>
 <body>
@@ -665,7 +671,7 @@
   <div class="grow"></div>
   <div class="updcard" id="updcard" hidden>
     <b>Update ready</b><small id="updtext"></small>
-    <button class="btn primary" id="updbtn" onclick="updInstall()">Restart Echo</button>
+    <button class="btn primary" id="updbtn">Restart Echo</button>
   </div>
   <div class="statcard">
     <div class="st"><div class="dot" id="raildot"></div><span id="railstate">Starting…</span></div>
@@ -918,6 +924,8 @@
             <h3>About</h3>
             <div class="row"><div class="lbl"><b id="appver">Echo</b><small id="updstate">Echo checks for updates by itself every few hours.</small></div>
               <button class="btn" id="updnow" onclick="updManual()">Check for updates</button></div>
+            <div class="row"><div class="lbl"><b>Something wrong, or an idea?</b><small>Goes straight to the person who makes Echo. You can attach Echo's log so problems are easier to find.</small></div>
+              <button class="btn" onclick="sendFeedback()">Send feedback</button></div>
           </div>
           <div class="box">
             <h3>Appearance</h3>
@@ -1108,7 +1116,20 @@
   // ----- updates: check 30 s after start, then every 6 hours; never interrupts, the user clicks when ready -----
   let updInfo = null;
   let appVer = "";
-  invoke("app_version").then(v => { appVer = v; $("appver").textContent = v === "0.1.0" ? "Echo (built on this PC)" : `Echo ${v}`; }).catch(() => {});
+  invoke("app_version").then(v => { appVer = v; $("appver").textContent = v === "0.1.0" ? "Echo (built on this PC)" : `Echo ${v}`; whatsNew(); }).catch(() => {});
+  // first start after an update: a small card saying what changed (once)
+  function whatsNew() {
+    let w = null;
+    try { w = JSON.parse(localStorage.getItem("echo_whatsnew") || "null"); } catch {}
+    if (!w || w.v !== appVer) return;
+    try { localStorage.removeItem("echo_whatsnew"); } catch {}
+    const c = $("updcard");
+    c.querySelector("b").textContent = `Updated to Echo ${w.v}`;
+    $("updtext").textContent = w.notes ? "What's new: " + w.notes : "You're on the newest version.";
+    const b = $("updbtn"); b.textContent = "Got it"; b.classList.remove("primary");
+    b.onclick = () => { c.hidden = true; c.querySelector("b").textContent = "Update ready"; b.classList.add("primary"); b.onclick = updInstall; };
+    c.hidden = false;
+  }
   async function updManual() {
     const b = $("updnow"), st = $("updstate");
     if (appVer === "0.1.0") { st.textContent = "Updates are off for builds made on this PC (build.cmd). The installed Echo updates itself."; return; }
@@ -1124,6 +1145,10 @@
     if (known) updInfo = known;
     else try { updInfo = await invoke("update_check"); } catch (e) { return; }
     if (!updInfo) return;
+    // remembered for "What's new" after the restart
+    try { localStorage.setItem("echo_whatsnew", JSON.stringify({ v: updInfo.version, notes: updInfo.notes || "" })); } catch {}
+    $("updcard").querySelector("b").textContent = "Update ready";
+    $("updbtn").classList.add("primary"); $("updbtn").onclick = updInstall;
     $("updtext").textContent = `Echo ${updInfo.version} is here (you have ${updInfo.current}).`;
     $("updbtn").textContent = updInfo.can_install ? "Restart Echo" : "Download";
     $("updcard").hidden = false;
@@ -1134,6 +1159,7 @@
     try { await invoke("update_install"); }
     catch (e) { b.disabled = false; b.textContent = "Try again"; toast(String(e)); }
   }
+  $("updbtn").onclick = updInstall;
   setTimeout(updCheck, 30000);
   setInterval(updCheck, 6 * 3600 * 1000);
 
@@ -1191,6 +1217,11 @@
   // Echo's library_stamp says something changed on disk, plus once more right after (files still being
   // written), plus every 30 s as a safety net. Any other caller (events, buttons) always reloads.
   let libStamp = null, libAt = 0, libAgain = false;
+  // weak PC: lighter drawing (see html.lite) and a calmer hover preview
+  const LITE = (navigator.hardwareConcurrency || 8) <= 4 || (navigator.deviceMemory || 8) <= 4;
+  if (LITE) document.documentElement.classList.add("lite");
+  // text from files / the cloud (names, audio track titles) must never become HTML
+  function escH(t) { return String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
   async function refresh(why) {
     if (document.hidden && refresh.done) return;
     status = await invoke("get_status");
@@ -1212,7 +1243,7 @@
     libAgain = changed && refresh.done; libStamp = stamp;
     if (!need) return;
     libAt = Date.now();
-    invoke("list_games").then(g => { const m = {}; g.forEach(x => m[x.name] = x.icon); const k = JSON.stringify(Object.keys(m).filter(n => m[n])); const gk = g.map(x => x.name + !!x.icon).join("|"); gameList = g; if (gk !== gamesKey) { gamesKey = gk; renderGameRules(); } if (k !== iconKey) { iconKey = k; gameIcons = m; listKey = ""; renderGrid(); } }).catch(() => {});
+    invoke("list_games").then(g => { g.forEach(x => { if (x.icon && !x.icon.startsWith("data:")) x.icon = convertFileSrc(x.icon) + "?v=" + (x.icon_v || 0); }); const m = {}; g.forEach(x => m[x.name] = x.icon); const k = JSON.stringify(Object.keys(m).filter(n => m[n])); const gk = g.map(x => x.name + !!x.icon).join("|"); gameList = g; if (gk !== gamesKey) { gamesKey = gk; renderGameRules(); } if (k !== iconKey) { iconKey = k; gameIcons = m; listKey = ""; renderGrid(); } }).catch(() => {});
     invoke("shared_clips").then(v => { const k = v.join("|"); if (k !== sharedKey) { sharedKey = k; shared = new Set(v); listKey = ""; renderGrid(); } }).catch(() => {});
     // these don't depend on each other: ask for all of them at once
     const [mR, cR, fR, cfR, shR, fvR] = await Promise.allSettled([invoke("clip_meta"), invoke("list_clips"), invoke("list_folders"),
@@ -1290,11 +1321,16 @@
   const inCloud = c => !!c.cloud || cloudRels.has(relOf(c));
   const streamUrl = c => cloudBase + "/" + (cloudPaths.get(relOf(c)) || relOf(c)).split("/").map(encodeURIComponent).join("/");
   let basePending = null;   // one start at a time, however many cards ask
+  // Echo stops the streaming server after 10 minutes without use: ask again (cheap while it runs) when the
+  // last answer is older than a minute, so a stopped server is started again before the video needs it
+  let baseAt = 0;
   async function ensureBase() {
-    if (cloudBase) return cloudBase;
-    if (!basePending) basePending = invoke("cloud_stream_base").then(b => (cloudBase = b)).finally(() => { basePending = null; });
+    if (cloudBase && Date.now() - baseAt < 60000) return cloudBase;
+    if (!basePending) basePending = invoke("cloud_stream_base").then(b => { baseAt = Date.now(); return (cloudBase = b); }).finally(() => { basePending = null; });
     return basePending;
   }
+  // while a cloud clip is open in the player, keep the streaming server alive
+  setInterval(() => { if (!document.hidden && trim.clip && trim.clip.cloud && $("player").classList.contains("open")) ensureBase().catch(() => {}); }, 120000);
   // cloud-only clip -> download it first (edit, copy, trim…); returns the local clip
   async function ensureLocal(c) {
     if (!c.cloud) return c;
@@ -1672,6 +1708,33 @@
     toast(`${n} clip${n === 1 ? "" : "s"} deleted`); listKey = ""; await refresh(); openTidy();
   };
   // small text question (reuses the confirm dialog): resolves to the text, or null on Cancel
+  // ----- feedback: a message (+ optional log) to support@echoclip.link through Echo Cloud's server -----
+  async function sendFeedback() {
+    const inSt = "display:block;width:100%;margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:8px 10px;font:inherit;font-size:13px";
+    $("ctitle").textContent = "Send feedback"; $("cno").textContent = "Cancel";
+    const yes = $("cyes"); yes.textContent = "Send"; yes.className = "btn primary";
+    const m = $("cmsg"); m.textContent = "What happened, or what would make Echo better?";
+    const ta = document.createElement("textarea"); ta.rows = 5; ta.maxLength = 4000; ta.placeholder = "e.g. the share link didn't work for a clip from Google Drive…"; ta.style.cssText = inSt + ";resize:vertical";
+    const em = document.createElement("input"); em.type = "email"; em.placeholder = "Your email, if you'd like an answer (optional)"; em.value = (cfg && cfg.ec_email) || ""; em.style.cssText = inSt + ";height:36px";
+    const lab = document.createElement("label"); lab.style.cssText = "display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-size:12.5px;color:var(--muted);cursor:pointer";
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = true; cb.style.marginTop = "2px";
+    const lt = document.createElement("span"); lt.textContent = "Attach Echo's log (the last few hundred lines: what Echo did, clip and file names, no passwords or keys)";
+    lab.append(cb, lt); m.append(ta, em, lab);
+    $("confirm").classList.add("open"); setTimeout(() => ta.focus(), 50);
+    const close = () => { $("confirm").classList.remove("open"); yes.className = "btn delb"; };
+    ta.onkeydown = em.onkeydown = e => { e.stopPropagation(); if (e.key === "Escape") close(); };
+    $("cno").onclick = close;
+    yes.onclick = async () => {
+      const msg = ta.value.trim();
+      if (!msg) { ta.focus(); return; }
+      yes.disabled = true; yes.textContent = "Sending…";
+      try { await invoke("send_feedback", { message: msg, contact: em.value.trim(), withLog: cb.checked, version: appVer || "" }); close(); toast("Thanks - your feedback was sent"); }
+      catch (e) { toast(String(e)); yes.textContent = "Send"; }
+      yes.disabled = false;
+    };
+  }
+  window.sendFeedback = sendFeedback;
+
   function askText(title, msg, placeholder, yes) {
     return new Promise(res => {
       $("ctitle").textContent = title; $("cyes").textContent = yes; $("cno").textContent = "Cancel";
@@ -1970,12 +2033,12 @@
     el.querySelectorAll(".ib").forEach(b => b.onclick = e => (b.dataset.a === "copymenu" || (b.dataset.a === "copy" && e.ctrlKey)) ? copyMenu(b, c) : action(b.dataset.a, c, b));
     // hover preview: muted video after a short delay
     let hv = null, vid = null;
-    th.onmouseenter = () => { if (c.cloud && !cloudBase) ensureBase().catch(() => {}); hv = setTimeout(() => {
+    th.onmouseenter = () => { if (c.cloud) ensureBase().catch(() => {}); hv = setTimeout(() => {
       vid = document.createElement("video"); vid.muted = true; vid.loop = true;
       const v0 = vid; v0.oncanplay = () => v0.classList.add("on"); th.prepend(v0);
       const go = () => { if (vid !== v0) return; v0.src = c.cloud ? streamUrl(c) : convertFileSrc(c.path); v0.play().catch(() => {}); };
-      if (c.cloud && !cloudBase) ensureBase().then(go).catch(() => {}); else go();
-    }, 450); };
+      if (c.cloud) ensureBase().then(go).catch(() => {}); else go();
+    }, LITE ? 900 : 450); };
     th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
     // a thumbnail seen before is put back at once when the library is rebuilt (rename, upload, delete…):
     // no blank cards flashing while they load again
@@ -2851,7 +2914,7 @@
       const w = sLen(s) * ed.pps; Object.assign(d.style, { left: s.at * ed.pps + 1 + "px", width: Math.max(4, w - 2) + "px" });
       if (stripOf(s)) Object.assign(d.style, { backgroundImage: `url("${stripOf(s)}")`, backgroundSize: `${durOf(s) / s.speed * ed.pps}px 100%`, backgroundPosition: `${-s.start / s.speed * ed.pps}px 0`, backgroundRepeat: "no-repeat" });
       const lab = [s.src && fileName(s.src), s.speed !== 1 && !s.freeze && s.speed + "x", s.freeze && "Freeze", s.rev && "Reverse", s.look && LOOKS[s.look] && LOOKS[s.look][0]].filter(Boolean).join(" · ");
-      d.innerHTML = (lab ? `<span class="sp">${lab}</span>` : "") + (s.amute ? `<span class="am">audio separated</span>` : "") + (isMan(s) ? "" : `<div class="eh l"></div><div class="eh r"></div>`) + fadeMarks(s, w)
+      d.innerHTML = (lab ? `<span class="sp">${escH(lab)}</span>` : "") + (s.amute ? `<span class="am">audio separated</span>` : "") + (isMan(s) ? "" : `<div class="eh l"></div><div class="eh r"></div>`) + fadeMarks(s, w)
         + (s.tr && i ? `<span class="etr" title="Transition: ${(TRANS.find(x => x[0] === s.tr) || ["", s.tr])[1]}">⇄</span>` : "");
       const segStart = s.at;
       d.onpointerdown = e => {
@@ -2960,7 +3023,7 @@
       const L = (a.end - a.start) / a.speed;
       Object.assign(d.style, { left: a.at * ed.pps + 1 + "px", width: Math.max(8, L * ed.pps - 2) + "px", top: rows.indexOf(a.track || 0) * 44 + "px", bottom: "auto", height: "40px" });
       if ((a.track || 0) === 2) d.classList.add("mic");
-      d.innerHTML = `<div class="eh l"></div><span>${a.label || "Audio"}${a.mute ? " (muted)" : ""} · ${Math.round(a.vol * 100)}%</span><div class="eh r"></div>` + fadeMarks(a, L * ed.pps);
+      d.innerHTML = `<div class="eh l"></div><span>${escH(a.label || "Audio")}${a.mute ? " (muted)" : ""} · ${Math.round(a.vol * 100)}%</span><div class="eh r"></div>` + fadeMarks(a, L * ed.pps);
       d.onpointerdown = e => {
         if (blockDown(e, "aud", i)) return;
         e.stopPropagation(); select({ k: "aud", i }); pushHist(); edPause();
@@ -3229,7 +3292,7 @@
       $("eidel").onclick = delSel;
     } else if (sel && sel.k === "aud" && ed.audio[sel.i]) {
       const a = ed.audio[sel.i];
-      el.innerHTML = `<h3>${a.label || "Audio"}</h3><label>Volume <span id="eavv">${Math.round(a.vol * 100)}%</span></label><input type="range" id="eav" min="0" max="2" step="0.05" value="${a.vol}">
+      el.innerHTML = `<h3>${escH(a.label || "Audio")}</h3><label>Volume <span id="eavv">${Math.round(a.vol * 100)}%</span></label><input type="range" id="eav" min="0" max="2" step="0.05" value="${a.vol}">
         <div class="row" style="border:0;padding:12px 0"><div class="lbl">Mute</div><label class="switch"><input type="checkbox" id="eam" ${a.mute ? "checked" : ""}><span></span></label></div>
         ${fadeUI(a, (a.end - a.start) / a.speed)}
         <label>Source ${fmtT(a.start)} – ${fmtT(a.end)} · starts at ${fmtT(a.at)}</label>
@@ -3783,7 +3846,7 @@
         it.chips.forEach(([t, fn, on]) => { const b = document.createElement("button"); b.textContent = t; if (on) b.className = "on"; b.onclick = () => { close(); fn(); }; row.appendChild(b); });
         return m.appendChild(row);
       }
-      const b = document.createElement("button"); if (it[4]) b.className = it[4]; b.innerHTML = `<span>${it[0]}</span>${it[2] ? `<kbd>${it[2]}</kbd>` : ""}`; b.disabled = !!it[3];
+      const b = document.createElement("button"); if (it[4]) b.className = it[4]; b.innerHTML = `<span>${escH(it[0])}</span>${it[2] ? `<kbd>${it[2]}</kbd>` : ""}`; b.disabled = !!it[3];
       b.onclick = () => { close(); it[1](); }; m.appendChild(b);
     });
     m.classList.add("on");

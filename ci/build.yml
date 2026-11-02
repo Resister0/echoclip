@@ -47,7 +47,7 @@ jobs:
           cp dl/rclone-*/rclone.exe tools/
           ls -la tools
           npx --yes @tauri-apps/cli@2 build --bundles nsis \
-            --config '{"bundle":{"active":true'"$UPD"',"resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh"}}}}'
+            --config '{"bundle":{"active":true'"$UPD"',"resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
           cp target/release/bundle/nsis/*-setup.exe ../Echo-Setup.exe
           cp target/release/bundle/nsis/*-setup.exe.sig ../Echo-Setup.exe.sig || echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
       - uses: actions/upload-artifact@v4
@@ -149,7 +149,7 @@ jobs:
           gh release create latest $files --title "Echo 1.0.${{ github.run_number }}" --notes "$notes"
 
   public:
-    # copies the code (without the private notes, see ci/public-exclude.txt) to the public repo
+    # copies the code (+ ci/public-build.yml as its workflow, + ci/version.txt) (without the private notes, see ci/public-exclude.txt) to the public repo
     # github.com/Resister0/echoclip, one commit per publish. Needs the secret PUBLIC_REPO_TOKEN
     # (fine-grained token, only repo echoclip, Contents: Read and write). Only runs in the private repo.
     if: github.repository == 'Resister0/echo'
@@ -170,10 +170,27 @@ jobs:
           if grep -rIlE 'polar_oat_[A-Za-z0-9]|whsec_[A-Za-z0-9]{10}|github_pat_[A-Za-z0-9]{20}|cfut_[A-Za-z0-9]{10}|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{10}|BEGIN [A-Z ]*PRIVATE KEY|IHJzaWduIGVuY3J5cHRlZ[C]BzZWNyZXQga2V5' --exclude-dir=.git . ; then
             echo "Something that looks like a key is in the files above - not publishing"; exit 1
           fi
+          # the public repo builds the releases itself: its workflow + the version number of this build
+          echo "1.0.${{ github.run_number }}" > ci/version.txt
+          mkdir -p .github/workflows
+          cp ci/public-build.yml .github/workflows/build.yml
           git config user.name "Resister0"
           git config user.email "Resister0@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
           git commit -q -m "$msg"
-          git push -q origin HEAD:main
-          echo "Public repo updated: https://github.com/Resister0/echoclip"
+          if git push -q origin HEAD:main; then
+            echo "Public repo updated: https://github.com/Resister0/echoclip"
+          else
+            # the token may not be allowed to change workflows (fine-grained token without "Workflows: Read and write"):
+            # publish the code anyway, without the workflow change
+            echo "::warning::Couldn't update the public repo's workflow - give the token PUBLIC_REPO_TOKEN 'Workflows: Read and write'"
+            git reset -q --soft HEAD~1
+            git restore -q --staged .github 2>/dev/null || git reset -q .github
+            git checkout -q -- .github 2>/dev/null || true
+            git clean -fdq .github 2>/dev/null || true
+            if git diff --cached --quiet; then echo "nothing else changed"; exit 0; fi
+            git commit -q -m "$msg"
+            git push -q origin HEAD:main
+            echo "Public repo updated (code only): https://github.com/Resister0/echoclip"
+          fi

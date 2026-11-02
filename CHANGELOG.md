@@ -1,0 +1,139 @@
+# Changelog
+
+Everything that changed in Echo, newest first. Each section is one published version (or a group of small
+internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
+
+## Next release
+- "Copy share link" hands out the same link again instead of making a new one (changing the lifetime keeps the link)
+- Signing out of a cloud removes its clips from the library right away
+- Sign-in tokens and storage keys are stored encrypted: Windows data protection (DPAPI) on Windows, the desktop keyring (KDE Wallet / GNOME Keyring) on Linux; the cloud login file (rclone config) is encrypted too
+- The window never receives the Echo Cloud sign-in token
+- Names from files and clouds can no longer inject HTML into the window
+- "Send feedback" in Settings → About (optional log attached)
+- "What's new" card after an automatic update
+- The cloud streaming server stops after 10 minutes without use (less memory on small PCs)
+- Game icons load as files instead of being embedded in every library refresh
+- Lighter drawing on weak PCs (no blur effects, calmer hover previews)
+- Clip names use the full card width until the hover buttons appear
+- Tray icon brings the window back exactly as it was (no maximize flash); closing with X minimizes to the tray
+- Installer shows the Echo icon and artwork
+- Release builds move to the public repository (traceable builds)
+
+## Safer Echo Cloud uploads
+- Echo Cloud is read-only inside the combined cloud; uploads, deletes and moves go through the server (no writing past your plan)
+- Faster cloud delete (other clouds are cleaned up in the background)
+- No thumbnail flashing on rename or upload
+- Share copies are deleted when you stop sharing or a link expires
+
+## Smart bitrate, AV1 and the Quality page
+- Smart bitrate: same average size, more bits for fast action (peak-limited VBR on the GPU encoder)
+- Convert clips to AV1 (about half the size) on GPUs that encode and decode it; everything that leaves the PC stays H.264
+- New Quality page with presets and size estimates
+- Library filter (game, where, type, tags)
+- "Tidy up": clips saved twice, very short clips, biggest clips
+- Faster share links (no re-encoding; the share page shows the watermark)
+- Simpler cloud menu
+- No hidden `tar`: downloaded tools are unpacked inside Echo
+- Echo Cloud account deletion and "Stop sharing"
+
+## Version number and smoother updates
+- Version shown in Settings → About, "Check for updates" button
+- Snappier library: reloads only when files changed, long libraries build in steps
+- Installer closes Echo's helper programs before updating
+- Share page works on phones (tap controls, fullscreen on iPhone and Android)
+
+## Share links without uploading first
+- "Copy share link" works for clips that are only on this PC
+- Link lifetime menu (never / 1 / 7 / 30 days)
+- Choose which cloud new clips upload to
+- Nicer share page with Echo's own video player
+- Fewer antivirus false alarms: no `rundll32`, no hidden `curl` (Echo makes its own HTTPS requests)
+
+## Discord embeds
+- Share links show title, size and a preview image in Discord and other chat apps
+- Installer fix for "Error opening file for writing"
+- Editor fixes, uploads pause when Echo Cloud is full
+
+## Open source
+- Echo is now GPL-3.0-or-later; the code is public
+- Themes (presets and your own colours)
+- Website updates
+
+## Automatic updates and the website
+- Echo updates itself (signed updates, you choose when to restart)
+- echoclip.link website with downloads, pricing, terms and privacy
+- Security fixes
+
+## Echo Cloud plans
+- Paid Echo Cloud plans (250 GB, 500 GB, 1 TB)
+- echoclip.link domain for share links and sign-in emails
+- Faster cloud settings page, security fixes (random addresses for the local streaming servers)
+
+## Echo Cloud share links
+- Fast "Copy share link" through Echo Cloud
+- Better streaming fallback (downloads the clip when streaming stalls)
+- Clearer error messages
+
+## Installer and clock-jump fix
+- Windows installer (Echo-Setup.exe) with ffmpeg, ffprobe and rclone included
+- Clips no longer come out hours long after the PC slept or the clock jumped
+- Echo Cloud groundwork
+
+## Editor and library upgrades
+- AppImage build for Linux
+- Timeline drag and drop, Media button, editable projects
+- Export, upload and download progress
+- Better captions with positions, moving several items at once
+- Your own folders (nested)
+- Fix for dark colours in Discord copies
+
+## Linux version
+- Echo runs on Linux (gpu-screen-recorder, PipeWire audio, KDE global shortcuts)
+- Several clouds at once, clips sorted into date folders in the cloud
+- GitHub builds the Linux version too
+
+## Antivirus-friendly Windows build
+- No PowerShell or `reg.exe`: clipboard, Recycle Bin, autostart, file pickers and game icons use Windows APIs directly
+- Publisher info in the exe
+- Sound files can be imported and saved as MP3 / WAV
+- Animated watermark with a style setting
+- Smarter game sorting, leftover temp file cleanup, player and editor fixes
+
+## Imports and welcome setup
+- Welcome setup on first start
+- "Send log" button
+- Shrink old clips automatically (optional)
+- Save clips with a controller button combo
+- FPS test (how much Echo costs in your game)
+- Import clips from Medal, SteelSeries Moments and other apps, sorted by game
+- New app icon
+
+## Cloud library
+- Your own cloud for your clips (Filen, MEGA, pCloud, Google Drive, WebDAV, SFTP, S3 or a folder) through rclone
+- Upload favourites or every clip, get clips from your other PCs, stream cloud-only clips
+- Share links through Cloudflare R2
+
+## Capture and audio upgrades
+- Record a game window only, choose the monitor, HDR to SDR
+- HEVC and AV1 recording, NVIDIA and Intel encoders
+- Per-app audio tracks (game, Discord, browser) with their own volumes, mic noise filter, push-to-talk, mic mute hotkey
+- Health check and self-test
+- "Record" button for long recordings
+
+## Editor
+- Timeline editor: pieces, speed, gaps, texts, several video layers, separated audio
+- Auto captions (whisper.cpp) with styles, animations and karaoke highlight
+- Transitions, colour looks, freeze frames, reverse, stickers, fades
+- Export presets (YouTube, TikTok / Shorts 9:16, Discord), even-out loudness
+- GIF export, montages, frame grabs, MP3
+
+## Library
+- Clip library with thumbnails, hover previews, search (including spoken words), tags and notes
+- Game folders with icons, favourites, screenshots, bookmarks
+- Copy a clip into Discord, also shrunk to Discord's size limits
+- Drag and drop import
+
+## First version
+- Replay buffer with near-zero cost: own zero-copy GPU pipeline (Desktop Duplication → hardware H.264 encoder)
+- Hotkeys save the last N seconds, desktop audio and microphone on separate tracks
+- Quick trim, tray icon, start with Windows

@@ -97,8 +97,10 @@ struct Session {
 #[derive(Serialize)]
 pub struct GameInfo {
     pub name: String,
-    /// data: URL of the game's exe icon ("" = none)
+    /// path of the game's exe icon (PNG in the app folder; "" = none)
     pub icon: String,
+    /// its change time (cache-buster for the window)
+    pub icon_v: u64,
 }
 
 #[derive(Serialize)]
@@ -110,6 +112,23 @@ pub struct ClipInfo {
     pub size: u64,
     /// unix seconds
     pub modified: u64,
+}
+
+/// A share link Echo already made (.thumbs/links.json, by clip): "Copy share link" hands the same link out again
+/// instead of making a new one (and re-making the share copy) every time.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct LinkEntry {
+    url: String,
+    /// Echo Cloud object the link points to ("Echo/…"); empty = another cloud's link
+    #[serde(default)] key: String,
+    #[serde(default)] days: u32,
+    /// unix s, 0 = never
+    #[serde(default)] expires: u64,
+    /// watermark style at the time + clip size/time: when either changes the link is made again
+    #[serde(default)] wm: String,
+    #[serde(default)] sig: String,
+    /// what the share page shows (sent again when only the lifetime changes)
+    #[serde(default)] meta: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -619,6 +638,7 @@ fn app_dir() -> PathBuf {
     std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
 }
 
+#[allow(dead_code)]
 fn b64(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut o = String::with_capacity(data.len() * 4 / 3 + 4);
@@ -2644,9 +2664,14 @@ impl Recorder {
         let not = self.settings().not_games;
         names.retain(|n| !not.iter().any(|x| x.eq_ignore_ascii_case(n)));
         names.into_iter().map(|name| {
-            let icon = fs::read(app_dir().join("icons").join(format!("{}.png", safe_name(&name))))
-                .map(|d| format!("data:image/png;base64,{}", b64(&d))).unwrap_or_default();
-            GameInfo { name, icon }
+            // the file's path (the window loads it like a thumbnail) instead of the whole picture as base64
+            // in every library refresh; the change time makes a new icon show up straight away
+            let p = app_dir().join("icons").join(format!("{}.png", safe_name(&name)));
+            let (icon, icon_v) = match fs::metadata(&p).and_then(|m| m.modified()) {
+                Ok(t) => (p.to_string_lossy().to_string(), t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
+                Err(_) => (String::new(), 0),
+            };
+            GameInfo { name, icon, icon_v }
         }).collect()
     }
 
@@ -2804,7 +2829,17 @@ impl Recorder {
     pub fn shared_clips(&self) -> Vec<String> {
         let m: std::collections::BTreeMap<String, String> = fs::read_to_string(self.thumbs_dir().join("shared.json")).ok()
             .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        m.keys().filter_map(|k| k.split('|').next().map(String::from)).collect()
+        let mut v: Vec<String> = m.keys().filter_map(|k| k.split('|').next().map(String::from)).collect();
+        // links made through the cloud ("Copy share link") that still work
+        let now = now_unix();
+        for (rel, e) in self.links() {
+            if e.expires == 0 || e.expires > now {
+                if let Some(n) = Path::new(&rel).file_stem() { v.push(n.to_string_lossy().to_string()); }
+            }
+        }
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// Cheap fingerprint of everything the library shows (folder + file change times). The UI asks for
@@ -2825,7 +2860,7 @@ impl Recorder {
         let th = self.thumbs_dir();
         add(&self.clips_dir().join("Screenshots"));
         add(&th);
-        for f in ["cloud.json", "meta.json", "favorites.json", "shared.json"] {
+        for f in ["cloud.json", "meta.json", "favorites.json", "shared.json", "links.json"] {
             add(&th.join(f));
         }
         add(&app_dir().join("games.json"));
@@ -4758,9 +4793,8 @@ fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), Str
 fn migrate_cloud(cfg: &mut crate::settings::Settings) {
     if cfg.cloud_accounts.len() > 1 && cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") {
         let want = cfg.cloud_accounts.iter().map(union_upstream).collect::<Vec<_>>().join(" ");
-        let t = fs::read_to_string(cloud_conf()).unwrap_or_default();
-        let have = t.split("\n[").find(|sec| sec.trim_start_matches('[').starts_with("echo]"))
-            .and_then(|sec| sec.lines().find_map(|l| l.trim().strip_prefix("upstreams").map(|v| v.trim_start_matches([' ', '=']).trim().to_string())));
+        let t = rclone_out(&["config", "show", "echo"]).unwrap_or_default();
+        let have = t.lines().find_map(|l| l.trim().strip_prefix("upstreams").map(|v| v.trim_start_matches([' ', '=']).trim().to_string()));
         if have.as_deref().map_or(false, |h| h != want) {
             match rebuild_echo_remote(&cfg.cloud_accounts) {
                 Ok(()) => log_line("cloud: Echo Cloud is now read-only in the combined cloud (writes go through the server)"),
@@ -4907,7 +4941,87 @@ fn rclone_cmd() -> Result<Command, String> {
 fn rclone_cmd_raw() -> Result<Command, String> {
     let mut c = hidden(&ensure_rclone()?.to_string_lossy());
     c.arg("--config").arg(cloud_conf());
+    // encrypted cloud config (Windows): the password goes in the child's environment, never on the command line;
+    // without it rclone must fail instead of waiting for someone to type a password into a hidden window
+    let pass = RCLONE_PASS.lock().map(|p| p.clone()).unwrap_or_default();
+    if !pass.is_empty() {
+        c.env("RCLONE_CONFIG_PASS", pass);
+    }
+    c.arg("--ask-password=false");
     Ok(c)
+}
+
+/// Password of the encrypted echo.conf (from settings, decrypted with the Windows login).
+static RCLONE_PASS: Mutex<String> = Mutex::new(String::new());
+
+pub fn set_rclone_pass(p: &str) {
+    if let Ok(mut g) = RCLONE_PASS.lock() { *g = p.to_string(); }
+}
+
+/// `Echo.exe --rclone-pass`: rclone asks Echo itself for the password while encrypting echo.conf
+/// (so the password never appears on a command line).
+pub fn print_rclone_pass() {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(crate::settings::Settings::load().rclone_pass.as_bytes());
+    let _ = std::io::stdout().flush();
+}
+
+/// echo.conf holds the cloud logins (Google Drive sign-in, Filen, MEGA…). Windows: encrypt it once with a
+/// random password that Echo keeps DPAPI-encrypted in settings.json. Returns true when `cfg` changed.
+fn secure_cloud_conf(cfg: &mut crate::settings::Settings) -> bool {
+    if !crate::settings::secret::available() {
+        crate::settings::secret::private_file(&cloud_conf());
+        return false;
+    }
+    let conf = cloud_conf();
+    let Ok(t) = fs::read_to_string(&conf) else { return false };
+    if t.starts_with("# Encrypted rclone configuration") {
+        if !cfg.rclone_pass.is_empty() { return false; }
+        if crate::settings::secret::keyring_down() {
+            // Linux: the keyring isn't open (yet) - the logins are fine, just not usable this run
+            log_line("cloud: the keyring (KDE Wallet) isn't open - cloud paused until Echo restarts");
+            return false;
+        }
+        // encrypted, but the password is gone (settings from another PC / Windows user): the logins can't be used
+        let _ = fs::rename(&conf, conf.with_extension("conf.locked"));
+        cfg.cloud.clear();
+        cfg.cloud_accounts.clear();
+        cfg.ec_token.clear();
+        let _ = cfg.save();
+        log_line("cloud: the saved cloud logins belong to another PC or Windows user - sign in again");
+        return true;
+    }
+    if t.trim().is_empty() { return false; }
+    // the one-time account move still reads the file in plain text: do it first
+    migrate_cloud(cfg);
+    let mut changed = false;
+    if cfg.rclone_pass.is_empty() {
+        cfg.rclone_pass = format!("{}{}", random_token(), random_token());
+        changed = true;
+    }
+    if cfg.save().is_err() { return changed; }
+    set_rclone_pass(&cfg.rclone_pass);
+    // AppImage: the outer file (the inner binary needs the AppImage's libraries)
+    let Some(exe) = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok()) else { return changed };
+    let bak = conf.with_extension("conf.bak");
+    if fs::copy(&conf, &bak).is_err() { return changed; }
+    let ok = ensure_rclone().ok().and_then(|r| hidden(&r.to_string_lossy())
+        .arg("--config").arg(&conf).arg("--ask-password=false")
+        .args(["config", "encryption", "set", "--password-command"]).arg(format!("\"{}\" --rclone-pass", exe.to_string_lossy()))
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().ok())
+        .map_or(false, |o| o.status.success())
+        && fs::read_to_string(&conf).map_or(false, |t| t.starts_with("# Encrypted"))
+        && rclone_out(&["listremotes"]).map_or(false, |l| t.contains('[') == !l.trim().is_empty());
+    if ok {
+        log_line("cloud: cloud logins are now stored encrypted");
+    } else {
+        // anything odd: put the plain file back, Echo keeps working as before
+        let _ = fs::copy(&bak, &conf);
+        set_rclone_pass("");
+        log_line("cloud: couldn't encrypt the cloud logins - kept as they were");
+    }
+    let _ = fs::remove_file(&bak);
+    changed
 }
 
 fn rclone_out(args: &[&str]) -> Result<String, String> {
@@ -4973,6 +5087,8 @@ static EC: Mutex<Option<EcState>> = Mutex::new(None);
 static EC_NEW_KEYS: AtomicBool = AtomicBool::new(false);
 /// port of the last streaming server (reused, the player keeps the address)
 static SERVE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+/// last time the window asked for the streaming server (unix s)
+static SERVE_USED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn ec_api(cfg: &crate::settings::Settings) -> String {
     let a = std::env::var("ECHO_CLOUD_API").ok().filter(|v| !v.trim().is_empty())
@@ -5314,6 +5430,7 @@ impl Recorder {
             ec_sync_state(&self.settings(), ec_exp);
         }
         let _ = rclone_out(&["mkdir", CLOUD_ROOT]);
+        self.secure_cloud();
         let _ = self.cloud_refresh();
         Ok(self.cloud_info())
     }
@@ -5326,8 +5443,19 @@ impl Recorder {
         if all.iter().any(|a| a.id == id && a.provider == "echocloud") {
             self.ec_sign_out();
         }
+        if all.iter().any(|a| a.id == id && a.provider == "echocloud") {
+            // its links aren't handed out again (signing in to another account must not reuse them)
+            let mut m = self.links();
+            m.retain(|_, e| e.key.is_empty());
+            self.save_links(&m);
+        }
         all.retain(|a| a.id != id);
         let _ = rclone_out(&["config", "delete", &format!("acc_{id}")]);
+        // the last listing still has that cloud's clips: the library must not show them any more.
+        // The other clouds' clips come back with the next listing (the sync runs right after).
+        let mut st = self.cloud_state();
+        st.files.clear();
+        self.save_cloud_state(&st);
         rebuild_echo_remote(&all)?;
         let mut c = self.cfg.lock().unwrap();
         c.cloud = match all.len() { 0 => String::new(), 1 => all[0].provider.clone(), _ => "multi".into() };
@@ -5336,6 +5464,13 @@ impl Recorder {
         ec_sync_state(&c, 0);
         log_line(&format!("cloud: removed account {id}"));
         Ok(())
+    }
+
+    /// Startup / after adding a cloud: make sure the cloud logins are stored encrypted (Windows).
+    pub fn secure_cloud(&self) {
+        let mut c = self.cfg.lock().unwrap();
+        set_rclone_pass(&c.rclone_pass);
+        secure_cloud_conf(&mut c);
     }
 
     /// Is the Echo Cloud server set up (address filled in)?
@@ -5394,6 +5529,11 @@ impl Recorder {
         self.stop_serve();
         self.ec_sign_out();
         let _ = fs::remove_file(cloud_conf());
+        // signed out: no cloud-only clips in the library, no old links handed out
+        let mut st = self.cloud_state();
+        st.files.clear();
+        self.save_cloud_state(&st);
+        let _ = fs::remove_file(self.thumbs_dir().join("links.json"));
         let mut c = self.cfg.lock().unwrap();
         c.cloud.clear();
         c.cloud_accounts.clear();
@@ -5503,6 +5643,11 @@ impl Recorder {
         let rel = self.rel_of(path).ok_or("not a clip")?;
         let cfg = self.settings();
         let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
+        // linked before: the same link again, nothing to upload
+        if let Ok(u) = self.reuse_link(&rel, days.map(|d| d.min(3650)).unwrap_or(cfg.link_days)) {
+            progress(1.0);
+            return Ok(u);
+        }
         // a share copy (watermark / AV1) is all the link needs: the whole clip doesn't have to go up first
         if !(has_ec && is_av1(path)) && !self.cloud_state().files.iter().any(|f| f.rel == rel) {
             self.upload_inner(path, true)?;
@@ -5667,6 +5812,7 @@ impl Recorder {
     }
 
     pub fn cloud_delete(&self, rel: &str) -> Result<(), String> {
+        self.forget_link(rel);
         let cp = self.cpath(rel);
         let cfg = self.settings();
         // Echo Cloud: delete through the server (works with read-only keys); other clouds: rclone as before
@@ -5692,6 +5838,35 @@ impl Recorder {
         Ok(())
     }
 
+    /// Settings → About → "Send feedback": the message (+ the end of Echo's log if the user ticked it) goes to
+    /// support@echoclip.link through the Echo Cloud server (no account needed; signed in = the server adds the email).
+    pub fn send_feedback(&self, message: &str, contact: &str, with_log: bool, version: &str) -> Result<(), String> {
+        let message = message.trim();
+        if message.is_empty() { return Err("Write a few words first".into()); }
+        let cfg = self.settings();
+        let mut body = serde_json::json!({
+            "message": message.chars().take(4000).collect::<String>(),
+            "contact": contact.trim(),
+            "version": version,
+            "os": if cfg!(windows) { "Windows" } else { "Linux" },
+        });
+        if with_log {
+            let t = fs::read_to_string(log_path()).unwrap_or_default();
+            let lines: Vec<&str> = t.lines().collect();
+            let mut tail = lines[lines.len().saturating_sub(400)..].join("\n");
+            // at most ~150 KB, the newest part
+            if tail.len() > 150_000 {
+                let mut cut = tail.len() - 150_000;
+                while !tail.is_char_boundary(cut) { cut += 1; }
+                tail = tail[cut..].to_string();
+            }
+            body["log"] = serde_json::json!(tail);
+        }
+        ec_call(&ec_api(&cfg), "POST", "/feedback", &cfg.ec_token, Some(body))?;
+        log_line("feedback: sent");
+        Ok(())
+    }
+
     /// "Stop sharing": the clip's Echo Cloud link stops working (the clip stays).
     pub fn cloud_unshare(&self, rel: &str) -> Result<(), String> {
         let cfg = self.settings();
@@ -5703,6 +5878,7 @@ impl Recorder {
             let j = ec_call(&ec_api(&cfg), "POST", "/share/remove", &cfg.ec_token, Some(serde_json::json!({ "path": p })))?;
             removed += j["removed"].as_u64().unwrap_or(0);
         }
+        self.forget_link(rel);
         log_line(&format!("cloud: stopped sharing {rel} ({removed} link(s))"));
         if removed == 0 { return Err("This clip had no share link".into()); }
         Ok(())
@@ -5738,6 +5914,7 @@ impl Recorder {
 
     /// Keep the cloud copy in step when a clip is renamed / moved on this PC.
     pub fn cloud_follow_move(&self, old_rel: String, new_rel: String) {
+        self.forget_link(&old_rel);
         if !self.cloud_on() || old_rel == new_rel || !self.cloud_state().files.iter().any(|f| f.rel == old_rel) {
             return;
         }
@@ -5775,8 +5952,20 @@ impl Recorder {
         }
     }
 
+    /// The streaming server (rclone, ~40-80 MB RAM) wasn't asked for in `secs`: stop it. The window asks
+    /// again (cloud_stream_base) before every cloud video and every couple of minutes while one plays,
+    /// and a restart reuses the same port + address.
+    pub fn stop_idle_serve(&self, secs: u64) {
+        let running = self.cloud_serve.lock().map(|g| g.is_some()).unwrap_or(false);
+        if running && now_unix().saturating_sub(SERVE_USED.load(Ordering::Relaxed)) > secs {
+            self.stop_serve();
+            log_line(&format!("cloud: streaming server stopped (not used for {} min)", secs / 60));
+        }
+    }
+
     /// Local streaming address for cloud clips (starts "rclone serve http" once).
     pub fn cloud_stream_base(&self) -> Result<String, String> {
+        SERVE_USED.store(now_unix(), Ordering::Relaxed);
         ec_ensure();
         if EC_NEW_KEYS.swap(false, Ordering::Relaxed) {
             self.stop_serve(); // restart with the new Echo Cloud keys (same port: the player keeps its address)
@@ -5926,10 +6115,23 @@ impl Recorder {
 
     /// Share link through a copy in Echo Cloud (Echo/.shared/<name>.mp4): H.264 + watermark, also for clips that
     /// are only on another cloud (Google Drive links don't play in Discord). The clip itself isn't touched.
-    fn link_via_copy(&self, rel: &str, days: u32, progress: &dyn Fn(f64)) -> Result<String, String> {
+    fn link_via_copy(&self, rel: &str, days: u32, progress: &dyn Fn(f64), try_old: bool) -> Result<(String, String, u64, serde_json::Value), String> {
         let cfg = self.settings();
         let local = self.clips_dir().join(rel);
         let name = Path::new(rel).file_name().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let key = format!("Echo/.shared/{name}");
+        // shared before (by an older Echo, or links.json was lost): the copy is still in Echo Cloud -
+        // link it again instead of fetching, converting and uploading the whole clip once more
+        if try_old {
+            let mut req = serde_json::json!({ "path": key, "days": days });
+            self.share_preview(rel, &mut req);
+            if let Ok(j) = ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req.clone())) {
+                if let Some(url) = j["url"].as_str().filter(|u| u.starts_with("http")) {
+                    log_line(&format!("cloud: echo cloud link for {rel} (share copy from before)"));
+                    return Ok((url.to_string(), key, j["expires"].as_u64().unwrap_or(0), req));
+                }
+            }
+        }
         let mut fetched = None;
         let src = if local.exists() { local } else {
             // only in a cloud: fetch it next to the share copies, just for this
@@ -5942,18 +6144,17 @@ impl Recorder {
         progress(0.0);
         let copy = self.share_copy(&src, &|f| progress(f * 0.45));
         let copy = match copy { Ok(c) => c, Err(e) => { if let Some(f) = &fetched { let _ = fs::remove_file(f); } return Err(e); } };
-        let key = format!("Echo/.shared/{name}");
         let up = self.ec_put(&copy, &key, &|f| progress(0.45 + f * 0.55));
         if let Some(f) = &fetched { let _ = fs::remove_file(f); }
         if fetched.is_some() && copy != src { let _ = fs::remove_file(&copy); }
         up?;
         let mut req = serde_json::json!({ "path": key, "days": days });
         self.share_preview(rel, &mut req);
-        let j = ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req))?;
+        let j = ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req.clone()))?;
         let url = j["url"].as_str().unwrap_or("").to_string();
         if !url.starts_with("http") { return Err("Echo Cloud didn't return a link".into()); }
         log_line(&format!("cloud: echo cloud link for {rel} (share copy)"));
-        Ok(url)
+        Ok((url, key, j["expires"].as_u64().unwrap_or(0), req))
     }
 
     fn share_preview(&self, rel: &str, req: &mut serde_json::Value) {
@@ -6009,8 +6210,91 @@ impl Recorder {
 
     /// A link to the cloud copy (pCloud / MEGA / Filen public link); copied to the clipboard by the caller.
     /// `days`: this link's lifetime (None = the default from Settings → Sharing, 0 = never expires).
+    fn links(&self) -> std::collections::BTreeMap<String, LinkEntry> {
+        fs::read_to_string(self.thumbs_dir().join("links.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    fn save_links(&self, m: &std::collections::BTreeMap<String, LinkEntry>) {
+        let _ = fs::create_dir_all(self.thumbs_dir());
+        let _ = fs::write(self.thumbs_dir().join("links.json"), serde_json::to_string(m).unwrap_or_default());
+    }
+    /// The clip's link must not be handed out again (stopped sharing, deleted, moved, signed out…).
+    pub fn forget_link(&self, rel: &str) {
+        let mut m = self.links();
+        if m.remove(rel).is_some() { self.save_links(&m); }
+    }
+    /// Size + change time of the clip (or its cloud copy): a link made for an older version isn't reused.
+    fn link_sig(&self, rel: &str) -> String {
+        let local = self.clips_dir().join(rel);
+        if let Ok(md) = fs::metadata(&local) {
+            let t = md.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+            return format!("{}:{t}", md.len());
+        }
+        self.cloud_state().files.iter().find(|f| f.rel == rel).map(|f| format!("c{}", f.size)).unwrap_or_default()
+    }
+    fn remember_link(&self, rel: &str, url: &str, key: &str, days: u32, expires: u64, req: &serde_json::Value) {
+        let mut meta = req.clone();
+        if let Some(o) = meta.as_object_mut() { o.remove("thumb"); o.remove("path"); o.remove("days"); }
+        let e = LinkEntry { url: url.into(), key: key.into(), days, expires, wm: share_wm(&self.settings()).to_string(), sig: self.link_sig(rel), meta };
+        let mut m = self.links();
+        // the share-link file names expire anyway; keep the list small
+        let now = now_unix();
+        m.retain(|_, v| v.expires == 0 || v.expires > now);
+        m.insert(rel.to_string(), e);
+        self.save_links(&m);
+    }
+    /// The link Echo made before, when it still works (same clip, same watermark, not expired or removed).
+    /// Only the lifetime is different: Echo Cloud changes it on the same link.
+    fn reuse_link(&self, rel: &str, days: u32) -> Result<String, bool> {
+        let mut m = self.links();
+        let Some(e) = m.get(rel).cloned() else { return Err(false) };
+        let cfg = self.settings();
+        let ok = (e.expires == 0 || e.expires > now_unix() + 3600) && e.sig == self.link_sig(rel) && e.wm == share_wm(&cfg)
+            && (e.key.is_empty() || !cfg.ec_token.is_empty());
+        // Echo Cloud links: ask the server whether the link still plays (taken down / removed elsewhere -> make a new one).
+        // No internet: hand out the known link anyway.
+        let alive = ok && (e.key.is_empty() || match crate::net::request("HEAD", &format!("{}.mp4", e.url), vec![], None, 8) {
+            Ok((code, _)) => code < 400,
+            Err(_) => true,
+        });
+        if !alive {
+            m.remove(rel);
+            self.save_links(&m);
+            return Err(true);
+        }
+        if e.days == days {
+            log_line(&format!("cloud: same link as before for {rel}"));
+            return Ok(e.url);
+        }
+        if e.key.is_empty() { return Err(false); }
+        let mut req = e.meta.clone();
+        if !req.is_object() { req = serde_json::json!({}); }
+        req["path"] = serde_json::json!(e.key);
+        req["days"] = serde_json::json!(days);
+        match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req.clone())) {
+            Ok(j) if j["url"].as_str() == Some(e.url.as_str()) => {
+                self.remember_link(rel, &e.url, &e.key, days, j["expires"].as_u64().unwrap_or(0), &req);
+                log_line(&format!("cloud: same link for {rel}, new lifetime {days} days"));
+                Ok(e.url)
+            }
+            _ => { self.forget_link(rel); Err(true) }
+        }
+    }
+
     pub fn cloud_link(&self, rel: &str, days: Option<u32>, progress: &dyn Fn(f64)) -> Result<String, String> {
         let days = days.map(|d| d.min(3650)).unwrap_or_else(|| self.settings().link_days);
+        // pressed "Copy share link" before: the same link again (in well under a second)
+        let stale = match self.reuse_link(rel, days) {
+            Ok(u) => { progress(1.0); return Ok(u); }
+            Err(stale) => stale,
+        };
+        let (url, key, exp, req) = self.cloud_link_new(rel, days, progress, stale)?;
+        self.remember_link(rel, &url, &key, days, exp, &req);
+        Ok(url)
+    }
+
+    /// Make the link (Echo Cloud: the same link comes back for the same file; other clouds: a new one).
+    /// Returns (link, Echo Cloud object or "", expires, what the share page shows).
+    fn cloud_link_new(&self, rel: &str, days: u32, progress: &dyn Fn(f64), stale: bool) -> Result<(String, String, u64, serde_json::Value), String> {
         let exp = format!("{days}d");
         let mut args = vec!["link"];
         if days > 0 {
@@ -6024,8 +6308,8 @@ impl Recorder {
         let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
         let local = self.clips_dir().join(rel);
         if has_ec && local.exists() && is_av1(&local.to_string_lossy()) {
-            match self.link_via_copy(rel, days, progress) {
-                Ok(u) => return Ok(u),
+            match self.link_via_copy(rel, days, progress, !stale) {
+                Ok(r) => return Ok(r),
                 Err(e) if e.contains("full") => log_line(&format!("cloud: no room for a share copy ({e}) - linking the clip itself")),
                 Err(e) => return Err(e),
             }
@@ -6033,19 +6317,20 @@ impl Recorder {
         // Echo Cloud first and without a listing: the server checks the clip itself and answers in ~1 s
         // (looking the file up in e.g. a big Google Drive first took up to a minute)
         if has_ec {
-            let mut req = serde_json::json!({ "path": format!("Echo/{}", cp.trim_start_matches('/')), "days": days });
+            let key = format!("Echo/{}", cp.trim_start_matches('/'));
+            let mut req = serde_json::json!({ "path": key, "days": days });
             self.share_preview(rel, &mut req);
-            match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req)) {
+            match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req.clone())) {
                 Ok(j) => {
                     let url = j["url"].as_str().unwrap_or("").to_string();
                     if url.starts_with("http") {
                         log_line(&format!("cloud: echo cloud link for {rel}"));
-                        return Ok(url);
+                        return Ok((url, key, j["expires"].as_u64().unwrap_or(0), req));
                     }
                 }
                 // only on another cloud (e.g. Google Drive): copy it to Echo Cloud, so the link plays in Discord
-                Err(e) if e.contains("isn't in Echo Cloud") => match self.link_via_copy(rel, days, progress) {
-                    Ok(u) => return Ok(u),
+                Err(e) if e.contains("isn't in Echo Cloud") => match self.link_via_copy(rel, days, progress, !stale) {
+                    Ok(r) => return Ok(r),
                     Err(e2) => log_line(&format!("cloud: couldn't copy {rel} to Echo Cloud for a link ({e2}) - using the other cloud's link")),
                 },
                 Err(e) => return Err(format!("Couldn't make a link: {e}")),
@@ -6064,7 +6349,8 @@ impl Recorder {
             return Err("This cloud didn't return a link".into());
         }
         log_line(&format!("cloud: link for {rel}"));
-        Ok(url)
+        let exp = if days > 0 { now_unix() + days as u64 * 86400 } else { 0 };
+        Ok((url, String::new(), exp, serde_json::json!({})))
     }
 
     /// Background sync, run every few minutes: upload new clips / favourites, download clips from other PCs.

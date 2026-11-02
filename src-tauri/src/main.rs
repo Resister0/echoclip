@@ -3,6 +3,8 @@
 mod net;
 mod recorder;
 mod settings;
+#[cfg(target_os = "linux")]
+mod keyring_linux;
 mod pad;
 mod mediaserve;
 #[cfg(target_os = "linux")]
@@ -304,7 +306,10 @@ async fn echocloud_start(rec: State<'_, Recorder>, email: String) -> Result<(), 
 
 #[tauri::command]
 async fn cloud_remove_account(rec: State<'_, Recorder>, id: u32) -> Result<(), String> {
-    rec.cloud_remove_account(id)
+    rec.cloud_remove_account(id)?;
+    // list the clouds that are left right away (the removed one's clips were taken out of the library)
+    SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 #[tauri::command]
 async fn cloud_disconnect(rec: State<'_, Recorder>) -> Result<(), String> {
@@ -414,6 +419,10 @@ async fn compress_clip(app: AppHandle, rec: State<'_, Recorder>, path: String, f
     })
 }
 
+#[tauri::command]
+async fn send_feedback(rec: State<'_, Recorder>, message: String, contact: String, with_log: bool, version: String) -> Result<(), String> {
+    rec.send_feedback(&message, &contact, with_log, &version)
+}
 #[tauri::command]
 async fn cloud_unshare(rec: State<'_, Recorder>, rel: String) -> Result<(), String> {
     rec.cloud_unshare(&rel)
@@ -1049,7 +1058,11 @@ async fn restart_recorder(rec: State<'_, Recorder>) -> Result<(), String> {
 
 #[tauri::command]
 fn get_settings(rec: State<Recorder>) -> Settings {
-    rec.settings()
+    // the window never needs the sign-in token or the cloud config password
+    let mut s = rec.settings();
+    s.ec_token = if s.ec_token.is_empty() { String::new() } else { "signed-in".into() };
+    s.rclone_pass.clear();
+    s
 }
 
 /// Save settings, re-register hotkeys, and restart the recorder only if needed.
@@ -1063,6 +1076,8 @@ async fn set_settings(app: AppHandle, rec: State<'_, Recorder>, settings: Settin
     settings.cloud_since = cur.cloud_since;
     settings.folder_alias = cur.folder_alias;
     settings.not_games = cur.not_games;
+    settings.ec_token = cur.ec_token;
+    settings.rclone_pass = cur.rclone_pass;
     settings.save()?;
     SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
     allow_clips_dir(&app, &settings.clips_dir);
@@ -1179,17 +1194,33 @@ fn set_autostart(on: bool) {
     }
 }
 
+/// The window was shown once already: from then on it comes back exactly as it was left.
+static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    let Some(w) = app.get_webview_window("main") else { return };
+    if !SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        // first time: Echo opens full size
         let _ = w.show();
-        let _ = w.unminimize();
-        // Echo always opens full size; re-maximize so a window that came back oversized fits the screen again
-        if w.is_maximized().unwrap_or(false) {
-            let _ = w.unmaximize();
-        }
         let _ = w.maximize();
         let _ = w.set_focus();
+        return;
     }
+    // tray click / second start: bring it back the way it was (no un-maximize + maximize flash every time)
+    if w.is_minimized().unwrap_or(false) {
+        let _ = w.unminimize();
+    }
+    let _ = w.show();
+    // only a window that came back bigger than the screen (e.g. after a resolution change) is fitted again
+    if !w.is_maximized().unwrap_or(false) {
+        if let (Ok(size), Ok(Some(mon))) = (w.outer_size(), w.current_monitor()) {
+            let m = mon.size();
+            if size.width > m.width || size.height > m.height {
+                let _ = w.maximize();
+            }
+        }
+    }
+    let _ = w.set_focus();
 }
 
 /// When Echo started (for the "startup: …" log line).
@@ -1215,6 +1246,12 @@ fn main() {
         }
         if std::env::var_os("USERPROFILE").is_none() { std::env::set_var("USERPROFILE", &home); }
     }
+    // rclone asking for the cloud config password (see recorder::secure_cloud_conf): answer and quit,
+    // before anything else (no window, no "already running" check)
+    if std::env::args().any(|a| a == "--rclone-pass") {
+        recorder::print_rclone_pass();
+        return;
+    }
     // only one Echo: a second launch just brings the running one to the front
     #[cfg(target_os = "linux")]
     if linuxutil::already_running() {
@@ -1232,6 +1269,7 @@ fn main() {
         return;
     }
     let cfg = Settings::load();
+    recorder::set_rclone_pass(&cfg.rclone_pass);
 
     let app = tauri::Builder::default()
         .plugin(
@@ -1356,6 +1394,8 @@ fn main() {
                     let mut last = std::time::Instant::now();
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(10));
+                        // cloud streaming server unused for 10 minutes: stop it (frees memory on small PCs)
+                        h.state::<Recorder>().stop_idle_serve(600);
                         let soon = SYNC_SOON.swap(false, std::sync::atomic::Ordering::Relaxed);
                         if !soon && last.elapsed().as_secs() < 300 {
                             continue;
@@ -1617,6 +1657,8 @@ fn main() {
 
             // start recording in the background so the window opens instantly
             std::thread::spawn(move || {
+                // cloud logins in echo.conf: encrypted once (Windows), a second or so the first time
+                handle.state::<Recorder>().secure_cloud();
                 let _ = handle.state::<Recorder>().start();
             });
             Ok(())
@@ -1625,6 +1667,9 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = ev {
                 if w.app_handle().state::<Recorder>().settings().close_to_tray {
                     api.prevent_close();
+                    // minimize first, then hide: the window goes down into the taskbar like a normal minimize,
+                    // and the tray icon brings it back up the same way (same size, no maximize flash)
+                    let _ = w.minimize();
                     let _ = w.hide();
                 }
             }
@@ -1659,6 +1704,7 @@ fn main() {
             compress_clip,
             av1_support,
             cloud_unshare,
+            send_feedback,
             echocloud_delete_account,
             cloud_connect,
             cloud_disconnect,

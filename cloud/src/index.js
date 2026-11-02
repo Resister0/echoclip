@@ -351,6 +351,68 @@ async function unshare(req, user, env) {
   return json({ ok: true, removed: rows.length, copy_deleted: copyDeleted });
 }
 
+/// Echo → Settings → About → "Send feedback": one email to support (Resend), the log as an attachment.
+/// No account needed; limited per network and per day so nobody can flood the inbox or the Resend quota.
+async function feedback(req, env, user) {
+  const b = await body(req);
+  const message = String(b.message || "").replace(/\r/g, "").trim().slice(0, 4000);
+  if (!message) return fail("Write a few words first");
+  if (!(await allow(env, `fb:ip:${ipOf(req)}`, 5, 3600))) return fail("That's a lot of feedback at once - try again in an hour", 429);
+  if (!(await allow(env, "fb:day", Number(env.FEEDBACK_DAY_LIMIT || 40), 86400))) return fail("Feedback is paused for today - email support@echoclip.link", 429);
+  const contact = cleanEmail(b.contact);
+  const account = user && user.email ? user.email : "";
+  const clip = (t, n) => String(t || "").replace(/[\u0000-\u001f]/g, " ").slice(0, n);
+  const lines = [
+    message, "", "---",
+    `From: ${contact || "(no email given)"}`,
+    `Echo Cloud account: ${account || "(not signed in)"}${user && user.plan ? " · " + user.plan : ""}`,
+    `Echo ${clip(b.version, 40) || "?"} on ${clip(b.os, 20) || "?"}`,
+    `Country: ${req.cf && req.cf.country ? req.cf.country : "?"}`,
+  ];
+  const log = typeof b.log === "string" ? b.log.slice(-200000) : "";
+  if (!env.RESEND_KEY) { console.log("feedback:", lines.join("\n"), log ? `(+ log ${log.length} chars)` : ""); return json({ ok: true }); }
+  const mail = {
+    from: env.MAIL_FROM,
+    to: [env.SUPPORT_TO || "support@echoclip.link"],
+    subject: `Echo feedback: ${clip(message.split("\n")[0], 70)}`,
+    text: lines.join("\n"),
+  };
+  const reply = contact || account;
+  if (reply) mail.reply_to = reply;
+  if (log) {
+    const bytes = new TextEncoder().encode(log);
+    let bin = ""; for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    mail.attachments = [{ filename: "echo-log.txt", content: btoa(bin) }];
+  }
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.RESEND_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify(mail),
+  });
+  if (!r.ok) { console.log("feedback mail failed", r.status, await r.text()); return fail("Couldn't send it right now - try again later", 502); }
+  return json({ ok: true });
+}
+
+/// Daily (cron): a copy of the database (accounts, sessions, share links) in R2 under backups/, the last 14 kept.
+/// Not reachable from outside (share links only serve objects listed in the shares table; user keys only see u/<id>/).
+/// Restore: download the file in the Cloudflare dashboard (R2 → echo-cloud → backups/), the tables are JSON rows.
+async function backupDb(env) {
+  await migrate(env);
+  const tables = (await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").all()).results || [];
+  const dump = { made: new Date().toISOString(), tables: {} };
+  for (const { name } of tables) {
+    if (name === "limits" || name === "codes") continue;   // short-lived, nothing to restore
+    dump.tables[name] = (await env.DB.prepare(`SELECT * FROM "${name.replace(/"/g, "")}"`).all()).results || [];
+  }
+  const day = dump.made.slice(0, 10);
+  const gz = new Response(new Blob([JSON.stringify(dump)]).stream().pipeThrough(new CompressionStream("gzip")));
+  await env.BUCKET.put(`backups/db-${day}.json.gz`, await gz.arrayBuffer(), { httpMetadata: { contentType: "application/gzip" } });
+  const list = await env.BUCKET.list({ prefix: "backups/db-" });
+  const old = list.objects.map((o) => o.key).sort().slice(0, -14);
+  if (old.length) await env.BUCKET.delete(old);
+  console.log(`backup: ${day}, ${Object.keys(dump.tables).length} tables`);
+}
+
 /// Daily (cron in wrangler.toml): links that have expired lose their share copy, so the space comes back.
 /// Links to the clip itself just stop working (the clip stays).
 async function cleanupExpired(env) {
@@ -727,40 +789,65 @@ const DOWNLOADS = {
   "linux": "Echo-x86_64.AppImage",
   "linux-tar": "Echo-linux-x86_64.tar.gz",
 };
-let releaseCache = null, releaseAt = 0;
-const ghFetch = (env, url, accept) => fetch(url, {
-  headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept, "user-agent": "echo-cloud", "x-github-api-version": "2022-11-28" },
+// Releases are built in two places: the PUBLIC repo Resister0/echoclip (traceable builds, needed for code
+// signing later; its files download without a token) and, as a fallback, the private repo Resister0/echo
+// (needs GITHUB_TOKEN). Both publish a release "latest" titled "Echo 1.0.<n>" with the same number;
+// for each file the newest release that has it wins, the public one on a tie.
+const releaseCache = new Map();   // repo -> { at, rel }
+const ghFetch = (env, url, accept, auth = true) => fetch(url, {
+  headers: { ...(auth && env.GITHUB_TOKEN ? { authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}), accept, "user-agent": "echo-cloud", "x-github-api-version": "2022-11-28" },
   redirect: "manual",
 });
-/// the GitHub release "latest" (cached 5 min), or null
-async function release(env) {
-  if (releaseCache && now() - releaseAt < 300) return releaseCache;
-  const r = await ghFetch(env, `https://api.github.com/repos/${env.GITHUB_REPO || "Resister0/echo"}/releases/tags/latest`, "application/vnd.github+json");
-  if (!r.ok) {
-    console.log("github: release lookup failed", r.status, (await r.text()).slice(0, 300));
-    return null;
-  }
-  releaseCache = await r.json();
-  releaseAt = now();
-  return releaseCache;
+const publicRepo = (env) => env.PUBLIC_REPO || "Resister0/echoclip";
+const privateRepo = (env) => env.GITHUB_REPO || "Resister0/echo";
+/// the GitHub release "latest" of one repo (cached 5 min), or null
+async function releaseOf(env, repo, isPublic) {
+  const c = releaseCache.get(repo);
+  if (c && now() - c.at < 300) return c.rel;
+  const url = `https://api.github.com/repos/${repo}/releases/tags/latest`;
+  let r = isPublic || env.GITHUB_TOKEN ? await ghFetch(env, url, "application/vnd.github+json") : null;
+  // the token may only be allowed for the private repo: public releases can be read without it
+  if (r && !r.ok && isPublic && env.GITHUB_TOKEN) r = await ghFetch(env, url, "application/vnd.github+json", false);
+  let rel = null;
+  if (r && r.ok) {
+    rel = await r.json();
+    rel.public = isPublic;
+  } else if (r && r.status !== 404) console.log("github: release lookup failed", repo, r.status, (await r.text()).slice(0, 200));
+  releaseCache.set(repo, { at: now(), rel });
+  return rel;
 }
-/// short-lived signed download address of a release file
-async function assetLink(env, asset) {
+const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
+/// newest release that has `file` (and its .sig when `withSig`); "private" = only the private repo
+async function release(env, file, withSig, only) {
+  const rels = [];
+  if (only !== "private") rels.push(await releaseOf(env, publicRepo(env), true));
+  rels.push(await releaseOf(env, privateRepo(env), false));
+  const has = (rel, n) => (rel.assets || []).some((a) => a.name === n);
+  let best = null;
+  for (const rel of rels) {
+    if (!rel || !relVersion(rel) || !has(rel, file) || (withSig && !has(rel, `${file}.sig`))) continue;
+    if (!best || newer(relVersion(rel), relVersion(best))) best = rel;
+  }
+  return best;
+}
+/// download address of a release file: public files directly, private ones as a short-lived signed address
+async function assetLink(env, rel, asset) {
+  if (rel.public) return asset.browser_download_url;
   const r = await ghFetch(env, asset.url, "application/octet-stream");
   const to = r.headers.get("location");
   if (!to) console.log("github: no redirect for", asset.name, r.status);
   return to;
 }
 
-async function download(env, what) {
+async function download(env, what, from) {
   const file = DOWNLOADS[what];
   if (!file) return null;
-  if (!env.GITHUB_TOKEN) return page("Downloads are coming soon", "Echo can't be downloaded here yet. Email support@echoclip.link.");
-  const rel = await release(env);
-  if (!rel) return page("Download not available", "The download couldn't be found right now - try again in a few minutes.");
-  const asset = (rel.assets || []).find((a) => a.name === file);
-  if (!asset) { releaseAt = 0; return page("Download not available", "This build isn't ready right now - a new version may be building. Try again in about 10 minutes."); }
-  const to = await assetLink(env, asset);
+  const rel = await release(env, file, false, from);
+  if (!rel) {
+    releaseCache.clear();
+    return page("Download not available", "This build isn't ready right now - a new version may be building. Try again in about 10 minutes.");
+  }
+  const to = await assetLink(env, rel, rel.assets.find((a) => a.name === file));
   if (!to) return page("Download not available", "Try again in a few minutes.");
   return new Response(null, { status: 302, headers: { location: to, "cache-control": "no-store" } });
 }
@@ -779,23 +866,24 @@ const sigCache = new Map();
 async function update(env, target, current) {
   const what = UPDATE_FILES[target];
   const none = () => new Response(null, { status: 204 });
-  if (!what || !env.GITHUB_TOKEN) return none();
-  const rel = await release(env);
-  const version = rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
-  if (!version || !newer(version, current)) return none();
+  if (!what) return none();
   const file = DOWNLOADS[what];
-  const sig = (rel.assets || []).find((a) => a.name === `${file}.sig`);
-  if (!sig || !(rel.assets || []).some((a) => a.name === file)) return none(); // still building / unsigned build
+  const rel = await release(env, file, true);   // still building / unsigned build -> not offered
+  const version = relVersion(rel);
+  if (!version || !newer(version, current)) return none();
+  const sig = rel.assets.find((a) => a.name === `${file}.sig`);
   let signature = sigCache.get(sig.id);
   if (!signature) {
-    const to = await assetLink(env, sig);
+    const to = await assetLink(env, rel, sig);
     const r = to && (await fetch(to));
     if (!r || !r.ok) return none();
     signature = (await r.text()).trim();
     sigCache.set(sig.id, signature);
   }
   const notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
-  return json({ version, notes, pub_date: rel.published_at || rel.created_at, url: `https://echoclip.link/download/${what}`, signature });
+  // the installer from the SAME release as the signature
+  const url = rel.public ? rel.assets.find((a) => a.name === file).browser_download_url : `https://echoclip.link/download/${what}?from=private`;
+  return json({ version, notes, pub_date: rel.published_at || rel.created_at, url, signature });
 }
 
 async function notFound(req, env) {
@@ -877,7 +965,7 @@ export default {
       // GET / and the other website pages come from site/ (static assets, answered before this code runs)
       if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
       const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
-      if (dm && req.method === "GET") return (await download(env, dm[1])) || (await notFound(req, env));
+      if (dm && req.method === "GET") return (await download(env, dm[1], url.searchParams.get("from") === "private" ? "private" : "")) || (await notFound(req, env));
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") return await update(env, um[1], um[3]);
       if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
@@ -886,6 +974,7 @@ export default {
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
+      if (route === "POST /feedback") return await feedback(req, env, await userFromToken(req, env).catch(() => null));
       const user = await userFromToken(req, env);
       if (!user) return AUTHED.has(route) || req.headers.has("authorization")
         ? fail("Signed out - sign in to Echo Cloud again", 401) : await notFound(req, env);
@@ -912,6 +1001,7 @@ export default {
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupExpired(env).catch((e) => console.log("cleanup error", e && e.stack)));
+    ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
   },
 };
 

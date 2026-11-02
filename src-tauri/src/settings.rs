@@ -171,6 +171,8 @@ pub struct Settings {
     /// settings version for smart bitrate: 0 = file from before it existed (migrated once in load())
     #[serde(default)]
     pub smart_v: u32,
+    /// password of the encrypted rclone cloud config (echo.conf, Windows); made by Echo, never shown
+    pub rclone_pass: String,
     /// controller combo that saves a clip (XInput bits, 0 = off) and its length (0 = first hotkey's length)
     pub pad_buttons: u16,
     pub pad_seconds: u32,
@@ -250,6 +252,7 @@ impl Default for Settings {
             share_watermark: true,
             smart_quality: 72,
             smart_v: 1,
+            rclone_pass: String::new(),
             pad_buttons: 0,
             pad_seconds: 0,
             watermark_style: "kimbo".into(),
@@ -284,6 +287,9 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// names of the secret fields (keyring item names on Linux)
+    const SECRETS: [&'static str; 4] = ["ec_token", "r2_key", "r2_secret", "rclone_pass"];
+
     pub fn path() -> PathBuf {
         let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         base.join("Clipper").join("settings.json")
@@ -294,6 +300,22 @@ impl Settings {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        // sign-in token and keys are saved encrypted (see `secret`); older files have them in plain text
+        let plain = [&s.ec_token, &s.r2_key, &s.r2_secret, &s.rclone_pass].iter()
+            .any(|v| !v.is_empty() && !v.starts_with(secret::PFX) && !v.starts_with(secret::KS));
+        let stored = [s.ec_token.clone(), s.r2_key.clone(), s.r2_secret.clone(), s.rclone_pass.clone()];
+        // Linux at login: the keyring may start a moment after Echo - wait for it a little (only then)
+        for attempt in 0..3 {
+            for ((n, v), raw) in Self::SECRETS.iter().zip([&mut s.ec_token, &mut s.r2_key, &mut s.r2_secret, &mut s.rclone_pass]).zip(&stored) {
+                *v = secret::unprotect(n, raw);
+                let _ = n;
+            }
+            if !secret::keyring_down() || attempt == 2 { break; }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        if plain && secret::available() {
+            let _ = s.save();
+        }
         // Smart bitrate arrived (chat 15): the old bitrate becomes the AVERAGE (Balanced = 60% of the maximum),
         // so clips stay about the same size, busy moments get up to ~1.7x the bits, and nothing gets softer.
         if s.smart_v < 1 {
@@ -318,7 +340,15 @@ impl Settings {
         if let Some(d) = p.parent() {
             fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
-        fs::write(p, serde_json::to_string_pretty(self).unwrap()).map_err(|e| e.to_string())
+        let mut out = self.clone();
+        for (n, v) in Self::SECRETS.iter().zip([&mut out.ec_token, &mut out.r2_key, &mut out.r2_secret, &mut out.rclone_pass]) {
+            *v = secret::protect(n, v);
+        }
+        // write next to it, then swap: a crash mid-write can't leave a half settings file
+        let tmp = p.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_string_pretty(&out).unwrap()).map_err(|e| e.to_string())?;
+        secret::private_file(&tmp);
+        fs::rename(&tmp, &p).or_else(|_| fs::copy(&tmp, &p).map(|_| ()).and_then(|_| fs::remove_file(&tmp))).map_err(|e| e.to_string())
     }
 
     /// Longest clip any hotkey can ask for = how much the buffer must hold.
@@ -364,4 +394,131 @@ impl Settings {
             || self.buffer_seconds() != new.buffer_seconds()
     }
 
+}
+
+/// Secrets in settings.json (Echo Cloud sign-in, R2 keys, the cloud config password).
+/// Windows: encrypted for the signed-in Windows user (DPAPI) and saved as "enc:<hex>" - no password, no prompt.
+/// Linux: kept in the desktop keyring (KDE Wallet / GNOME Keyring); the file only says "ks:".
+/// Without a keyring they stay in the file, which only this user can read.
+/// A copy of the file on another PC / user can't be read (Echo then just asks to sign in again).
+pub mod secret {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
+
+    pub const PFX: &str = "enc:";
+    pub const KS: &str = "ks:";
+    /// Linux: value last written to / read from the keyring per field (no D-Bus call when nothing changed)
+    static LAST: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    /// Linux: fields whose keyring item couldn't be read this run (keyring not running / locked):
+    /// their "ks:" mark stays in the file, so nothing is lost
+    static DOWN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    fn last(name: &str) -> Option<String> { LAST.lock().ok()?.as_ref()?.get(name).cloned() }
+    fn set_last(name: &str, v: &str) { if let Ok(mut g) = LAST.lock() { g.get_or_insert_with(HashMap::new).insert(name.into(), v.into()); } }
+    fn is_down(name: &str) -> bool { DOWN.lock().ok().and_then(|g| g.as_ref().map(|s| s.contains(name))).unwrap_or(false) }
+    fn set_down(name: &str, down: bool) {
+        if let Ok(mut g) = DOWN.lock() {
+            let s = g.get_or_insert_with(HashSet::new);
+            if down { s.insert(name.into()); } else { s.remove(name); }
+        }
+    }
+    /// Some secret couldn't be read because the keyring wasn't there (Linux).
+    pub fn keyring_down() -> bool { DOWN.lock().ok().and_then(|g| g.as_ref().map(|s| !s.is_empty())).unwrap_or(false) }
+
+    pub fn available() -> bool {
+        #[cfg(windows)]
+        { true }
+        #[cfg(target_os = "linux")]
+        { crate::keyring_linux::available() }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        { false }
+    }
+
+    pub fn protect(name: &str, v: &str) -> String {
+        if v.starts_with(PFX) || v.starts_with(KS) { return v.to_string(); }
+        #[cfg(target_os = "linux")]
+        {
+            if v.is_empty() {
+                // couldn't read it this run: keep the mark; signed out for real: remove it from the keyring
+                if is_down(name) { return KS.into(); }
+                if last(name).map_or(false, |l| !l.is_empty()) { crate::keyring_linux::delete(name); set_last(name, ""); }
+                return String::new();
+            }
+            if !available() { return v.to_string(); }
+            if last(name).as_deref() == Some(v) { return KS.into(); }
+            return match crate::keyring_linux::store(name, v) {
+                Ok(()) => { set_last(name, v); set_down(name, false); KS.into() }
+                Err(_) => v.to_string(),
+            };
+        }
+        #[allow(unreachable_code)]
+        {
+            let _ = (name, last as fn(&str) -> Option<String>, set_last as fn(&str, &str), is_down as fn(&str) -> bool);
+            if v.is_empty() || !available() { return v.to_string(); }
+            match imp::protect(v.as_bytes()) {
+                Some(b) => format!("{PFX}{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+                None => v.to_string(),
+            }
+        }
+    }
+
+    /// "" when it can't be read (file from another PC / user, keyring not there).
+    pub fn unprotect(name: &str, v: &str) -> String {
+        if v == KS {
+            #[cfg(target_os = "linux")]
+            return match crate::keyring_linux::load(name) {
+                Ok(s) => { set_last(name, &s); set_down(name, false); s }
+                Err(crate::keyring_linux::Miss::NotFound) => { set_down(name, false); String::new() }
+                Err(crate::keyring_linux::Miss::Unavailable) => { set_down(name, true); String::new() }
+            };
+            #[allow(unreachable_code)]
+            { let _ = (name, set_down as fn(&str, bool)); return String::new(); }
+        }
+        let Some(h) = v.strip_prefix(PFX) else { return v.to_string() };
+        if h.len() % 2 != 0 { return String::new(); }
+        let bytes: Option<Vec<u8>> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).ok()).collect();
+        bytes.and_then(|b| imp::unprotect(&b)).and_then(|b| String::from_utf8(b).ok()).unwrap_or_default()
+    }
+
+    /// Only this user may read the file (Linux; on Windows %APPDATA% is per-user already).
+    pub fn private_file(p: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+        }
+        #[cfg(not(unix))]
+        let _ = p;
+    }
+
+    #[cfg(windows)]
+    mod imp {
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
+        use windows::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+
+        fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+            let v = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
+            unsafe { let _ = LocalFree(HLOCAL(out.pbData as *mut core::ffi::c_void)); }
+            v
+        }
+        pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
+            let inp = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+            let mut out = CRYPT_INTEGER_BLOB::default();
+            unsafe { CryptProtectData(&inp, windows::core::w!("Echo"), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out) }.ok()?;
+            Some(take(out))
+        }
+        pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+            let inp = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+            let mut out = CRYPT_INTEGER_BLOB::default();
+            unsafe { CryptUnprotectData(&inp, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out) }.ok()?;
+            Some(take(out))
+        }
+    }
+
+    #[cfg(not(windows))]
+    mod imp {
+        #[allow(dead_code)]
+        pub fn protect(_: &[u8]) -> Option<Vec<u8>> { None }
+        pub fn unprotect(_: &[u8]) -> Option<Vec<u8>> { None }
+    }
 }

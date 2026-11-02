@@ -1,0 +1,159 @@
+# Echo's release build in the PUBLIC repo (github.com/Resister0/echoclip): every file people download or
+# auto-update to is built here from the public source, so anyone can check what went into it (also needed
+# for free code signing via SignPath later). This file lives in the private repo as ci/public-build.yml and is
+# copied to .github/workflows/build.yml here on every publish. Needs the secret TAURI_SIGNING_PRIVATE_KEY
+# (same value as in the private repo) for auto-update signatures.
+name: Build Echo
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    if: github.repository == 'Resister0/echoclip'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Version
+        # same number as the private repo's build (ci/version.txt, written when the code is copied here)
+        # Own builds (build.cmd / build.sh) stay 0.1.0 and never offer updates.
+        shell: bash
+        run: |
+          V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
+          sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
+          grep '"version"' src-tauri/tauri.conf.json
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --release
+      - name: Rename
+        shell: pwsh
+        run: Copy-Item src-tauri/target/release/echo.exe Echo.exe
+      - name: Installer
+        # Echo-Setup.exe: installs for the current user (no admin), Start menu entry + uninstaller
+        continue-on-error: true
+        shell: bash
+        working-directory: src-tauri
+        env:
+          # signs the update (Echo only installs updates signed with this key; public half is in tauri.conf.json)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
+          # ffmpeg + ffprobe + rclone go inside the installer (tools/ next to Echo.exe)
+          mkdir -p tools dl
+          curl -sSL --retry 3 -o dl/ff.zip https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip
+          curl -sSL --retry 3 -o dl/rc.zip https://downloads.rclone.org/rclone-current-windows-amd64.zip
+          (cd dl && unzip -q ff.zip && unzip -q rc.zip)
+          cp dl/*/bin/ffmpeg.exe dl/*/bin/ffprobe.exe tools/
+          cp dl/rclone-*/rclone.exe tools/
+          ls -la tools
+          npx --yes @tauri-apps/cli@2 build --bundles nsis \
+            --config '{"bundle":{"active":true'"$UPD"',"resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
+          cp target/release/bundle/nsis/*-setup.exe ../Echo-Setup.exe
+          cp target/release/bundle/nsis/*-setup.exe.sig ../Echo-Setup.exe.sig || echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            Echo.exe
+            Echo-Setup.exe
+            Echo-Setup.exe.sig
+          if-no-files-found: warn
+
+  linux:
+    if: github.repository == 'Resister0/echoclip'
+    # Ubuntu 22.04 = older system libraries, so the build also runs on newer distros (Fedora / Nobara, Arch, Ubuntu 24…)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libasound2-dev libdbus-1-dev libayatana-appindicator3-dev libsoup-3.0-dev pkg-config \
+            libfuse2 file patchelf gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Version
+        # same number as the private repo's build (ci/version.txt, written when the code is copied here)
+        # Own builds (build.cmd / build.sh) stay 0.1.0 and never offer updates.
+        shell: bash
+        run: |
+          V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
+          sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
+          grep '"version"' src-tauri/tauri.conf.json
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p Echo-linux
+          cp src-tauri/target/release/echo Echo-linux/Echo
+          cp build.sh src-tauri/icons/icon.png Echo-linux/
+          cat > Echo-linux/README.txt <<'TXT'
+          Echo for Linux (x86_64)
+          Start: ./Echo
+          Needs (Fedora / Nobara): sudo dnf install webkit2gtk4.1 gpu-screen-recorder ffmpeg-free wl-clipboard libnotify pulseaudio-utils
+          Ubuntu / Debian: sudo apt install libwebkit2gtk-4.1-0 ffmpeg wl-clipboard libnotify-bin pulseaudio-utils (+ gpu-screen-recorder from its website / flatpak)
+          TXT
+          tar -czf Echo-linux-x86_64.tar.gz Echo-linux
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: AppImage
+        # one file that runs on most distros (WebKit + video playback libraries inside); the recorder tools
+        # (gpu-screen-recorder, ffmpeg) still come from the system
+        continue-on-error: true
+        working-directory: src-tauri
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          NO_STRIP: true
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
+          npx --yes @tauri-apps/cli@2 build --bundles appimage \
+            --config '{"bundle":{"active":true'"$UPD"',"linux":{"appimage":{"bundleMediaFramework":true}}}}'
+          cp target/release/bundle/appimage/*.AppImage ../Echo-x86_64.AppImage
+          cp target/release/bundle/appimage/*.AppImage.sig ../Echo-x86_64.AppImage.sig || echo "no update signature"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            Echo-linux-x86_64.tar.gz
+            Echo-x86_64.AppImage
+            Echo-x86_64.AppImage.sig
+          if-no-files-found: warn
+
+  release:
+    # publishes whatever built (one OS failing doesn't block the other)
+    needs: [windows, linux]
+    if: always() && (needs.windows.result == 'success' || needs.linux.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Publish as "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          msg=$(git log -1 --pretty=%s)
+          files=$(find out -type f \( -name 'Echo.exe' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' \))
+          notes="Built from: $msg
+
+          Windows: download Echo-Setup.exe (installs Echo with a Start menu entry) or Echo.exe (no install). First start: if Windows says it protected your PC, click More info > Run anyway.
+          Linux: download Echo-x86_64.AppImage, make it runnable (right-click > Properties > Allow executing, or chmod +x) and start it. Also needs gpu-screen-recorder + ffmpeg from your distro.
+          (Echo-linux-x86_64.tar.gz = the plain program, smaller; see README.txt inside.)
+          Windows build: ${{ needs.windows.result }} / Linux build: ${{ needs.linux.result }}"
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
+          gh release create latest $files --title "Echo $V" --notes "$notes"
