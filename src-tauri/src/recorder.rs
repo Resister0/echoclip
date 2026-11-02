@@ -1,0 +1,5684 @@
+//! Replay-buffer recorder.
+//! Video (mode "gpu"): own zero-copy pipeline in gpucap.rs -> H.264 over a named pipe.
+//! Video (mode "cpu"): ffmpeg ddagrab -> hwdownload -> AMF (fallback).
+//! Audio: WASAPI loopback (+ optional mic) via cpal -> mixed, paced PCM into ffmpeg stdin -> AAC.
+//! Output: rolling 2s mpegts segments; save = concat last N seconds with -c copy.
+
+use crate::settings::Settings;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::VecDeque,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant, SystemTime},
+};
+
+const SEG: u32 = 2; // seconds per segment
+/// sub-folders of the clips folder that are not clip folders
+const RESERVED_DIRS: [&str; 4] = ["Screenshots", "GIFs", "Audio", "Discord"];
+
+/// "FiveM / Staff evidence\\" -> "FiveM/Staff evidence": safe folder path, "/" between levels.
+fn clean_folder(s: &str) -> String {
+    s.split(|c| c == '/' || c == '\\')
+        .map(|p| p.trim().chars().filter(|c| !r#":*?"<>|"#.contains(*c)).collect::<String>().trim().trim_end_matches('.').trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>().join("/")
+}
+
+/// Hidden or one of Echo's own folders at the top level.
+fn folder_reserved(rel: &str) -> bool {
+    rel.split('/').any(|p| p.starts_with('.'))
+        || rel.split('/').next().map_or(false, |f| RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(f)))
+}
+
+/// "Valorant 2026-10-31 23-39-26 (edit)" -> Some("Valorant"); "Clip ..." / other names -> None.
+fn game_of_name(name: &str) -> Option<String> {
+    let b = name.as_bytes();
+    for i in 0..b.len() {
+        if b[i] == b' ' && b.len() >= i + 20 && name.is_char_boundary(i + 1) && name.is_char_boundary(i + 20) {
+            let d = &name[i + 1..i + 20];
+            let ok = d.char_indices().all(|(k, c)| match k {
+                4 | 7 | 13 | 16 => c == '-',
+                10 => c == ' ',
+                _ => c.is_ascii_digit(),
+            });
+            if ok {
+                let g = name[..i].trim();
+                return (!g.is_empty() && g != "Clip" && g != "Montage" && g != "Recording" && g != "Session").then(|| g.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub struct Recorder {
+    child: Mutex<Option<Child>>,
+    audio_stop: Mutex<Arc<AtomicBool>>,
+    cfg: Mutex<Settings>,
+    /// live volumes (f32 bits): desktop, mic
+    volumes: Arc<[AtomicU32; 2]>,
+    pub buf_dir: PathBuf,
+    pub mode: Mutex<String>,
+    /// one save at a time (they share the buffer and can be 500 MB of reading)
+    save_lock: Mutex<()>,
+    /// start() and stop() never overlap (a settings restart during start-up used to run two recorders)
+    life: Mutex<()>,
+    /// recorder stopped because the PC is idle (resumes on input)
+    pub idle_paused: AtomicBool,
+    /// game window to record when Settings > Video > "Game window only" is on (0 = whole monitor)
+    pub window: std::sync::atomic::AtomicIsize,
+    /// why the buffer is paused: "" running, "idle", "game" (game set to not record), "nogame"
+    pub pause_reason: Mutex<String>,
+    /// long (full-session) recording in progress
+    session: Mutex<Option<Session>>,
+    /// cloud: local "rclone serve http" for streaming cloud-only clips (port)
+    cloud_serve: Mutex<Option<(Child, u16)>>,
+    /// cloud: what the background sync is doing right now ("" = idle)
+    pub cloud_busy: Mutex<String>,
+    cloud_lock: Mutex<()>,
+    /// last game the watch loop saw in front (name, when) - used when the hotkey is pressed outside the game
+    pub last_game: Mutex<Option<(String, Instant)>>,
+}
+
+struct Session {
+    dir: PathBuf,
+    started: Instant,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Serialize)]
+pub struct GameInfo {
+    pub name: String,
+    /// data: URL of the game's exe icon ("" = none)
+    pub icon: String,
+}
+
+#[derive(Serialize)]
+pub struct ClipInfo {
+    pub path: String,
+    pub name: String,
+    /// sub-folder inside the clips folder ("" = top level)
+    pub folder: String,
+    pub size: u64,
+    /// unix seconds
+    pub modified: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct ClipMeta {
+    pub tags: Vec<String>,
+    pub note: String,
+    /// words spoken in the clip (from auto captions), only filled for the library search
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub said: String,
+}
+
+#[derive(Serialize)]
+pub struct Thumb {
+    pub thumb: String,
+    pub duration: f64,
+}
+
+/// One kept piece of the source clip (source seconds) played at `speed`.
+#[derive(Deserialize, Clone)]
+pub struct Seg {
+    pub start: f64,
+    pub end: f64,
+    pub speed: f64,
+    /// position on the output timeline (gaps before it render as black + silence)
+    #[serde(default)]
+    pub at: f64,
+    /// audio moved to its own track (piece itself plays silent)
+    #[serde(default)]
+    pub amute: bool,
+    /// fade in / out seconds (video from/to black + audio)
+    #[serde(default)]
+    pub fi: f64,
+    #[serde(default)]
+    pub fo: f64,
+    /// colour: brightness (-1..1, 0 = normal), contrast + saturation (1 = normal), look preset name
+    #[serde(default)]
+    pub bri: f64,
+    #[serde(default = "one")]
+    pub con: f64,
+    #[serde(default = "one")]
+    pub sat: f64,
+    #[serde(default)]
+    pub look: String,
+    /// play backwards
+    #[serde(default)]
+    pub rev: bool,
+    /// freeze frame: shows the frame at `start` for (end - start) seconds, silent
+    #[serde(default)]
+    pub freeze: bool,
+    /// transition from the previous piece ("" = cut; xfade names: fade, fadeblack, wipeleft, slideleft, circleopen, zoomin, pixelize)
+    #[serde(default)]
+    pub tr: String,
+    #[serde(default)]
+    pub td: f64,
+    /// another video dropped into the editor ("" = the clip being edited)
+    #[serde(default)]
+    pub src: String,
+}
+
+/// ffmpeg colour filters for a piece ("" = untouched)
+fn grade(s: &Seg) -> String {
+    let mut f = String::new();
+    if s.bri.abs() > 0.005 || (s.con - 1.0).abs() > 0.005 || (s.sat - 1.0).abs() > 0.005 {
+        f += &format!(",eq=brightness={:.3}:contrast={:.3}:saturation={:.3}", s.bri.clamp(-1.0, 1.0) * 0.5, s.con.clamp(0.2, 3.0), s.sat.clamp(0.0, 3.0));
+    }
+    f += match s.look.as_str() {
+        "vivid" => ",eq=contrast=1.08:saturation=1.35",
+        "warm" => ",colorbalance=rs=0.06:bs=-0.06:rm=0.06:bm=-0.06:rh=0.03:bh=-0.03",
+        "cool" => ",colorbalance=rs=-0.06:bs=0.06:rm=-0.05:bm=0.06:rh=-0.02:bh=0.03",
+        "bw" => ",hue=s=0,eq=contrast=1.1",
+        "cinema" => ",eq=contrast=1.12:saturation=0.85,colorbalance=rs=-0.06:bs=0.06:rh=0.06:bh=-0.06",
+        "vintage" => ",curves=preset=vintage",
+        "punch" => ",eq=contrast=1.2:saturation=1.15:gamma=0.95",
+        _ => "",
+    };
+    f
+}
+
+/// Text animations as ASS override tags for a line lasting `len` seconds. `first`/`last`: this slice starts / ends the text.
+fn ass_anim(anim: &str, x: f64, y: f64, h: u32, len: f64, first: bool, last: bool) -> String {
+    let ms = |s: f64| (s * 1000.0).round() as i64;
+    let mut t = String::new();
+    let fin = ms(0.25f64.min(len / 3.0));
+    match anim {
+        "fade" => t += &format!("\\fad({},{})", if first { fin } else { 0 }, if last { fin } else { 0 }),
+        "pop" if first => t += &format!("\\fscx20\\fscy20\\t(0,{},\\fscx112\\fscy112)\\t({},{},\\fscx100\\fscy100)", fin * 2 / 3, fin * 2 / 3, fin),
+        "slide" if first => {
+            let dy = (h as f64 * 0.06).round();
+            t += &format!("\\move({:.0},{:.0},{:.0},{:.0},0,{fin})\\fad({fin},0)", x, y + dy, x, y);
+        }
+        "bounce" if first => t += &format!("\\fscy40\\fscx130\\t(0,{},\\fscy120\\fscx90)\\t({},{},\\fscy100\\fscx100)", fin / 2, fin / 2, fin),
+        _ => {}
+    }
+    t
+}
+
+/// Detached audio clip (source seconds, played at `speed`, placed at `at` on the output timeline).
+#[derive(Deserialize, Clone)]
+pub struct Aud {
+    pub start: f64,
+    pub end: f64,
+    pub speed: f64,
+    pub at: f64,
+    pub vol: f64,
+    #[serde(default)]
+    pub mute: bool,
+    /// source audio track: 0 = mix, 1 = game/desktop, 2 = mic
+    #[serde(default)]
+    pub track: u32,
+    #[serde(default)]
+    pub fi: f64,
+    #[serde(default)]
+    pub fo: f64,
+    /// another file dropped into the editor ("" = the clip being edited)
+    #[serde(default)]
+    pub src: String,
+}
+
+/// ",fade=..." / ",afade=..." for a piece of output length `len` (empty when no fades)
+fn fades(f: &str, fi: f64, fo: f64, len: f64) -> String {
+    let mut out = String::new();
+    let fi = fi.clamp(0.0, len);
+    let fo = fo.clamp(0.0, len);
+    if fi >= 0.05 { out += &format!(",{f}=t=in:st=0:d={fi:.3}"); }
+    if fo >= 0.05 { out += &format!(",{f}=t=out:st={:.3}:d={fo:.3}", (len - fo).max(0.0)); }
+    out
+}
+
+/// Text overlay; times are on the OUTPUT timeline, x/y = centre (0..1), size = fraction of video height.
+#[derive(Deserialize, Clone)]
+pub struct Txt {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+    pub x: f64,
+    pub y: f64,
+    pub size: f64,
+    pub color: String,
+    /// spoken words with times (output timeline) - for highlighting the current word
+    #[serde(default)]
+    pub words: Vec<TWord>,
+    /// highlight colour for the spoken word ("" = off)
+    #[serde(default)]
+    pub hl: String,
+    /// "" | "fade" | "pop" | "slide" | "bounce" | "type"
+    #[serde(default)]
+    pub anim: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct TWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+    /// this word starts a new line
+    #[serde(default)]
+    pub nl: bool,
+}
+
+fn ass_time(t: f64) -> String {
+    let cs = (t.max(0.0) * 100.0).round() as u64;
+    format!("{}:{:02}:{:02}.{:02}", cs / 360000, cs / 6000 % 60, cs / 100 % 60, cs % 100)
+}
+
+/// "RRGGBB" -> ASS "&HBBGGRR&"
+fn ass_color(hex: &str) -> String {
+    let h: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let h = if h.len() == 6 { h } else { "FFFFFF".into() };
+    format!("&H{}{}{}&", &h[4..6], &h[2..4], &h[0..2])
+}
+
+fn ass_escape(s: &str) -> String {
+    s.replace('\\', "/").replace('{', "(").replace('}', ")").replace("\r", "").replace('\n', "\\N")
+}
+
+/// Captions with a highlighted spoken word, plus animated texts, as an ASS subtitle script (rendered by libass).
+fn captions_ass(texts: &[&Txt], w: u32, h: u32) -> String {
+    let mut out = format!("[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nScaledBorderAndShadow: yes\nWrapStyle: 2\n\n\
+        [V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+        Style: C,Segoe UI,48,&H00FFFFFF,&H00FFFFFF,&H40000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1\n\n\
+        [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    for t in texts {
+        let px = ((t.size * h as f64).round() as u32).max(8);
+        let (x, y) = ((t.x * w as f64).round(), (t.y * h as f64).round());
+        let head = |first: bool, last: bool, len: f64| {
+            let anim = ass_anim(&t.anim, x, y, h, len, first, last);
+            let pos = if anim.contains("\\move") { String::new() } else { format!("\\pos({x},{y})") };
+            format!("{{\\an5{pos}\\fs{px}\\bord{}\\c{}{anim}}}", (px / 14).max(2), ass_color(&t.color))
+        };
+        let base = ass_color(&t.color);
+        if t.words.is_empty() || t.hl.is_empty() {
+            // plain (animated) text
+            let txt = ass_escape(t.text.trim_end());
+            let body = if t.anim == "type" {
+                // typewriter: each letter appears in turn
+                let chars: Vec<char> = txt.chars().collect();
+                let n = chars.iter().filter(|c| !c.is_whitespace()).count().max(1);
+                let step = (0.06f64).min((t.end - t.start) * 0.6 / n as f64);
+                let mut b = String::new();
+                let mut k = 0;
+                let mut i = 0;
+                while i < chars.len() {
+                    // keep "\N" line breaks intact
+                    if chars[i] == '\\' && chars.get(i + 1) == Some(&'N') {
+                        b += "\\N";
+                        i += 2;
+                        continue;
+                    }
+                    let c = chars[i];
+                    if c.is_whitespace() {
+                        b.push(c);
+                    } else {
+                        let ms = (k as f64 * step * 1000.0).round() as i64;
+                        b += &format!("{{\\alpha&HFF&\\t({ms},{},\\alpha&H00&)}}{c}", ms + 1);
+                        k += 1;
+                    }
+                    i += 1;
+                }
+                b
+            } else { txt };
+            out += &format!("Dialogue: 0,{},{},C,,0,0,0,,{}{body}\n", ass_time(t.start), ass_time(t.end), head(true, true, t.end - t.start));
+            continue;
+        }
+        let hl = ass_color(&t.hl);
+        // split the caption's time at every word boundary; in each slice colour the word being spoken
+        let mut cuts: Vec<f64> = vec![t.start, t.end];
+        for wd in &t.words {
+            cuts.push(wd.start.clamp(t.start, t.end));
+            cuts.push(wd.end.clamp(t.start, t.end));
+        }
+        cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        cuts.dedup_by(|a, b| (*a - *b).abs() < 0.005);
+        let nw = cuts.len().saturating_sub(1);
+        for (k, win) in cuts.windows(2).enumerate() {
+            let (a, b) = (win[0], win[1]);
+            let mid = (a + b) / 2.0;
+            let mut body = String::new();
+            for (k, wd) in t.words.iter().enumerate() {
+                if k > 0 { body += if wd.nl { "\\N" } else { " " }; }
+                let txt = ass_escape(&wd.text);
+                body += &if mid >= wd.start && mid < wd.end { format!("{{\\c{hl}}}{txt}{{\\c{base}}}") } else { txt };
+            }
+            // animation only on the first (in) / last (out) slice; "type" doesn't apply to word captions
+            let anim_ok = t.anim != "type";
+            let hd = if anim_ok { head(k == 0, k + 1 == nw, b - a) } else { head(false, false, b - a) };
+            out += &format!("Dialogue: 0,{},{},C,,0,0,0,,{hd}{body}\n", ass_time(a), ass_time(b));
+        }
+    }
+    out
+}
+
+fn one() -> f64 { 1.0 }
+
+/// A rectangle drawn over the video for a while: "blur" (hide names / chat) or "color" (solid fill).
+/// Position/size are fractions of the full source frame (x, y = centre); times are output time.
+#[derive(Deserialize, Clone)]
+pub struct BoxFx {
+    pub start: f64,
+    pub end: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub kind: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default = "one")]
+    pub opacity: f64,
+    /// blur strength (gaussian sigma in source pixels)
+    #[serde(default)]
+    pub blur: f64,
+    /// kind "image": picture / sticker file
+    #[serde(default)]
+    pub src: String,
+}
+
+/// A piece lifted onto a video layer above the main track (overlay / picture-in-picture).
+#[derive(Deserialize, Clone)]
+pub struct Ovl {
+    pub start: f64,
+    pub end: f64,
+    pub speed: f64,
+    pub at: f64,
+    /// centre position (0..1) and width as a fraction of the video
+    pub x: f64,
+    pub y: f64,
+    pub scale: f64,
+    #[serde(default)]
+    pub sound: bool,
+    #[serde(default)]
+    pub row: u32,
+    #[serde(default)]
+    pub src: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Edit {
+    pub segments: Vec<Seg>,
+    pub texts: Vec<Txt>,
+    #[serde(default)]
+    pub audio: Vec<Aud>,
+    #[serde(default)]
+    pub overlays: Vec<Ovl>,
+    #[serde(default)]
+    pub boxes: Vec<BoxFx>,
+    pub volume: f64,
+    pub mute: bool,
+    /// vertical 9:16 export: centre of the crop window (0..1 of the width); None = normal
+    #[serde(default)]
+    pub vertical: Option<f64>,
+    /// even out loudness (-14 LUFS, like YouTube / TikTok)
+    #[serde(default)]
+    pub normalize: bool,
+    /// scale the result to this height (export presets); None = source size
+    #[serde(default)]
+    pub out_h: Option<u32>,
+}
+
+/// Path inside a filtergraph option: forward slashes, escaped drive colon.
+fn ff_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/").replace(':', "\\:")
+}
+
+/// atempo only takes 0.5..2 per instance, so chain it.
+fn atempo(mut speed: f64) -> String {
+    let mut v = Vec::new();
+    while speed < 0.5 {
+        v.push("atempo=0.5".to_string());
+        speed /= 0.5;
+    }
+    while speed > 2.0 {
+        v.push("atempo=2.0".to_string());
+        speed /= 2.0;
+    }
+    v.push(format!("atempo={speed:.4}"));
+    v.join(",")
+}
+
+/// Feedback sounds, synthesised as a small WAV (no asset files needed).
+#[derive(Clone, Copy)]
+pub enum Sound {
+    Saved,
+    Failed,
+    Mark,
+    Shot,
+    Stopped,
+}
+
+fn sound_wav(kind: Sound, volume: f32) -> Vec<u8> {
+    const RATE: u32 = 44100;
+    // (frequency Hz, seconds, square-ish?)
+    let notes: &[(f32, f32, bool)] = match kind {
+        Sound::Saved => &[(880.0, 0.07, false), (1318.5, 0.13, false)],
+        Sound::Failed => &[(311.0, 0.12, true), (220.0, 0.22, true)],
+        Sound::Mark => &[(1318.5, 0.06, false)],
+        Sound::Shot => &[(1046.5, 0.05, false), (1568.0, 0.09, false)],
+        Sound::Stopped => &[(659.3, 0.12, false), (523.3, 0.12, false), (392.0, 0.28, false)],
+    };
+    let mut pcm: Vec<i16> = Vec::new();
+    for &(f, secs, buzzy) in notes {
+        let n = (secs * RATE as f32) as usize;
+        for i in 0..n {
+            let t = i as f32 / RATE as f32;
+            let env = (t / 0.005).min(1.0) * (1.0 - i as f32 / n as f32).powf(1.6);
+            let w = (t * f * std::f32::consts::TAU).sin();
+            let w = if buzzy { (w * 3.0).tanh() * 0.6 } else { w };
+            pcm.push((w * env * volume.clamp(0.0, 1.0) * 0.5 * i16::MAX as f32) as i16);
+        }
+    }
+    let data_len = (pcm.len() * 2) as u32;
+    let mut v = Vec::with_capacity(44 + data_len as usize);
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(36 + data_len).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    v.extend_from_slice(&1u16.to_le_bytes()); // mono
+    v.extend_from_slice(&RATE.to_le_bytes());
+    v.extend_from_slice(&(RATE * 2).to_le_bytes());
+    v.extend_from_slice(&2u16.to_le_bytes());
+    v.extend_from_slice(&16u16.to_le_bytes());
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&data_len.to_le_bytes());
+    for s in pcm {
+        v.extend_from_slice(&s.to_le_bytes());
+    }
+    v
+}
+
+/// Play a feedback sound on a background thread (if enabled in settings).
+pub fn play_sound(kind: Sound, cfg: &Settings, force: bool) {
+    let (on, key) = match kind {
+        Sound::Saved => (cfg.sound_on_save, "saved"),
+        Sound::Failed => (cfg.sound_on_fail, "failed"),
+        Sound::Mark => (cfg.sound_on_mark, "mark"),
+        Sound::Shot => (cfg.sound_on_shot, "shot"),
+        Sound::Stopped => (cfg.sound_on_stop, "stopped"),
+    };
+    if !(force || on) || cfg.sound_volume <= 0.0 {
+        return;
+    }
+    let custom = cfg.sound_files.get(key).filter(|f| !f.is_empty() && Path::new(f).is_file()).cloned();
+    let wav = sound_wav(kind, cfg.sound_volume);
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        match custom {
+            Some(f) => crate::winutil::play_file(&f),
+            None => crate::winutil::play_wav(&wav),
+        }
+        #[cfg(not(windows))]
+        {
+            let f = match custom {
+                Some(f) => PathBuf::from(f),
+                None => {
+                    let f = std::env::temp_dir().join(format!("echo_sound_{}.wav", std::process::id()));
+                    if fs::write(&f, &wav).is_err() { return; }
+                    f
+                }
+            };
+            let ok = Command::new("pw-play").arg(&f).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+            if !ok { let _ = Command::new("paplay").arg(&f).stderr(Stdio::null()).status(); }
+        }
+    });
+}
+
+/// Name of the game in front, for clip names. None = not a game (desktop, browser, Clipper...).
+pub fn detect_game() -> Option<String> {
+    #[cfg(windows)]
+    {
+        let (stem, title) = crate::winutil::foreground_app()?;
+        return game_name(&stem, &title, crate::winutil::foreground_fullscreen());
+    }
+    #[cfg(target_os = "linux")]
+    return linux_game().map(|g| g.0);
+    #[allow(unreachable_code)]
+    None
+}
+
+/// The game in front: (name, pid, exe path).
+pub fn game_in_front() -> Option<(String, u32, String)> {
+    #[cfg(windows)]
+    {
+        let (pid, stem, title) = crate::winutil::foreground_pid()?;
+        if pid == std::process::id() {
+            return None;
+        }
+        let name = game_name(&stem, &title, crate::winutil::foreground_fullscreen())?;
+        return Some((name, pid, crate::winutil::exe_path(pid).unwrap_or_default()));
+    }
+    #[cfg(target_os = "linux")]
+    return linux_game();
+    #[allow(unreachable_code)]
+    None
+}
+
+/// Linux: Wayland doesn't tell apps which window is in front, so look for a running game instead:
+/// Steam games (steamapps/common/<Game>/), Wine / Proton / Lutris / Heroic games (*.exe), Minecraft.
+/// Several running: the one using the most memory. Returns (name, pid, exe path).
+#[cfg(target_os = "linux")]
+pub fn linux_game() -> Option<(String, u32, String)> {
+    const WINE_HELPERS: &[&str] = &["wineserver", "services", "explorer", "winedevice", "plugplay", "svchost", "rpcss", "steam",
+        "conhost", "start", "tabtip", "rundll32", "winemenubuilder", "steamwebhelper", "crashhandler", "crashreporter",
+        "unitycrashhandler64", "easyanticheat", "easyanticheat_eos", "battleye", "beservice", "eosoverlayrenderer-win64-shipping",
+        "iexplore", "msiexec", "wineboot", "winecfg", "proton", "pressure-vessel", "reaper", "steam-runtime", "gameoverlayui",
+        "legendary", "galaxyclient", "epicgameslauncher", "socialclubhelper", "launcher", "rockstarservice", "subprocess"];
+    let me = std::process::id();
+    let mut best: Option<(u64, String, u32, String)> = None;
+    for e in fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+        if pid == me { continue; }
+        let Ok(cmd) = fs::read(e.path().join("cmdline")) else { continue };
+        if cmd.is_empty() { continue; }
+        let args: Vec<String> = cmd.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        let exe = fs::read_link(e.path().join("exe")).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let a0 = args.first().cloned().unwrap_or_default().replace('\\', "/");
+        let mut found: Option<(String, String)> = None; // (stem, title hint)
+        if a0.to_lowercase().ends_with(".exe") {
+            // Wine / Proton: argv[0] is the Windows exe
+            let stem = Path::new(&a0).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            if !WINE_HELPERS.contains(&stem.to_lowercase().as_str()) {
+                let title = a0.split("/common/").nth(1).and_then(|r| r.split('/').next()).unwrap_or("").to_string();
+                found = Some((stem, title));
+            }
+        } else if let Some(r) = exe.split("/steamapps/common/").nth(1) {
+            // native Steam game
+            let title = r.split('/').next().unwrap_or("").to_string();
+            let stem = Path::new(&exe).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            if !title.to_lowercase().starts_with("proton") && !title.to_lowercase().starts_with("steamlinuxruntime") && !title.to_lowercase().starts_with("steamworks") {
+                found = Some((stem, title));
+            }
+        } else if exe.ends_with("/java") && args.iter().any(|a| a.contains("minecraft")) {
+            found = Some(("minecraft".into(), "Minecraft".into()));
+        }
+        let Some((stem, title)) = found else { continue };
+        let Some(name) = game_name(&stem, &title, true) else { continue };
+        let rss = fs::read_to_string(e.path().join("statm")).ok().and_then(|t| t.split_whitespace().nth(1).and_then(|x| x.parse::<u64>().ok())).unwrap_or(0);
+        if rss < 25_000 { continue; } // < ~100 MB: launchers / helpers, not the game
+        if best.as_ref().map_or(true, |b| rss > b.0) {
+            best = Some((rss, name, pid, if exe.is_empty() { a0.clone() } else { exe.clone() }));
+        }
+    }
+    best.map(|(_, n, p, x)| (n, p, x))
+}
+
+fn app_dir() -> PathBuf {
+    std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
+}
+
+fn b64(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity(data.len() * 4 / 3 + 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            o.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    o
+}
+
+/// Standard base64 -> bytes (None if malformed).
+pub fn unb64(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c { b'A'..=b'Z' => c - b'A', b'a'..=b'z' => c - b'a' + 26, b'0'..=b'9' => c - b'0' + 52, b'+' | b'-' => 62, b'/' | b'_' => 63, _ => return None } as u32)
+    };
+    let s: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=').collect();
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    for ch in s.chunks(4) {
+        let mut n = 0u32;
+        for (i, c) in ch.iter().enumerate() {
+            n |= val(*c)? << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if ch.len() > 2 { out.push((n >> 8) as u8); }
+        if ch.len() > 3 { out.push(n as u8); }
+    }
+    Some(out)
+}
+
+fn safe_name(s: &str) -> String {
+    s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect()
+}
+
+/// Games seen while recording ("games.json": name -> exe) + their icons, for the sidebar / Settings > Games.
+pub fn remember_game(name: &str, exe: &str) {
+    let p = app_dir().join("games.json");
+    let mut m: std::collections::BTreeMap<String, String> = fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    if m.get(name).map_or(false, |e| e == exe) {
+        return;
+    }
+    m.insert(name.into(), exe.into());
+    let _ = fs::create_dir_all(app_dir());
+    let _ = fs::write(&p, serde_json::to_string_pretty(&m).unwrap_or_default());
+    // exe icon -> png (once)
+    let icon = app_dir().join("icons").join(format!("{}.png", safe_name(name)));
+    if !exe.is_empty() && !icon.exists() {
+        let _ = fs::create_dir_all(app_dir().join("icons"));
+        #[cfg(windows)]
+        if let Some(px) = crate::winutil::exe_icon_bgra(exe, 64) {
+            // raw pixels -> PNG with ffmpeg
+            let raw = std::env::temp_dir().join("echo_icon.raw");
+            if fs::write(&raw, &px).is_ok() {
+                let _ = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", "64x64", "-i"])
+                    .arg(&raw).args(["-frames:v", "1"]).arg(&icon).stdout(Stdio::null()).stderr(Stdio::null()).status();
+                let _ = fs::remove_file(&raw);
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+/// `fullscreen`: the window covers its whole monitor. Unknown apps only count as games when they do
+/// (so Bitwarden, Lightshot, Echo itself… in a normal window aren't "games").
+fn game_name(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
+    let name = game_name_raw(stem, title, fullscreen)?;
+    let not = NOT_GAMES.lock().unwrap();
+    let (n, s) = (name.to_lowercase(), stem.to_lowercase());
+    if not.iter().any(|x| *x == n || *x == s) { None } else { Some(name) }
+}
+
+fn game_name_raw(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
+    let s = stem.to_lowercase();
+    const IGNORE: &[&str] = &[
+        "explorer", "clipper", "applicationframehost", "searchhost", "searchapp", "shellexperiencehost", "startmenuexperiencehost",
+        "lockapp", "taskmgr", "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "discord", "spotify", "steam",
+        "steamwebhelper", "epicgameslauncher", "code", "devenv", "obs64", "medal", "claude", "cmd", "powershell", "windowsterminal",
+        "wt", "notepad", "textinputhost", "systemsettings", "battle.net", "riotclientux", "riotclientservices", "eadesktop",
+        "ubisoftconnect", "upc", "galaxyclient", "vlc", "mpc-hc64", "photos", "whatsapp", "telegram", "teams", "ms-teams",
+        "echo", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
+        "sharex", "greenshot", "nvidia app", "radeonsoftware", "amdrsserv", "msiafterburner", "rtss", "outlook", "winword",
+        "excel", "powerpnt", "onenote", "slack", "zoom", "notion", "obsidian", "signal", "thunderbird", "mspaint", "notepad++",
+    ];
+    if IGNORE.contains(&s.as_str()) {
+        return None;
+    }
+    const KNOWN: &[(&str, &str)] = &[
+        ("fivem", "FiveM"), ("gta5", "GTA V"), ("gtav", "GTA V"), ("playgtav", "GTA V"), ("valorant", "Valorant"),
+        ("cs2", "Counter-Strike 2"), ("csgo", "CS GO"), ("fortniteclient", "Fortnite"), ("r5apex", "Apex Legends"),
+        ("rocketleague", "Rocket League"), ("league of legends", "League of Legends"), ("overwatch", "Overwatch 2"),
+        ("destiny2", "Destiny 2"), ("eldenring", "Elden Ring"), ("cod", "Call of Duty"), ("rainbowsix", "Rainbow Six Siege"),
+        ("tslgame", "PUBG"), ("robloxplayerbeta", "Roblox"), ("dota2", "Dota 2"), ("rustclient", "Rust"),
+        ("marvel-win64", "Marvel Rivals"), ("helldivers2", "Helldivers 2"), ("escapefromtarkov", "Escape from Tarkov"),
+        ("eft", "Escape from Tarkov"), ("project8", "Deadlock"), ("deadlock", "Deadlock"), ("bf2042", "Battlefield 2042"),
+        ("rdr2", "Red Dead Redemption 2"), ("minecraft", "Minecraft"), ("thefinals", "The Finals"), ("discovery", "The Finals"),
+        ("palworld", "Palworld"), ("sotgame", "Sea of Thieves"), ("warframe", "Warframe"), ("forzahorizon5", "Forza Horizon 5"),
+    ];
+    for (k, name) in KNOWN {
+        if s.starts_with(k) {
+            return Some(name.to_string());
+        }
+    }
+    if (s == "javaw" || s == "java") && title.to_lowercase().contains("minecraft") {
+        return Some("Minecraft".into());
+    }
+    if s == "javaw" || s == "java" || !fullscreen {
+        return None;
+    }
+    // unknown: short window title if it looks like a name, else a tidied exe name
+    let clean = |x: &str| -> String {
+        x.chars().filter(|c| !r#"\/:*?"<>|"#.contains(*c)).collect::<String>().trim().to_string()
+    };
+    let t = clean(title);
+    if !t.is_empty() && t.chars().count() <= 32 && t.chars().any(|c| c.is_alphabetic()) {
+        return Some(t);
+    }
+    let mut n = stem.to_string();
+    for suf in ["-Win64-Shipping", "-WinGDK-Shipping", "_x64", "-Shipping", "Win64", "_dx12", "_dx11", "_BE"] {
+        if let Some(i) = n.find(suf) {
+            n.truncate(i);
+        }
+    }
+    let n = clean(&n);
+    if n.is_empty() { None } else { Some(n) }
+}
+
+/// One spoken word with its time in the SOURCE clip (seconds).
+#[derive(Serialize, Clone)]
+pub struct Word {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+fn whisper_dir() -> PathBuf {
+    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+    base.join("Clipper").join("whisper")
+}
+
+/// Tools shipped with the installer (Echo-Setup.exe puts ffmpeg / rclone in "tools" next to Echo.exe):
+/// used first, so an installed Echo doesn't download and run programs by itself.
+fn bundled(names: &[&str]) -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.join("tools");
+    find_file(&dir, names)
+}
+
+fn find_file(dir: &Path, names: &[&str]) -> Option<PathBuf> {
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Some(f) = find_file(&p, names) {
+                return Some(f);
+            }
+        } else if p.file_name().map_or(false, |n| names.iter().any(|x| n.eq_ignore_ascii_case(x))) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// ffmpeg + ffprobe: use the ones on PATH; otherwise (a friend's PC) the copy in %APPDATA%\Clipper\ffmpeg,
+/// downloaded once. The folder is put in front of this process' PATH so every "ffmpeg"/"ffprobe" call finds it.
+pub fn ensure_ffmpeg() {
+    let has = |c: &str| hidden(c).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+    let dir = app_dir().join("ffmpeg");
+    let use_dir = |d: &Path| {
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts = vec![d.to_path_buf()];
+        parts.extend(std::env::split_paths(&old));
+        if let Ok(p) = std::env::join_paths(parts) {
+            std::env::set_var("PATH", p);
+        }
+    };
+    let local = || find_file(&dir, &["ffmpeg.exe"]).filter(|f| f.with_file_name("ffprobe.exe").exists());
+    if let Some(f) = bundled(&["ffmpeg.exe"]).filter(|f| f.with_file_name("ffprobe.exe").exists()).or_else(local) {
+        if let Some(d) = f.parent() {
+            use_dir(d);
+        }
+        return;
+    }
+    if has("ffmpeg") && has("ffprobe") {
+        return;
+    }
+    log_line("ffmpeg: not installed - downloading it once (~100 MB)");
+    let _ = fs::create_dir_all(&dir);
+    let zip = dir.join("ffmpeg.zip");
+    let mut res = Err(String::new());
+    for u in ["https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+              "https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip"] {
+        res = download(u, &zip);
+        if res.is_ok() {
+            break;
+        }
+    }
+    if let Err(e) = res {
+        log_line(&format!("ffmpeg: download failed: {e}"));
+        return;
+    }
+    let ok = hidden("tar").arg("-xf").arg(&zip).arg("-C").arg(&dir).status().map_or(false, |s| s.success());
+    let _ = fs::remove_file(&zip);
+    match local() {
+        Some(f) if ok => {
+            log_line(&format!("ffmpeg: ready ({})", f.display()));
+            if let Some(d) = f.parent() {
+                use_dir(d);
+            }
+        }
+        _ => log_line("ffmpeg: couldn't unpack the download"),
+    }
+}
+
+fn download(url: &str, to: &Path) -> Result<(), String> {
+    let tmp = to.with_extension("part");
+    let ok = hidden("curl")
+        .args(["-L", "--fail", "--silent", "--show-error", "--retry", "2", "-o"]).arg(&tmp).arg(url)
+        .status().map_err(|e| format!("curl not available: {e}"))?.success();
+    if !ok || fs::metadata(&tmp).map_or(true, |m| m.len() < 1000) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("download failed: {url}"));
+    }
+    fs::rename(&tmp, to).map_err(err)
+}
+
+/// whisper.cpp needs the Microsoft Visual C++ runtime, which Windows LTSC doesn't include.
+fn ensure_vc_runtime() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let sys = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join("System32");
+        let missing: Vec<&str> = ["msvcp140.dll", "vcruntime140_1.dll", "vcomp140.dll"]
+            .into_iter().filter(|d| !sys.join(d).exists()).collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        log_line(&format!("captions: Visual C++ runtime missing ({}), installing", missing.join(", ")));
+        let exe = whisper_dir().join("vc_redist.x64.exe");
+        if !exe.exists() {
+            download("https://aka.ms/vs/17/release/vc_redist.x64.exe", &exe)
+                .map_err(|e| format!("Couldn't download the Microsoft Visual C++ runtime ({e})"))?;
+        }
+        // needs admin: Windows shows one permission prompt
+        let code = crate::winutil::run_elevated(&exe.to_string_lossy(), "/install /quiet /norestart", true).unwrap_or(-1);
+        log_line(&format!("captions: vc_redist exit code {code}"));
+        // 0 = ok, 3010 = ok (restart recommended), 1638 = newer version already installed
+        if ![0, 3010, 1638].contains(&code) && !sys.join("msvcp140.dll").exists() {
+            return Err("The Microsoft Visual C++ runtime wasn't installed (the permission prompt was declined?)".into());
+        }
+    }
+    Ok(())
+}
+
+/// whisper.cpp command-line tool, downloaded the first time captions are used.
+fn whisper_cli() -> Result<PathBuf, String> {
+    if let Ok(p) = std::env::var("CLIPPER_WHISPER_CLI") {
+        return Ok(PathBuf::from(p));
+    }
+    #[cfg(not(windows))]
+    {
+        // Linux: no ready-made download - use the system package (Fedora/Nobara: `sudo dnf install whisper-cpp`)
+        if let Some(p) = linux_whisper() {
+            return Ok(p);
+        }
+        return Err("Speech recognition isn't installed - run: sudo dnf install whisper-cpp".into());
+    }
+    #[allow(unreachable_code)]
+    let dir = whisper_dir();
+    // prefer whisper-cli.exe: in new releases main.exe is only a stub that says "renamed" and exits
+    let find = |d: &Path| find_file(d, &["whisper-cli.exe"]).or_else(|| find_file(d, &["main.exe"]));
+    if let Some(p) = find(&dir) {
+        return Ok(p);
+    }
+    fs::create_dir_all(&dir).map_err(err)?;
+    let zip = dir.join("whisper.zip");
+    let urls = [
+        "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip",
+        "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip",
+    ];
+    let mut last = String::new();
+    for u in urls {
+        match download(u, &zip) {
+            Ok(()) => {
+                log_line(&format!("captions: downloaded {u}"));
+                last.clear();
+                break;
+            }
+            Err(e) => last = e,
+        }
+    }
+    if !last.is_empty() {
+        return Err(format!("Couldn't download the speech tool ({last})"));
+    }
+    let ok = hidden("tar").arg("-xf").arg(&zip).arg("-C").arg(&dir).status().map_err(err)?.success();
+    let _ = fs::remove_file(&zip);
+    if !ok {
+        return Err("couldn't unpack the speech tool".into());
+    }
+    find(&dir).ok_or_else(|| "speech tool not found after download".into())
+}
+
+fn whisper_model(name: &str) -> Result<PathBuf, String> {
+    if let Ok(p) = std::env::var("CLIPPER_WHISPER_MODEL") {
+        return Ok(PathBuf::from(p));
+    }
+    let name = if name == "small" { "small" } else { "base" };
+    let dir = whisper_dir().join("models");
+    fs::create_dir_all(&dir).map_err(err)?;
+    let f = dir.join(format!("ggml-{name}.bin"));
+    if !f.exists() {
+        download(&format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin"), &f)
+            .map_err(|e| format!("Couldn't download the speech model ({e})"))?;
+        log_line(&format!("captions: downloaded model {name}"));
+    }
+    Ok(f)
+}
+
+/// Is everything for captions already downloaded? (so the UI can warn about the first-time download)
+/// whisper.cpp's command-line tool on PATH (Linux packages name it differently).
+#[cfg(not(windows))]
+fn linux_whisper() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for name in ["whisper-cli", "whisper-cpp", "whisper.cpp", "whisper-cpp-cli"] {
+        for d in std::env::split_paths(&path).chain([PathBuf::from("/usr/bin"), PathBuf::from("/usr/local/bin")]) {
+            let f = d.join(name);
+            if f.is_file() {
+                return Some(f);
+            }
+        }
+    }
+    // other package names: any whisper*cli* in /usr/bin
+    if let Ok(rd) = fs::read_dir("/usr/bin") {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            if n.starts_with("whisper") && n.contains("cli") {
+                return Some(e.path());
+            }
+        }
+    }
+    find_file(&whisper_dir(), &["whisper-cli"])
+}
+
+pub fn captions_ready(model: &str) -> bool {
+    let m = if model == "small" { "small" } else { "base" };
+    #[cfg(not(windows))]
+    let tool = linux_whisper().is_some();
+    #[cfg(windows)]
+    let tool = find_file(&whisper_dir(), &["whisper-cli.exe", "main.exe"]).is_some();
+    tool
+        && whisper_dir().join("models").join(format!("ggml-{m}.bin")).exists()
+}
+
+/// 16-bit mono PCM from a WAV file made by ffmpeg.
+fn read_wav16(p: &Path) -> Vec<i16> {
+    let b = fs::read(p).unwrap_or_default();
+    let mut i = 12;
+    while i + 8 <= b.len() {
+        let id = &b[i..i + 4];
+        let len = u32::from_le_bytes([b[i + 4], b[i + 5], b[i + 6], b[i + 7]]) as usize;
+        if id == b"data" {
+            let end = (i + 8 + len).min(b.len());
+            return b[i + 8..end].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        }
+        i += 8 + len + (len & 1);
+    }
+    Vec::new()
+}
+
+fn write_wav16(p: &Path, pcm: &[i16], rate: u32) -> Result<(), String> {
+    let n = (pcm.len() * 2) as u32;
+    let mut v = Vec::with_capacity(44 + n as usize);
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(36 + n).to_le_bytes());
+    v.extend_from_slice(b"WAVEfmt ");
+    for x in [16u32.to_le_bytes().as_slice(), &1u16.to_le_bytes(), &1u16.to_le_bytes(), &rate.to_le_bytes(),
+              &(rate * 2).to_le_bytes(), &2u16.to_le_bytes(), &16u16.to_le_bytes()] {
+        v.extend_from_slice(x);
+    }
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&n.to_le_bytes());
+    for s in pcm {
+        v.extend_from_slice(&s.to_le_bytes());
+    }
+    fs::write(p, v).map_err(err)
+}
+
+/// Where someone is actually talking (seconds), from the loudness of the mic audio.
+/// Whisper invents text for silence and smears timestamps, so only these parts are sent to it.
+fn speech_regions(pcm: &[i16], rate: u32) -> Vec<(f64, f64)> {
+    let hop = (rate / 50) as usize; // 20 ms frames
+    if pcm.len() < hop {
+        return Vec::new();
+    }
+    let db: Vec<f64> = pcm.chunks(hop).map(|c| {
+        let e = c.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum::<f64>() / c.len() as f64;
+        10.0 * (e + 1e-12).log10()
+    }).collect();
+    let mut sorted = db.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let floor = sorted[sorted.len() / 5];            // background noise level
+    // above the background, but never higher than normal speaking level (so non-stop talking still counts)
+    let thr = (floor + 14.0).max(-48.0).min(-34.0);
+    let fs = hop as f64 / rate as f64;
+    let mut regs: Vec<(f64, f64)> = Vec::new();
+    for (i, &d) in db.iter().enumerate() {
+        if d > thr {
+            let t = i as f64 * fs;
+            match regs.last_mut() {
+                Some(r) if t - r.1 < 0.6 => r.1 = t + fs,  // bridge short pauses between words
+                _ => regs.push((t, t + fs)),
+            }
+        }
+    }
+    let total = pcm.len() as f64 / rate as f64;
+    let mut out: Vec<(f64, f64)> = regs.into_iter()
+        .filter(|r| r.1 - r.0 >= 0.25)
+        .map(|(a, b)| ((a - 0.3).max(0.0), (b + 0.3).min(total)))
+        .collect();
+    // merge overlaps, and keep the number of whisper runs small
+    out.dedup_by(|b, a| if b.0 <= a.1 { a.1 = a.1.max(b.1); true } else { false });
+    while out.len() > 10 {
+        let k = (1..out.len()).min_by(|&x, &y| (out[x].0 - out[x - 1].1).partial_cmp(&(out[y].0 - out[y - 1].1)).unwrap()).unwrap();
+        out[k - 1].1 = out[k].1;
+        out.remove(k);
+    }
+    out
+}
+
+fn parse_whisper_json(s: &str) -> Vec<Word> {
+    let v: serde_json::Value = match serde_json::from_str(s) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for seg in v["transcription"].as_array().cloned().unwrap_or_default() {
+        let text = seg["text"].as_str().unwrap_or("").trim().to_string();
+        let (a, b) = (seg["offsets"]["from"].as_f64(), seg["offsets"]["to"].as_f64());
+        // skip empty bits and whisper's non-speech tags like [MUSIC] / (laughs)
+        if text.is_empty() || text.starts_with('[') || (text.starts_with('(') && text.ends_with(')')) {
+            continue;
+        }
+        if let (Some(a), Some(b)) = (a, b) {
+            out.push(Word { text, start: a / 1000.0, end: (b / 1000.0).max(a / 1000.0 + 0.05) });
+        }
+    }
+    out
+}
+
+pub fn log_path() -> PathBuf {
+    std::env::temp_dir().join("clipper_ffmpeg.log")
+}
+
+pub fn log_line(msg: &str) {
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log_path()) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// 128 random bits as hex (OS-seeded; for secret localhost addresses).
+pub fn random_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    (0..2u64).map(|i| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(i ^ now_unix());
+        format!("{:016x}", h.finish())
+    }).collect()
+}
+/// secret path of the cloud streaming server (rclone serve --baseurl)
+static SERVE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+fn serve_token() -> &'static str {
+    SERVE_TOKEN.get_or_init(random_token)
+}
+
+fn hidden(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
+fn ffmpeg() -> Command {
+    hidden("ffmpeg")
+}
+
+fn err<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
+/// Kill ffmpeg recorders left behind by a crashed Clipper (they block screen capture).
+fn kill_leftovers() {
+    #[cfg(windows)]
+    crate::winutil::kill_orphans(&["ffmpeg.exe", "rclone.exe"]);
+}
+
+/// Format of the default output device (what loopback delivers).
+fn loopback_format() -> Result<(u32, u16), String> {
+    #[cfg(target_os = "linux")]
+    return Ok((48000, 2));
+    #[allow(unreachable_code)]
+    let dev = cpal::default_host().default_output_device().ok_or("No audio output device")?;
+    let cfg = dev.default_output_config().map_err(err)?;
+    Ok((cfg.sample_rate().0, cfg.channels()))
+}
+
+type Buf = Arc<Mutex<VecDeque<f32>>>;
+
+/// Linear resampler + channel mapper (mics often run at 16/44.1 kHz and mono).
+struct Resampler {
+    step: f64,
+    t: f64,
+    cin: usize,
+    cout: usize,
+    prev: Vec<f32>,
+}
+
+impl Resampler {
+    fn new(in_rate: u32, out_rate: u32, cin: usize, cout: usize) -> Self {
+        Resampler { step: in_rate as f64 / out_rate as f64, t: 0.0, cin: cin.max(1), cout, prev: vec![0.0; cout] }
+    }
+    fn push(&mut self, input: &[f32], q: &mut VecDeque<f32>) {
+        let mut cur = vec![0.0f32; self.cout];
+        for f in input.chunks(self.cin) {
+            for (c, v) in cur.iter_mut().enumerate() {
+                *v = if self.cin == 1 { f[0] } else { *f.get(c).unwrap_or(&0.0) };
+            }
+            while self.t < 1.0 {
+                let t = self.t as f32;
+                for c in 0..self.cout {
+                    q.push_back(self.prev[c] + (cur[c] - self.prev[c]) * t);
+                }
+                self.t += self.step;
+            }
+            self.t -= 1.0;
+            self.prev.copy_from_slice(&cur);
+        }
+    }
+}
+
+/// Opens desktop loopback (`mic == false`) or the default microphone on its own thread and
+/// pushes samples, converted to `ch` channels, into `buf`. Never blocks the caller.
+/// Microphones Windows knows about: (names, default name).
+pub fn list_mics() -> (Vec<String>, String) {
+    let host = cpal::default_host();
+    #[allow(unused_mut)]
+    let mut names: Vec<String> = host.input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+    #[allow(unused_mut)]
+    let mut def = host.default_input_device().and_then(|d| d.name().ok()).unwrap_or_default();
+    // Linux/ALSA lists every plug-in variant of each card; keep one entry per real card
+    #[cfg(target_os = "linux")]
+    {
+        names.retain(|n| n.starts_with("sysdefault:CARD="));
+        if def == "default" || def == "pipewire" || def == "sysdefault" { def = String::new(); }
+    }
+    (names, def)
+}
+
+/// Friendly mic name: on Linux "sysdefault:CARD=Wireless" -> the card's full name from /proc/asound/cards
+pub fn mic_label(name: &str) -> String {
+    #[cfg(target_os = "linux")]
+    { if let Some(id) = name.strip_prefix("sysdefault:CARD=") {
+        if let Ok(t) = std::fs::read_to_string("/proc/asound/cards") {
+            for l in t.lines() {
+                // " 1 [Wireless       ]: USB-Audio - HyperX Cloud II Wireless"
+                if let (Some(a), Some(b)) = (l.find('['), l.find(']')) {
+                    if a < b && l[a + 1..b].trim() == id {
+                        if let Some(p) = l.find(" - ") { return l[p + 3..].trim().to_string(); }
+                    }
+                }
+            }
+        }
+        return id.to_string();
+    } }
+    name.to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_audio(buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    use std::io::Read;
+    let mut child = match Command::new("parec")
+        .args(["--device=@DEFAULT_MONITOR@", "--format=float32le", &format!("--rate={rate}"), &format!("--channels={ch}"), "--raw", "--latency-msec=20"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+    {
+        Ok(c) => c,
+        Err(e) => { log_line(&format!("audio: desktop capture needs parec (sudo dnf install pulseaudio-utils): {e}")); return; }
+    };
+    log_line("audio: desktop via parec @DEFAULT_MONITOR@");
+    let mut out = child.stdout.take().unwrap();
+    let mut b = vec![0u8; 4096 * 4];
+    let mut rest: Vec<u8> = Vec::new();
+    while !stop.load(Ordering::Relaxed) {
+        let n = match out.read(&mut b) { Ok(0) | Err(_) => break, Ok(n) => n };
+        rest.extend_from_slice(&b[..n]);
+        let whole = rest.len() / 4 * 4;
+        {
+            let mut q = buf.lock().unwrap();
+            for c in rest[..whole].chunks_exact(4) { q.push_back(f32::from_le_bytes([c[0], c[1], c[2], c[3]])); }
+        }
+        rest.drain(..whole);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    #[cfg(target_os = "linux")]
+    if !mic {
+        std::thread::spawn(move || linux_desktop_audio(buf, stop, rate, ch));
+        return;
+    }
+    std::thread::spawn(move || {
+        let what = if mic { "mic" } else { "desktop" };
+        let res = (|| -> Result<cpal::Stream, String> {
+            let host = cpal::default_host();
+            let chosen = if mic && !mic_name.is_empty() {
+                let d = host.input_devices().ok().and_then(|mut it| it.find(|d| d.name().map_or(false, |n| n == mic_name)));
+                if d.is_none() {
+                    log_line(&format!("audio: mic '{mic_name}' not found, using the Windows default"));
+                }
+                d
+            } else {
+                None
+            };
+            let dev = match chosen {
+                Some(d) => Some(d),
+                None if mic => host.default_input_device(),
+                None => host.default_output_device(),
+            }
+            .ok_or("no device")?;
+            let cfg = if mic { dev.default_input_config() } else { dev.default_output_config() }.map_err(err)?;
+            log_line(&format!("audio: {what} '{}' {:?} {}Hz {}ch",
+                dev.name().unwrap_or_default(), cfg.sample_format(), cfg.sample_rate().0, cfg.channels()));
+            let (in_rate, cin, cout) = (cfg.sample_rate().0, cfg.channels() as usize, ch as usize);
+            if in_rate != rate {
+                log_line(&format!("audio: {what} resampling {in_rate} -> {rate} Hz"));
+            }
+            let errf = move |e: cpal::StreamError| log_line(&format!("audio: {what} stream error: {e}"));
+            let b = buf.clone();
+            let mut rs = Resampler::new(in_rate, rate, cin, cout);
+            let mut tmp: Vec<f32> = Vec::new();
+            let s = match cfg.sample_format() {
+                cpal::SampleFormat::F32 => dev.build_input_stream(
+                    &cfg.config(),
+                    move |d: &[f32], _: &cpal::InputCallbackInfo| rs.push(d, &mut b.lock().unwrap()),
+                    errf, None),
+                cpal::SampleFormat::I16 => dev.build_input_stream(
+                    &cfg.config(),
+                    move |d: &[i16], _: &cpal::InputCallbackInfo| {
+                        tmp.clear();
+                        tmp.extend(d.iter().map(|s| *s as f32 / 32768.0));
+                        rs.push(&tmp, &mut b.lock().unwrap());
+                    },
+                    errf, None),
+                cpal::SampleFormat::I32 => dev.build_input_stream(
+                    &cfg.config(),
+                    move |d: &[i32], _: &cpal::InputCallbackInfo| {
+                        tmp.clear();
+                        tmp.extend(d.iter().map(|s| *s as f32 / 2147483648.0));
+                        rs.push(&tmp, &mut b.lock().unwrap());
+                    },
+                    errf, None),
+                f => return Err(format!("unsupported sample format {f:?}")),
+            }
+            .map_err(err)?;
+            s.play().map_err(err)?;
+            Ok(s)
+        })();
+        match res {
+            Ok(_stream) => {
+                log_line(&format!("audio: {what} capture running"));
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+            Err(e) => log_line(&format!("audio: {what} unavailable: {e}")),
+        }
+    });
+}
+
+/// One per-app capture (a process tree) feeding its own queue.
+struct AppSrc {
+    pid: u32,
+    buf: Buf,
+    stop: Arc<AtomicBool>,
+}
+/// All captures of one app track (e.g. several browsers on the Browser track).
+type Group = Arc<Mutex<Vec<AppSrc>>>;
+
+/// Extra tracks, in file order after mix/desktop/mic: a:3 game, a:4 Discord, a:5 browsers.
+pub const APP_TRACKS: [&str; 3] = ["Game", "Discord", "Browser"];
+
+#[allow(dead_code)]
+const DISCORD_EXES: &[&str] = &["discord.exe", "discordcanary.exe", "discordptb.exe"];
+#[allow(dead_code)]
+const BROWSER_EXES: &[&str] = &["chrome.exe", "brave.exe", "msedge.exe", "firefox.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe", "librewolf.exe", "zen.exe"];
+
+/// Every ~2 s: works out which processes are the game / Discord / browsers and starts or
+/// stops a per-app loopback capture for each (whole process tree).
+#[cfg(windows)]
+fn app_supervisor(groups: [Group; 3], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    std::thread::spawn(move || {
+        let mut game: Option<u32> = None;
+        let mut failed: std::collections::HashSet<u32> = Default::default();
+        while !stop.load(Ordering::Relaxed) {
+            let procs = crate::winutil::processes();
+            let alive = |pid: u32| procs.iter().any(|p| p.0 == pid);
+            // game: the game in front; kept while it runs and no other game takes over
+            if let Some((pid, stem, title)) = crate::winutil::foreground_pid() {
+                if pid != std::process::id() && game_name(&stem, &title, crate::winutil::foreground_fullscreen()).is_some() {
+                    game = Some(pid);
+                }
+            }
+            if game.is_some_and(|g| !alive(g)) {
+                game = None;
+            }
+            // root processes of a set of exes (child processes are included by the capture)
+            let roots = |set: &[&str]| -> Vec<u32> {
+                procs.iter()
+                    .filter(|p| set.contains(&p.2.as_str()))
+                    .filter(|p| !procs.iter().any(|q| q.0 == p.1 && set.contains(&q.2.as_str())))
+                    .map(|p| p.0)
+                    .collect()
+            };
+            let want: [Vec<u32>; 3] = [game.into_iter().collect(), roots(DISCORD_EXES), roots(BROWSER_EXES)];
+            for (k, g) in groups.iter().enumerate() {
+                let mut list = g.lock().unwrap();
+                list.retain(|s| {
+                    let keep = want[k].contains(&s.pid) && !s.stop.load(Ordering::Relaxed);
+                    if !keep {
+                        s.stop.store(true, Ordering::Relaxed);
+                    }
+                    keep
+                });
+                for &pid in &want[k] {
+                    if list.iter().any(|s| s.pid == pid) || failed.contains(&pid) {
+                        continue;
+                    }
+                    let src = AppSrc { pid, buf: Arc::new(Mutex::new(VecDeque::new())), stop: Arc::new(AtomicBool::new(false)) };
+                    let (b, st, all) = (src.buf.clone(), src.stop.clone(), stop.clone());
+                    let name = procs.iter().find(|p| p.0 == pid).map(|p| p.2.clone()).unwrap_or_default();
+                    let what = APP_TRACKS[k];
+                    log_line(&format!("audio: {what} track <- {name} (pid {pid})"));
+                    std::thread::spawn(move || {
+                        let st2 = st.clone();
+                        let r = crate::winutil::app_loopback(pid, rate, ch, st.clone(), |x| {
+                            if all.load(Ordering::Relaxed) { st2.store(true, Ordering::Relaxed); }
+                            b.lock().unwrap().extend(x.iter().copied());
+                        });
+                        if let Err(e) = r {
+                            log_line(&format!("audio: {what} capture of pid {pid} failed: {e}"));
+                        }
+                        st.store(true, Ordering::Relaxed); // supervisor drops it
+                    });
+                    list.push(src);
+                }
+                // a capture that ended by itself (error) is not retried for the same pid
+                for s in list.iter() {
+                    if s.stop.load(Ordering::Relaxed) {
+                        failed.insert(s.pid);
+                    }
+                }
+            }
+            for _ in 0..20 {
+                if stop.load(Ordering::Relaxed) { break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        for g in &groups {
+            for s in g.lock().unwrap().iter() {
+                s.stop.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn app_supervisor(_: [Group; 3], _: Arc<AtomicBool>, _: u32, _: u16) {}
+
+/// Mixes desktop + mic and writes to ffmpeg at exactly real-time pace,
+/// padding with silence when nothing is playing (keeps A/V in sync).
+/// Tracks per frame: mix, desktop, mic (+ game, Discord, browsers when `apps`).
+#[allow(clippy::too_many_arguments)]
+/// mic gate: hotkey mute + push-to-talk (live, read by the audio thread)
+/// cloud download progress: (rel, bytes so far, total)
+static DL_PROGRESS: Mutex<(String, u64, u64)> = Mutex::new((String::new(), 0, 0));
+/// editor export progress in 1/1000 (polled by the UI)
+pub static EXPORT_PROGRESS: AtomicU32 = AtomicU32::new(0);
+/// cloud upload in progress, for the UI: rel ("" = none), bytes sent, total, which one (1-based) of how many
+#[derive(Serialize, Clone, Default)]
+pub struct UpProgress {
+    pub rel: String,
+    pub got: u64,
+    pub total: u64,
+    pub idx: u32,
+    pub count: u32,
+}
+pub static UP_PROGRESS: Mutex<UpProgress> = Mutex::new(UpProgress { rel: String::new(), got: 0, total: 0, idx: 0, count: 0 });
+pub static MIC_MUTED: AtomicBool = AtomicBool::new(false);
+/// set when the audio clock and the wall clock (video timestamps) split apart - sleep / hibernate, a big
+/// clock change, or a long stall. Clips would come out hours long with broken sound; the watch loop restarts the recorder.
+pub static RESTART_REC: AtomicBool = AtomicBool::new(false);
+/// live mixer settings: per-app volume (f32 bits) and "mix only these apps"
+static APP_VOL: [AtomicU32; 3] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000)];
+static MIX_APPS: AtomicBool = AtomicBool::new(false);
+static MIX_INC: [AtomicBool; 3] = [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false)];
+static MIC_MONO: AtomicBool = AtomicBool::new(false);
+/// the mic is added to the mix by ffmpeg (after the noise filter), not here
+static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
+/// names the user said are not games (Settings > Games > remove)
+static NOT_GAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+fn set_mixer(c: &Settings) {
+    *NOT_GAMES.lock().unwrap() = c.not_games.iter().map(|n| n.to_lowercase()).collect();
+    for (i, v) in [c.vol_game, c.vol_discord, c.vol_browser].iter().enumerate() {
+        APP_VOL[i].store(v.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+    MIX_APPS.store(c.mix_mode == "apps" && c.app_tracks, Ordering::Relaxed);
+    for (i, b) in [c.mix_game, c.mix_discord, c.mix_browser].iter().enumerate() {
+        MIX_INC[i].store(*b, Ordering::Relaxed);
+    }
+    MIC_MONO.store(c.mic_mono, Ordering::Relaxed);
+}
+pub static PTT_ON: AtomicBool = AtomicBool::new(false);
+pub static PTT_HELD: AtomicBool = AtomicBool::new(false);
+
+/// RNNoise model for the mic noise filter (downloaded once); None = use ffmpeg's afftdn instead.
+fn denoise_model() -> Option<PathBuf> {
+    let p = app_dir().join("rnnoise-sh.rnnn");
+    if fs::metadata(&p).map_or(false, |m| m.len() > 1000) {
+        return Some(p);
+    }
+    let _ = fs::create_dir_all(app_dir());
+    match download("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/somnolent-hogwash-2018-09-01/sh.rnnn", &p) {
+        Ok(()) => Some(p),
+        Err(e) => { log_line(&format!("audio: noise model download failed ({e}), using afftdn")); None }
+    }
+}
+
+fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, start: Instant,
+                desktop: bool, mic: bool, mic_name: String, vols: Arc<[AtomicU32; 2]>, apps: bool) {
+    let bd: Buf = Arc::new(Mutex::new(VecDeque::new()));
+    let bm: Buf = Arc::new(Mutex::new(VecDeque::new()));
+    if desktop {
+        spawn_capture(false, String::new(), bd.clone(), stop.clone(), rate, ch);
+    }
+    if mic {
+        spawn_capture(true, mic_name.clone(), bm.clone(), stop.clone(), rate, ch);
+    }
+    let groups: [Group; 3] = Default::default();
+    if apps {
+        app_supervisor(groups.clone(), stop.clone(), rate, ch);
+    }
+    let ch = ch as usize;
+    let max_buffered = rate as usize * 3 / 10 * ch; // keep at most 300 ms queued (whole frames)
+    let mut last_slow_log = Instant::now() - Duration::from_secs(60);
+    let mut written: u64 = 0; // frames
+    let mut gain = 1.0f32; // mic gate, ramped to avoid clicks
+    let mut primed: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
+    let prime = rate as usize * ch as usize * 40 / 1000; // 40 ms
+    // video is stamped with the wall clock, audio is paced by `start` (monotonic): they must stay together
+    let wall0 = SystemTime::now();
+    let mono0 = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(10));
+        let target = (start.elapsed().as_secs_f64() * rate as f64) as u64;
+        let behind = target.saturating_sub(written);
+        let wall = SystemTime::now().duration_since(wall0).map(|d| d.as_secs_f64()).unwrap_or(-1e9);
+        let drift = wall - mono0.elapsed().as_secs_f64();
+        if drift.abs() > 3.0 || behind > rate as u64 * 5 {
+            log_line(&format!("audio: clock jump (PC sleep / clock change?): wall clock {drift:+.1} s, audio {:.1} s behind - restarting the recorder",
+                behind as f64 / rate as f64));
+            RESTART_REC.store(true, Ordering::Relaxed);
+            return;
+        }
+        let n = (behind as usize) * ch;
+        if n > rate as usize * ch / 6 && last_slow_log.elapsed() > Duration::from_secs(10) {
+            // writing to ffmpeg took long (it read our audio slowly) - only logged, handled below
+            log_line(&format!("audio: writer fell behind by {} ms", n / ch * 1000 / rate as usize));
+            last_slow_log = Instant::now();
+        }
+        let vd = f32::from_bits(vols[0].load(Ordering::Relaxed));
+        let vm = f32::from_bits(vols[1].load(Ordering::Relaxed));
+        // jitter buffer: Windows hands audio over in bursts. Reading it the moment it arrives left tiny gaps
+        // (choppy sound right after a start until it settled). A source plays once ~40 ms are queued;
+        // if it runs dry it waits for 40 ms again instead of stuttering sample by sample.
+        let take = |q: &Buf, v: f32, into: &mut [f32], primed: &mut std::collections::HashMap<usize, bool>| {
+            let key = Arc::as_ptr(q) as usize;
+            let mut q = q.lock().unwrap();
+            while q.len() > max_buffered { q.pop_front(); }
+            let p = primed.entry(key).or_insert(false);
+            if !*p {
+                if q.len() < prime.min(max_buffered / 2) {
+                    return; // still filling: silence
+                }
+                *p = true;
+            }
+            // play what is queued (a big catch-up after a slow write is filled at its end, so the newest
+            // sound lines up with "now"); only when the queue runs completely dry wait for 40 ms again
+            let k = q.len().min(into.len());
+            let at = into.len() - k;
+            for x in into[at..].iter_mut() { *x += q.pop_front().unwrap_or(0.0) * v; }
+            if q.is_empty() {
+                *p = false;
+            }
+        };
+        let mut d = vec![0.0f32; n];
+        let mut m = vec![0.0f32; n];
+        take(&bd, vd, &mut d, &mut primed);
+        take(&bm, vm, &mut m, &mut primed);
+        let open = !MIC_MUTED.load(Ordering::Relaxed) && (!PTT_ON.load(Ordering::Relaxed) || PTT_HELD.load(Ordering::Relaxed));
+        let want = if open { 1.0f32 } else { 0.0 };
+        let step = 50.0 / rate as f32; // ~20 ms ramp
+        for f in 0..(n / ch) {
+            gain = if gain < want { (gain + step).min(want) } else { (gain - step).max(want) };
+            if gain < 1.0 {
+                for i in f * ch..f * ch + ch { m[i] *= gain; }
+            }
+        }
+        if MIC_MONO.load(Ordering::Relaxed) && ch == 2 {
+            for f in m.chunks_exact_mut(2) {
+                let v = (f[0] + f[1]).clamp(-1.0, 1.0);
+                f[0] = v;
+                f[1] = v;
+            }
+        }
+        let mut g: Vec<Vec<f32>> = Vec::new();
+        if apps {
+            for (gi, grp) in groups.iter().enumerate() {
+                let mut a = vec![0.0f32; n];
+                let av = vd * f32::from_bits(APP_VOL[gi].load(Ordering::Relaxed));
+                for src in grp.lock().unwrap().iter() {
+                    take(&src.buf, av, &mut a, &mut primed);
+                }
+                g.push(a);
+            }
+        }
+        let tracks = 3 + g.len();
+        let mut chunk = Vec::with_capacity(n * tracks * 4);
+        let put = |chunk: &mut Vec<u8>, x: f32| chunk.extend_from_slice(&x.clamp(-1.0, 1.0).to_le_bytes());
+        let mix_apps = MIX_APPS.load(Ordering::Relaxed);
+        let no_mic = MIX_NO_MIC.load(Ordering::Relaxed);
+        let inc = [MIX_INC[0].load(Ordering::Relaxed), MIX_INC[1].load(Ordering::Relaxed), MIX_INC[2].load(Ordering::Relaxed)];
+        for f in 0..(n / ch) {
+            let r = f * ch..f * ch + ch;
+            // mix: everything, or only the apps ticked in Settings > Audio (+ mic)
+            if mix_apps && g.len() == 3 {
+                for i in r.clone() {
+                    let mut x = if no_mic { 0.0 } else { m[i] };
+                    for (gi, a) in g.iter().enumerate() {
+                        if inc[gi] { x += a[i]; }
+                    }
+                    put(&mut chunk, x);
+                }
+            } else {
+                for i in r.clone() { put(&mut chunk, if no_mic { d[i] } else { d[i] + m[i] }); }
+            }
+            for i in r.clone() { put(&mut chunk, d[i]); }
+            for i in r.clone() { put(&mut chunk, m[i]); }
+            for a in &g {
+                for i in r.clone() { put(&mut chunk, a[i]); }
+            }
+        }
+        if out.write_all(&chunk).is_err() {
+            break; // ffmpeg exited
+        }
+        written = target;
+    }
+}
+
+/// Starts the zero-copy capture thread; returns ffmpeg input args + pipe name.
+#[cfg(windows)]
+fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) -> Option<(Vec<String>, String)> {
+    let name = format!(r"\\.\pipe\clipper_v_{}_{}_{}", std::process::id(), i,
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let pipe = match crate::gpucap::create_pipe(&name) {
+        Ok(p) => p,
+        Err(e) => {
+            log_line(&format!("gpu: {e}"));
+            return None;
+        }
+    };
+    let s = stop.clone();
+    let opts = crate::gpucap::Opts {
+        fps: cfg.fps,
+        bitrate_mbps: cfg.bitrate_mbps,
+        gop: cfg.fps * SEG,
+        target_h: cfg.resolution.parse().unwrap_or(0),
+        monitor: cfg.monitor.clone(),
+        codec: cfg.codec.clone(),
+        window: if cfg.capture == "game" { window } else { 0 },
+    };
+    let fps = cfg.fps;
+    std::thread::spawn(move || crate::gpucap::run(pipe, s, opts, log_line));
+    let args = vec![
+        "-thread_queue_size".into(), "1024".into(),
+        "-use_wallclock_as_timestamps".into(), "1".into(),
+        "-probesize".into(), "1000000".into(), "-analyzeduration".into(), "0".into(),
+        "-f".into(), match cfg.codec.as_str() { "hevc" => "hevc", "av1" => "obu", _ => "h264" }.into(), "-framerate".into(), fps.to_string(),
+        "-i".into(), name.clone(),
+        "-map".into(), "1:v".into(),
+        "-c:v".into(), "copy".into(),
+    ];
+    Some((args, name))
+}
+
+/// Linux: gpu-screen-recorder captures the screen and encodes on the GPU (VAAPI),
+/// writes MPEG-TS into a FIFO, ffmpeg copies it into the same segment buffer as on Windows.
+#[cfg(target_os = "linux")]
+fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -> Option<(Vec<String>, String)> {
+    let _ = Command::new("pkill").args(["-f", "gpu-screen-recorder.*clipper_v_"]).status();
+    let name = std::env::temp_dir().join(format!("clipper_v_{}_{}.ts", std::process::id(), i));
+    let _ = fs::remove_file(&name);
+    let ok = Command::new("mkfifo").arg(&name).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        log_line("gsr: could not create the video pipe (mkfifo)");
+        return None;
+    }
+    let codec = match cfg.codec.as_str() { "hevc" => "hevc", "av1" => "av1", _ => "h264" };
+    let mut a: Vec<String> = vec![
+        "-w".into(), "screen".into(), "-f".into(), cfg.fps.to_string(), "-k".into(), codec.into(),
+        "-c".into(), "mpegts".into(), "-bm".into(), "cbr".into(), "-q".into(), (cfg.bitrate_mbps * 1000).to_string(),
+        "-keyint".into(), SEG.to_string(), "-cursor".into(), "no".into(), "-fm".into(), "cfr".into(),
+    ];
+    if let Ok(h) = cfg.resolution.parse::<u32>() {
+        a.extend(["-s".into(), format!("{}x{h}", h * 16 / 9)]);
+    }
+    a.extend(["-o".into(), name.to_string_lossy().into_owned()]);
+    log_line(&format!("gsr: gpu-screen-recorder {}", a.join(" ")));
+    let log = fs::OpenOptions::new().create(true).append(true).open(log_path()).ok();
+    let mut cmd = Command::new("gpu-screen-recorder");
+    cmd.args(&a).stdin(Stdio::null()).stdout(Stdio::null());
+    if let Some(l) = log { cmd.stderr(l); }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log_line(&format!("gsr: could not start gpu-screen-recorder (sudo dnf install gpu-screen-recorder): {e}"));
+            let _ = fs::remove_file(&name);
+            return None;
+        }
+    };
+    let (s, n2) = (stop.clone(), name.clone());
+    std::thread::spawn(move || {
+        loop {
+            if s.load(Ordering::Relaxed) { break; }
+            if let Ok(Some(st)) = child.try_wait() { log_line(&format!("gsr: exited ({st})")); break; }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = Command::new("kill").args(["-INT", &child.id().to_string()]).status();
+        for _ in 0..25 {
+            if matches!(child.try_wait(), Ok(Some(_))) { break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_file(&n2);
+    });
+    let args = vec![
+        "-thread_queue_size".into(), "1024".into(),
+        "-use_wallclock_as_timestamps".into(), "1".into(),
+        "-probesize".into(), "2000000".into(), "-analyzeduration".into(), "1000000".into(),
+        "-f".into(), "mpegts".into(),
+        "-i".into(), name.to_string_lossy().into_owned(),
+        "-map".into(), "1:v".into(),
+        "-c:v".into(), "copy".into(),
+    ];
+    Some((args, name.to_string_lossy().into_owned()))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn gpu_input(_: usize, _: &Arc<AtomicBool>, _: &Settings, _: isize) -> Option<(Vec<String>, String)> {
+    None
+}
+
+/// Filter tail for re-encodes: convert whatever came in to BT.709 TV-range yuv420p (players everywhere expect that).
+const TV_YUV: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
+/// Matching output tags (so Discord / Chrome / phones don't guess the colours).
+const TV_TAGS: [&str; 8] = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+
+/// Share of pixels outside TV range (16-235) in a few small grey frames: full-range videos
+/// (real blacks) have lots of them, correctly made TV-range videos almost none.
+fn full_range_share(p: &Path) -> f64 {
+    let o = ffmpeg()
+        .args(["-hide_banner", "-v", "error", "-i"]).arg(p)
+        .args(["-an", "-vf", "framestep=60,scale=320:-2:flags=neighbor,format=gray", "-frames:v", "10", "-f", "rawvideo", "-"])
+        .stdout(Stdio::piped()).stderr(Stdio::null()).output();
+    let px = o.map(|o| o.stdout).unwrap_or_default();
+    if px.is_empty() {
+        return 0.0;
+    }
+    px.iter().filter(|&&b| b < 10 || b > 245).count() as f64 / px.len() as f64
+}
+
+/// Re-encode a full-range video (labelled or not) into real BT.709 TV range, all streams kept.
+fn to_tv_range(src: &Path, out: &Path) -> bool {
+    let vf = "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p";
+    let run = |venc: &[&str]| -> bool {
+        ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
+            .args(["-map", "0:v:0", "-map", "0:a?", "-vf", vf]).args(venc).args(TV_TAGS)
+            .args(["-c:a", "copy", "-movflags", "+faststart", "-f", "mp4"]).arg(out)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+            && fs::metadata(out).map_or(false, |m| m.len() > 0)
+    };
+    run(&["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "20"])
+        || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
+}
+
+fn modified(p: &Path) -> Option<SystemTime> {
+    fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+impl Recorder {
+    pub fn new(cfg: Settings) -> Self {
+        set_mixer(&cfg);
+        ec_sync_state(&cfg, 0);
+        let volumes = Arc::new([
+            AtomicU32::new(cfg.desktop_volume.to_bits()),
+            AtomicU32::new(cfg.mic_volume.to_bits()),
+        ]);
+        Self {
+            child: Mutex::new(None),
+            audio_stop: Mutex::new(Arc::new(AtomicBool::new(true))),
+            cfg: Mutex::new(cfg),
+            volumes,
+            buf_dir: std::env::temp_dir().join("clipper_buffer"),
+            mode: Mutex::new(String::new()),
+            save_lock: Mutex::new(()),
+            life: Mutex::new(()),
+            idle_paused: AtomicBool::new(false),
+            window: std::sync::atomic::AtomicIsize::new(0),
+            pause_reason: Mutex::new(String::new()),
+            session: Mutex::new(None),
+            cloud_serve: Mutex::new(None),
+            cloud_busy: Mutex::new(String::new()),
+            cloud_lock: Mutex::new(()),
+            last_game: Mutex::new(None),
+        }
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.cfg.lock().unwrap().clone()
+    }
+
+    /// Apply new settings. Returns true if the recorder needs a restart.
+    pub fn apply(&self, new: Settings) -> bool {
+        self.volumes[0].store(new.desktop_volume.to_bits(), Ordering::Relaxed);
+        self.volumes[1].store(new.mic_volume.to_bits(), Ordering::Relaxed);
+        set_mixer(&new);
+        let mut cur = self.cfg.lock().unwrap();
+        let restart = cur.recorder_changed(&new);
+        *cur = new;
+        restart
+    }
+
+    pub fn clips_dir(&self) -> PathBuf {
+        PathBuf::from(&self.cfg.lock().unwrap().clips_dir)
+    }
+
+    pub fn is_recording(&self) -> bool {
+        match self.child.lock().unwrap().as_mut() {
+            Some(c) => matches!(c.try_wait(), Ok(None)),
+            None => false,
+        }
+    }
+
+    pub fn start(&self) -> Result<(), String> {
+        let _life = self.life.lock().unwrap_or_else(|e| e.into_inner());
+        self.stop_inner();
+        let cfg = self.settings();
+        fs::create_dir_all(&cfg.clips_dir).map_err(err)?;
+        // keep the previous session's log for troubleshooting
+        let _ = fs::rename(log_path(), log_path().with_extension("prev.log"));
+        log_line(&format!("start: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+        ensure_ffmpeg();
+        kill_leftovers();
+        let (rate, ch) = loopback_format().unwrap_or((48000, 2));
+        #[cfg(windows)]
+        let out_idx = crate::gpucap::output_index(&cfg.monitor);
+        #[cfg(not(windows))]
+        let out_idx = 0;
+        let grab = format!("ddagrab=output_idx={out_idx}:framerate={}:draw_mouse=0", cfg.fps);
+        let scale = match cfg.resolution.parse::<u32>() {
+            Ok(h) => format!(",scale=-2:{h}"),
+            Err(_) => String::new(),
+        };
+        // Mode "gpu": own zero-copy pipeline (gpucap.rs). Mode "cpu": ffmpeg ddagrab + CPU copy + AMF.
+        // ffmpeg-only zero-copy routes all fail on this PC (scale_d3d11, AMF hwmap/vpp_amf, h264_mf).
+        // CPU fallback tries each vendor's encoder: AMD, NVIDIA, Intel.
+        #[cfg(windows)]
+        let all = ["gpu", "cpu", "cpu-nvenc", "cpu-qsv"];
+        #[cfg(not(windows))]
+        let all = ["gpu"];
+        let mode_file = std::env::temp_dir().join("clipper_mode_v7.txt");
+        let last: usize = fs::read_to_string(&mode_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        // always try the zero-copy GPU path first; among the fallbacks, start with the one that worked last
+        let mut order: Vec<usize> = (0..all.len()).collect();
+        if last > 0 && last < all.len() {
+            order.retain(|&i| i != last);
+            order.insert(1, last);
+        }
+        for i in order {
+            let mode = all[i];
+            let _ = fs::remove_dir_all(&self.buf_dir);
+            fs::create_dir_all(&self.buf_dir).map_err(err)?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut pipe_name = None;
+            let video: Vec<String> = if mode == "gpu" {
+                match gpu_input(i, &stop, &cfg, self.window.load(Ordering::Relaxed)) {
+                    Some((args, name)) => {
+                        pipe_name = Some(name);
+                        args
+                    }
+                    None => continue,
+                }
+            } else {
+                let c = match cfg.codec.as_str() { "hevc" => "hevc", "av1" => "av1", _ => "h264" };
+                let enc: Vec<String> = match mode {
+                    "cpu-nvenc" => vec!["-c:v".into(), format!("{c}_nvenc"), "-preset".into(), "p3".into(), "-tune".into(), "ll".into(), "-rc".into(), "cbr".into()],
+                    "cpu-qsv" => vec!["-c:v".into(), format!("{c}_qsv"), "-preset".into(), "veryfast".into()],
+                    _ => vec!["-c:v".into(), format!("{c}_amf"), "-quality".into(), "speed".into(), "-rc".into(), "cbr".into()],
+                };
+                // explicit full-range RGB -> TV-range BT.709 conversion (else clips come out dark)
+                let mut v: Vec<String> = vec![
+                    "-filter_complex".into(), format!("{grab},hwdownload,format=bgra{scale},scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=nv12[v]"),
+                    "-map".into(), "[v]".into(),
+                ];
+                v.extend(enc);
+                v.extend(["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"].map(String::from));
+                v.extend(["-b:v".to_string(), format!("{}M", cfg.bitrate_mbps), "-g".to_string(), (cfg.fps * SEG).to_string()]);
+                v
+            };
+            let t0 = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_err(err)?.as_secs_f64();
+            let audio_start = Instant::now();
+            let offset = if mode == "gpu" { Some(t0) } else { None };
+            let tracks = if cfg.app_tracks { 6 } else { 3 };
+            let nr = if cfg.mic && cfg.mic_denoise {
+                Some(match denoise_model() {
+                    Some(p) => format!("arnndn=m='{}':mix=0.9", ff_path(&p)),
+                    None => "afftdn=nf=-25".into(),
+                })
+            } else { None };
+            MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
+            let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
+            if let Some(stdin) = child.stdin.take() {
+                let (s, v) = (stop.clone(), self.volumes.clone());
+                let (d, m, mn, apps) = (cfg.desktop_audio, cfg.mic, cfg.mic_device.clone(), cfg.app_tracks);
+                std::thread::spawn(move || audio_thread(stdin, s, rate, ch, audio_start, d, m, mn, v, apps));
+            }
+            std::thread::sleep(Duration::from_secs(3));
+            if matches!(child.try_wait(), Ok(None)) {
+                *self.child.lock().unwrap() = Some(child);
+                *self.audio_stop.lock().unwrap() = stop;
+                *self.mode.lock().unwrap() = mode.into();
+                let _ = fs::write(&mode_file, i.to_string());
+                log_line(&format!("recording: {} ({} Hz, {} ch)",
+                    if mode == "gpu" { "ZERO-COPY gpu pipeline" } else { "cpu copy fallback" }, rate, ch));
+                return Ok(());
+            }
+            stop.store(true, Ordering::Relaxed);
+            // unblock a capture thread still waiting for ffmpeg to connect
+            if let Some(n) = pipe_name {
+                let _ = fs::OpenOptions::new().read(true).open(n);
+            }
+            log_line(&format!("--- {mode} mode failed, trying next ---"));
+        }
+        Err("Recorder failed to start - see the ffmpeg log".into())
+    }
+
+    fn spawn(&self, video: Vec<String>, audio_offset: Option<f64>, rate: u32, ch: u16, buffer_secs: u32, tracks: usize,
+             denoise: Option<String>) -> Result<Child, String> {
+        let log = fs::OpenOptions::new().create(true).append(true).open(log_path()).map_err(err)?;
+        // generous spare segments: a long save reads the oldest ones while recording continues
+        let wrap = buffer_secs / SEG + 20;
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(), "-nostdin".into(), "-loglevel".into(), "error".into(), "-y".into(),
+            // input 0: audio from our stdin pipe
+            "-thread_queue_size".into(), "8192".into(),
+            "-f".into(), "f32le".into(), "-ar".into(), rate.to_string(), "-ac".into(), (ch as usize * tracks).to_string(),
+        ];
+        if let Some(t0) = audio_offset {
+            // gpu mode: video carries wall-clock timestamps; put audio on the same clock.
+            args.extend(["-itsoffset".into(), format!("{t0:.6}")]);
+        }
+        args.extend(["-i".into(), "pipe:0".into()]);
+        // audio tracks: 0 = mix (what players play), 1 = all desktop sound, 2 = mic, (3 = game, 4 = Discord, 5 = browsers)
+        let c = ch as usize;
+        let pan = |o: usize| (0..c).map(|i| format!("c{i}=c{}", o + i)).collect::<Vec<_>>().join("|");
+        let lay = if c == 1 { "mono" } else { "stereo" };
+        let mut fc = (0..tracks).map(|t| format!("[0:a]pan={lay}|{}[a{t}]", pan(t * c))).collect::<Vec<_>>().join(";");
+        if let Some(nr) = denoise {
+            // mic cleaned by the noise filter; the mix track is rebuilt from desktop + cleaned mic
+            fc = format!("[0:a]asplit={tracks}{}", (0..tracks).map(|t| format!("[s{t}]")).collect::<String>());
+            // track 0 from the app arrives WITHOUT the mic here (MIX_NO_MIC): add the cleaned mic to it
+            for t in 0..tracks {
+                fc += &format!(";[s{t}]pan={lay}|{}", pan(t * c));
+                match t {
+                    0 => fc += "[dm]",
+                    1 => fc += "[a1]",
+                    2 => fc += &format!("[m1];[m1]{nr},asplit[a2][mm]"),
+                    _ => fc += &format!("[a{t}]"),
+                }
+            }
+            fc += ";[dm][mm]amix=inputs=2:normalize=0:duration=longest[a0]";
+        }
+        let mut tail: Vec<String> = vec!["-filter_complex".into(), fc];
+        for t in 0..tracks {
+            tail.extend(["-map".into(), format!("[a{t}]")]);
+        }
+        tail.extend::<Vec<String>>(vec![
+            "-c:a".into(), "aac".into(), "-b:a".into(), "160k".into(), "-ac".into(), "2".into(),
+            "-f".into(), "segment".into(),
+            "-segment_time".into(), SEG.to_string(),
+            "-segment_wrap".into(), wrap.to_string(),
+            "-reset_timestamps".into(), "1".into(),
+            "-segment_format".into(), "mpegts".into(),
+        ]);
+        ffmpeg()
+            .args(&args)
+            .args(&video)
+            .args(&tail)
+            .arg(self.buf_dir.join("seg_%04d.ts"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(log)
+            .spawn()
+            .map_err(|e| format!("Could not start ffmpeg (is it installed?): {e}"))
+    }
+
+    pub fn stop(&self) {
+        let _life = self.life.lock().unwrap_or_else(|e| e.into_inner());
+        self.stop_inner();
+    }
+
+    fn stop_inner(&self) {
+        self.audio_stop.lock().unwrap().store(true, Ordering::Relaxed);
+        if let Some(mut c) = self.child.lock().unwrap().take() {
+            let _ = c.kill(); // mpegts segments are safe to cut
+            let _ = c.wait();
+        }
+    }
+
+    /// Save the last `seconds` (default: first hotkey's length).
+    pub fn save(&self, seconds: Option<u32>) -> Result<String, String> {
+        self.save_to(seconds, None)
+    }
+
+    /// `to`: write the clip there instead of the library (self-test); no thumbnail / storage check then.
+    fn save_to(&self, seconds: Option<u32>, to: Option<PathBuf>) -> Result<String, String> {
+        let cfg = self.settings();
+        let seconds = seconds.unwrap_or_else(|| cfg.hotkeys.first().map(|h| h.seconds).unwrap_or(30));
+        let _one_at_a_time = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let t0 = Instant::now();
+        let list = || -> Result<Vec<(SystemTime, PathBuf)>, String> {
+            let mut v: Vec<(SystemTime, PathBuf)> = fs::read_dir(&self.buf_dir)
+                .map_err(err)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map_or(false, |x| x == "ts"))
+                .filter_map(|p| modified(&p).map(|t| (t, p)))
+                .collect();
+            v.sort();
+            Ok(v)
+        };
+        let mut segs = list()?;
+        if segs.is_empty() {
+            return Err("Buffer is empty - recording isn't running. Check the ffmpeg log.".into());
+        }
+        // The newest segment is still being written (ffmpeg holds back its last second or so).
+        // Wait until ffmpeg moves on to the next file, so the clip reaches the moment of the keypress.
+        let live = segs.last().unwrap().1.clone();
+        if self.is_recording() {
+            let wait = Instant::now();
+            while wait.elapsed() < Duration::from_millis(SEG as u64 * 1000 * 2 + 1500) {
+                std::thread::sleep(Duration::from_millis(100));
+                let now = list()?;
+                if now.last().map_or(false, |(_, p)| *p != live) {
+                    segs = now;
+                    // keep everything up to (and including) the segment that was live at the keypress
+                    if let Some(i) = segs.iter().position(|(_, p)| *p == live) {
+                        segs.truncate(i + 1);
+                    }
+                    break;
+                }
+            }
+        }
+        let need = (seconds / SEG + 1) as usize;
+        let start = segs.len().saturating_sub(need);
+
+        fs::create_dir_all(&cfg.clips_dir).map_err(err)?;
+        // game in front now, else the last game seen during this clip
+        let game = detect_game().or_else(|| {
+            self.last_game.lock().unwrap().as_ref()
+                .filter(|(_, t)| t.elapsed().as_secs() <= seconds as u64 + 30)
+                .map(|(g, _)| g.clone())
+        });
+        let prefix = if cfg.name_by_game { game.clone() } else { None }.unwrap_or_else(|| "Clip".into());
+        let name = format!("{prefix} {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S.mp4"));
+        let dir = match game.map(|g| cfg.game_folder(&g)).filter(|g| !g.is_empty() && cfg.game_folders && cfg.game_rule(g).folder && !RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(g))) {
+            Some(g) => PathBuf::from(&cfg.clips_dir).join(g.trim_end_matches('.')),
+            None => PathBuf::from(&cfg.clips_dir),
+        };
+        fs::create_dir_all(&dir).map_err(err)?;
+        let test = to.is_some();
+        let out = to.unwrap_or_else(|| dir.join(name));
+        // write next to it under a temp name: the library never shows a half-written (black) clip
+        let fin = out.clone();
+        let out = out.with_extension("saving.tmp");
+        // Try with the newest (still-being-written) segment; if that breaks the join, drop it.
+        let mut ok = false;
+        for end in [segs.len(), segs.len().saturating_sub(1)] {
+            if end <= start {
+                break;
+            }
+            if self.join(&segs[start..end], &out)? {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return Err("ffmpeg failed to join the clip".into());
+        }
+        fs::rename(&out, &fin).map_err(err)?;
+        let out = fin.to_string_lossy().to_string();
+        log_line(&format!("save: {seconds}s -> {out} in {:.1}s", t0.elapsed().as_secs_f32()));
+        if test {
+            return Ok(out);
+        }
+        if let Ok(t) = self.thumb(&out) {
+            // a clip far longer than asked for = audio and video timestamps split apart: restart for the next one
+            if t.duration > seconds as f64 + 60.0 {
+                log_line(&format!("save: clip is {:.0} s long, wanted {seconds} s - timestamps broke, restarting the recorder", t.duration));
+                RESTART_REC.store(true, Ordering::Relaxed);
+            }
+        }
+        self.enforce_storage(&cfg);
+        Ok(out)
+    }
+
+    fn join(&self, segs: &[(SystemTime, PathBuf)], out: &PathBuf) -> Result<bool, String> {
+        let list = self.buf_dir.join(format!("list_{}.txt", std::process::id()));
+        let body: String = segs
+            .iter()
+            .map(|(_, p)| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/")))
+            .collect();
+        fs::write(&list, body).map_err(err)?;
+        let status = ffmpeg()
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list)
+            .args(["-map", "0:v", "-map", "0:a", "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart"])
+            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+            .args(["-f", "mp4"])
+            .arg(out)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(err)?;
+        let msg = String::from_utf8_lossy(&status.stderr);
+        if !msg.trim().is_empty() {
+            log_line(&format!("save: ffmpeg: {}", msg.trim().lines().take(5).collect::<Vec<_>>().join(" | ")));
+        }
+        let _ = fs::remove_file(&list);
+        Ok(status.status.success())
+    }
+
+    /// Seconds since ffmpeg last wrote to the replay buffer (None = no buffer yet).
+    pub fn buffer_age(&self) -> Option<f64> {
+        let newest = fs::read_dir(&self.buf_dir).ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map_or(false, |x| x == "ts"))
+            .filter_map(|p| modified(&p))
+            .max()?;
+        Some(SystemTime::now().duration_since(newest).map(|d| d.as_secs_f64()).unwrap_or(0.0))
+    }
+
+    /// Records a short test clip (outside the library) and checks video + every audio track.
+    /// Returns (check, ok, detail) rows. Needs the recorder running.
+    pub fn self_test(&self) -> Vec<(String, bool, String)> {
+        let mut r: Vec<(String, bool, String)> = Vec::new();
+        let cfg = self.settings();
+        let mode = self.mode.lock().unwrap().clone();
+        if !self.is_recording() {
+            r.push(("Recorder running".into(), false, "Not recording - press Restart recorder, then try again".into()));
+            return r;
+        }
+        r.push(("Recorder running".into(), true, match mode.as_str() {
+            "gpu" => "Zero-copy GPU capture".into(),
+            m => format!("CPU fallback ({m}) - works, but costs more performance"),
+        }));
+        log_line("selftest: recording 6 s");
+        std::thread::sleep(Duration::from_secs(6));
+        let out = std::env::temp_dir().join("clipper_selftest.mp4");
+        let _ = fs::remove_file(&out);
+        if let Err(e) = self.save_to(Some(5), Some(out.clone())) {
+            r.push(("Save a clip".into(), false, e));
+            return r;
+        }
+        r.push(("Save a clip".into(), true, format!("{:.1} MB for ~5 s", fs::metadata(&out).map(|m| m.len()).unwrap_or(0) as f64 / 1e6)));
+        // video
+        let probe = hidden("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,avg_frame_rate:format=duration", "-of", "default=nw=1"])
+            .arg(&out).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let get = |k: &str| probe.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").to_string();
+        let fps = { let f = get("avg_frame_rate"); let mut it = f.split('/'); let a: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0); let b: f64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(1.0); if b > 0.0 { a / b } else { 0.0 } };
+        let dur: f64 = get("duration").parse().unwrap_or(0.0);
+        let vok = !get("codec_name").is_empty() && dur >= 3.0;
+        r.push(("Video".into(), vok, if vok {
+            format!("{} {}x{} · {:.0} FPS (set: {}) · {:.1} s", get("codec_name").to_uppercase(), get("width"), get("height"), fps, cfg.fps, dur)
+        } else { "No usable video in the test clip - see the log".into() }));
+        if vok && fps > 0.0 && fps < cfg.fps as f64 * 0.85 {
+            r.push(("Frame rate".into(), false, format!("Only {fps:.0} of {} FPS - try a lower resolution / FPS, or the GPU is very busy", cfg.fps)));
+        }
+        // a nearly black picture usually means the capture shows nothing (e.g. protected content / wrong monitor)
+        let luma = ffmpeg().args(["-hide_banner", "-nostats", "-i"]).arg(&out)
+            .args(["-vf", "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-frames:v", "30", "-f", "null", "-"])
+            .output().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+        let ys: Vec<f64> = luma.lines().filter_map(|l| l.split("YAVG=").nth(1).and_then(|v| v.trim().parse().ok())).collect();
+        if !ys.is_empty() {
+            let avg = ys.iter().sum::<f64>() / ys.len() as f64;
+            r.push(("Picture".into(), avg > 18.0, if avg > 18.0 { "Not black".into() } else { "The picture is (almost) black - wrong monitor, or the screen was dark".into() }));
+        }
+        // audio tracks
+        let names = ["Mix (what players hear)", "All desktop sound", "Microphone", "Game", "Discord", "Browsers"];
+        let n = self.audio_tracks(&out.to_string_lossy());
+        let want = if cfg.app_tracks { 6 } else { 3 };
+        r.push(("Audio tracks".into(), n as usize == want, format!("{n} of {want}")));
+        for t in 0..n.min(6) {
+            let o = ffmpeg().args(["-hide_banner", "-nostats", "-i"]).arg(&out)
+                .args(["-map", &format!("0:a:{t}"), "-af", "volumedetect", "-f", "null", "-"])
+                .output().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
+            let max: f64 = o.lines().find_map(|l| l.split("max_volume:").nth(1)).and_then(|v| v.trim().trim_end_matches("dB").trim().parse().ok()).unwrap_or(-91.0);
+            let silent = max <= -60.0;
+            let name = names[t as usize];
+            // apps that aren't running are silent on purpose; desktop + mic should have sound if they're on
+            let expect = match t { 1 => cfg.desktop_audio, 2 => cfg.mic && !MIC_MUTED.load(Ordering::Relaxed) && !PTT_ON.load(Ordering::Relaxed), 0 => cfg.desktop_audio || cfg.mic, _ => false };
+            let detail = if silent {
+                match t {
+                    1 => "Silent - play some sound while testing".to_string(),
+                    2 => "Silent - say something while testing (or check the mic device)".to_string(),
+                    0 => "Silent".to_string(),
+                    _ => "Silent (fine if that app isn't running / playing)".to_string(),
+                }
+            } else { format!("Sound (peak {max:.0} dB)") };
+            r.push((format!("Audio: {name}"), !(silent && expect), detail));
+        }
+        let _ = fs::remove_file(&out);
+        log_line(&format!("selftest: {}", r.iter().map(|(a, ok, b)| format!("{a}={}{}", if *ok { "ok" } else { "FAIL " }, if *ok { String::new() } else { b.clone() })).collect::<Vec<_>>().join(", ")));
+        r
+    }
+
+    fn thumbs_dir(&self) -> PathBuf {
+        self.clips_dir().join(".thumbs")
+    }
+
+    /// Cached preview image + duration for `clip`, generated with ffmpeg/ffprobe if missing.
+    pub fn thumb(&self, clip: &str) -> Result<Thumb, String> {
+        let clip = PathBuf::from(clip);
+        let dir = self.thumbs_dir();
+        fs::create_dir_all(&dir).map_err(err)?;
+        let stem = clip.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let img = dir.join(format!("{stem}.jpg"));
+        let dur_file = dir.join(format!("{stem}.dur"));
+        if !img.exists() {
+            let _ = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i"])
+                .arg(&clip)
+                .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
+                .arg(&img)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let duration = match fs::read_to_string(&dur_file).ok().and_then(|s| s.trim().parse().ok()) {
+            Some(d) => d,
+            None => {
+                let out = hidden("ffprobe")
+                    .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+                    .arg(&clip)
+                    .output()
+                    .map_err(err)?;
+                let d: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0);
+                if d > 0.0 {
+                    let _ = fs::write(&dur_file, d.to_string());
+                }
+                d
+            }
+        };
+        Ok(Thumb { thumb: img.to_string_lossy().into(), duration })
+    }
+
+    /// Top level of the clips folder plus its clip sub-folders (per game / custom).
+    fn clip_dirs(&self) -> Vec<(String, PathBuf)> {
+        let root = self.clips_dir();
+        let mut v = vec![(String::new(), root.clone())];
+        // folders and sub-folders ("FiveM/Staff evidence"), a few levels deep
+        fn walk(dir: &Path, rel: &str, depth: u32, v: &mut Vec<(String, PathBuf)>) {
+            if depth > 5 {
+                return;
+            }
+            if let Ok(rd) = fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if !p.is_dir() || n.starts_with('.') || (rel.is_empty() && RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(&n))) {
+                        continue;
+                    }
+                    let r = if rel.is_empty() { n } else { format!("{rel}/{n}") };
+                    v.push((r.clone(), p.clone()));
+                    walk(&p, &r, depth + 1, v);
+                }
+            }
+        }
+        walk(&root, "", 1, &mut v);
+        v
+    }
+
+    /// All clip folders (also empty ones you made), as "Folder/Sub folder" paths.
+    pub fn list_folders(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.clip_dirs().into_iter().map(|(f, _)| f).filter(|f| !f.is_empty()).collect();
+        v.sort_by_key(|f| f.to_lowercase());
+        v
+    }
+
+    /// Make an (empty) folder; `name` may be "Parent/Child". A hidden marker keeps it when its last clip moves out.
+    pub fn create_folder(&self, name: &str) -> Result<String, String> {
+        let rel = clean_folder(name);
+        if rel.is_empty() {
+            return Err("type a folder name".into());
+        }
+        if folder_reserved(&rel) {
+            return Err("that folder name is reserved".into());
+        }
+        let dir = self.clips_dir().join(&rel);
+        if dir.is_dir() {
+            return Err("that folder already exists".into());
+        }
+        fs::create_dir_all(&dir).map_err(err)?;
+        let _ = fs::write(dir.join(".echo-folder"), "");
+        log_line(&format!("folders: made '{rel}'"));
+        Ok(rel)
+    }
+
+    /// Remove a folder that has no clips (sub-folders without clips go too).
+    pub fn delete_folder(&self, name: &str) -> Result<(), String> {
+        let rel = clean_folder(name);
+        if rel.is_empty() {
+            return Err("pick a folder".into());
+        }
+        let dir = self.clips_dir().join(&rel);
+        fn has_files(d: &Path) -> bool {
+            fs::read_dir(d).map(|rd| rd.flatten().any(|e| {
+                let p = e.path();
+                if p.is_dir() { has_files(&p) } else { e.file_name() != ".echo-folder" }
+            })).unwrap_or(false)
+        }
+        if has_files(&dir) {
+            return Err("move or delete the clips in it first".into());
+        }
+        fs::remove_dir_all(&dir).map_err(err)?;
+        log_line(&format!("folders: removed '{rel}'"));
+        Ok(())
+    }
+
+    /// Is this file a clip in the clips folder or one of its clip sub-folders?
+    fn is_clip(&self, p: &Path) -> bool {
+        let Some(parent) = p.parent() else { return false };
+        let root = self.clips_dir();
+        let Ok(rel) = parent.strip_prefix(&root) else { return false };
+        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect();
+        parts.len() <= 6
+            && parts.iter().all(|n| !n.is_empty() && !n.starts_with('.') && n != "..")
+            && parts.first().map_or(true, |n| !RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(n)))
+    }
+
+    /// Move a clip into `folder` ("" = top level). Returns the new path.
+    pub fn move_clip(&self, path: &str, folder: &str) -> Result<String, String> {
+        let p = PathBuf::from(path);
+        if !self.is_clip(&p) {
+            return Err("not a Clipper clip".into());
+        }
+        let folder = clean_folder(folder);
+        if folder_reserved(&folder) {
+            return Err("that folder name is reserved".into());
+        }
+        let dir = if folder.is_empty() { self.clips_dir() } else { self.clips_dir().join(&folder) };
+        if p.parent() == Some(dir.as_path()) {
+            return Ok(path.into());
+        }
+        fs::create_dir_all(&dir).map_err(err)?;
+        let new = dir.join(p.file_name().ok_or("bad clip path")?);
+        if new.exists() {
+            return Err(format!("{} already has a clip with that name", if folder.is_empty() { "The main folder" } else { &folder }));
+        }
+        let old_rel = self.rel_of(path);
+        fs::rename(&p, &new).map_err(err)?;
+        self.remove_if_empty(p.parent());
+        if let (Some(o), Some(n)) = (old_rel, self.rel_of(&new.to_string_lossy())) {
+            self.cloud_follow_move(o, n);
+        }
+        Ok(new.to_string_lossy().into())
+    }
+
+    /// Rename a clip folder; if `new` already exists the two are merged ("" = merge into the main folder).
+    /// Future clips of that game follow (settings.folder_alias).
+    pub fn rename_folder(&self, old: &str, new: &str) -> Result<String, String> {
+        let (old, new) = (clean_folder(old), clean_folder(new));
+        if old.is_empty() {
+            return Err("pick a folder".into());
+        }
+        if folder_reserved(&new) || folder_reserved(&old) {
+            return Err("that folder name is reserved".into());
+        }
+        if new.to_lowercase().starts_with(&format!("{}/", old.to_lowercase())) {
+            return Err("a folder can't go inside itself".into());
+        }
+        let root = self.clips_dir();
+        let src = root.join(&old);
+        if !src.is_dir() {
+            return Err("that game has no folder yet".into());
+        }
+        let dst = if new.is_empty() { root.clone() } else { root.join(&new) };
+        let same_dir = !new.is_empty() && new.eq_ignore_ascii_case(&old);
+        if same_dir || !dst.exists() {
+            // plain rename (also fixes upper / lower case); sub-folders move along
+            if let Some(par) = dst.parent() {
+                let _ = fs::create_dir_all(par);
+            }
+            fs::rename(&src, &dst).map_err(err)?;
+        } else {
+            // merge: move every clip over, renaming on name clashes
+            let rd = fs::read_dir(&src).map_err(err)?;
+            for f in rd.flatten() {
+                let p = f.path();
+                if p.is_dir() {
+                    // sub-folders come along (unless the target already has one with that name)
+                    let to = dst.join(f.file_name());
+                    if !to.exists() {
+                        let _ = fs::rename(&p, &to);
+                    }
+                    continue;
+                }
+                if !p.is_file() || f.file_name() == ".echo-folder" {
+                    continue;
+                }
+                let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let ext = p.extension().map(|x| format!(".{}", x.to_string_lossy())).unwrap_or_default();
+                let mut to = dst.join(format!("{stem}{ext}"));
+                let mut k = 2;
+                while to.exists() {
+                    to = dst.join(format!("{stem} ({k}){ext}"));
+                    k += 1;
+                }
+                fs::rename(&p, &to).map_err(err)?;
+                let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                if new_stem != stem {
+                    for x in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+                        let _ = fs::rename(self.thumbs_dir().join(format!("{stem}.{x}")), self.thumbs_dir().join(format!("{new_stem}.{x}")));
+                    }
+                    let mut meta = self.meta_all();
+                    if let Some(m) = meta.remove(&stem) {
+                        meta.insert(new_stem.clone(), m);
+                        let _ = self.write_meta(&meta);
+                    }
+                    if self.favorites().contains(&stem) {
+                        let _ = self.set_favorite(&stem, false);
+                        let _ = self.set_favorite(&new_stem, true);
+                    }
+                }
+            }
+            let _ = fs::remove_file(src.join(".echo-folder"));
+            let _ = fs::remove_dir(&src);
+        }
+        // new clips of this game go to the new folder too
+        {
+            let mut c = self.cfg.lock().unwrap();
+            for v in c.folder_alias.values_mut() {
+                if v.eq_ignore_ascii_case(&old) {
+                    *v = new.clone();
+                }
+            }
+            c.folder_alias.retain(|k, _| !k.eq_ignore_ascii_case(&new) || new.is_empty());
+            c.folder_alias.insert(old.clone(), new.clone());
+            let _ = c.save();
+        }
+        // cloud copies follow (file by file, so merges work too)
+        if self.cloud_on() {
+            let lo = old.to_lowercase();
+            let moves: Vec<(String, String)> = self.cloud_state().files.iter().filter(|f| {
+                let fl = f.folder.replace('\\', "/").to_lowercase();
+                fl == lo || fl.starts_with(&format!("{lo}/"))
+            }).map(|f| {
+                let fol = f.folder.replace('\\', "/");
+                let sub = fol.get(old.len()..).unwrap_or("").trim_start_matches('/').to_string();
+                let file = Path::new(&f.rel).file_name().unwrap_or_default().to_string_lossy().to_string();
+                let nf = [new.as_str(), sub.as_str()].iter().filter(|x| !x.is_empty()).cloned().collect::<Vec<_>>().join("/");
+                (f.rel.clone(), if nf.is_empty() { file } else { format!("{nf}/{file}") })
+            }).collect();
+            for (o, n) in moves {
+                self.cloud_follow_move(o, n);
+            }
+        }
+        log_line(&format!("folders: '{old}' -> '{}'", if new.is_empty() { "main folder" } else { &new }));
+        Ok(new)
+    }
+
+    fn remove_if_empty(&self, dir: Option<&Path>) {
+        if let Some(d) = dir {
+            if d != self.clips_dir() {
+                let _ = fs::remove_dir(d); // only succeeds when empty
+            }
+        }
+    }
+
+    /// Move older top-level clips named "<Game> 2026-..." into their game's folder. Returns how many moved.
+    /// A game named anywhere in a file name ("FiveM_2026…", "Valorant clip 3", "GTA V - Moments"), from the
+    /// games Echo knows (seen, folders, rules) plus common names. Longest match wins.
+    fn guess_game(&self, name: &str) -> Option<String> {
+        let norm = |s: &str| format!(" {} ", s.to_lowercase().chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>()
+            .split_whitespace().collect::<Vec<_>>().join(" "));
+        const HINTS: &[(&str, &str)] = &[
+            ("fivem", "FiveM"), ("grand theft auto v", "GTA V"), ("gta v", "GTA V"), ("gtav", "GTA V"), ("gta5", "GTA V"),
+            ("valorant", "Valorant"), ("counter strike 2", "Counter-Strike 2"), ("cs2", "Counter-Strike 2"), ("fortnite", "Fortnite"),
+            ("apex legends", "Apex Legends"), ("rocket league", "Rocket League"), ("league of legends", "League of Legends"),
+            ("overwatch", "Overwatch 2"), ("minecraft", "Minecraft"), ("roblox", "Roblox"), ("call of duty", "Call of Duty"),
+            ("warzone", "Call of Duty"), ("rainbow six", "Rainbow Six Siege"), ("pubg", "PUBG"), ("dota 2", "Dota 2"),
+            ("marvel rivals", "Marvel Rivals"), ("helldivers 2", "Helldivers 2"), ("tarkov", "Escape from Tarkov"),
+            ("elden ring", "Elden Ring"), ("destiny 2", "Destiny 2"), ("red dead redemption 2", "Red Dead Redemption 2"),
+        ];
+        let n = norm(name);
+        // names without spaces too ("MedalTVGrandTheftAutoVFiveM2026…"): compare with spaces removed, for names of 5+ letters
+        let compact = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+        let nc = compact(name);
+        let not = self.settings().not_games;
+        let mut cands: Vec<(String, String, bool)> = self.list_games().into_iter().map(|g| (norm(&g.name), g.name, true)).collect();
+        cands.extend(HINTS.iter().map(|(k, v)| (norm(k), v.to_string(), false)));
+        cands.into_iter()
+            .filter(|(k, v, _)| k.trim().len() >= 3 && k.trim() != n.trim() && !v.eq_ignore_ascii_case("echo")
+                && !["exported clips", "shared clips", "clips", "videos", "highlights", "exports", "screenshots", "gifs", "audio", "sounds"].contains(&v.to_lowercase().as_str())
+                && !not.iter().any(|x| x.eq_ignore_ascii_case(v)))
+            .filter_map(|(k, v, known)| {
+                let word = n.contains(k.as_str());
+                let kc = compact(&k);
+                (word || (kc.len() >= 5 && nc.contains(&kc))).then(|| (known, word, k.len(), v))
+            })
+            // games Echo already knows beat built-in names, whole words beat glued-together text, then the longest
+            .max_by_key(|(known, word, len, _)| (*known, *word, *len))
+            .map(|(_, _, _, v)| v)
+    }
+
+    /// The Echo watermark ("Echo / By Kimbo", bottom-right) as filtergraph text: video [inl] of height `h` -> [outl]. None = off.
+    /// Every re-encode ends in plain BT.709 TV-range yuv420p. Without it ffmpeg 8 sometimes wrote the
+    /// watermarked Discord copies as full-range "gbr" video, which Discord / browsers show far too dark.
+    fn watermark_graph(&self, inl: &str, outl: &str, h: u32) -> Option<String> {
+        // animated (APNG, 1 s): the logo animates in, then the last frame stays for the rest of the video
+        const KIMBO: &[u8] = include_bytes!("watermark.apng");
+        const ECHO: &[u8] = include_bytes!("watermark_echo.apng");
+        let (png, file) = match self.settings().watermark_style.as_str() {
+            "off" => return None,
+            "echo" => (ECHO, "watermark_echo.apng"),
+            _ => (KIMBO, "watermark.apng"),
+        };
+        let p = app_dir().join(file);
+        if fs::metadata(&p).map(|m| m.len()).ok() != Some(png.len() as u64) {
+            fs::create_dir_all(app_dir()).ok()?;
+            fs::write(&p, png).ok()?;
+        }
+        let wh = ((h as f64 * 0.075).round() as u32).max(20);
+        let m = ((h as f64 * 0.025).round() as u32).max(6);
+        Some(format!("movie='{}':f=apng,format=rgba,scale=-1:{wh}[wmk{outl}];[{inl}][wmk{outl}]overlay=W-w-{m}:H-h-{m}:format=yuv420,{TV_YUV}[{outl}]", ff_path(&p)))
+    }
+
+    /// Half-written files left by a crash or a closed app (imports, saves, shrinks, trims) older than an hour.
+    pub fn remove_stale_tmp(&self) {
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        for (_, dir) in self.clip_dirs() {
+            for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                if [".importing.tmp", ".saving.tmp", ".compress.tmp", ".trimming.tmp", ".giftmp"].iter().any(|x| n.ends_with(x))
+                    && modified(&e.path()).map_or(false, |t| t < old) && fs::remove_file(e.path()).is_ok() {
+                    log_line(&format!("cleanup: removed leftover {n}"));
+                }
+            }
+        }
+    }
+
+    /// Moves clips whose name contains a game (main folder and catch-all folders like "Exported Clips") into that game's folder.
+    pub fn sort_into_folders(&self) -> u32 {
+        let mut n = 0;
+        const LOOSE: &[&str] = &["", "exported clips", "shared clips", "clips", "videos", "highlights", "exports"];
+        for c in self.list_clips().into_iter().filter(|c| LOOSE.contains(&c.folder.to_lowercase().as_str())) {
+            let game = game_of_name(&c.name).or_else(|| self.guess_game(&c.name));
+            if let Some(g) = game.map(|g| self.settings().game_folder(&g)).filter(|g| !g.is_empty() && !g.eq_ignore_ascii_case(&c.folder)) {
+                if self.move_clip(&c.path, &g).is_ok() {
+                    n += 1;
+                }
+            }
+        }
+        log_line(&format!("folders: sorted {n} clips into game folders"));
+        n
+    }
+
+    pub fn pause_reason(&self) -> String {
+        self.pause_reason.lock().unwrap().clone()
+    }
+    pub fn set_pause(&self, r: &str) {
+        *self.pause_reason.lock().unwrap() = r.into();
+        self.idle_paused.store(r == "idle", Ordering::Relaxed);
+    }
+    /// start()/stop() running right now
+    pub fn busy(&self) -> bool {
+        self.life.try_lock().is_err()
+    }
+
+    /// Known games (seen while recording, clip folders, rules) with icons.
+    pub fn list_games(&self) -> Vec<GameInfo> {
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        names.extend(seen.keys().cloned());
+        names.extend(self.clip_dirs().into_iter().map(|d| d.0).filter(|n| !n.is_empty()));
+        names.extend(self.settings().games.iter().map(|g| g.name.clone()));
+        let not = self.settings().not_games;
+        names.retain(|n| !not.iter().any(|x| x.eq_ignore_ascii_case(n)));
+        names.into_iter().map(|name| {
+            let icon = fs::read(app_dir().join("icons").join(format!("{}.png", safe_name(&name))))
+                .map(|d| format!("data:image/png;base64,{}", b64(&d))).unwrap_or_default();
+            GameInfo { name, icon }
+        }).collect()
+    }
+
+    /// Removes a wrongly detected "game" from the list (its clips stay where they are).
+    /// `never` = also never treat it as a game again (clip names, game folders, Game audio track).
+    pub fn forget_game(&self, name: &str, never: bool) {
+        let path = app_dir().join("games.json");
+        let mut seen: std::collections::BTreeMap<String, String> = fs::read_to_string(&path).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        seen.retain(|k, _| !k.eq_ignore_ascii_case(name));
+        let _ = fs::write(&path, serde_json::to_string(&seen).unwrap_or_default());
+        let _ = fs::remove_file(app_dir().join("icons").join(format!("{}.png", safe_name(name))));
+        let mut c = self.cfg.lock().unwrap();
+        c.games.retain(|g| !g.name.eq_ignore_ascii_case(name));
+        c.not_games.retain(|g| !g.eq_ignore_ascii_case(name));
+        if never {
+            c.not_games.push(name.to_string());
+        }
+        let _ = c.save();
+        set_mixer(&c);
+        log_line(&format!("games: removed '{name}'{}", if never { " (never a game)" } else { "" }));
+    }
+
+    /// Seconds into the long recording (None = not recording one).
+    pub fn session_secs(&self) -> Option<u64> {
+        self.session.lock().unwrap().as_ref().map(|s| s.started.elapsed().as_secs())
+    }
+
+    /// Start a long (full-session) recording: finished buffer segments are copied aside until stop_session().
+    pub fn start_session(&self) -> Result<(), String> {
+        let mut g = self.session.lock().unwrap();
+        if g.is_some() {
+            return Err("already recording".into());
+        }
+        if !self.is_recording() {
+            return Err("the recorder isn't running".into());
+        }
+        let dir = self.clips_dir().join(".session");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(err)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (st, d, buf) = (stop.clone(), dir.clone(), self.buf_dir.clone());
+        let since = SystemTime::now() - Duration::from_secs(SEG as u64);
+        let worker = std::thread::spawn(move || {
+            let mut last = since;
+            let mut n = 0u32;
+            loop {
+                let done = st.load(Ordering::Relaxed);
+                if done {
+                    std::thread::sleep(Duration::from_millis(SEG as u64 * 1000 + 500)); // let the current segment finish
+                }
+                let mut segs: Vec<(SystemTime, PathBuf)> = fs::read_dir(&buf).map(|rd| rd.flatten().map(|e| e.path())
+                    .filter(|p| p.extension().map_or(false, |x| x == "ts"))
+                    .filter_map(|p| modified(&p).map(|t| (t, p))).collect()).unwrap_or_default();
+                segs.sort();
+                if !done {
+                    segs.pop(); // newest is still being written
+                }
+                let from = last;
+                for (t, p) in segs.into_iter().filter(|(t, _)| *t > from) {
+                    if fs::copy(&p, d.join(format!("{n:06}.ts"))).is_ok() {
+                        n += 1;
+                    }
+                    last = t;
+                }
+                if done {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(700));
+            }
+        });
+        *g = Some(Session { dir, started: Instant::now(), stop, worker: Some(worker) });
+        log_line("session: manual recording started");
+        Ok(())
+    }
+
+    /// Stop the long recording and join it into one clip. Returns the clip path.
+    pub fn stop_session(&self) -> Result<String, String> {
+        let mut s = self.session.lock().unwrap().take().ok_or("not recording")?;
+        s.stop.store(true, Ordering::Relaxed);
+        if let Some(w) = s.worker.take() {
+            let _ = w.join();
+        }
+        let mut parts: Vec<PathBuf> = fs::read_dir(&s.dir).map_err(err)?.flatten().map(|e| e.path()).collect();
+        parts.sort();
+        if parts.is_empty() {
+            let _ = fs::remove_dir_all(&s.dir);
+            return Err("nothing was recorded".into());
+        }
+        let cfg = self.settings();
+        let game = detect_game();
+        let prefix = if cfg.name_by_game { game.clone() } else { None }.unwrap_or_else(|| "Recording".into());
+        let dir = match game.map(|g| cfg.game_folder(&g)).filter(|g| !g.is_empty() && cfg.game_folders && cfg.game_rule(g).folder && !RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(g))) {
+            Some(g) => self.clips_dir().join(g.trim_end_matches('.')),
+            None => self.clips_dir(),
+        };
+        fs::create_dir_all(&dir).map_err(err)?;
+        let out = dir.join(format!("{prefix} {}.mp4", chrono::Local::now().format("%Y-%m-%d %H-%M-%S")));
+        let list: Vec<(SystemTime, PathBuf)> = parts.into_iter().map(|p| (SystemTime::UNIX_EPOCH, p)).collect();
+        let tmp = out.with_extension("saving.tmp");
+        let ok = self.join(&list, &tmp)? && fs::rename(&tmp, &out).is_ok();
+        let _ = fs::remove_dir_all(&s.dir);
+        if !ok {
+            return Err("ffmpeg failed to save the recording".into());
+        }
+        let out = out.to_string_lossy().to_string();
+        log_line(&format!("session: {} min -> {out}", s.started.elapsed().as_secs() / 60));
+        let _ = self.thumb(&out);
+        Ok(out)
+    }
+
+    /// Upload a clip to the user's Cloudflare R2 bucket (via rclone) and return its public link.
+    pub fn share_clip(&self, path: &str) -> Result<String, String> {
+        let cfg = self.settings();
+        if cfg.r2_account.trim().is_empty() || cfg.r2_key.trim().is_empty() || cfg.r2_secret.trim().is_empty()
+            || cfg.r2_bucket.trim().is_empty() || cfg.r2_url.trim().is_empty() {
+            return Err("Set up sharing first: Settings > Sharing".into());
+        }
+        let src = PathBuf::from(path);
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let db = self.thumbs_dir().join("shared.json");
+        let mut m: std::collections::BTreeMap<String, String> = fs::read_to_string(&db).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let size = fs::metadata(&src).map_err(err)?.len();
+        let key = format!("{stem}|{size}");
+        if let Some(u) = m.get(&key) {
+            return Ok(u.clone());
+        }
+        let rclone = ensure_rclone()?;
+        let tag = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() % 1_000_000).unwrap_or(0);
+        let object: String = format!("{}-{tag}.mp4", safe_name(&stem).replace("__", "_"));
+        let t0 = Instant::now();
+        let o = hidden(&rclone.to_string_lossy())
+            .args(["copyto", "--s3-no-check-bucket"]).arg(&src).arg(format!("clipr2:{}/{object}", cfg.r2_bucket.trim()))
+            .env("RCLONE_CONFIG_CLIPR2_TYPE", "s3")
+            .env("RCLONE_CONFIG_CLIPR2_PROVIDER", "Cloudflare")
+            .env("RCLONE_CONFIG_CLIPR2_REGION", "auto")
+            .env("RCLONE_CONFIG_CLIPR2_ACCESS_KEY_ID", cfg.r2_key.trim())
+            .env("RCLONE_CONFIG_CLIPR2_SECRET_ACCESS_KEY", cfg.r2_secret.trim())
+            .env("RCLONE_CONFIG_CLIPR2_ENDPOINT", format!("https://{}.r2.cloudflarestorage.com", cfg.r2_account.trim()))
+            .output().map_err(err)?;
+        if !o.status.success() {
+            let e = String::from_utf8_lossy(&o.stderr).to_string();
+            log_line(&format!("share: upload failed: {}", e.trim().lines().last().unwrap_or("")));
+            return Err(format!("Upload failed: {}", e.trim().lines().last().unwrap_or("see log")));
+        }
+        let url = format!("{}/{object}", cfg.r2_url.trim().trim_end_matches('/'));
+        log_line(&format!("share: {} MB in {:.1}s -> {url}", size / 1_000_000, t0.elapsed().as_secs_f32()));
+        m.insert(key, url.clone());
+        let _ = fs::create_dir_all(self.thumbs_dir());
+        let _ = fs::write(&db, serde_json::to_string_pretty(&m).unwrap_or_default());
+        Ok(url)
+    }
+
+    /// Names of clips that were shared (for the cloud badge).
+    pub fn shared_clips(&self) -> Vec<String> {
+        let m: std::collections::BTreeMap<String, String> = fs::read_to_string(self.thumbs_dir().join("shared.json")).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        m.keys().filter_map(|k| k.split('|').next().map(String::from)).collect()
+    }
+
+    pub fn list_clips(&self) -> Vec<ClipInfo> {
+        let mut v: Vec<ClipInfo> = self.clip_dirs().into_iter().flat_map(|(folder, dir)| fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("mp4")))
+                    .filter_map(|p| {
+                        let m = fs::metadata(&p).ok()?;
+                        Some(ClipInfo {
+                            name: p.file_stem()?.to_string_lossy().into(),
+                            folder: folder.clone(),
+                            path: p.to_string_lossy().into(),
+                            size: m.len(),
+                            modified: m.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()).collect();
+        v.sort_by(|a, b| b.modified.cmp(&a.modified));
+        v
+    }
+
+    /// Editor project of an exported video (what it was made from + every edit), so it can be edited again.
+    pub fn save_project(&self, clip: &str, data: &str) -> Result<(), String> {
+        let stem = Path::new(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
+        fs::write(self.thumbs_dir().join(format!("{stem}.project.json")), data).map_err(err)
+    }
+    pub fn load_project(&self, clip: &str) -> Option<String> {
+        let stem = Path::new(clip).file_stem()?.to_string_lossy().to_string();
+        fs::read_to_string(self.thumbs_dir().join(format!("{stem}.project.json"))).ok()
+    }
+    /// (width, height, has sound, seconds) of any video / sound file
+    pub fn probe_media(&self, path: &str) -> (u32, u32, bool, f64) {
+        let (w, h, a) = self.probe(Path::new(path));
+        let d = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(path)
+            .output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok()).unwrap_or(0.0);
+        (w, h, a, d)
+    }
+
+    /// Bookmarks (seconds into the clip) saved next to its thumbnail.
+    pub fn write_marks(&self, clip: &str, marks: &[f64]) {
+        if let Some(stem) = Path::new(clip).file_stem() {
+            let _ = fs::create_dir_all(self.thumbs_dir());
+            let _ = fs::write(self.thumbs_dir().join(format!("{}.marks.json", stem.to_string_lossy())), serde_json::to_string(marks).unwrap_or_default());
+        }
+    }
+    pub fn marks(&self, clip: &str) -> Vec<f64> {
+        Path::new(clip).file_stem()
+            .and_then(|s| fs::read_to_string(self.thumbs_dir().join(format!("{}.marks.json", s.to_string_lossy()))).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Screenshots (<clips>/Screenshots/*.png|jpg), newest first.
+    pub fn list_shots(&self) -> Vec<ClipInfo> {
+        let mut v: Vec<ClipInfo> = fs::read_dir(self.clips_dir().join("Screenshots"))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("png") || x.eq_ignore_ascii_case("jpg")))
+                    .filter_map(|p| {
+                        let m = fs::metadata(&p).ok()?;
+                        Some(ClipInfo {
+                            name: p.file_stem()?.to_string_lossy().into(),
+                            folder: String::new(),
+                            path: p.to_string_lossy().into(),
+                            size: m.len(),
+                            modified: m.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by(|a, b| b.modified.cmp(&a.modified));
+        v
+    }
+
+    /// Delete a clip (to the Recycle Bin) and its cached preview.
+    pub fn delete_clip(&self, path: &str) -> Result<(), String> {
+        let p = PathBuf::from(path);
+        let shot = p.parent() == Some(self.clips_dir().join("Screenshots").as_path());
+        if !self.is_clip(&p) && !shot {
+            return Err("not a Clipper clip".into());
+        }
+        #[cfg(windows)]
+        {
+            let mut ok = crate::winutil::recycle(path);
+            if !ok {
+                // usually a thumbnail / filmstrip / audio scan of ours still has the file open: stop those
+                // helpers (never the recorder itself) and retry
+                let keep: Vec<u32> = self.child.lock().unwrap().as_ref().map(|c| c.id()).into_iter().collect();
+                crate::winutil::kill_children(&["ffmpeg.exe", "ffprobe.exe"], &keep);
+                std::thread::sleep(Duration::from_millis(500));
+                ok = crate::winutil::recycle(path);
+            }
+            if !ok {
+                return Err("Couldn't delete - the clip is open somewhere else (close the player / editor and try again)".into());
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // to the Trash (KDE / freedesktop), plain delete if gio is missing
+            let ok = Command::new("gio").arg("trash").arg(&p).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+            if !ok { fs::remove_file(&p).map_err(err)?; }
+        }
+        if !shot {
+            self.remove_if_empty(p.parent());
+        }
+        if let Some(stem) = p.file_stem().filter(|_| !shot) {
+            let stem = stem.to_string_lossy();
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.jpg")));
+            let _ = self.set_favorite(&stem, false);
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.dur")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
+            for t in 0..6 {
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.a{t}.m4a")));
+            }
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.levels.json")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.marks.json")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.words.json")));
+            let mut meta = self.meta_all();
+            if meta.remove(stem.as_ref()).is_some() {
+                let _ = self.write_meta(&meta);
+            }
+            // shrunk Discord copies
+            if let (Some(name), Ok(rd)) = (p.file_name(), fs::read_dir(self.thumbs_dir().join("discord"))) {
+                for d in rd.flatten() {
+                    let _ = fs::remove_file(d.path().join(name));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rename a clip (and its cached preview). Returns the new path.
+    pub fn rename_clip(&self, path: &str, name: &str) -> Result<String, String> {
+        let name: String = name.trim().chars().filter(|c| !r#"\/:*?"<>|"#.contains(*c)).collect();
+        if name.is_empty() {
+            return Err("empty name".into());
+        }
+        let p = PathBuf::from(path);
+        let new = p.with_file_name(format!("{name}.mp4"));
+        if new.exists() {
+            return Err("a clip with that name already exists".into());
+        }
+        let old_rel = self.rel_of(path);
+        fs::rename(&p, &new).map_err(err)?;
+        if let (Some(o), Some(n)) = (old_rel, self.rel_of(&new.to_string_lossy())) {
+            self.cloud_follow_move(o, n);
+        }
+        if let Some(old) = p.file_stem() {
+            let old = old.to_string_lossy();
+            if self.favorites().iter().any(|x| x == old.as_ref()) {
+                let _ = self.set_favorite(&old, false);
+                let _ = self.set_favorite(&name, true);
+            }
+            let mut meta = self.meta_all();
+            if let Some(m) = meta.remove(old.as_ref()) {
+                meta.insert(name.clone(), m);
+                let _ = self.write_meta(&meta);
+            }
+            for ext in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+                let _ = fs::rename(self.thumbs_dir().join(format!("{old}.{ext}")), self.thumbs_dir().join(format!("{name}.{ext}")));
+            }
+        }
+        Ok(new.to_string_lossy().into())
+    }
+
+    /// Cut `start..end` (seconds) out of a clip.
+    /// fast: stream copy (instant, snaps to the keyframe before `start`, every 2s).
+    /// exact: re-encode (AMF, falls back to x264) for frame-accurate cuts.
+    /// replace: overwrite the original instead of saving "<name> (trim).mp4".
+    /// Re-encode a clip so it fits in `target_mb` megabytes (Discord upload limits). Returns the file to copy:
+    /// the original when it already fits, otherwise a cached copy with the same name in .thumbs/discord/<mb>/.
+    pub fn shrink_clip(&self, path: &str, target_mb: f64, progress: &dyn Fn(f64)) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        let limit = (target_mb * 1_000_000.0) as u64;
+        let src_meta = fs::metadata(&src).map_err(err)?;
+        if src_meta.len() <= limit {
+            return Ok(path.into());
+        }
+        let name = src.file_name().ok_or("bad clip path")?.to_owned();
+        let dir = self.thumbs_dir().join("discord").join(format!("{}", target_mb.round() as u64));
+        fs::create_dir_all(&dir).map_err(err)?;
+        let out = dir.join(&name);
+        if let (Ok(m), Ok(sm)) = (fs::metadata(&out), src_meta.modified()) {
+            // older copies could have broken (too dark) colours: only reuse ones tagged BT.709
+            let colours_ok = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
+                .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
+            if m.len() > 0 && m.len() <= limit && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+                return Ok(out.to_string_lossy().into());   // made earlier
+            }
+        }
+        let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+        if dur <= 0.0 {
+            return Err("could not read the clip length".into());
+        }
+        let (_w, h, audio) = self.probe(&src);
+        let tmp = dir.join("shrinking.tmp");
+        let t0 = Instant::now();
+        let mut factor = 0.92;
+        for attempt in 0..3 {
+            let total = limit as f64 * 8.0 / 1000.0 / dur * factor;   // kbit/s for everything
+            let a_kbps = if !audio { 0.0 } else if total > 3000.0 { 160.0 } else if total > 800.0 { 96.0 } else { 64.0 };
+            let v_kbps = total - a_kbps;
+            if v_kbps < 120.0 {
+                return Err(format!("this clip is too long to fit in {} MB - trim it first", target_mb));
+            }
+            // lower resolution / fps when the bitrate is low, so it stays sharp instead of blocky
+            let th = if v_kbps >= 8000.0 { h } else if v_kbps >= 4000.0 { 1080 } else if v_kbps >= 1800.0 { 720 } else if v_kbps >= 800.0 { 540 } else { 360 }.min(h);
+            let mut vf: Vec<String> = Vec::new();
+            if th < h { vf.push(format!("scale=-2:{th}")); }
+            if v_kbps < 1800.0 { vf.push("fps=30".into()); }
+            vf.push(TV_YUV.into());
+            let b = format!("{}k", v_kbps as u64);
+            let buf = format!("{}k", (v_kbps * 2.0) as u64);
+            let ab = format!("{}k", a_kbps as u64);
+            let run = |venc: &[&str]| -> Result<bool, String> {
+                let mut c = ffmpeg();
+                c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
+                match self.watermark_graph("v0", "out", th) {
+                    Some(w) => { c.args(["-vf", &format!("[in]{}[v0];{w}", if vf.is_empty() { "null".to_string() } else { vf.join(",") })]); }
+                    None => if !vf.is_empty() { c.args(["-vf", &vf.join(",")]); },
+                }
+                c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
+                if audio { c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]); }
+                let mut child = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp)
+                    .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(err)?;
+                // ffmpeg reports "out_time_us=<microseconds>" while encoding
+                if let Some(out) = child.stdout.take() {
+                    use std::io::BufRead;
+                    for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                        if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                            let f = (v / 1e6 / dur).clamp(0.0, 1.0);
+                            progress((attempt as f64 + f) / (attempt as f64 + 1.0));
+                        }
+                    }
+                }
+                let st = child.wait().map_err(err)?;
+                Ok(st.success() && fs::metadata(&tmp).map_or(false, |m| m.len() > 0))
+            };
+            progress(0.0);
+            let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-rc", "cbr"])?
+                || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "cbr"])?
+                || run(&["-c:v", "h264_qsv"])?
+                || run(&["-c:v", "libx264", "-preset", "veryfast"])?;
+            if !ok {
+                let _ = fs::remove_file(&tmp);
+                return Err("ffmpeg could not shrink this clip".into());
+            }
+            let got = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
+            log_line(&format!("shrink: {} -> {:.1} MB (target {target_mb} MB, {v_kbps:.0} kbps, {th}p, try {attempt}) in {:.1}s",
+                name.to_string_lossy(), got as f64 / 1e6, t0.elapsed().as_secs_f32()));
+            if got <= limit {
+                let _ = fs::remove_file(&out);
+                fs::rename(&tmp, &out).map_err(err)?;
+                return Ok(out.to_string_lossy().into());
+            }
+            factor *= limit as f64 / got as f64 * 0.95;   // overshot: aim lower
+        }
+        let _ = fs::remove_file(&tmp);
+        Err(format!("could not get this clip under {target_mb} MB"))
+    }
+
+    /// Import videos dropped onto the window: copy (or convert) them into the clips folder as .mp4.
+    pub fn import_clips(&self, paths: &[String]) -> (Vec<String>, Vec<String>) {
+        let (mut ok, mut bad) = (Vec::new(), Vec::new());
+        let dir = self.clips_dir();
+        let _ = fs::create_dir_all(&dir);
+        for p in paths {
+            let src = PathBuf::from(p);
+            // a dropped folder (e.g. Medal's clips folder): import everything in it, game subfolders kept
+            if src.is_dir() {
+                let (o, _, b) = self.import_folder(p, |_, _, _| {});
+                ok.extend(o);
+                bad.extend(b);
+                continue;
+            }
+            let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            // sound files (.wav, .mp3…) become playable/editable clips in the "Sounds" folder
+            if is_audio_file(&src) {
+                match self.import_audio(&src) {
+                    Ok(out) => ok.push(out.to_string_lossy().to_string()),
+                    Err(e) => bad.push(format!("{name}: {e}")),
+                }
+                continue;
+            }
+            if !is_video_file(&src) {
+                bad.push(format!("{name}: not a video"));
+                continue;
+            }
+            if self.is_clip(&src) {
+                continue;
+            }
+            match self.import_one(&src, &dir) {
+                Ok(out) => ok.push(out.to_string_lossy().to_string()),
+                Err(e) => bad.push(format!("{name}: {e}")),
+            }
+        }
+        (ok, bad)
+    }
+
+    /// A sound file as a clip: its waveform as the picture (so the player, trim and editor all work on it),
+    /// saved in <clips>/Sounds. Keyframe every 0.5 s so quick trims are precise enough for short sound effects.
+    fn import_audio(&self, src: &Path) -> Result<PathBuf, String> {
+        let dir = self.clips_dir().join("Sounds");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let out = (1..).map(|n| dir.join(if n == 1 { format!("{stem}.mp4") } else { format!("{stem} ({n}).mp4") }))
+            .find(|p| !p.exists()).unwrap();
+        let pic = std::env::temp_dir().join("echo_wave.png");
+        let tmp = dir.join(format!("{stem}.importing.tmp"));
+        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
+            .args(["-filter_complex", "[0:a]aformat=channel_layouts=mono,showwavespic=s=1600x420:colors=0xa78bfa:scale=sqrt[w];color=c=0x15121f:s=1920x1080[bg];[bg][w]overlay=(W-w)/2:(H-h)/2",
+                   "-frames:v", "1"]).arg(&pic)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+        if !ok {
+            return Err("not a sound file Echo can read".into());
+        }
+        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-loop", "1", "-framerate", "30", "-i"]).arg(&pic)
+            .arg("-i").arg(src)
+            .args(["-map", "0:v", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-g", "15",
+                   "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-ac", "2", "-shortest",
+                   "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+            && fs::metadata(&tmp).map_or(false, |m| m.len() > 0);
+        let _ = fs::remove_file(&pic);
+        if !ok || fs::rename(&tmp, &out).is_err() {
+            let _ = fs::remove_file(&tmp);
+            return Err("could not convert this sound".into());
+        }
+        log_line(&format!("import: sound {} -> {}", src.display(), out.display()));
+        Ok(out)
+    }
+
+    /// Converts / copies one video into `dir` as .mp4 and keeps its original date (the library sorts by it).
+    fn import_one(&self, src: &Path, dir: &Path) -> Result<PathBuf, String> {
+        let _ = fs::create_dir_all(dir);
+        let p = src.to_string_lossy().to_string();
+        let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let mut n = 1;
+        let out = loop {
+            let f = if n == 1 { format!("{stem}.mp4") } else { format!("{stem} ({n}).mp4") };
+            let q = dir.join(f);
+            if !q.exists() { break q; }
+            n += 1;
+        };
+        let tmp = dir.join(format!("{stem}.importing.tmp"));
+        // codecs WebView2 can play without converting
+        let probe = |sel: &str| -> String {
+            hidden("ffprobe").args(["-v", "error", "-select_streams", sel, "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+                .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()).unwrap_or_default()
+        };
+        let (vc, ac) = (probe("v:0"), probe("a:0"));
+        if vc.is_empty() {
+            return Err("no video stream".into());
+        }
+        // full-range video (Medal, phones, some OBS setups): labelled "pc" or simply out of TV range.
+        // Players (Linux WebKitGTK, Discord) show those too dark, so convert them to real TV range.
+        let vinfo = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt,color_range", "-of", "csv=p=0"])
+            .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let full = vinfo.contains("pc") || vinfo.contains("yuvj") || full_range_share(src) > 0.005;
+        let copy_ok = vc == "h264" && !full && vinfo.trim().starts_with("yuv420p") && (ac.is_empty() || ac == "aac" || ac == "mp3");
+        let vf = if full { "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p".to_string() } else { TV_YUV.to_string() };
+        let run = |args: &[&str]| -> bool {
+            let reenc = !args.contains(&"copy");
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
+                .args(["-map", "0:v:0", "-map", "0:a?"]).args(args);
+            if reenc {
+                c.args(["-vf", &vf]).args(TV_TAGS);
+            }
+            let st = c.args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            st.map_or(false, |s| s.success()) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+        };
+        let aenc = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"];
+        let done = (copy_ok && run(&["-c", "copy"]))
+            || run(&[&["-c:v", "h264_amf", "-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", "22"][..], &aenc[..]].concat())
+            || run(&[&["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "22"][..], &aenc[..]].concat())
+            || run(&[&["-c:v", "h264_qsv", "-global_quality", "22"][..], &aenc[..]].concat())
+            || run(&[&["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"][..], &aenc[..]].concat());
+        if done && fs::rename(&tmp, &out).is_ok() {
+            // keep the date the clip was recorded, not the import time
+            if let (Ok(t), Ok(f)) = (fs::metadata(src).and_then(|m| m.modified()), fs::File::options().write(true).open(&out)) {
+                let _ = f.set_modified(t);
+            }
+            log_line(&format!("import: {} -> {} ({vc}/{ac}{}{})", p, out.display(), if copy_ok { ", copied" } else { "" }, if full { ", full range -> tv" } else { "" }));
+            Ok(out)
+        } else {
+            let _ = fs::remove_file(&tmp);
+            log_line(&format!("import: failed {p} ({vc}/{ac})"));
+            Err("could not convert".into())
+        }
+    }
+
+    /// Other clipping apps' folders found on this PC (Medal, SteelSeries Moments, Outplayed…) that hold videos.
+    pub fn import_sources(&self) -> Vec<ImportSource> {
+        let env = |k: &str| std::env::var(k).map(PathBuf::from).unwrap_or_default();
+        let (home, appdata, progdata) = (env("USERPROFILE"), env("APPDATA"), env("ProgramData"));
+        let vids = home.join("Videos");
+        let mut cands: Vec<(&str, PathBuf)> = vec![
+            ("Medal", PathBuf::from(r"C:\Medal")), ("Medal", PathBuf::from(r"D:\Medal")), ("Medal", PathBuf::from(r"E:\Medal")),
+            ("Medal", vids.join("Medal")), ("Medal", home.join("Medal")),
+            ("SteelSeries Moments", vids.join("SteelSeries Moments")), ("SteelSeries Moments", vids.join("SteelSeries")),
+            ("SteelSeries Moments", vids.join("Moments")), ("SteelSeries Moments", home.join("SteelSeries Moments")),
+            ("Outplayed", vids.join("Overwolf").join("Outplayed")), ("Outplayed", vids.join("Outplayed")),
+            ("Insights", vids.join("Insights Capture")),
+        ];
+        // folders the apps wrote into their own settings (covers a moved capture folder)
+        for (app, d) in [("Medal", appdata.join("Medal")), ("SteelSeries Moments", progdata.join("SteelSeries").join("GG"))] {
+            let mut found = Vec::new();
+            paths_in_settings(&d, 0, &mut found);
+            cands.extend(found.into_iter().map(|p| (app, p)));
+        }
+        let own = self.clips_dir();
+        let mut out: Vec<ImportSource> = Vec::new();
+        for (app, p) in cands {
+            let p = import_root(&p);
+            if !p.is_dir() || p.starts_with(&own) || own.starts_with(&p) {
+                continue;
+            }
+            if out.iter().any(|s| p.starts_with(&s.path) || Path::new(&s.path).starts_with(&p)) {
+                continue;
+            }
+            let mut v = Vec::new();
+            collect_videos(&p, 0, &mut v);
+            if v.is_empty() {
+                continue;
+            }
+            let bytes = v.iter().filter_map(|f| fs::metadata(f).ok()).map(|m| m.len()).sum();
+            out.push(ImportSource { app: app.into(), path: p.to_string_lossy().to_string(), count: v.len(), bytes });
+        }
+        out
+    }
+
+    /// Imports every video under `root` (copies; the originals stay). Clips in a subfolder go into the Echo folder
+    /// with that name (Medal / Moments keep one folder per game). Already imported files are skipped.
+    /// Returns (imported clips, skipped count, failures).
+    pub fn import_folder(&self, root: &str, progress: impl Fn(usize, usize, &str)) -> (Vec<String>, usize, Vec<String>) {
+        let root = import_root(Path::new(root));
+        let own = self.clips_dir();
+        let mut files = Vec::new();
+        collect_videos(&root, 0, &mut files);
+        files.retain(|f| !f.starts_with(&own));
+        // oldest first, so a half-finished import still has a sensible order
+        files.sort_by_key(|f| modified(f));
+        let list = self.thumbs_dir().join("imported.json");
+        let mut seen: std::collections::HashSet<String> = fs::read_to_string(&list).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let cfg = self.settings();
+        let (mut ok, mut skipped, mut bad) = (Vec::new(), 0usize, Vec::new());
+        let total = files.len();
+        // don't fill the disk: everything still to copy + 5 GB spare must fit
+        #[cfg(windows)]
+        {
+            let need: u64 = files.iter().filter_map(|f| fs::metadata(f).ok().map(|m| (f, m.len())))
+                .filter(|(f, n)| !seen.contains(&format!("{}|{}", f.to_string_lossy().to_lowercase(), n))).map(|(_, n)| n).sum();
+            let free = crate::winutil::disk_free(&own.to_string_lossy());
+            if free > 0 && need + 5_000_000_000 > free {
+                let gb = |b: u64| b as f64 / 1e9;
+                log_line(&format!("import: not enough space ({:.1} GB needed, {:.1} GB free)", gb(need), gb(free)));
+                bad.push(format!("Not enough space: these clips need {:.0} GB but only {:.0} GB is free on the clips drive. Free up space or pick a clips folder on a bigger drive (Settings > Clips & Storage).", gb(need), gb(free)));
+                return (ok, skipped, bad);
+            }
+        }
+        for (i, f) in files.iter().enumerate() {
+            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+            progress(i, total, &name);
+            let key = format!("{}|{}", f.to_string_lossy().to_lowercase(), fs::metadata(f).map(|m| m.len()).unwrap_or(0));
+            if seen.contains(&key) {
+                skipped += 1;
+                continue;
+            }
+            // first folder under the root = the game (Medal: Clips\<Game>\…, Moments: <Game>\…)
+            let rel = f.strip_prefix(&root).unwrap_or(f);
+            let game = rel.components().rev().skip(1).last()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .filter(|g| !["clips", "videos", "recordings", "captures", "moments", "exported clips", "exports", "exported", "highlights"].contains(&g.to_lowercase().as_str()))
+                .unwrap_or_default();
+            // settings re-read per clip: a folder renamed / merged during the import is followed
+            let c = self.settings();
+            let game = if game.is_empty() { game } else { self.guess_game(&game).unwrap_or(game) };
+            let folder = if game.is_empty() || !c.game_folders { String::new() } else { c.game_folder(&game) };
+            let dir = if folder.is_empty() { own.clone() } else { own.join(&folder) };
+            match self.import_one(f, &dir) {
+                Ok(out) => {
+                    ok.push(out.to_string_lossy().to_string());
+                    seen.insert(key);
+                    if ok.len() % 10 == 0 {
+                        let _ = fs::write(&list, serde_json::to_string(&seen).unwrap_or_default());
+                    }
+                }
+                Err(e) => bad.push(format!("{name}: {e}")),
+            }
+        }
+        let _ = fs::create_dir_all(self.thumbs_dir());
+        let _ = fs::write(&list, serde_json::to_string(&seen).unwrap_or_default());
+        // clips that came without a game folder: sort them by the game in their name
+        if cfg.game_folders && !ok.is_empty() {
+            self.sort_into_folders();
+        }
+        progress(total, total, "");
+        log_line(&format!("import: {} from {} ({} new, {skipped} already there, {} failed)", total, root.display(), ok.len(), bad.len()));
+        (ok, skipped, bad)
+    }
+
+    /// Save the frame at `t` seconds as a PNG in <clips>/Screenshots.
+    pub fn frame_png(&self, path: &str, t: f64) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let dir = self.clips_dir().join("Screenshots");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let out = dir.join(format!("{stem} @{:.1}s.png", t.max(0.0)));
+        let ok = ffmpeg()
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{:.3}", t.max(0.0)), "-i"])
+            .arg(&src).args(["-frames:v", "1", "-update", "1"]).arg(&out)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+        if ok && out.exists() { Ok(out.to_string_lossy().to_string()) } else { Err("could not grab this frame".into()) }
+    }
+
+    /// Save the clip's sound (mix track) as MP3 in <clips>/Audio.
+    pub fn audio_mp3(&self, path: &str) -> Result<String, String> {
+        self.audio_file(path, false)
+    }
+
+    /// The clip's sound (mix track) as <clips>/Audio/<name>.mp3 or .wav (16-bit 48 kHz, for sound effects).
+    pub fn audio_file(&self, path: &str, wav: bool) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let dir = self.clips_dir().join("Audio");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let out = dir.join(format!("{stem}.{}", if wav { "wav" } else { "mp3" }));
+        let enc: &[&str] = if wav { &["-c:a", "pcm_s16le", "-ar", "48000"] } else { &["-c:a", "libmp3lame", "-b:a", "192k"] };
+        let ok = ffmpeg()
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&src).args(["-map", "0:a:0", "-vn"]).args(enc).arg(&out)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+        if ok && out.exists() { Ok(out.to_string_lossy().to_string()) } else { Err("could not export the audio".into()) }
+    }
+
+    /// Join several clips (in the given order) into "Montage <date>.mp4". Re-encodes so mixed sizes work.
+    pub fn combine_clips(&self, paths: &[String]) -> Result<String, String> {
+        if paths.len() < 2 {
+            return Err("select at least 2 clips".into());
+        }
+        let probe = hidden("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate", "-of", "csv=p=0"])
+            .arg(&paths[0]).output().map_err(err)?;
+        let s = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+        let f: Vec<&str> = s.split(',').collect();
+        let w: u32 = f.first().and_then(|x| x.parse().ok()).unwrap_or(1920);
+        let h: u32 = f.get(1).and_then(|x| x.parse().ok()).unwrap_or(1080);
+        let fps = f.get(2).and_then(|x| {
+            let mut p = x.split('/');
+            let a: f64 = p.next()?.parse().ok()?;
+            let b: f64 = p.next().unwrap_or("1").parse().ok()?;
+            if b > 0.0 { Some((a / b).round()) } else { None }
+        }).filter(|v| *v >= 10.0 && *v <= 240.0).unwrap_or(60.0);
+        let (w, h) = (w / 2 * 2, h / 2 * 2);
+        let mut fc = String::new();
+        for i in 0..paths.len() {
+            fc += &format!("[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{i}];[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}];");
+        }
+        for i in 0..paths.len() {
+            fc += &format!("[v{i}][a{i}]");
+        }
+        fc += &format!("concat=n={}:v=1:a=1[v0][a]", paths.len());
+        match self.watermark_graph("v0", "v", h) {
+            Some(w) => fc += &format!(";{w}"),
+            None => fc += ";[v0]null[v]",
+        }
+        let dir = self.clips_dir();
+        let out = dir.join(format!("Montage {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S.mp4")));
+        let tmp = dir.join("montage.tmp");
+        let kb = ((w as u64 * h as u64 * fps as u64) / 6000).clamp(6000, 60000);
+        let b = format!("{kb}k");
+        let mut last = String::new();
+        let encs: [&[&str]; 4] = [
+            &["-c:v", "h264_amf", "-quality", "quality", "-b:v", b.as_str(), "-maxrate", b.as_str()],
+            &["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", b.as_str(), "-maxrate", b.as_str()],
+            &["-c:v", "h264_qsv", "-b:v", b.as_str(), "-maxrate", b.as_str()],
+            &["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"],
+        ];
+        for enc in encs {
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            for p in paths {
+                c.arg("-i").arg(p);
+            }
+            let o = c.args(["-filter_complex", &fc, "-map", "[v]", "-map", "[a]"]).args(enc)
+                .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+            if o.status.success() && fs::metadata(&tmp).map_or(false, |m| m.len() > 0) {
+                fs::rename(&tmp, &out).map_err(err)?;
+                log_line(&format!("montage: {} clips -> {}", paths.len(), out.display()));
+                return Ok(out.to_string_lossy().to_string());
+            }
+            last = String::from_utf8_lossy(&o.stderr).trim().to_string();
+        }
+        let _ = fs::remove_file(&tmp);
+        log_line(&format!("montage: failed: {last}"));
+        Err("could not combine these clips".into())
+    }
+
+    /// Make a GIF of [start, end] into <clips>/GIFs/. Shrinks until it is under ~10 MB.
+    pub fn make_gif(&self, path: &str, start: f64, end: f64) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        let len = (end - start).min(30.0);
+        if !(start >= 0.0 && len >= 0.3) {
+            return Err("selection is too short".into());
+        }
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let dir = self.clips_dir().join("GIFs");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let mut n = 1;
+        let out = loop {
+            let name = if n == 1 { format!("{stem}.gif") } else { format!("{stem} ({n}).gif") };
+            let p = dir.join(name);
+            if !p.exists() { break p; }
+            n += 1;
+        };
+        let tmp = dir.join(format!("{stem}.giftmp"));
+        let mut last = String::new();
+        for (w, fps) in [(640, 20), (480, 15), (360, 12), (270, 10)] {
+            let head = match self.watermark_graph("g0", "g1", w * 9 / 16) {
+                Some(x) => format!("[0:v]fps={fps},scale={w}:-2:flags=lanczos[g0];{x};[g1]"),
+                None => format!("[0:v]fps={fps},scale={w}:-2:flags=lanczos,"),
+            };
+            let vf = format!("{head}split[a][b];[a]palettegen=max_colors=192:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle");
+            let o = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-t", &format!("{len:.3}"), "-i"])
+                .arg(&src)
+                .args(["-filter_complex", &vf, "-loop", "0", "-f", "gif"])
+                .arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+            let size = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            log_line(&format!("gif: {w}px {fps}fps {len:.1}s -> {} KB", size / 1024));
+            if !o.status.success() || size == 0 {
+                last = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                continue;
+            }
+            if size <= 10 * 1024 * 1024 || w == 270 {
+                fs::rename(&tmp, &out).map_err(err)?;
+                return Ok(out.to_string_lossy().to_string());
+            }
+        }
+        let _ = fs::remove_file(&tmp);
+        log_line(&format!("gif: failed: {last}"));
+        Err("could not make a GIF of this clip".into())
+    }
+
+    pub fn trim_clip(&self, path: &str, start: f64, end: f64, exact: bool, replace: bool) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        if !self.is_clip(&src) {
+            return Err("not a Clipper clip".into());
+        }
+        let len = end - start;
+        if !(start >= 0.0 && len >= 0.3) {
+            return Err("selection is too short".into());
+        }
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let dir = src.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.clips_dir());
+        let tmp = dir.join(format!("{stem}.trimming.tmp"));
+        let out = if replace {
+            src.clone()
+        } else {
+            let mut n = 1;
+            loop {
+                let name = if n == 1 { format!("{stem} (trim).mp4") } else { format!("{stem} (trim {n}).mp4") };
+                let p = dir.join(name);
+                if !p.exists() {
+                    break p;
+                }
+                n += 1;
+            }
+        };
+
+        let run = |venc: &[&str]| -> Result<bool, String> {
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
+                .arg(&src)
+                .args(["-t", &format!("{len:.3}"), "-map", "0:v:0", "-map", "0:a?"]);
+            if venc.is_empty() {
+                c.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
+            } else {
+                c.args(venc).args(["-c:a", "aac", "-b:a", "192k"]);
+            }
+            let st = c.args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?;
+            Ok(st.success() && fs::metadata(&tmp).map_or(false, |m| m.len() > 0))
+        };
+
+        let ok = if exact {
+            // keep roughly the source bitrate
+            let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+            let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0) as f64;
+            let kbps = if dur > 0.0 { ((size * 8.0 / dur / 1000.0) as u64).clamp(4000, 80000) } else { 20000 };
+            let b = format!("{kbps}k");
+            run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])?
+                || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])?
+                || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])?
+                || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])?
+        } else {
+            run(&[])?
+        };
+        if !ok {
+            let _ = fs::remove_file(&tmp);
+            return Err("ffmpeg could not trim this clip".into());
+        }
+
+        if replace {
+            // the player may still hold the file for a moment
+            let mut done = false;
+            for _ in 0..20 {
+                if fs::remove_file(&src).is_ok() || !src.exists() {
+                    done = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            if !done {
+                let _ = fs::remove_file(&tmp);
+                return Err("original is in use - close it and try again".into());
+            }
+            for ext in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a"] {
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{ext}")));
+            }
+        }
+        fs::rename(&tmp, &out).map_err(err)?;
+        let out = out.to_string_lossy().to_string();
+        let _ = self.thumb(&out);
+        // replaced a clip that's in the cloud: upload the cut version over it
+        if replace && self.cloud_on() {
+            if let Some(rel) = self.rel_of(&out) {
+                if self.cloud_state().files.iter().any(|f| f.rel == rel) {
+                    let _ = self.cloud_upload(&out);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Make a clip smaller in place: re-encode the video at `factor` of its bitrate (all audio tracks kept, length unchanged).
+    pub fn compress_clip(&self, path: &str, factor: f64) -> Result<(u64, u64), String> {
+        let src = PathBuf::from(path);
+        if !self.is_clip(&src) {
+            return Err("not a Clipper clip".into());
+        }
+        let before = fs::metadata(&src).map_err(err)?.len();
+        let mtime = fs::metadata(&src).and_then(|m| m.modified()).ok();
+        let dur = self.thumb(path)?.duration.max(1.0);
+        let kbps = ((before as f64 * 8.0 / dur / 1000.0 - 192.0 * self.audio_tracks(path).max(1) as f64) * factor.clamp(0.1, 0.9)).max(800.0) as u64;
+        let b = format!("{kbps}k");
+        let tmp = src.with_extension("compress.tmp");
+        let t0 = Instant::now();
+        let run = |venc: &[&str]| -> bool {
+            ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
+                .args(["-map", "0", "-c:a", "copy"]).args(venc)
+                .args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+                && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+        };
+        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])
+            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])
+            || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])
+            || run(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b]);
+        let after = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        if !ok || after == 0 || after >= before {
+            let _ = fs::remove_file(&tmp);
+            return Err(if ok { "It's already about as small as it gets".into() } else { "Couldn't re-encode the clip - see the log".into() });
+        }
+        fs::rename(&tmp, &src).map_err(err)?;
+        // keep its date so it stays in place in the library
+        if let (Some(t), Ok(f)) = (mtime, fs::File::options().write(true).open(&src)) {
+            let _ = f.set_modified(t);
+        }
+        if let Some(stem) = src.file_stem() {
+            let stem = stem.to_string_lossy();
+            for x in ["strip.jpg", "levels.json", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{x}")));
+            }
+        }
+        log_line(&format!("compress: {} MB -> {} MB in {:.0}s", before / 1_000_000, after / 1_000_000, t0.elapsed().as_secs_f32()));
+        // the cloud copy gets the smaller version too
+        if self.cloud_on() {
+            if let Some(rel) = self.rel_of(path) {
+                if self.cloud_state().files.iter().any(|f| f.rel == rel) {
+                    let _ = self.cloud_upload(path);
+                }
+            }
+        }
+        Ok((before, after))
+    }
+
+    /// A horizontal strip of N frames for the editor timeline.
+    pub fn filmstrip(&self, clip: &str) -> Result<String, String> {
+        const N: u32 = 40;
+        let t = self.thumb(clip)?;
+        let stem = PathBuf::from(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let img = self.thumbs_dir().join(format!("{stem}.strip.jpg"));
+        if !img.exists() {
+            let fps = N as f64 / t.duration.max(1.0);
+            // decode keyframes only (one every ~2 s) - 10+ minute clips took ages otherwise
+            let ok = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-skip_frame", "nokey", "-i"])
+                .arg(clip)
+                .args(["-vf", &format!("fps={fps:.5},scale=-2:72,tile={N}x1"), "-frames:v", "1", "-q:v", "5"])
+                .arg(&img)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+            if !ok {
+                return Err("could not build filmstrip".into());
+            }
+        }
+        Ok(img.to_string_lossy().into())
+    }
+
+    fn probe(&self, clip: &Path) -> (u32, u32, bool) {
+        let out = hidden("ffprobe")
+            .args(["-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "csv=p=0"])
+            .arg(clip)
+            .output();
+        let s = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        let (mut w, mut h, mut audio) = (1920, 1080, false);
+        for l in s.lines() {
+            let f: Vec<&str> = l.split(',').map(|x| x.trim()).collect();
+            if f.first() == Some(&"video") && f.len() >= 3 {
+                w = f[1].parse().unwrap_or(w);
+                h = f[2].parse().unwrap_or(h);
+            }
+            if f.first() == Some(&"audio") {
+                audio = true;
+            }
+        }
+        (w, h, audio)
+    }
+
+    /// Speech-to-text for a clip: listens to the Mic track (falls back to the full mix), returns words.
+    pub fn transcribe(&self, clip: &str, model: &str) -> Result<Vec<Word>, String> {
+        let cli = whisper_cli()?;
+        let model = whisper_model(model)?;
+        ensure_vc_runtime()?;
+        let tracks = self.audio_tracks(clip);
+        if tracks == 0 {
+            return Err("this clip has no audio".into());
+        }
+        let threads = std::thread::available_parallelism().map(|n| n.get().min(8)).unwrap_or(4).to_string();
+        // what to listen to: your mic + the Discord track when Discord had sound (so friends' voices are captioned too);
+        // otherwise the full mix (Linux puts Discord in the desktop sound) or the mic. Tracks: 0 mix, 1 desktop, 2 mic, 4 Discord.
+        let levels = if tracks >= 5 { self.track_levels(clip) } else { Vec::new() };
+        let discord = levels.get(4).map_or(false, |&l| l > -50.0);
+        let candidates: Vec<(&str, String)> = if discord {
+            vec![("mic + Discord", "[0:a:2][0:a:4]amix=inputs=2:normalize=0,".into()), ("mix", "[0:a:0]".into())]
+        } else if tracks >= 3 && cfg!(windows) {
+            vec![("mic", "[0:a:2]".into()), ("mix", "[0:a:0]".into())]
+        } else if tracks >= 3 {
+            vec![("mix", "[0:a:0]".into()), ("mic", "[0:a:2]".into())]
+        } else {
+            vec![("track 0", "[0:a:0]".into())]
+        };
+        for (label, input) in candidates {
+            let wav = std::env::temp_dir().join("clipper_caption.wav");
+            // voice band + level out quiet voices (Discord friends are often much quieter than your mic)
+            let graph = format!("{input}aformat=channel_layouts=mono,highpass=f=80,lowpass=f=7500,dynaudnorm=f=150:g=15:p=0.9,aresample=16000[o]");
+            let ok = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(clip)
+                .args(["-filter_complex", &graph, "-map", "[o]", "-ac", "1", "-c:a", "pcm_s16le"])
+                .arg(&wav).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+            if !ok {
+                continue;
+            }
+            let pcm = read_wav16(&wav);
+            let _ = fs::remove_file(&wav);
+            let regions = speech_regions(&pcm, 16000);
+            log_line(&format!("captions: {label}: speech at {}", regions.iter().map(|r| format!("{:.1}-{:.1}s", r.0, r.1)).collect::<Vec<_>>().join(", ")));
+            if regions.is_empty() {
+                continue;
+            }
+            let t0 = Instant::now();
+            // all speech joined into ONE file (short silences between) -> one whisper run: it sees whole
+            // sentences and detects the language once, which is much more accurate than many tiny pieces
+            const GAP: f64 = 0.4;
+            let mut joined: Vec<i16> = Vec::new();
+            let mut map: Vec<(f64, f64, f64)> = Vec::new(); // (start in joined, start in clip, length)
+            for (a, b) in &regions {
+                let part = &pcm[(a * 16000.0) as usize..((b * 16000.0) as usize).min(pcm.len())];
+                map.push((joined.len() as f64 / 16000.0, *a, part.len() as f64 / 16000.0));
+                joined.extend_from_slice(part);
+                joined.extend(std::iter::repeat(0i16).take((GAP * 16000.0) as usize));
+            }
+            joined.resize(joined.len().max(16000 * 3 / 2), 0); // whisper wants >= ~1 s
+            let to_clip = |t: f64| -> Option<f64> {
+                let k = map.iter().rposition(|m| m.0 <= t + 0.05)?;
+                let (j0, c0, len) = map[k];
+                Some(c0 + (t - j0).clamp(0.0, len))
+            };
+            let rw = std::env::temp_dir().join("clipper_caption_part.wav");
+            write_wav16(&rw, &joined, 16000)?;
+            let base = std::env::temp_dir().join("clipper_caption");
+            let _ = fs::remove_file(base.with_extension("json"));
+            let o = hidden(&cli.to_string_lossy())
+                .current_dir(cli.parent().unwrap_or(Path::new(".")))
+                .args(["-m"]).arg(&model).args(["-f"]).arg(&rw)
+                .args(["-l", "auto", "-ml", "1", "-sow", "-sns", "-mc", "64", "-oj", "-t", &threads, "-of"]).arg(&base)
+                .stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(err)?;
+            let _ = fs::remove_file(&rw);
+            if !o.status.success() {
+                let code = o.status.code().unwrap_or(-1);
+                let all = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+                let tail: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
+                log_line(&format!("captions: whisper failed (exit {code:#x}): {}", tail[tail.len().saturating_sub(6)..].join(" | ")));
+                if code as u32 == 0xC000_0135 {
+                    return Err("A Windows runtime file is missing for speech recognition - see the log".into());
+                }
+                return Err("speech recognition failed - see the log".into());
+            }
+            let mut words: Vec<Word> = Vec::new();
+            for w in parse_whisper_json(&fs::read_to_string(base.with_extension("json")).unwrap_or_default()) {
+                // back to clip time; drop anything whisper placed in the silence padding
+                if let (Some(s0), Some(e0)) = (to_clip(w.start), to_clip(w.end)) {
+                    words.push(Word { text: w.text, start: s0, end: e0.max(s0 + 0.05) });
+                }
+            }
+            log_line(&format!("captions: {label}: {} words in {:.1}s", words.len(), t0.elapsed().as_secs_f32()));
+            if !words.is_empty() {
+                // kept so the library search can find clips by what was said
+                if let Some(stem) = Path::new(clip).file_stem() {
+                    let text = words.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join(" ");
+                    let _ = fs::write(self.thumbs_dir().join(format!("{}.words.json", stem.to_string_lossy())), serde_json::to_string(&text).unwrap_or_default());
+                }
+                return Ok(words);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Full-resolution PNG of the screen right now -> <clips>/Screenshots/<Game> <date>.png
+    pub fn screenshot(&self) -> Result<String, String> {
+        let cfg = self.settings();
+        let dir = self.clips_dir().join("Screenshots");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let prefix = if cfg.name_by_game { detect_game() } else { None }.unwrap_or_else(|| "Screenshot".into());
+        let out = dir.join(format!("{prefix} {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S.png")));
+        // desktop duplication (works for borderless/fullscreen games), GDI capture as a fallback
+        let tries: [Vec<&str>; 2] = [
+            vec!["-filter_complex", "ddagrab=output_idx=0:draw_mouse=0,hwdownload,format=bgra"],
+            vec!["-f", "gdigrab", "-draw_mouse", "0", "-i", "desktop"],
+        ];
+        for args in tries.iter() {
+            let ok = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y"]).args(args)
+                .args(["-frames:v", "1"]).arg(&out)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+            if ok && fs::metadata(&out).map_or(false, |m| m.len() > 0) {
+                log_line(&format!("screenshot: {}", out.display()));
+                return Ok(out.to_string_lossy().into());
+            }
+        }
+        Err("screenshot failed".into())
+    }
+
+    fn meta_path(&self) -> PathBuf {
+        self.thumbs_dir().join("meta.json")
+    }
+    fn meta_all(&self) -> std::collections::BTreeMap<String, ClipMeta> {
+        fs::read_to_string(self.meta_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    fn write_meta(&self, m: &std::collections::BTreeMap<String, ClipMeta>) -> Result<(), String> {
+        fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
+        fs::write(self.meta_path(), serde_json::to_string(m).map_err(err)?).map_err(err)
+    }
+    /// Tags + notes per clip, plus what was said (from captions) for search.
+    pub fn clip_meta(&self) -> std::collections::BTreeMap<String, ClipMeta> {
+        let mut m = self.meta_all();
+        if let Ok(rd) = fs::read_dir(self.thumbs_dir()) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if let Some(stem) = n.strip_suffix(".words.json") {
+                    let said: String = fs::read_to_string(e.path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+                    m.entry(stem.to_string()).or_default().said = said;
+                }
+            }
+        }
+        m
+    }
+    pub fn set_meta(&self, name: &str, tags: Vec<String>, note: String) -> Result<(), String> {
+        let mut m = self.meta_all();
+        let mut tags: Vec<String> = tags.into_iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+        tags.dedup();
+        if tags.is_empty() && note.trim().is_empty() {
+            m.remove(name);
+        } else {
+            m.insert(name.into(), ClipMeta { tags, note: note.trim().into(), said: String::new() });
+        }
+        self.write_meta(&m)
+    }
+    /// Use the frame at `t` seconds as the clip's thumbnail.
+    pub fn set_thumb(&self, clip: &str, t: f64) -> Result<String, String> {
+        let stem = Path::new(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let img = self.thumbs_dir().join(format!("{stem}.jpg"));
+        let ok = ffmpeg()
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{:.3}", t.max(0.0)), "-i"])
+            .arg(clip)
+            .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
+            .arg(&img)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+        if !ok {
+            return Err("could not grab that frame".into());
+        }
+        Ok(img.to_string_lossy().into())
+    }
+    /// Auto-cleanup: send clips older than `days` to the Recycle Bin (favourites are kept). Returns how many.
+    pub fn cleanup_old(&self, days: u32) -> u32 {
+        if days == 0 {
+            return 0;
+        }
+        let favs = self.favorites();
+        let cutoff = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+            .saturating_sub(days as u64 * 86400);
+        let mut n = 0;
+        for c in self.list_clips() {
+            if c.modified < cutoff && !favs.contains(&c.name) && self.delete_clip(&c.path).is_ok() {
+                n += 1;
+            }
+        }
+        if n > 0 {
+            log_line(&format!("cleanup: {n} clips older than {days} days sent to the Recycle Bin"));
+        }
+        n
+    }
+
+    /// Shrinks clips older than `days` (not favourites, each only once) to about half their size.
+    /// `keep_going` is checked between clips (stops when the user is back / a game starts).
+    pub fn shrink_old_clips(&self, days: u32, keep_going: impl Fn() -> bool) -> u32 {
+        let list = self.thumbs_dir().join("shrunk.json");
+        let mut done: std::collections::BTreeSet<String> = fs::read_to_string(&list).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let favs = self.favorites();
+        let cutoff = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+            .saturating_sub(days.max(1) as u64 * 86400);
+        let mut n = 0;
+        let mut old: Vec<ClipInfo> = self.list_clips().into_iter()
+            .filter(|c| c.modified < cutoff && !favs.contains(&c.name) && !done.contains(&c.path)).collect();
+        old.sort_by_key(|c| std::cmp::Reverse(c.size));
+        for c in old {
+            if !keep_going() {
+                break;
+            }
+            match self.compress_clip(&c.path, 0.5) {
+                Ok(_) => n += 1,
+                Err(e) => log_line(&format!("shrink: skipped {} ({e})", c.name)),
+            }
+            done.insert(c.path.clone());
+            let _ = fs::write(&list, serde_json::to_string(&done).unwrap_or_default());
+        }
+        if n > 0 {
+            log_line(&format!("shrink: {n} old clips made smaller"));
+        }
+        n
+    }
+
+    /// Writes "Echo log <time>.txt" (log + previous log + settings without passwords/keys) for sending to a friend.
+    pub fn support_file(&self) -> Result<String, String> {
+        let mut out = format!("Echo {} - {}\n", env!("CARGO_PKG_VERSION"), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        let mut cfg = serde_json::to_value(self.settings()).unwrap_or_default();
+        if let Some(m) = cfg.as_object_mut() {
+            for (k, v) in m.iter_mut() {
+                let k = k.to_lowercase();
+                if (k.contains("secret") || k.contains("key") && k.starts_with("r2") || k.contains("pass") || k.contains("token"))
+                    && v.as_str().map_or(false, |s| !s.is_empty()) {
+                    *v = serde_json::Value::String("***".into());
+                }
+            }
+        }
+        out += &format!("\n--- settings ---\n{}\n", serde_json::to_string_pretty(&cfg).unwrap_or_default());
+        let tail = |p: PathBuf| -> String {
+            let s = fs::read_to_string(p).unwrap_or_default();
+            let lines: Vec<&str> = s.lines().collect();
+            lines[lines.len().saturating_sub(400)..].join("\n")
+        };
+        out += &format!("\n--- log ---\n{}\n", tail(log_path()));
+        out += &format!("\n--- previous run ---\n{}\n", tail(log_path().with_extension("prev.log")));
+        let file = std::env::temp_dir().join(format!("Echo log {}.txt", chrono::Local::now().format("%Y-%m-%d %H-%M")));
+        fs::write(&file, out).map_err(err)?;
+        Ok(file.to_string_lossy().to_string())
+    }
+
+    fn favs_path(&self) -> PathBuf {
+        self.thumbs_dir().join("favorites.json")
+    }
+    /// Starred clips (by file name without extension).
+    pub fn favorites(&self) -> Vec<String> {
+        fs::read_to_string(self.favs_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    pub fn set_favorite(&self, name: &str, on: bool) -> Result<(), String> {
+        let mut f = self.favorites();
+        f.retain(|x| x != name);
+        if on {
+            f.push(name.to_string());
+        }
+        fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
+        fs::write(self.favs_path(), serde_json::to_string(&f).map_err(err)?).map_err(err)
+    }
+
+    /// Number of audio tracks in a clip (3 = mix, desktop, mic; 6 adds game, Discord, browsers).
+    pub fn audio_tracks(&self, clip: &str) -> u32 {
+        let out = hidden("ffprobe")
+            .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"])
+            .arg(clip)
+            .output();
+        out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.trim().is_empty()).count() as u32).unwrap_or(0)
+    }
+
+    /// Loudest peak (dB) of each audio track, so the editor can skip silent ones (-99 = silent). Cached.
+    pub fn track_levels(&self, clip: &str) -> Vec<f64> {
+        let n = self.audio_tracks(clip);
+        let stem = PathBuf::from(clip).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let cache = self.thumbs_dir().join(format!("{stem}.levels.json"));
+        if let Ok(v) = fs::read_to_string(&cache).map(|s| serde_json::from_str::<Vec<f64>>(&s)) {
+            if let Ok(v) = v {
+                if v.len() == n as usize && modified(&cache) >= modified(Path::new(clip)) {
+                    return v;
+                }
+            }
+        }
+        let hs: Vec<_> = (0..n).map(|t| {
+            let clip = clip.to_string();
+            std::thread::spawn(move || {
+                let o = hidden("ffmpeg")
+                    .args(["-hide_banner", "-nostats", "-i"]).arg(&clip)
+                    .args(["-map", &format!("0:a:{t}"), "-af", "volumedetect", "-vn", "-f", "null", "-"])
+                    .output();
+                o.ok().and_then(|o| {
+                    let e = String::from_utf8_lossy(&o.stderr).to_string();
+                    e.lines().find_map(|l| l.split("max_volume:").nth(1).and_then(|x| x.trim().trim_end_matches("dB").trim().parse::<f64>().ok()))
+                }).unwrap_or(-99.0)
+            })
+        }).collect();
+        let v: Vec<f64> = hs.into_iter().map(|h| h.join().unwrap_or(-99.0)).collect();
+        let _ = fs::create_dir_all(self.thumbs_dir());
+        let _ = fs::write(&cache, serde_json::to_string(&v).unwrap_or_default());
+        v
+    }
+
+    /// One audio track as its own small file (cached), so the editor can preview it.
+    pub fn extract_track(&self, clip: &str, track: u32) -> Result<String, String> {
+        let stem = PathBuf::from(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
+        let out = self.thumbs_dir().join(format!("{stem}.a{track}.m4a"));
+        if !out.exists() {
+            let ok = ffmpeg()
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(clip)
+                .args(["-map", &format!("0:a:{track}"), "-c", "copy", "-movflags", "+faststart"])
+                .arg(&out)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+            if !ok {
+                return Err("could not read that audio track".into());
+            }
+        }
+        Ok(out.to_string_lossy().into())
+    }
+
+    /// Render an editor project (pieces + speed + text + volume) to "<name> (edit).mp4".
+    /// A reversed copy of src[start..end] (cached in %TEMP%), made in 2 s chunks so memory stays small.
+    fn reverse_piece(&self, src: &Path, start: f64, end: f64, audio: bool) -> Result<PathBuf, String> {
+        let dir = std::env::temp_dir().join("clipper_reverse");
+        fs::create_dir_all(&dir).map_err(err)?;
+        let key = format!("{}_{:.0}_{:.0}", safe_name(&src.file_stem().unwrap_or_default().to_string_lossy()), start * 1000.0, end * 1000.0);
+        let out = dir.join(format!("{key}.mp4"));
+        if out.exists() {
+            return Ok(out);
+        }
+        let t0 = Instant::now();
+        let mut list = String::new();
+        let mut t = end;
+        let mut k = 0;
+        while t > start + 0.01 {
+            let a = (t - 2.0).max(start);
+            let part = dir.join(format!("{key}_{k}.mp4"));
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{a:.3}"), "-t", &format!("{:.3}", t - a), "-i"]).arg(src)
+                .args(["-map", "0:v:0", "-vf", "reverse", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14"]);
+            if audio {
+                c.args(["-map", "0:a:0", "-af", "areverse", "-c:a", "aac", "-b:a", "192k"]);
+            }
+            let ok = c.arg(&part).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+            if !ok {
+                return Err("could not reverse a piece".into());
+            }
+            list += &format!("file '{}'\n", part.to_string_lossy().replace('\\', "/"));
+            t = a;
+            k += 1;
+        }
+        let lf = dir.join(format!("{key}.txt"));
+        fs::write(&lf, list).map_err(err)?;
+        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&lf)
+            .args(["-c", "copy"]).arg(&out).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+        for j in 0..k {
+            let _ = fs::remove_file(dir.join(format!("{key}_{j}.mp4")));
+        }
+        let _ = fs::remove_file(&lf);
+        if !ok {
+            return Err("could not reverse a piece".into());
+        }
+        log_line(&format!("edit: reversed {:.1}s piece in {:.1}s", end - start, t0.elapsed().as_secs_f32()));
+        Ok(out)
+    }
+
+    pub fn render_edit(&self, path: &str, e: &Edit) -> Result<String, String> {
+        let src = PathBuf::from(path);
+        if !self.is_clip(&src) {
+            return Err("not a Clipper clip".into());
+        }
+        let out_dir = src.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.clips_dir());
+        let mut segs: Vec<&Seg> = e.segments.iter().filter(|s| s.end - s.start >= 0.05).collect();
+        segs.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
+        if segs.is_empty() {
+            return Err("nothing left on the timeline".into());
+        }
+        let (w, h, has_audio) = self.probe(&src);
+        let tracks = self.audio_tracks(path);
+        let mut g = Vec::new();
+        let srcdur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+        // extra inputs after the source (-i args); input index = 1 + position
+        let mut inputs: Vec<Vec<String>> = Vec::new();
+        // other videos / sounds dropped into the editor: one input each -> (input index, has audio, duration)
+        let mut extra_src: std::collections::HashMap<String, (usize, bool, f64)> = std::collections::HashMap::new();
+        {
+            let all = e.segments.iter().map(|x| &x.src).chain(e.overlays.iter().map(|x| &x.src)).chain(e.audio.iter().map(|x| &x.src));
+            for sp in all {
+                if sp.is_empty() || sp == path || extra_src.contains_key(sp) {
+                    continue;
+                }
+                if !Path::new(sp).exists() {
+                    return Err(format!("{} is missing", Path::new(sp).file_name().unwrap_or_default().to_string_lossy()));
+                }
+                let (_, _, a) = self.probe(Path::new(sp));
+                let d = self.thumb(sp).map(|t| t.duration).unwrap_or(0.0);
+                inputs.push(vec!["-i".into(), sp.clone()]);
+                extra_src.insert(sp.clone(), (inputs.len(), a, d));
+            }
+        }
+        // (input index, has audio, duration, is another file) for a piece's source
+        let src_of = |sp: &str| -> (usize, bool, f64, bool) {
+            match extra_src.get(sp) {
+                Some(&(k, a, d)) if !sp.is_empty() && sp != path => (k, a, d, true),
+                _ => (0, has_audio, srcdur, false),
+            }
+        };
+        let audio = (has_audio || extra_src.values().any(|x| x.1)) && !e.mute;
+        // other videos are fitted into the clip's frame (black bars when the shape differs)
+        let fit = format!(",scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1");
+        // timeline units joined by concat: (video label, audio label)
+        let mut units: Vec<(String, String)> = Vec::new();
+        let mut unit_len = 0.0f64; // output length of the last unit
+        let mut last_piece = false;
+        let mut pos = 0.0f64; // output time reached so far
+        const VF: &str = "fps=60,setsar=1,format=yuv420p";
+        const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+        let speed_of = |s: &Seg| if s.freeze { 1.0 } else { s.speed.clamp(0.1, 4.0) };
+        let len_of = |s: &Seg| (s.end - s.start) / speed_of(s);
+        // transition length into piece k (0 = hard cut); needs the pieces to touch
+        let tr_len = |k: usize, gap: f64| -> f64 {
+            let s = segs[k];
+            if k == 0 || s.tr.is_empty() || gap > 0.02 {
+                return 0.0;
+            }
+            s.td.max(0.1).min(len_of(s) / 2.0).min(len_of(segs[k - 1]) / 2.0).min(3.0)
+        };
+        for (i, s) in segs.iter().enumerate() {
+            let sp = speed_of(s);
+            let gap = s.at - pos;
+            if gap > 0.02 {
+                g.push(format!("color=c=black:s={w}x{h}:r=60:d={gap:.3},{VF}[gv{i}]"));
+                if audio {
+                    g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={gap:.3},{AF}[ga{i}]"));
+                }
+                units.push((format!("gv{i}"), format!("ga{i}")));
+                unit_len = gap;
+                last_piece = false;
+            }
+            let slen = len_of(s);
+            // a transition into the NEXT piece needs this one to run on a little (handle)
+            let ext = match segs.get(i + 1) {
+                Some(nx) => tr_len(i + 1, nx.at - (pos.max(s.at) + slen)),
+                None => 0.0,
+            };
+            let total = slen + ext;
+            let gr = grade(s);
+            let vf_fades = fades("fade", s.fi, s.fo, slen);
+            let af_fades = fades("afade", s.fi, s.fo, slen);
+            let (si, s_audio, s_dur, other) = src_of(&s.src);
+            let fitf = if other { fit.as_str() } else { "" };
+            let mut silent = s.amute || !s_audio;
+            if s.freeze {
+                g.push(format!("[{si}:v]trim=start={:.3}:duration=0.25,setpts=PTS-STARTPTS{fitf},{VF},trim=end_frame=1,tpad=stop_mode=clone:stop_duration={total:.3},trim=duration={total:.3},setpts=PTS-STARTPTS{gr}{vf_fades}[v{i}]", s.start));
+                silent = true;
+            } else if s.rev {
+                let rsrc = if other { PathBuf::from(&s.src) } else { src.clone() };
+                let rv = self.reverse_piece(&rsrc, s.start, s.end, s_audio)?;
+                inputs.push(vec!["-i".into(), rv.to_string_lossy().to_string()]);
+                let k = inputs.len();
+                let pad = if ext > 0.0 { format!(",tpad=stop_mode=clone:stop_duration={ext:.3}") } else { String::new() };
+                g.push(format!("[{k}:v]setpts=(PTS-STARTPTS)/{sp:.4}{fitf},{VF}{pad}{gr}{vf_fades}[v{i}]"));
+                if audio && !silent {
+                    let ap = if ext > 0.0 { format!(",apad=whole_dur={total:.3},atrim=duration={total:.3}") } else { String::new() };
+                    g.push(format!("[{k}:a]asetpts=PTS-STARTPTS,{},{AF}{ap}{af_fades}[a{i}]", atempo(sp)));
+                }
+            } else {
+                let end2 = if s_dur > 0.0 { (s.end + ext * sp).min(s_dur) } else { s.end + ext * sp };
+                let short = ext - (end2 - s.end) / sp;
+                let pad = if short > 0.01 { format!(",tpad=stop_mode=clone:stop_duration={short:.3}") } else { String::new() };
+                g.push(format!("[{si}:v]trim=start={:.3}:end={end2:.3},setpts=(PTS-STARTPTS)/{sp:.4}{fitf},{VF}{pad}{gr}{vf_fades}[v{i}]", s.start));
+                if audio && !silent {
+                    // a dropped video's sound can be a little shorter than its picture: pad to the exact length
+                    let ap = if ext > 0.0 || other { format!(",apad=whole_dur={total:.3},atrim=duration={total:.3}") } else { String::new() };
+                    g.push(format!("[{si}:a:0]atrim=start={:.3}:end={end2:.3},asetpts=PTS-STARTPTS,{},{AF}{ap}{af_fades}[a{i}]", s.start, atempo(sp)));
+                }
+            }
+            if audio && silent {
+                g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={total:.3},{AF}[a{i}]"));
+            }
+            let td = tr_len(i, gap);
+            if td > 0.0 && last_piece {
+                // blend with the previous piece: it ran on for `td` past its end, so later timing is unchanged
+                let (pv, pa) = units.pop().unwrap();
+                let kind: String = s.tr.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                g.push(format!("[{pv}][v{i}]xfade=transition={kind}:duration={td:.3}:offset={unit_len:.3}[xv{i}]"));
+                if audio {
+                    g.push(format!("[{pa}][a{i}]acrossfade=d={td:.3}:c1=tri:c2=tri[xa{i}]"));
+                }
+                units.push((format!("xv{i}"), format!("xa{i}")));
+                unit_len += slen;
+            } else {
+                units.push((format!("v{i}"), format!("a{i}")));
+                unit_len = slen;
+            }
+            last_piece = true;
+            pos = pos.max(s.at) + slen;
+        }
+        // layers may run past the main track: pad with black + silence underneath them
+        let ov_end = e.overlays.iter().map(|o| o.at.max(0.0) + (o.end - o.start) / o.speed.clamp(0.1, 4.0)).fold(0.0f64, f64::max);
+        let tail = ov_end - pos;
+        if tail > 0.02 {
+            g.push(format!("color=c=black:s={w}x{h}:r=60:d={tail:.3},{VF}[gvt]"));
+            if audio {
+                g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={tail:.3},{AF}[gat]"));
+            }
+            units.push(("gvt".into(), "gat".into()));
+        }
+        let total_len = pos.max(ov_end);
+        let n = units.len();
+        let cat: String = units.iter().map(|(v, a)| if audio { format!("[{v}][{a}]") } else { format!("[{v}]") }).collect();
+        g.push(format!("{cat}concat=n={n}:v=1:a={}[vc]{}", audio as u8, if audio { "[ac]" } else { "" }));
+
+        // text overlays (text goes through files -> no escaping trouble)
+        let tmp = std::env::temp_dir();
+        let font = if cfg!(windows) { "fontfile='C\\:/Windows/Fonts/segoeuib.ttf':" } else { "" };
+        let mut last = "vc".to_string();
+        // zoom boxes: zoompan over the main video, eased in/out (0.4 s), centred on the box
+        let zooms: Vec<&BoxFx> = e.boxes.iter().filter(|b| b.kind == "zoom" && b.end - b.start >= 0.2 && b.w > 0.0 && b.h > 0.0).collect();
+        if !zooms.is_empty() {
+            let (mut z, mut cx, mut cy) = (String::from("1"), String::from("0.5"), String::from("0.5"));
+            for b in &zooms {
+                let zf = (1.0 / b.w.max(b.h)).clamp(1.0, 5.0);
+                let r = (0.4f64).min((b.end - b.start) / 2.0);
+                let ramp = format!("clip(min((it-{:.3})/{r:.3}\\,({:.3}-it)/{r:.3})\\,0\\,1)", b.start, b.end);
+                z += &format!("+{:.4}*{ramp}", zf - 1.0);
+                cx += &format!("+{:.4}*{ramp}", b.x.clamp(0.0, 1.0) - 0.5);
+                cy += &format!("+{:.4}*{ramp}", b.y.clamp(0.0, 1.0) - 0.5);
+            }
+            g.push(format!(
+                "[vc]zoompan=z='{z}':x='clip(({cx})*iw-iw/zoom/2\\,0\\,iw-iw/zoom)':y='clip(({cy})*ih-ih/zoom/2\\,0\\,ih-ih/zoom)':d=1:s={w}x{h}:fps=60,setsar=1[vz]"));
+            last = "vz".into();
+        }
+        let mut ovs: Vec<&Ovl> = e.overlays.iter().filter(|o| o.end - o.start >= 0.05).collect();
+        ovs.sort_by_key(|o| o.row);
+        for (i, o) in ovs.iter().enumerate() {
+            let sp = o.speed.clamp(0.1, 4.0);
+            let len = (o.end - o.start) / sp;
+            let (oi, _, _, other) = src_of(&o.src);
+            // a dropped video on a layer: sized relative to the clip's width
+            let sc = if other { format!("scale={w}*{:.4}:-2", o.scale.clamp(0.05, 1.0)) } else { format!("scale=iw*{:.4}:-2", o.scale.clamp(0.05, 1.0)) };
+            g.push(format!(
+                "[{oi}:v]trim=start={:.3}:end={:.3},setpts=(PTS-STARTPTS)/{sp:.4}+{:.3}/TB,{sc},setsar=1[ov{i}]",
+                o.start, o.end, o.at.max(0.0)));
+            g.push(format!(
+                "[{last}][ov{i}]overlay=x=main_w*{:.4}-overlay_w/2:y=main_h*{:.4}-overlay_h/2:eof_action=pass:enable='between(t,{:.3},{:.3})'[vo{i}]",
+                o.x, o.y, o.at.max(0.0), o.at.max(0.0) + len));
+            last = format!("vo{i}");
+        }
+        // blur / colour boxes (full-frame coordinates, so before the 9:16 crop)
+        for (i, b) in e.boxes.iter().filter(|b| b.kind != "zoom" && b.end - b.start >= 0.05 && b.w > 0.0 && b.h > 0.0).enumerate() {
+            let bw = (((b.w.min(1.0) * w as f64).round() as u32).max(4) / 2 * 2).min(w);
+            let bh = (((b.h.min(1.0) * h as f64).round() as u32).max(4) / 2 * 2).min(h);
+            let bx = (((b.x - b.w / 2.0).max(0.0) * w as f64).round() as u32).min(w - bw);
+            let by = (((b.y - b.h / 2.0).max(0.0) * h as f64).round() as u32).min(h - bh);
+            let en = format!("enable='between(t,{:.3},{:.3})'", b.start.max(0.0), b.end);
+            if b.kind == "image" {
+                if b.src.is_empty() || !Path::new(&b.src).exists() {
+                    continue;
+                }
+                inputs.push(vec!["-loop".into(), "1".into(), "-framerate".into(), "60".into(), "-t".into(), format!("{:.3}", total_len + 1.0), "-i".into(), b.src.clone()]);
+                let k = inputs.len();
+                g.push(format!("[{k}:v]scale={bw}:{bh},format=rgba,colorchannelmixer=aa={:.2}[im{i}]", b.opacity.clamp(0.0, 1.0)));
+                g.push(format!("[{last}][im{i}]overlay=x={bx}:y={by}:eof_action=pass:{en}[bx{i}]"));
+            } else if b.kind == "blur" {
+                let sg = b.blur.clamp(1.0, 200.0);
+                g.push(format!("[{last}]split[bm{i}][bs{i}]"));
+                g.push(format!("[bs{i}]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sg:.1}:steps=3[bb{i}]"));
+                g.push(format!("[bm{i}][bb{i}]overlay=x={bx}:y={by}:{en}[bx{i}]"));
+            } else {
+                let col: String = b.color.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect();
+                let col = if col.len() == 6 { col } else { "000000".into() };
+                g.push(format!("[{last}]drawbox=x={bx}:y={by}:w={bw}:h={bh}:color=0x{col}@{:.2}:t=fill:{en}[bx{i}]", b.opacity.clamp(0.0, 1.0)));
+            }
+            last = format!("bx{i}");
+        }
+        // vertical 9:16: crop before the texts so captions are placed inside the tall frame
+        let mut w = w;
+        if let Some(cx) = e.vertical {
+            let cw = ((h as f64 * 9.0 / 16.0).round() as u32 / 2 * 2).min(w);
+            let x = (cx.clamp(0.0, 1.0) * w as f64 - cw as f64 / 2.0).clamp(0.0, (w - cw) as f64).round() as u32 / 2 * 2;
+            g.push(format!("[{last}]crop={cw}:{h}:{x}:0[vcrop]"));
+            last = "vcrop".into();
+            w = cw;
+        }
+        let base_g = g.clone();
+        let base_last = last.clone();
+        let in_ass = |t: &Txt| (!t.words.is_empty() && !t.hl.is_empty()) || (!t.anim.is_empty() && !t.text.trim().is_empty());
+        let karaoke: Vec<&Txt> = e.texts.iter().filter(|t| in_ass(t)).collect();
+        // returns (filters, last label); `ass`: render highlighted captions with libass
+        let build_text = |ass: bool| -> Result<(Vec<String>, String), String> {
+            let mut g: Vec<String> = Vec::new();
+            let mut last = base_last.clone();
+            for (i, t) in e.texts.iter().enumerate() {
+                if t.text.trim().is_empty() || (ass && in_ass(t)) {
+                    continue;
+                }
+                let f = tmp.join(format!("clipper_text_{i}.txt"));
+                fs::write(&f, t.text.replace("\r", "")).map_err(err)?;
+                let color: String = t.color.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect();
+                let px = ((t.size * h as f64).round() as u32).max(8);
+                g.push(format!(
+                    "[{last}]drawtext={font}textfile='{}':fontsize={px}:fontcolor=0x{color}:borderw={}:bordercolor=black@0.75:line_spacing={}{}:x=w*{:.4}-text_w/2:y=h*{:.4}-text_h/2:enable='between(t,{:.3},{:.3})'[t{i}]",
+                    ff_path(&f), (px / 14).max(2), px / 6, if t.text.contains('\n') { ":text_align=C" } else { "" }, t.x, t.y, t.start, t.end));
+                last = format!("t{i}");
+            }
+            if ass && !karaoke.is_empty() {
+                let f = tmp.join("clipper_captions.ass");
+                fs::write(&f, captions_ass(&karaoke, w, h)).map_err(err)?;
+                let fonts = if cfg!(windows) { ":fontsdir='C\\:/Windows/Fonts'" } else { "" };
+                g.push(format!("[{last}]subtitles=filename='{}'{fonts}[subs]", ff_path(&f)));
+                last = "subs".into();
+            }
+            Ok((g, last))
+        };
+        let mut g: Vec<String> = Vec::new();
+        if audio {
+            // detached audio clips, delayed to their spot and mixed over the main audio
+            let ov_sound: Vec<Aud> = e.overlays.iter().filter(|o| o.sound).map(|o| Aud {
+                start: o.start, end: o.end, speed: o.speed, at: o.at, vol: 1.0, mute: false, track: 0, fi: 0.0, fo: 0.0, src: o.src.clone(),
+            }).collect();
+            let extra: Vec<&Aud> = e.audio.iter().chain(ov_sound.iter())
+                .filter(|a| !a.mute && a.end - a.start >= 0.05 && src_of(&a.src).1).collect();
+            let mut mix = String::from("[ac]");
+            for (i, a) in extra.iter().enumerate() {
+                let sp = a.speed.clamp(0.1, 4.0);
+                let ms = (a.at.max(0.0) * 1000.0).round() as u64;
+                let (ai, _, _, other) = src_of(&a.src);
+                let stream = if other { format!("{ai}:a:0") } else { format!("0:a:{}", a.track.min(tracks.saturating_sub(1))) };
+                g.push(format!(
+                    "[{stream}]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS,{},volume={:.3},{AF}{},adelay={ms}:all=1[x{i}]",
+                    a.start, a.end, atempo(sp), a.vol.clamp(0.0, 4.0), fades("afade", a.fi, a.fo, (a.end - a.start) / sp)));
+                mix += &format!("[x{i}]");
+            }
+            let main = if extra.is_empty() {
+                "ac".to_string()
+            } else {
+                g.push(format!("{mix}amix=inputs={}:normalize=0:duration=first[am]", extra.len() + 1));
+                "am".to_string()
+            };
+            let norm = if e.normalize { ",loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000" } else { "" };
+            g.push(format!("[{main}]volume={:.3}{norm}[ao]", e.volume.clamp(0.0, 4.0)));
+        }
+
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let out = (1..).map(|n| out_dir.join(if n == 1 { format!("{stem} (edit).mp4") } else { format!("{stem} (edit {n}).mp4") }))
+            .find(|p| !p.exists()).unwrap();
+        let tmp_out = out_dir.join(format!("{stem}.render.tmp"));
+        let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+        let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0) as f64;
+        let kbps = if dur > 0.0 { ((size * 8.0 / dur / 1000.0) as u64).clamp(4000, 80000) } else { 20000 };
+        let b = format!("{kbps}k");
+        let audio_g = g;
+        let variant = |ass: bool| -> Result<(String, String), String> {
+            let (mut tg, mut last) = build_text(ass)?;
+            if let Some(oh) = e.out_h.filter(|&oh| oh >= 240 && oh != h) {
+                tg.push(format!("[{last}]scale=-2:{oh}:flags=lanczos,setsar=1[vout]"));
+                last = "vout".into();
+            }
+            if let Some(w) = self.watermark_graph(&last, "vwm", e.out_h.filter(|&oh| oh >= 240).unwrap_or(h)) {
+                tg.push(w);
+                last = "vwm".into();
+            }
+            // colour looks / stickers / texts can leave RGB behind: always finish as BT.709 TV-range yuv420p
+            tg.push(format!("[{last}]{TV_YUV}[vtv]"));
+            last = "vtv".into();
+            let all: Vec<String> = base_g.iter().chain(tg.iter()).chain(audio_g.iter()).cloned().collect();
+            Ok((all.join(";"), last))
+        };
+        let run_with = |graph: &str, last: &str, venc: &[&str]| -> Result<bool, String> {
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src);
+            for inp in &inputs {
+                c.args(inp);
+            }
+            c.args(["-filter_complex", graph, "-map", &format!("[{last}]")]);
+            if audio {
+                c.args(["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]);
+            }
+            // -progress on stdout: "out_time_us=…" lines -> EXPORT_PROGRESS for the UI's bar
+            EXPORT_PROGRESS.store(0, Ordering::Relaxed);
+            let mut ch = c.args(venc).args(TV_TAGS).args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp_out)
+                .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(err)?;
+            let errp = ch.stderr.take();
+            let errt = std::thread::spawn(move || {
+                let mut s = String::new();
+                if let Some(mut e) = errp {
+                    use std::io::Read;
+                    let _ = e.read_to_string(&mut s);
+                }
+                s
+            });
+            if let Some(out) = ch.stdout.take() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    if let Some(v) = line.strip_prefix("out_time_us=").or_else(|| line.strip_prefix("out_time_ms=")) {
+                        if let Ok(us) = v.trim().parse::<f64>() {
+                            let f = if total_len > 0.0 { (us / 1e6 / total_len).clamp(0.0, 0.99) } else { 0.0 };
+                            EXPORT_PROGRESS.store((f * 1000.0) as u32, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            let st = ch.wait().map_err(err)?;
+            let e = errt.join().unwrap_or_default();
+            if !st.success() {
+                log_line(&format!("edit: {}", e.trim()));
+            }
+            Ok(st.success() && fs::metadata(&tmp_out).map_or(false, |m| m.len() > 0))
+        };
+        let encode = |graph: &str, last: &str| -> Result<bool, String> {
+            Ok(run_with(graph, last, &["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])?
+                || run_with(graph, last, &["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])?
+                || run_with(graph, last, &["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])?
+                || run_with(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])?)
+        };
+        let mut ok = false;
+        if !karaoke.is_empty() {
+            let (gr, l) = variant(true)?;
+            ok = encode(&gr, &l)?;
+            if !ok {
+                log_line("edit: word-highlight / animated text failed, exporting plain text instead");
+            }
+        }
+        if !ok {
+            let (gr, l) = variant(false)?;
+            ok = encode(&gr, &l)?;
+        }
+        if !ok {
+            let _ = fs::remove_file(&tmp_out);
+            return Err("render failed - see the log".into());
+        }
+        fs::rename(&tmp_out, &out).map_err(err)?;
+        let out = out.to_string_lossy().to_string();
+        let _ = self.thumb(&out);
+        Ok(out)
+    }
+
+    /// Older clips were recorded with full-range colours but labelled TV-range, so they play too dark.
+    /// Detect those (brightness values outside 16-235). Windows: just fix the label (no re-encode).
+    /// Linux: the player (WebKitGTK) ignores the full-range label, so convert the picture to real TV range.
+    pub fn fix_dark_clips(&self) -> Result<u32, String> {
+        let mut fixed = 0;
+        for c in self.list_clips() {
+            let p = PathBuf::from(&c.path);
+            let info = hidden("ffprobe")
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range,codec_name", "-of", "csv=p=0"])
+                .arg(&p).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+            if !info.contains("h264") {
+                continue;
+            }
+            let labelled_pc = info.contains("pc");
+            if labelled_pc && cfg!(windows) {
+                continue;
+            }
+            let out_of_range = if labelled_pc { 1.0 } else { full_range_share(&p) };
+            if out_of_range <= 0.005 {
+                continue;
+            }
+            let tmp = p.with_extension("colorfix.tmp");
+            let ok = if cfg!(windows) {
+                ffmpeg()
+                    .args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&p)
+                    .args(["-map", "0", "-c", "copy", "-bsf:v", "h264_metadata=video_full_range_flag=1", "-color_range", "pc", "-movflags", "+faststart", "-f", "mp4"])
+                    .arg(&tmp).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success()
+            } else {
+                to_tv_range(&p, &tmp)
+            };
+            if !ok {
+                let _ = fs::remove_file(&tmp);
+                continue;
+            }
+            let mtime = fs::metadata(&p).and_then(|m| m.modified()).ok();
+            if fs::rename(&tmp, &p).is_err() {
+                let _ = fs::remove_file(&tmp);
+                continue;
+            }
+            // keep the clip's date so the library order doesn't change
+            if let (Some(t), Ok(f)) = (mtime, fs::File::options().write(true).open(&p)) {
+                let _ = f.set_modified(t);
+            }
+            if let Some(stem) = p.file_stem() {
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.jpg", stem.to_string_lossy())));
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip.jpg", stem.to_string_lossy())));
+            }
+            log_line(&format!("colorfix: {} ({:.1}% pixels outside TV range)", c.name, out_of_range * 100.0));
+            fixed += 1;
+        }
+        Ok(fixed)
+    }
+
+    /// Delete oldest clips while the folder is over the size limit.
+    fn enforce_storage(&self, cfg: &Settings) {
+        if cfg.max_storage_gb == 0 {
+            return;
+        }
+        let limit = cfg.max_storage_gb as u64 * 1_000_000_000;
+        let mut clips = self.list_clips(); // newest first
+        let mut total: u64 = clips.iter().map(|c| c.size).sum();
+        while total > limit && clips.len() > 1 {
+            let c = clips.pop().unwrap();
+            total -= c.size;
+            log_line(&format!("storage: removing oldest clip {}", c.name));
+            let _ = self.delete_clip(&c.path);
+        }
+    }
+}
+
+/// Put a clip on the clipboard as a file (paste straight into Discord, Explorer...).
+/// rclone (for the Share button), downloaded to %APPDATA%\\Clipper\\rclone on first use.
+fn ensure_rclone() -> Result<PathBuf, String> {
+    #[cfg(not(windows))]
+    {
+        // own up-to-date copy (distro rclone is often too old for Filen): ~/.config/Clipper/rclone
+        let dir = app_dir().join("rclone");
+        if let Some(p) = find_file(&dir, &["rclone"]).filter(|p| p.is_file()) {
+            return Ok(p);
+        }
+        fs::create_dir_all(&dir).map_err(err)?;
+        let zip = dir.join("rclone.zip");
+        log_line("cloud: downloading rclone (linux)");
+        download("https://downloads.rclone.org/rclone-current-linux-amd64.zip", &zip)?;
+        let ok = Command::new("unzip").arg("-oq").arg(&zip).arg("-d").arg(&dir).status().map(|s| s.success()).unwrap_or(false)
+            || Command::new("python3").args(["-m", "zipfile", "-e"]).arg(&zip).arg(&dir).status().map(|s| s.success()).unwrap_or(false);
+        let _ = fs::remove_file(&zip);
+        let p = find_file(&dir, &["rclone"]).filter(|p| p.is_file());
+        if let (true, Some(p)) = (ok, p) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+            return Ok(p);
+        }
+        log_line("cloud: rclone download/unpack failed, using the system rclone");
+        return Ok(PathBuf::from("rclone"));
+    }
+    #[allow(unreachable_code)]
+    let dir = app_dir().join("rclone");
+    if let Some(p) = bundled(&["rclone.exe"]).or_else(|| find_file(&dir, &["rclone.exe"])) {
+        return Ok(p);
+    }
+    fs::create_dir_all(&dir).map_err(err)?;
+    let zip = dir.join("rclone.zip");
+    log_line("share: downloading rclone");
+    download("https://downloads.rclone.org/rclone-current-windows-amd64.zip", &zip)?;
+    let ok = hidden("tar").arg("-xf").arg(&zip).arg("-C").arg(&dir).status().map_err(err)?.success();
+    let _ = fs::remove_file(&zip);
+    if !ok {
+        return Err("could not unpack rclone".into());
+    }
+    find_file(&dir, &["rclone.exe"]).ok_or_else(|| "rclone.exe missing after download".into())
+}
+
+/// Put text (a share link) on the clipboard.
+pub fn copy_text(text: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if crate::winutil::clipboard_text(text) { Ok(()) } else { Err("copy failed".into()) }
+    }
+    #[cfg(not(windows))]
+    {
+        wl_copy(&[], text.as_bytes())
+    }
+}
+
+pub fn copy_to_clipboard(path: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if crate::winutil::clipboard_files(&[path]) { Ok(()) } else { Err("copy failed".into()) }
+    }
+    #[cfg(not(windows))]
+    {
+        // file:// URI list: Dolphin, Discord, browsers paste it as a file
+        let abs = fs::canonicalize(path).map_err(err)?;
+        let uri = format!("file://{}", uri_escape(&abs.to_string_lossy()));
+        wl_copy(&["--type", "text/uri-list"], format!("{uri}\r\n").as_bytes())
+    }
+}
+
+#[cfg(not(windows))]
+fn uri_escape(p: &str) -> String {
+    p.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+
+/// Linux clipboard via wl-copy (wl-clipboard); xclip as a fallback on X11.
+#[cfg(not(windows))]
+fn wl_copy(args: &[&str], data: &[u8]) -> Result<(), String> {
+    let run = |prog: &str, a: Vec<&str>| -> bool {
+        let Ok(mut c) = Command::new(prog).args(&a).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return false };
+        if let Some(mut i) = c.stdin.take() { let _ = i.write_all(data); }
+        c.wait().map_or(false, |s| s.success())
+    };
+    if run("wl-copy", args.to_vec()) { return Ok(()); }
+    let t = if args.len() == 2 { args[1] } else { "UTF8_STRING" };
+    if run("xclip", vec!["-selection", "clipboard", "-t", t]) { return Ok(()); }
+    Err("copy failed - install wl-clipboard (sudo dnf install wl-clipboard)".into())
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Cloud library (pCloud / MEGA through rclone): upload, free up space, stream, delete, and sync
+// clips between PCs. Cloud layout mirrors the clips folder: echo:Echo/<folder>/<name>.mp4
+// ---------------------------------------------------------------------------------------------
+
+/// A clip in the cloud. `rel` = path inside the Echo folder ("Valorant/x.mp4").
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct CloudFile {
+    /// path as on the PC: "<folder>/<name>.mp4"
+    pub rel: String,
+    /// where it really is under Echo/ in the cloud: "2026/11/01/<folder>/<name>.mp4" (older uploads: = rel)
+    #[serde(default)]
+    pub path: String,
+    pub name: String,
+    pub folder: String,
+    pub size: u64,
+    pub modified: u64,
+    /// also on this PC
+    pub local: bool,
+}
+
+/// Remembered between runs (.thumbs/cloud.json).
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
+struct CloudState {
+    /// last cloud listing
+    files: Vec<CloudFile>,
+    /// clips you chose to keep only in the cloud / deleted from this PC only: never auto-download them
+    keep_remote: std::collections::BTreeSet<String>,
+}
+
+#[derive(Serialize)]
+pub struct CloudInfo {
+    pub provider: String,
+    pub used: u64,
+    pub total: u64,
+    pub accounts: Vec<AccountInfo>,
+    pub busy: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct AccountInfo {
+    pub id: u32,
+    pub provider: String,
+    pub label: String,
+    pub used: u64,
+    pub total: u64,
+    pub error: String,
+}
+
+fn acc_remote(a: &crate::settings::CloudAccount) -> String {
+    let root = a.root.trim_end_matches(['/', '\\']);
+    format!("acc_{}:{root}", a.id)
+}
+
+/// "acc_N:<root>/<sub>" (or "acc_N:<sub>" when the account has no root folder)
+fn acc_path(a: &crate::settings::CloudAccount, sub: &str) -> String {
+    let r = acc_remote(a);
+    if r.ends_with(':') { format!("{r}{sub}") } else { format!("{r}/{sub}") }
+}
+
+/// Rebuild the "echo" remote over all accounts: alias for one, union for several
+/// (new clips go to the account with the most free space; reads/moves/deletes look everywhere).
+fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), String> {
+    let _ = rclone_out(&["config", "delete", "echo"]);
+    match accs.len() {
+        0 => Ok(()),
+        1 => rclone_out(&["config", "create", "echo", "alias", "remote", &acc_remote(&accs[0])]).map(|_| ()),
+        _ => {
+            let ups = accs.iter().map(acc_remote).collect::<Vec<_>>().join(" ");
+            rclone_out(&["config", "create", "echo", "union", "upstreams", &ups,
+                "action_policy", "epall", "create_policy", "mfs", "search_policy", "ff"]).map(|_| ())
+        }
+    }
+}
+
+/// Old single-account setup ([echo] was the provider itself) -> account acc_1 + alias.
+fn migrate_cloud(cfg: &mut crate::settings::Settings) {
+    if cfg.cloud.is_empty() || !cfg.cloud_accounts.is_empty() {
+        return;
+    }
+    let Ok(t) = fs::read_to_string(cloud_conf()) else { return };
+    if !t.contains("[echo]") || t.contains("type = alias") || t.contains("type = union") {
+        return;
+    }
+    let _ = fs::write(cloud_conf(), t.replace("[echo]", "[acc_1]"));
+    let acc = crate::settings::CloudAccount { id: 1, provider: cfg.cloud.clone(), label: String::new(), root: String::new() };
+    if rebuild_echo_remote(std::slice::from_ref(&acc)).is_ok() {
+        cfg.cloud_accounts.push(acc);
+        let _ = cfg.save();
+        log_line("cloud: moved the old cloud login to account 1");
+    } else {
+        let _ = fs::write(cloud_conf(), t);
+    }
+}
+
+fn cloud_conf() -> PathBuf {
+    app_dir().join("rclone").join("echo.conf")
+}
+
+/// Older rclone downloads may miss newer backends (Filen needs 1.73+): fetch the current rclone if so.
+fn rclone_supports(backend: &str) -> Result<(), String> {
+    let ok = |p: &Path| hidden(&p.to_string_lossy()).args(["help", "backend", backend]).output().map_or(false, |o| o.status.success());
+    let exe = ensure_rclone()?;
+    if ok(&exe) {
+        return Ok(());
+    }
+    if cfg!(windows) {
+        log_line(&format!("cloud: rclone too old for {backend} - updating"));
+        let _ = fs::remove_dir_all(app_dir().join("rclone").join("bin"));
+        // keep echo.conf; drop the old rclone folders
+        if let Ok(rd) = fs::read_dir(app_dir().join("rclone")) {
+            for e in rd.flatten() {
+                if e.path().is_dir() {
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+        }
+        let exe = ensure_rclone()?;
+        if ok(&exe) {
+            return Ok(());
+        }
+    }
+    Err(format!("This rclone version can't use {backend} yet"))
+}
+
+/// Filen's rclone backend needs an API key that only the Filen CLI can export:
+/// download the CLI (once) and run `export-api-key` with the login.
+fn filen_api_key(email: &str, pass: &str, code: &str) -> Result<String, String> {
+    let dir = app_dir().join("filen");
+    fs::create_dir_all(&dir).map_err(err)?;
+    let exe = dir.join(if cfg!(windows) { "filen.exe" } else { "filen" });
+    if !exe.exists() {
+        log_line("cloud: downloading the Filen CLI");
+        let json = hidden("curl").args(["-sL", "-H", "User-Agent: Echo", "https://api.github.com/repos/FilenCloudDienste/filen-cli-releases/releases/latest"])
+            .output().map_err(err)?;
+        let v: serde_json::Value = serde_json::from_slice(&json.stdout).map_err(|_| "Couldn't reach GitHub to get the Filen tool".to_string())?;
+        let want_os = if cfg!(windows) { "windows" } else { "linux-gnu" };
+        let url = v["assets"].as_array().into_iter().flatten()
+            .filter_map(|a| a["browser_download_url"].as_str())
+            .find(|u| { let l = u.to_lowercase(); l.contains("x86_64") && l.contains(want_os) })
+            .ok_or("No Filen tool for this system in the latest release")?.to_string();
+        let tmp = dir.join(url.rsplit('/').next().unwrap_or("filen.bin"));
+        download(&url, &tmp)?;
+        let low = tmp.to_string_lossy().to_lowercase();
+        if low.ends_with(".zip") || low.ends_with(".tar.gz") || low.ends_with(".tgz") {
+            hidden("tar").arg("-xf").arg(&tmp).arg("-C").arg(&dir).status().map_err(err)?;
+            let _ = fs::remove_file(&tmp);
+            let found = find_file(&dir, &[if cfg!(windows) { "filen.exe" } else { "filen" }])
+                .or_else(|| fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_file() && p.extension().map_or(cfg!(not(windows)), |x| x == "exe")))
+                .ok_or("Filen tool missing after unpacking")?;
+            if found != exe {
+                fs::rename(&found, &exe).map_err(err)?;
+            }
+        } else {
+            fs::rename(&tmp, &exe).map_err(err)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&exe, fs::Permissions::from_mode(0o755));
+        }
+    }
+    // 1) login flags before the command, 2) login through FILEN_CLI_* environment variables
+    let _ = fs::create_dir_all(dir.join("config")); // the CLI won't create it itself
+    let run = |via_env: bool| -> Result<std::process::Output, String> {
+        let mut c = hidden(&exe.to_string_lossy());
+        c.arg("--config-dir").arg(dir.join("config"));
+        if via_env {
+            c.env("FILEN_CLI_EMAIL", email).env("FILEN_CLI_PASSWORD", pass);
+            if !code.is_empty() {
+                c.env("FILEN_CLI_2FA_CODE", code);
+            }
+        } else {
+            c.args(["--email", email, "--password", pass]);
+            if !code.is_empty() {
+                c.args(["--two-factor-code", code]);
+            }
+        }
+        c.arg("export-api-key").stdin(Stdio::null()).output().map_err(err)
+    };
+    let mut o = run(false)?;
+    if !o.status.success() {
+        log_line(&format!("cloud: filen (flags) failed: {}", String::from_utf8_lossy(&o.stdout).lines().chain(String::from_utf8_lossy(&o.stderr).lines()).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ")));
+        o = run(true)?;
+    }
+    let out = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    // the key: the longest token of letters / digits / - _ in the output
+    let key = out.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+        .filter(|t| t.len() >= 24).max_by_key(|t| t.len()).map(|t| t.to_string());
+    match key {
+        Some(k) if o.status.success() => Ok(k),
+        _ => {
+            let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty() && !l.contains("report it at")).collect();
+            let msg = lines.last().copied().unwrap_or("login failed").trim_start_matches(['✘', ' ']).to_string();
+            log_line(&format!("cloud: filen export-api-key failed (exit {:?}): {}", o.status.code(), lines.join(" | ")));
+            if msg.to_lowercase().contains("two") || msg.to_lowercase().contains("2fa") {
+                Err("Filen asks for your 2FA code - enter it and try again".into())
+            } else {
+                Err(format!("Filen login failed: {msg}"))
+            }
+        }
+    }
+}
+
+fn rclone_cmd() -> Result<Command, String> {
+    ec_ensure();
+    rclone_cmd_raw()
+}
+
+fn rclone_cmd_raw() -> Result<Command, String> {
+    let mut c = hidden(&ensure_rclone()?.to_string_lossy());
+    c.arg("--config").arg(cloud_conf());
+    Ok(c)
+}
+
+fn rclone_out(args: &[&str]) -> Result<String, String> {
+    let o = rclone_cmd()?.args(args).output().map_err(err)?;
+    if !o.status.success() {
+        let e = String::from_utf8_lossy(&o.stderr).to_string();
+        let last = e.trim().lines().last().unwrap_or("rclone failed").to_string();
+        log_line(&format!("cloud: rclone {} failed: {last}", args.first().unwrap_or(&"")));
+        return Err(last);
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// rclone with live byte counts: JSON stats every 0.5 s on stderr -> on_bytes(sent, total)
+fn rclone_progress(args: &[&str], on_bytes: impl Fn(u64, u64)) -> Result<(), String> {
+    use std::io::BufRead;
+    let mut ch = rclone_cmd()?.args(args).args(["--use-json-log", "--stats", "500ms", "-v"])
+        .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(err)?;
+    let mut last_err = String::new();
+    if let Some(e) = ch.stderr.take() {
+        for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if let (Some(b), Some(t)) = (v["stats"]["bytes"].as_u64(), v["stats"]["totalBytes"].as_u64()) {
+                on_bytes(b, t);
+            }
+            if v["level"].as_str().map_or(false, |l| l == "error" || l == "critical") {
+                last_err = v["msg"].as_str().unwrap_or("").trim().to_string();
+            }
+        }
+    }
+    let st = ch.wait().map_err(err)?;
+    if !st.success() {
+        let e = if last_err.is_empty() { "rclone failed".to_string() } else { last_err };
+        log_line(&format!("cloud: rclone {} failed: {e}", args.first().unwrap_or(&"")));
+        return Err(e);
+    }
+    Ok(())
+}
+
+const CLOUD_ROOT: &str = "echo:Echo";
+
+// ----- Echo Cloud: our own storage (Cloudflare R2 behind the echo-cloud Worker, see cloud/ in the repo) -----
+// Sign in with an email code -> token. The Worker hands out R2 keys (a few hours, only for u/<id>/) that
+// go into an rclone s3 remote like any other account; they're renewed before they run out.
+const EC_API_DEFAULT: &str = "https://echoclip.link";
+
+struct EcState {
+    api: String,
+    token: String,
+    /// rclone remote name (acc_N)
+    acc: String,
+    /// when the current keys expire (unix s); 0 = get keys first
+    exp: u64,
+    /// over the quota: keys only read
+    read_only: bool,
+}
+static EC: Mutex<Option<EcState>> = Mutex::new(None);
+/// new keys were written: the streaming server must restart to use them
+static EC_NEW_KEYS: AtomicBool = AtomicBool::new(false);
+/// port of the last streaming server (reused, the player keeps the address)
+static SERVE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn ec_api(cfg: &crate::settings::Settings) -> String {
+    let a = std::env::var("ECHO_CLOUD_API").ok().filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| if cfg.ec_api.trim().is_empty() { EC_API_DEFAULT.to_string() } else { cfg.ec_api.trim().to_string() });
+    a.trim_end_matches('/').to_string()
+}
+
+/// Call the Echo Cloud server (curl, JSON in and out). Server errors come back as Err(message).
+fn ec_call(api: &str, method: &str, path: &str, token: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let mut c = hidden("curl");
+    c.args(["-sS", "--max-time", "30", "-X", method, "-H", "content-type: application/json", "-H", "user-agent: Echo", "-w", "\n%{http_code}"]);
+    if !token.is_empty() {
+        c.args(["-H", &format!("authorization: Bearer {token}")]);
+    }
+    if body.is_some() {
+        c.args(["--data-binary", "@-"]);
+    }
+    c.arg(format!("{api}{path}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut ch = c.spawn().map_err(|e| format!("curl not available: {e}"))?;
+    if let (Some(b), Some(mut i)) = (body, ch.stdin.take()) {
+        let _ = i.write_all(b.to_string().as_bytes());
+    }
+    let o = ch.wait_with_output().map_err(err)?;
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    let (json, code) = text.trim_end().rsplit_once('\n').unwrap_or(("", text.trim()));
+    let code: u32 = code.trim().parse().unwrap_or(0);
+    if code == 0 {
+        // log why (DNS, TLS, timeout…) - curl's exit code + message
+        log_line(&format!("echo cloud: {api}{path} unreachable: curl exit {:?} {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim()));
+        return Err("Couldn't reach Echo Cloud - check your internet".into());
+    }
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+    if let Some(e) = v["error"].as_str() {
+        return Err(e.to_string());
+    }
+    if code >= 300 {
+        return Err(format!("Echo Cloud answered {code}"));
+    }
+    Ok(v)
+}
+
+/// Put fresh keys into the rclone remote.
+fn ec_apply(acc: &str, j: &serde_json::Value) -> Result<(), String> {
+    let g = |k: &str| j[k].as_str().unwrap_or("").to_string();
+    let (id, secret, tok) = (g("access_key_id"), g("secret_access_key"), g("session_token"));
+    if id.is_empty() || secret.is_empty() {
+        return Err("Echo Cloud sent no storage keys".into());
+    }
+    let o = rclone_cmd_raw()?.args(["config", "update", acc, "access_key_id", &id, "secret_access_key", &secret, "session_token", &tok])
+        .stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+    if !o.status.success() {
+        return Err(format!("couldn't save the Echo Cloud keys: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(())
+}
+
+/// Renew the keys when they run out in the next 10 minutes (called before every rclone command).
+fn ec_ensure() {
+    let mut g = EC.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = g.as_mut() else { return };
+    if s.exp > now_unix() + 600 {
+        return;
+    }
+    match ec_call(&s.api, "POST", "/creds", &s.token, Some(serde_json::json!({}))) {
+        Ok(j) => match ec_apply(&s.acc, &j) {
+            Ok(()) => {
+                s.exp = j["expires"].as_u64().unwrap_or(now_unix() + 3600);
+                s.read_only = j["read_only"].as_bool().unwrap_or(false);
+                EC_NEW_KEYS.store(true, Ordering::Relaxed);
+                log_line(&format!("echo cloud: new storage keys{}", if s.read_only { " (read only - over the quota)" } else { "" }));
+            }
+            Err(e) => { log_line(&format!("echo cloud: {e}")); s.exp = now_unix() + 660; }
+        },
+        Err(e) => {
+            log_line(&format!("echo cloud: no new keys: {e}"));
+            // don't ask again on every rclone call: retry in a minute
+            s.exp = now_unix() + 660;
+        }
+    }
+}
+
+/// Point the key renewal at the current Echo Cloud account (after start, sign-in, removal).
+fn ec_sync_state(cfg: &crate::settings::Settings, exp: u64) {
+    let acc = cfg.cloud_accounts.iter().find(|a| a.provider == "echocloud");
+    let mut g = EC.lock().unwrap_or_else(|e| e.into_inner());
+    *g = match acc {
+        Some(a) if !cfg.ec_token.is_empty() => Some(EcState { api: ec_api(cfg), token: cfg.ec_token.clone(), acc: format!("acc_{}", a.id), exp, read_only: false }),
+        _ => None,
+    };
+}
+
+/// The plan got bigger (paid) while the keys were read-only: get new keys on the next cloud command.
+fn ec_room_again(used: u64, total: u64) {
+    if let Ok(mut g) = EC.lock() {
+        if let Some(s) = g.as_mut() {
+            if s.read_only && used < total { s.read_only = false; s.exp = 0; }
+        }
+    }
+}
+
+/// Open a web page in the default browser (only https links from Echo Cloud).
+pub fn open_web(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") || url.contains('"') {
+        return Err("Echo Cloud sent no link - try again".into());
+    }
+    #[cfg(windows)]
+    hidden("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn().map_err(err)?;
+    #[cfg(not(windows))]
+    Command::new("xdg-open").arg(url).spawn().map_err(err)?;
+    Ok(())
+}
+
+fn ec_full() -> bool {
+    EC.lock().map(|g| g.as_ref().map_or(false, |s| s.read_only)).unwrap_or(false)
+}
+
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// "2026/November/November 1st/FiveM/x.mp4" (or older "2026/11/01/…") -> "FiveM/x.mp4"
+/// (the cloud's date folders aren't part of the PC layout)
+fn strip_date(p: &str) -> String {
+    let parts: Vec<&str> = p.splitn(4, '/').collect();
+    let num = |x: &str, n: usize| x.len() == n && x.bytes().all(|b| b.is_ascii_digit());
+    if parts.len() == 4 && num(parts[0], 4) {
+        let numeric = num(parts[1], 2) && num(parts[2], 2);
+        let words = MONTHS.contains(&parts[1]) && parts[2].starts_with(parts[1])
+            && parts[2][parts[1].len()..].trim().chars().next().map_or(false, |c| c.is_ascii_digit());
+        // "11 November" / "01 November 1st"
+        let both = parts[1].len() > 3 && num(&parts[1][..2], 2) && MONTHS.contains(&&parts[1][3..])
+            && parts[2].len() > 3 && num(&parts[2][..2], 2) && parts[2][3..].starts_with(&parts[1][3..]);
+        if numeric || words || both {
+            return parts[3].to_string();
+        }
+    }
+    p.to_string()
+}
+
+fn ordinal(d: u32) -> String {
+    let suf = match (d % 10, d % 100) { (1, x) if x != 11 => "st", (2, x) if x != 12 => "nd", (3, x) if x != 13 => "rd", _ => "th" };
+    format!("{d}{suf}")
+}
+
+/// Cloud date folder for a clip, e.g. "2026/11 November/01 November 1st": the date in its name
+/// ("… 2026-11-01 08-18-00"), else the file's date.
+fn date_folder(local: &Path) -> String {
+    let stem = local.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut ymd: Option<(i32, u32, u32)> = None;
+    for i in 0..stem.len().saturating_sub(9) {
+        if !stem.is_char_boundary(i) || !stem.is_char_boundary(i + 10) { continue; }
+        let w = &stem[i..i + 10];
+        let ok = w.bytes().enumerate().all(|(k, c)| if k == 4 || k == 7 { c == b'-' } else { c.is_ascii_digit() });
+        if ok {
+            let (y, m, d) = (w[0..4].parse().unwrap_or(0), w[5..7].parse().unwrap_or(0), w[8..10].parse().unwrap_or(0));
+            if (1..=12).contains(&m) && (1..=31).contains(&d) { ymd = Some((y, m, d)); break; }
+        }
+    }
+    let (y, m, d) = ymd.unwrap_or_else(|| {
+        use chrono::Datelike;
+        let t: chrono::DateTime<chrono::Local> = modified(local).unwrap_or_else(SystemTime::now).into();
+        (t.year(), t.month(), t.day())
+    });
+    let month = MONTHS[(m - 1) as usize];
+    // number first so cloud websites sort them in calendar order, words after for reading
+    format!("{y}/{m:02} {month}/{d:02} {month} {}", ordinal(d))
+}
+
+fn remote(rel: &str) -> String {
+    format!("{CLOUD_ROOT}/{}", rel.trim_start_matches('/'))
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+impl Recorder {
+    fn cloud_state(&self) -> CloudState {
+        fs::read_to_string(self.thumbs_dir().join("cloud.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    fn save_cloud_state(&self, st: &CloudState) {
+        let _ = fs::create_dir_all(self.thumbs_dir());
+        let _ = fs::write(self.thumbs_dir().join("cloud.json"), serde_json::to_string(st).unwrap_or_default());
+    }
+    /// Where a clip lives in the cloud (with its date folder), from the last listing; rel itself if unknown.
+    fn cpath(&self, rel: &str) -> String {
+        self.cloud_state().files.into_iter().find(|f| f.rel == rel && !f.path.is_empty()).map(|f| f.path).unwrap_or_else(|| rel.to_string())
+    }
+    fn cloud_on(&self) -> bool {
+        !self.settings().cloud.is_empty() && cloud_conf().exists()
+    }
+    fn set_busy(&self, s: &str) {
+        *self.cloud_busy.lock().unwrap() = s.to_string();
+    }
+
+    /// Path of a local clip inside the cloud folder ("Valorant/x.mp4"); None for non-clips.
+    pub fn rel_of(&self, path: &str) -> Option<String> {
+        let p = PathBuf::from(path);
+        if !self.is_clip(&p) {
+            return None;
+        }
+        let rel = p.strip_prefix(self.clips_dir()).ok()?.to_string_lossy().replace('\\', "/");
+        Some(rel)
+    }
+
+    /// Add a cloud account. pCloud / Google Drive: browser login (rclone OAuth). MEGA / Filen: email + password
+    /// (+ 2FA for Filen). Own server: WebDAV / SFTP / S3 / a folder (NAS share) - details in `extra`.
+    pub fn cloud_connect(&self, provider: &str, user: &str, pass: &str, code: &str,
+                         extra: &std::collections::HashMap<String, String>) -> Result<CloudInfo, String> {
+        let _ = fs::create_dir_all(app_dir().join("rclone"));
+        { let mut c = self.cfg.lock().unwrap(); migrate_cloud(&mut c); }
+        let accs = self.settings().cloud_accounts;
+        let id = accs.iter().map(|a| a.id).max().unwrap_or(0) + 1;
+        let name = format!("acc_{id}");
+        let x = |k: &str| extra.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+        let need = |v: &str, what: &str| if v.trim().is_empty() { Err(format!("Enter the {what}")) } else { Ok(()) };
+        log_line(&format!("cloud: adding {provider} as {name}"));
+        let (mut label, mut root) = (user.trim().to_string(), String::new());
+        let mut ec_exp = 0u64;
+        let made = match provider {
+            "pcloud" => rclone_out(&["config", "create", &name, "pcloud"]),
+            // drive.file: Echo only sees the files it made itself, not the rest of the Drive
+            "gdrive" => rclone_out(&["config", "create", &name, "drive", "scope", "drive.file"]),
+            "mega" => {
+                need(user, "MEGA email")?; need(pass, "MEGA password")?;
+                rclone_out(&["config", "create", &name, "mega", "user", user.trim(), "pass", pass, "--obscure"])
+            }
+            "filen" => {
+                need(user, "Filen email")?; need(pass, "Filen password")?;
+                rclone_supports("filen")?;
+                let key = filen_api_key(user.trim(), pass, code.trim())?;
+                rclone_out(&["config", "create", &name, "filen", "email", user.trim(), "password", pass, "api_key", &key, "--obscure"])
+            }
+            "webdav" => {
+                let url = x("url"); need(&url, "server address")?;
+                label = url.clone();
+                let vendor = if x("vendor").is_empty() { "other".to_string() } else { x("vendor") };
+                rclone_out(&["config", "create", &name, "webdav", "url", &url, "vendor", &vendor,
+                    "user", user.trim(), "pass", pass, "--obscure"])
+            }
+            "sftp" => {
+                let host = x("host"); need(&host, "server address")?; need(user, "user name")?;
+                let port = if x("port").is_empty() { "22".to_string() } else { x("port") };
+                label = format!("{}@{host}", user.trim());
+                root = x("path");
+                let mut a = vec!["config", "create", &name, "sftp", "host", &host, "user", user.trim(), "port", &port];
+                if !pass.is_empty() { a.extend(["pass", pass]); }
+                a.push("--obscure");
+                rclone_out(&a)
+            }
+            "s3" => {
+                let (ep, bucket) = (x("url"), x("bucket")); need(&ep, "endpoint address")?; need(&bucket, "bucket name")?;
+                need(user, "access key")?; need(pass, "secret key")?;
+                label = format!("{bucket} @ {ep}");
+                root = bucket;
+                rclone_out(&["config", "create", &name, "s3", "provider", "Other", "endpoint", &ep,
+                    "access_key_id", user.trim(), "secret_access_key", pass])
+            }
+            "echocloud" => {
+                if accs.iter().any(|a| a.provider == "echocloud") {
+                    return Err("You're already signed in to Echo Cloud".into());
+                }
+                let email = user.trim().to_lowercase();
+                need(&email, "email")?; need(code, "code from the email")?;
+                let api = ec_api(&self.settings());
+                let v = ec_call(&api, "POST", "/auth/verify", "", Some(serde_json::json!({ "email": email, "code": code.trim() })))?;
+                let token = v["token"].as_str().unwrap_or("").to_string();
+                if token.is_empty() { return Err("Echo Cloud didn't sign you in - try again".into()); }
+                {
+                    let mut c = self.cfg.lock().unwrap();
+                    c.ec_token = token.clone();
+                    c.ec_email = email.clone();
+                    let _ = c.save();
+                }
+                let j = ec_call(&api, "POST", "/creds", &token, Some(serde_json::json!({})))?;
+                let g = |k: &str| j[k].as_str().unwrap_or("").to_string();
+                label = email;
+                root = g("root");
+                ec_exp = j["expires"].as_u64().unwrap_or(0);
+                rclone_out(&["config", "create", &name, "s3", "provider", "Cloudflare", "endpoint", &g("endpoint"), "region", "auto",
+                    "access_key_id", &g("access_key_id"), "secret_access_key", &g("secret_access_key"), "session_token", &g("session_token"),
+                    "no_check_bucket", "true"])
+            }
+            "folder" => {
+                let path = x("path"); need(&path, "folder")?;
+                if !Path::new(&path).is_dir() { return Err("That folder doesn't exist (is the drive / network share connected?)".into()); }
+                label = path.clone();
+                root = path.clone();
+                rclone_out(&["config", "create", &name, "local"])
+            }
+            _ => return Err("unknown cloud".into()),
+        };
+        if let Err(e) = made {
+            let _ = rclone_out(&["config", "delete", &name]);
+            return Err(e);
+        }
+        let echo_cloud = provider == "echocloud";
+        if label.is_empty() {
+            label = format!("account {id}");
+        }
+        let acc = crate::settings::CloudAccount { id, provider: provider.into(), label, root };
+        if let Err(e) = rclone_out(&["mkdir", &acc_path(&acc, "Echo")]) {
+            let _ = rclone_out(&["config", "delete", &name]);
+            return Err(format!("Signed in, but the cloud didn't answer: {e}"));
+        }
+        let mut all = accs.clone();
+        all.push(acc);
+        rebuild_echo_remote(&all)?;
+        {
+            let mut c = self.cfg.lock().unwrap();
+            c.cloud = if all.len() > 1 { "multi".into() } else { provider.into() };
+            c.cloud_accounts = all;
+            if c.cloud_since == 0 {
+                c.cloud_since = now_unix();
+            }
+            let _ = c.save();
+        }
+        if echo_cloud {
+            ec_sync_state(&self.settings(), ec_exp);
+        }
+        let _ = rclone_out(&["mkdir", CLOUD_ROOT]);
+        let _ = self.cloud_refresh();
+        Ok(self.cloud_info())
+    }
+
+    /// Remove one account (its clips stay in that cloud, Echo just stops using it).
+    pub fn cloud_remove_account(&self, id: u32) -> Result<(), String> {
+        { let mut c = self.cfg.lock().unwrap(); migrate_cloud(&mut c); }
+        self.stop_serve();
+        let mut all = self.settings().cloud_accounts;
+        if all.iter().any(|a| a.id == id && a.provider == "echocloud") {
+            self.ec_sign_out();
+        }
+        all.retain(|a| a.id != id);
+        let _ = rclone_out(&["config", "delete", &format!("acc_{id}")]);
+        rebuild_echo_remote(&all)?;
+        let mut c = self.cfg.lock().unwrap();
+        c.cloud = match all.len() { 0 => String::new(), 1 => all[0].provider.clone(), _ => "multi".into() };
+        c.cloud_accounts = all;
+        let _ = c.save();
+        ec_sync_state(&c, 0);
+        log_line(&format!("cloud: removed account {id}"));
+        Ok(())
+    }
+
+    /// Is the Echo Cloud server set up (address filled in)?
+    pub fn echocloud_ready(&self) -> bool {
+        !ec_api(&self.settings()).contains("REPLACE_ME")
+    }
+
+    /// Echo Cloud sign-in step 1: email the 6-digit code.
+    pub fn echocloud_start(&self, email: &str) -> Result<(), String> {
+        let email = email.trim().to_lowercase();
+        if email.is_empty() { return Err("Enter your email".into()); }
+        ec_call(&ec_api(&self.settings()), "POST", "/auth/start", "", Some(serde_json::json!({ "email": email }))).map(|_| ())
+    }
+
+    /// Echo Cloud plans for sale (the server reads them from Polar).
+    pub fn echocloud_plans(&self) -> Result<serde_json::Value, String> {
+        let v = ec_call(&ec_api(&self.settings()), "GET", "/plans", "", None)?;
+        Ok(v["plans"].clone())
+    }
+
+    /// Open the checkout for a plan in the browser (already paying: the page to change or cancel it).
+    pub fn echocloud_checkout(&self, product_id: &str) -> Result<(), String> {
+        let cfg = self.settings();
+        if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }
+        let j = ec_call(&ec_api(&cfg), "POST", "/checkout", &cfg.ec_token, Some(serde_json::json!({ "product_id": product_id })))?;
+        log_line("echo cloud: opened the checkout");
+        open_web(j["url"].as_str().unwrap_or(""))
+    }
+
+    /// Open the subscription page (change plan, cancel, invoices, card).
+    pub fn echocloud_manage(&self) -> Result<(), String> {
+        let cfg = self.settings();
+        if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }
+        let j = ec_call(&ec_api(&cfg), "POST", "/portal", &cfg.ec_token, Some(serde_json::json!({})))?;
+        open_web(j["url"].as_str().unwrap_or(""))
+    }
+
+    /// Plan + usage of the signed-in Echo Cloud account.
+    pub fn echocloud_me(&self) -> Result<serde_json::Value, String> {
+        let cfg = self.settings();
+        if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }
+        ec_call(&ec_api(&cfg), "GET", "/me?fresh=1", &cfg.ec_token, None)
+    }
+
+    fn ec_sign_out(&self) {
+        let cfg = self.settings();
+        if !cfg.ec_token.is_empty() {
+            let _ = ec_call(&ec_api(&cfg), "POST", "/auth/logout", &cfg.ec_token, Some(serde_json::json!({})));
+        }
+        let mut c = self.cfg.lock().unwrap();
+        c.ec_token.clear();
+        let _ = c.save();
+    }
+
+    pub fn cloud_disconnect(&self) {
+        self.stop_serve();
+        self.ec_sign_out();
+        let _ = fs::remove_file(cloud_conf());
+        let mut c = self.cfg.lock().unwrap();
+        c.cloud.clear();
+        c.cloud_accounts.clear();
+        let _ = c.save();
+        ec_sync_state(&c, 0);
+        log_line("cloud: signed out");
+    }
+
+    pub fn cloud_info(&self) -> CloudInfo {
+        { let mut c = self.cfg.lock().unwrap(); migrate_cloud(&mut c); }
+        let on = self.cloud_on();
+        let cfg = self.settings();
+        let provider = if on { cfg.cloud.clone() } else { String::new() };
+        let (mut used, mut total) = (0, 0);
+        let mut accounts = Vec::new();
+        if on {
+            for a in &cfg.cloud_accounts {
+                let mut ai = AccountInfo { id: a.id, provider: a.provider.clone(), label: a.label.clone(), used: 0, total: 0, error: String::new() };
+                if a.provider == "echocloud" {
+                    let t0 = Instant::now();
+                    let r = ec_call(&ec_api(&cfg), "GET", "/me", &cfg.ec_token, None);
+                    if t0.elapsed() > Duration::from_secs(2) { log_line(&format!("cloud: Echo Cloud space check took {:.1} s", t0.elapsed().as_secs_f32())); }
+                    match r {
+                        Ok(v) => { ai.used = v["used"].as_u64().unwrap_or(0); ai.total = v["quota"].as_u64().unwrap_or(0); ec_room_again(ai.used, ai.total); }
+                        Err(e) => ai.error = e,
+                    }
+                    used += ai.used;
+                    total += ai.total;
+                    accounts.push(ai);
+                    continue;
+                }
+                let t0 = Instant::now();
+                let r = rclone_out(&["about", &acc_remote(a), "--json"]);
+                if t0.elapsed() > Duration::from_secs(2) { log_line(&format!("cloud: {} space check took {:.1} s", a.provider, t0.elapsed().as_secs_f32())); }
+                match r {
+                    Ok(j) => if let Ok(v) = serde_json::from_str::<serde_json::Value>(&j) {
+                        ai.used = v["used"].as_u64().unwrap_or(0);
+                        ai.total = v["total"].as_u64().unwrap_or(0);
+                    },
+                    Err(e) => ai.error = e,
+                }
+                used += ai.used;
+                total += ai.total;
+                accounts.push(ai);
+            }
+        }
+        CloudInfo { provider, used, total, accounts, busy: self.cloud_busy.lock().unwrap().clone() }
+    }
+
+    /// List the cloud folder (and remember it).
+    pub fn cloud_refresh(&self) -> Result<Vec<CloudFile>, String> {
+        if !self.cloud_on() {
+            return Ok(Vec::new());
+        }
+        let j = match rclone_out(&["lsjson", "-R", "--files-only", CLOUD_ROOT]) {
+            Ok(j) => j,
+            Err(e) if e.contains("not found") => {
+                // Echo folder missing (deleted on the website?) - recreate it
+                rclone_out(&["mkdir", CLOUD_ROOT])?;
+                "[]".into()
+            }
+            Err(e) => return Err(e),
+        };
+        let v: Vec<serde_json::Value> = serde_json::from_str(&j).map_err(err)?;
+        let root = self.clips_dir();
+        let files: Vec<CloudFile> = v.iter().filter_map(|f| {
+            let path = f["Path"].as_str()?.to_string();
+            let rel = strip_date(&path);
+            if !rel.to_lowercase().ends_with(".mp4") || rel.split('/').any(|p| p.starts_with('.')) {
+                return None;
+            }
+            let p = Path::new(&rel);
+            let folder = p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+            let modified = f["ModTime"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp().max(0) as u64).unwrap_or(0);
+            Some(CloudFile {
+                name: p.file_stem()?.to_string_lossy().to_string(),
+                folder,
+                size: f["Size"].as_u64().unwrap_or(0),
+                modified,
+                local: root.join(&rel).exists(),
+                rel,
+                path,
+            })
+        }).collect();
+        let mut st = self.cloud_state();
+        st.files = files.clone();
+        self.save_cloud_state(&st);
+        Ok(files)
+    }
+
+    /// Last known cloud listing (fast, no network), with "on this PC" refreshed.
+    pub fn cloud_files(&self) -> Vec<CloudFile> {
+        if !self.cloud_on() {
+            return Vec::new();
+        }
+        let root = self.clips_dir();
+        self.cloud_state().files.into_iter().map(|mut f| { f.local = root.join(&f.rel).exists(); f }).collect()
+    }
+
+    pub fn cloud_upload(&self, path: &str) -> Result<(), String> {
+        let rel = self.rel_of(path).ok_or("not a clip")?;
+        ec_ensure();
+        if ec_full() && self.settings().cloud_accounts.len() == 1 {
+            return Err("Echo Cloud is full - delete some clips from the cloud or upgrade your plan".into());
+        }
+        let t0 = Instant::now();
+        // new uploads go into Echo/<year>/<month>/<day>/<folder>/; re-uploads overwrite where the clip already is
+        let known = self.cloud_state().files.into_iter().find(|f| f.rel == rel).map(|f| if f.path.is_empty() { f.rel } else { f.path });
+        let cp = known.unwrap_or_else(|| format!("{}/{rel}", date_folder(Path::new(path))));
+        // live progress for the UI (card bar, bottom bar, player)
+        let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.count == 0 { p.idx = 1; p.count = 1; }
+            p.rel = rel.clone(); p.got = 0; p.total = fsize;
+        }
+        let r = rclone_progress(&["copyto", path, &remote(&cp)], |b, t| {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.rel == rel { p.got = b; if t > 0 { p.total = t; } }
+        });
+        {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
+        }
+        r?;
+        log_line(&format!("cloud: uploaded {rel} in {:.0}s", t0.elapsed().as_secs_f32()));
+        let mut st = self.cloud_state();
+        st.keep_remote.remove(&rel);
+        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        st.files.retain(|f| f.rel != rel);
+        let p = Path::new(&rel);
+        st.files.push(CloudFile {
+            rel: rel.clone(),
+            path: cp,
+            name: p.file_stem().unwrap_or_default().to_string_lossy().into(),
+            folder: p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default(),
+            size, modified: now_unix(), local: true,
+        });
+        self.save_cloud_state(&st);
+        Ok(())
+    }
+
+    /// Download a cloud clip into the clips folder (same sub-folder). Returns the local path.
+    /// (bytes so far, total bytes) of the cloud download in progress for `rel`
+    pub fn cloud_dl_progress(rel: &str) -> (u64, u64) {
+        let p = DL_PROGRESS.lock().unwrap();
+        if p.0 == rel { (p.1, p.2) } else { (0, 0) }
+    }
+
+    pub fn cloud_download(&self, rel: &str) -> Result<String, String> {
+        let out = self.clips_dir().join(rel);
+        if let Some(d) = out.parent() {
+            fs::create_dir_all(d).map_err(err)?;
+        }
+        let t0 = Instant::now();
+        // progress for the UI: watch the (partial) file grow next to the destination
+        let total = self.cloud_state().files.iter().find(|f| f.rel == rel).map_or(0, |f| f.size);
+        *DL_PROGRESS.lock().unwrap() = (rel.to_string(), 0, total);
+        let done = Arc::new(AtomicBool::new(false));
+        {
+            let (done, out, rel) = (done.clone(), out.clone(), rel.to_string());
+            std::thread::spawn(move || {
+                let name = out.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                while !done.load(Ordering::Relaxed) {
+                    let got: u64 = out.parent().and_then(|d| fs::read_dir(d).ok()).into_iter().flatten().flatten()
+                        .filter(|e| e.file_name().to_string_lossy().starts_with(&name))
+                        .filter_map(|e| e.metadata().ok()).map(|m| m.len()).max().unwrap_or(0);
+                    let mut p = DL_PROGRESS.lock().unwrap();
+                    if p.0 == rel { p.1 = got; }
+                    drop(p);
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            });
+        }
+        let r = rclone_out(&["copyto", &remote(&self.cpath(rel)), &out.to_string_lossy()]);
+        done.store(true, Ordering::Relaxed);
+        DL_PROGRESS.lock().unwrap().0.clear();
+        r?;
+        log_line(&format!("cloud: downloaded {rel} in {:.0}s", t0.elapsed().as_secs_f32()));
+        let mut st = self.cloud_state();
+        st.keep_remote.remove(rel);
+        self.save_cloud_state(&st);
+        let out = out.to_string_lossy().to_string();
+        let _ = self.thumb(&out);
+        Ok(out)
+    }
+
+    /// Free up space: delete the PC copy once the cloud has the whole file (thumbnail stays).
+    pub fn cloud_remove_local(&self, path: &str) -> Result<(), String> {
+        let rel = self.rel_of(path).ok_or("not a clip")?;
+        let size = fs::metadata(path).map_err(err)?.len();
+        let j = rclone_out(&["lsjson", &remote(&self.cpath(&rel))]).map_err(|_| "This clip isn't in the cloud yet - upload it first".to_string())?;
+        let v: Vec<serde_json::Value> = serde_json::from_str(&j).unwrap_or_default();
+        if v.first().and_then(|f| f["Size"].as_u64()) != Some(size) {
+            return Err("The cloud copy isn't complete yet - upload it first".into());
+        }
+        fs::remove_file(path).map_err(err)?;
+        self.remove_if_empty(Path::new(path).parent());
+        let mut st = self.cloud_state();
+        st.keep_remote.insert(rel.clone());
+        self.save_cloud_state(&st);
+        log_line(&format!("cloud: removed PC copy of {rel}"));
+        Ok(())
+    }
+
+    pub fn cloud_delete(&self, rel: &str) -> Result<(), String> {
+        rclone_out(&["deletefile", &remote(&self.cpath(rel))])?;
+        let mut st = self.cloud_state();
+        st.files.retain(|f| f.rel != rel);
+        st.keep_remote.remove(rel);
+        self.save_cloud_state(&st);
+        log_line(&format!("cloud: deleted {rel}"));
+        Ok(())
+    }
+
+    /// A local clip was deleted from this PC only: don't download it again from the cloud.
+    pub fn cloud_forget_local(&self, path: &str) {
+        if let Some(rel) = self.rel_of(path) {
+            let mut st = self.cloud_state();
+            if st.files.iter().any(|f| f.rel == rel) {
+                st.keep_remote.insert(rel);
+                self.save_cloud_state(&st);
+            }
+        }
+    }
+
+    /// Keep the cloud copy in step when a clip is renamed / moved on this PC.
+    pub fn cloud_follow_move(&self, old_rel: String, new_rel: String) {
+        if !self.cloud_on() || old_rel == new_rel || !self.cloud_state().files.iter().any(|f| f.rel == old_rel) {
+            return;
+        }
+        let mut st = self.cloud_state();
+        let old_p = self.cpath(&old_rel);
+        // keep the date folder: only the part after it changes
+        let new_p = match old_p.strip_suffix(old_rel.as_str()) { Some(pre) => format!("{pre}{new_rel}"), None => new_rel.clone() };
+        for f in st.files.iter_mut().filter(|f| f.rel == old_rel) {
+            f.rel = new_rel.clone();
+            f.path = new_p.clone();
+        }
+        self.save_cloud_state(&st);
+        std::thread::spawn(move || {
+            let _ = rclone_out(&["moveto", &remote(&old_p), &remote(&new_p)]);
+        });
+    }
+
+    fn stop_serve(&self) {
+        if let Some((mut c, _)) = self.cloud_serve.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Local streaming address for cloud clips (starts "rclone serve http" once).
+    pub fn cloud_stream_base(&self) -> Result<String, String> {
+        ec_ensure();
+        if EC_NEW_KEYS.swap(false, Ordering::Relaxed) {
+            self.stop_serve(); // restart with the new Echo Cloud keys (same port: the player keeps its address)
+        }
+        let mut g = self.cloud_serve.lock().unwrap();
+        if let Some((c, port)) = g.as_mut() {
+            if matches!(c.try_wait(), Ok(None)) {
+                return Ok(format!("http://127.0.0.1:{port}/{}", serve_token()));
+            }
+        }
+        let pref = SERVE_PORT.load(Ordering::Relaxed);
+        for port in std::iter::once(pref).filter(|p| *p != 0).chain(53980u16..53990) {
+            let mut c = rclone_cmd()?
+                .args(["serve", "http", CLOUD_ROOT, "--read-only", "--addr", &format!("127.0.0.1:{port}"), "--vfs-cache-mode", "minimal",
+                       "--baseurl", &format!("/{}", serve_token())])
+                .stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(err)?;
+            std::thread::sleep(Duration::from_millis(900));
+            if matches!(c.try_wait(), Ok(None)) {
+                log_line(&format!("cloud: streaming server on port {port}"));
+                SERVE_PORT.store(port, Ordering::Relaxed);
+                *g = Some((c, port));
+                return Ok(format!("http://127.0.0.1:{port}/{}", serve_token()));
+            }
+        }
+        Err("could not start the streaming server".into())
+    }
+
+    /// Thumbnail + length of a cloud-only clip (read over the streaming server, cached like local ones).
+    pub fn cloud_thumb(&self, rel: &str) -> Result<Thumb, String> {
+        let stem = Path::new(rel).file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+        let img = self.thumbs_dir().join(format!("{stem}.jpg"));
+        let dur_file = self.thumbs_dir().join(format!("{stem}.dur"));
+        if img.exists() && dur_file.exists() {
+            return Ok(Thumb { thumb: img.to_string_lossy().into(), duration: fs::read_to_string(&dur_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0.0) });
+        }
+        let url = format!("{}/{}", self.cloud_stream_base()?, self.cpath(rel).split('/').map(url_part).collect::<Vec<_>>().join("/"));
+        fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
+        let _ = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i", &url, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
+            .arg(&img).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let o = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", &url]).output().map_err(err)?;
+        let d: f64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0.0);
+        if d > 0.0 {
+            let _ = fs::write(&dur_file, d.to_string());
+        }
+        Ok(Thumb { thumb: img.to_string_lossy().into(), duration: d })
+    }
+
+    /// A link to the cloud copy (pCloud / MEGA / Filen public link); copied to the clipboard by the caller.
+    pub fn cloud_link(&self, rel: &str) -> Result<String, String> {
+        let days = self.settings().link_days;
+        let exp = format!("{days}d");
+        let mut args = vec!["link"];
+        if days > 0 {
+            args.extend(["--expire", exp.as_str()]);
+        }
+        // the union remote can't make links: ask the account that holds the file
+        let cp = self.cpath(rel);
+        let mut r = remote(&cp);
+        let cfg = self.settings();
+        // Echo Cloud first and without a listing: the server checks the clip itself and answers in ~1 s
+        // (looking the file up in e.g. a big Google Drive first took up to a minute)
+        if cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty() {
+            match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token,
+                Some(serde_json::json!({ "path": format!("Echo/{}", cp.trim_start_matches('/')), "days": days }))) {
+                Ok(j) => {
+                    let url = j["url"].as_str().unwrap_or("").to_string();
+                    if url.starts_with("http") {
+                        log_line(&format!("cloud: echo cloud link for {rel}"));
+                        return Ok(url);
+                    }
+                }
+                // only on another cloud: look there below
+                Err(e) if e.contains("isn't in Echo Cloud") => {}
+                Err(e) => return Err(format!("Couldn't make a link: {e}")),
+            }
+        }
+        for a in cfg.cloud_accounts.iter().filter(|a| a.provider != "echocloud") {
+            let p = acc_path(a, &format!("Echo/{}", cp.trim_start_matches('/')));
+            if rclone_out(&["lsjson", &p]).map_or(false, |j| j.contains("\"Path\"")) {
+                r = p;
+                break;
+            }
+        }
+        args.push(r.as_str());
+        let url = rclone_out(&args).map_err(|e| format!("Couldn't make a link: {e}"))?.trim().lines().last().unwrap_or("").to_string();
+        if !url.starts_with("http") {
+            return Err("This cloud didn't return a link".into());
+        }
+        log_line(&format!("cloud: link for {rel}"));
+        Ok(url)
+    }
+
+    /// Background sync, run every few minutes: upload new clips / favourites, download clips from other PCs.
+    /// Returns true when the library changed.
+    pub fn cloud_sync(&self) -> bool {
+        if !self.cloud_on() {
+            return false;
+        }
+        let Ok(_one) = self.cloud_lock.try_lock() else { return false };
+        // Echo Cloud keys renewed: a running streaming server gets them too (restarted on the same port)
+        ec_ensure();
+        if EC_NEW_KEYS.swap(false, Ordering::Relaxed) && self.cloud_serve.lock().unwrap().is_some() {
+            self.stop_serve();
+            let _ = self.cloud_stream_base();
+        }
+        let cfg = self.settings();
+        let mut changed = false;
+        let Ok(files) = self.cloud_refresh() else { return false };
+        let in_cloud: std::collections::HashSet<String> = files.iter().map(|f| f.rel.clone()).collect();
+        // 1) uploads
+        if cfg.cloud_upload != "off" {
+            let favs = self.favorites();
+            // "game": like "all", but only once the game is closed (no upload traffic while playing)
+            let game_running = self.last_game.lock().unwrap().as_ref().map_or(false, |(_, t)| t.elapsed().as_secs() < 15);
+            let every = cfg.cloud_upload == "all" || (cfg.cloud_upload == "game" && !game_running);
+            let todo: Vec<ClipInfo> = self.list_clips().into_iter().filter(|c| {
+                let rel = if c.folder.is_empty() { format!("{}.mp4", c.name) } else { format!("{}/{}.mp4", c.folder, c.name) };
+                !in_cloud.contains(&rel) && (favs.contains(&c.name) || (every && c.modified >= cfg.cloud_since))
+                    && now_unix().saturating_sub(c.modified) > 20 // not still being written
+            }).collect();
+            for (i, c) in todo.iter().enumerate() {
+                self.set_busy(&format!("Uploading {} of {}…", i + 1, todo.len()));
+                { let mut p = UP_PROGRESS.lock().unwrap(); p.idx = i as u32 + 1; p.count = todo.len() as u32; }
+                if self.cloud_upload(&c.path).is_err() {
+                    let mut p = UP_PROGRESS.lock().unwrap(); p.idx = 0; p.count = 0;
+                    break;
+                }
+                if cfg.cloud_free_after && self.cloud_remove_local(&c.path).is_ok() {
+                    changed = true;
+                }
+            }
+        }
+        // 2) downloads from other PCs
+        if cfg.cloud_download {
+            let st = self.cloud_state();
+            let root = self.clips_dir();
+            let todo: Vec<&CloudFile> = files.iter().filter(|f| {
+                !root.join(&f.rel).exists() && !st.keep_remote.contains(&f.rel) && f.modified >= cfg.cloud_since
+            }).collect();
+            for (i, f) in todo.iter().enumerate() {
+                self.set_busy(&format!("Downloading {} of {} from the cloud…", i + 1, todo.len()));
+                if self.cloud_download(&f.rel).is_ok() {
+                    changed = true;
+                } else {
+                    break;
+                }
+            }
+        }
+        self.set_busy("");
+        changed
+    }
+}
+
+/// Percent-encode one URL path segment.
+fn url_part(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+
+/// A folder of another clipping app that Echo can import from.
+#[derive(Serialize, Clone)]
+pub struct ImportSource {
+    pub app: String,
+    pub path: String,
+    pub count: usize,
+    pub bytes: u64,
+}
+
+const AUDIO_EXTS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "opus", "wma"];
+
+fn is_audio_file(p: &Path) -> bool {
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    AUDIO_EXTS.contains(&ext.as_str())
+}
+
+const VIDEO_EXTS: [&str; 12] = ["mp4", "mov", "m4v", "mkv", "webm", "avi", "ts", "flv", "wmv", "mpg", "mpeg", "3gp"];
+
+fn is_video_file(p: &Path) -> bool {
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    VIDEO_EXTS.contains(&ext.as_str())
+}
+
+/// Medal keeps clips in <capture folder>\Clips next to Editor / Thumbnails: start there when it exists.
+fn import_root(p: &Path) -> PathBuf {
+    let c = p.join("Clips");
+    if c.is_dir() { c } else { p.to_path_buf() }
+}
+
+fn collect_videos(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let n = e.file_name().to_string_lossy().to_lowercase();
+        if p.is_dir() {
+            // "Shared Clips" (SteelSeries) are extra copies made for sharing - skip them
+            if n.starts_with('.') || ["thumbnails", "thumbs", "editor", "cache", "temp", "tmp", "screenshots", "logs", "shared clips"].contains(&n.as_str()) {
+                continue;
+            }
+            collect_videos(&p, depth + 1, out);
+        } else if is_video_file(&p) && !n.contains(".tmp") && !n.contains(".part") {
+            out.push(p);
+        }
+    }
+}
+
+/// Folder paths (like "D:\\Clips") written inside small settings files of another app.
+fn paths_in_settings(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    if depth > 3 || out.len() > 40 {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            paths_in_settings(&p, depth + 1, out);
+            continue;
+        }
+        let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !["json", "ini", "cfg", "config", "xml"].contains(&ext.as_str()) || fs::metadata(&p).map_or(true, |m| m.len() > 2_000_000) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&p) else { continue };
+        let b = text.as_bytes();
+        for i in 1..b.len().saturating_sub(2) {
+            if b[i] == b':' && b[i + 1] == b'\\' && b[i - 1].is_ascii_alphabetic() && (i < 2 || !b[i - 2].is_ascii_alphanumeric()) {
+                let rest = &text[i - 1..];
+                let end = rest.find(|c: char| c == '"' || c == '\'' || c == '\n' || c == '\r' || c == '<' || c == ',').unwrap_or(rest.len());
+                let raw = rest[..end].replace("\\\\", "\\").replace('/', "\\");
+                let q = PathBuf::from(raw.trim_end_matches('\\'));
+                if q.is_dir() && !out.contains(&q) {
+                    out.push(q);
+                }
+            }
+        }
+    }
+}
+
+/// PresentMon (Intel's frame-time tool) for the FPS test, downloaded once to %APPDATA%\\Clipper\\presentmon.
+pub fn presentmon_exe() -> Result<PathBuf, String> {
+    let dir = app_dir().join("presentmon");
+    let exe = dir.join("PresentMon.exe");
+    if exe.is_file() {
+        return Ok(exe);
+    }
+    fs::create_dir_all(&dir).map_err(err)?;
+    let json = hidden("curl").args(["-sL", "-H", "User-Agent: Echo", "https://api.github.com/repos/GameTechDev/PresentMon/releases/latest"])
+        .output().map_err(err)?.stdout;
+    let v: serde_json::Value = serde_json::from_slice(&json).map_err(|_| "couldn't reach GitHub".to_string())?;
+    let url = v["assets"].as_array().and_then(|a| a.iter().find_map(|x| {
+        let n = x["name"].as_str()?.to_lowercase();
+        (n.starts_with("presentmon") && n.ends_with("-x64.exe") && !n.contains("service")).then(|| x["browser_download_url"].as_str().map(String::from)).flatten()
+    })).ok_or("PresentMon download not found")?;
+    download(&url, &exe)?;
+    log_line(&format!("fps: downloaded {url}"));
+    Ok(exe)
+}
+
+/// FPS of one app in a PresentMon CSV between two times (seconds since the capture started).
+/// Returns (app, average FPS, 1% low FPS, frames).
+pub fn fps_stats(csv: &Path, from: f64, to: f64) -> Option<(String, f64, f64, usize)> {
+    let text = fs::read_to_string(csv).ok()?;
+    let mut lines = text.lines();
+    let head: Vec<String> = lines.next()?.split(',').map(|h| h.trim().to_lowercase()).collect();
+    let col = |names: &[&str]| head.iter().position(|h| names.contains(&h.as_str()));
+    let (ca, cms) = (col(&["application"])?, col(&["msbetweenpresents"])?);
+    let ct = col(&["timeinseconds", "cpustarttime"]);
+    let skip = ["dwm.exe", "echo.exe", "msedgewebview2.exe", "presentmon.exe", "<error>", "explorer.exe"];
+    let mut per: std::collections::HashMap<String, Vec<(f64, f64)>> = Default::default();
+    let mut clock: std::collections::HashMap<String, f64> = Default::default();
+    for l in lines {
+        let f: Vec<&str> = l.split(',').collect();
+        let (Some(app), Some(ms)) = (f.get(ca), f.get(cms).and_then(|x| x.trim().parse::<f64>().ok())) else { continue };
+        let app = app.trim().to_string();
+        if skip.contains(&app.to_lowercase().as_str()) || ms <= 0.0 {
+            continue;
+        }
+        // CPUStartTime (PresentMon 2) is in ms, TimeInSeconds (1.x / --v1_metrics) in s; else add up frame times
+        let t = match ct.and_then(|c| f.get(c)).and_then(|x| x.trim().parse::<f64>().ok()) {
+            Some(v) if head[ct.unwrap()] == "cpustarttime" => v / 1000.0,
+            Some(v) => v,
+            None => {
+                let c = clock.entry(app.clone()).or_insert(0.0);
+                *c += ms / 1000.0;
+                *c
+            }
+        };
+        per.entry(app).or_default().push((t, ms));
+    }
+    // the game = the app with the most frames
+    let (app, frames) = per.into_iter().max_by_key(|(_, v)| v.len())?;
+    let mut ms: Vec<f64> = frames.iter().filter(|(t, _)| *t >= from && *t < to).map(|(_, m)| *m).collect();
+    if ms.len() < 30 {
+        return None;
+    }
+    let total: f64 = ms.iter().sum();
+    let avg = ms.len() as f64 * 1000.0 / total;
+    ms.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let worst = &ms[..(ms.len() / 100).max(1)];
+    let low = 1000.0 / (worst.iter().sum::<f64>() / worst.len() as f64);
+    Some((app, avg, low, ms.len()))
+}
+

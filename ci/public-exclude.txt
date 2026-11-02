@@ -1,0 +1,27 @@
+# Files that stay in the private repo only (ci/build.yml "public" job copies everything else to Resister0/echoclip)
+/.git
+/.github/
+/ECHO_HANDOFF.md
+/ECHO_SPEC.md
+/LINUX_HANDOFF.md
+/MONETIZATION.md
+/WINDOWS_NOTES.md
+/README.txt
+/publish.cmd
+/publish.sh
+/update.cmd
+/clipper_ffmpeg.log
+/Claude outputs/
+/desktop.ini
+/Echo
+/Echo.exe
+/Echo.old.exe
+/echo-updater.key.pub
+*.key
+*.secret.txt
+/cloud/.wrangler/
+/cloud/.dev.vars
+/cloud/setup.cmd
+/src-tauri/Quit)
+/src-tauri/target/
+/src-tauri/gen/

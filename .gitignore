@@ -1,0 +1,13 @@
+src-tauri/target/
+src-tauri/gen/
+*.exe
+desktop.ini
+src-tauri/Quit)
+/Echo
+/Echo.old
+cloud/.wrangler/
+cloud/.dev.vars
+clipper_ffmpeg.log
+Claude outputs/
+*.secret.txt
+*.key

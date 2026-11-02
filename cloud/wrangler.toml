@@ -1,0 +1,31 @@
+# Echo Cloud server (Cloudflare Worker). Deploy: see README.md
+name = "echo-cloud"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+# echoclip.link = API + share links; the old echo-cloud.echoclips.workers.dev address keeps working
+workers_dev = true
+routes = [{ pattern = "echoclip.link", custom_domain = true }]
+
+# the website (echoclip.link, /pricing, /terms, /privacy): plain files in site/, uploaded by "wrangler deploy".
+# A path that matches a file is answered from site/ (free, doesn't count as a Worker request); everything else
+# (/s/…, /plans, /auth/…, /download/…) runs src/index.js as before.
+[assets]
+directory = "./site"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "echo-cloud"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "echo-cloud"
+database_id = "c5443e40-48c8-4fd6-b52f-df41bc912f9f"
+
+[vars]
+# where clips live: https://<ACCOUNT_ID>.r2.cloudflarestorage.com (ACCOUNT_ID is a secret, Echo gets it from /creds)
+BUCKET_NAME = "echo-cloud"
+# sender of the sign-in emails (needs a domain verified in Resend)
+MAIL_FROM = "Echo <noreply@echoclip.link>"
+# plans: free quota in GB
+FREE_GB = "10"

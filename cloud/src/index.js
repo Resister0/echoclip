@@ -1,0 +1,523 @@
+// Echo Cloud server: sign in with an email code, usage / quota, and short-lived R2 keys that only
+// reach the user's own folder (u/<id>/) in the bucket. Echo then talks to R2 directly (rclone s3).
+//
+// Secrets (npx wrangler secret put NAME):
+//   CF_API_TOKEN           Cloudflare API token with "Workers R2 Storage: Edit" (makes the temporary keys)
+//   ACCOUNT_ID             Cloudflare account id
+//   PARENT_ACCESS_KEY_ID   access key id of an R2 API token (Object Read & Write on echo-cloud)
+//   RESEND_KEY             Resend API key for the sign-in emails (without it the code is only logged: wrangler tail)
+//   POLAR_TOKEN            Polar organization access token (products:read, checkouts:write, customer_sessions:write)
+//   POLAR_WEBHOOK_SECRET   secret of the Polar webhook pointing at https://echoclip.link/polar/webhook
+// Plans are the Polar products with metadata quota_gb; paying sets the user's quota, ending it goes back to free.
+
+const GB = 1e9; // decimal GB, like Echo shows sizes
+const PLANS = { free: 10 * GB, plus: 250 * GB, pro: 1024 * GB };
+const CODE_MINUTES = 10;
+const CREDS_SECONDS = 3 * 3600;
+const USAGE_CACHE_SECONDS = 300;
+const USAGE_FRESH_SECONDS = 20; // "fresh" usage is still cached this long (listing the bucket costs money)
+const SESSION_DAYS = 180;       // signed out after this long without using Echo Cloud
+
+const now = () => Math.floor(Date.now() / 1000);
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const fail = (msg, status = 400) => json({ error: msg }, status);
+
+async function sha256(s) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function randomHex(bytes) {
+  return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function randomId() {
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+  return [...crypto.getRandomValues(new Uint8Array(10))].map((b) => abc[b % abc.length]).join("");
+}
+function sixDigits() {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+  return String(n).padStart(6, "0");
+}
+function cleanEmail(e) {
+  e = String(e || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 200 ? e : "";
+}
+async function body(req) {
+  try { return await req.json(); } catch { return {}; }
+}
+
+/// Fixed-window counter in D1: true while `key` was hit at most `max` times in the last `window` seconds.
+async function allow(env, key, max, window) {
+  const t = now();
+  const r = await env.DB.prepare(
+    "INSERT INTO limits (k, n, reset) VALUES (?, 1, ?) ON CONFLICT(k) DO UPDATE SET "
+    + "n = CASE WHEN reset <= ? THEN 1 ELSE n + 1 END, reset = CASE WHEN reset <= ? THEN ? ELSE reset END RETURNING n"
+  ).bind(key, t + window, t, t, t + window).first();
+  return !r || r.n <= max;
+}
+const ipOf = (req) => req.headers.get("cf-connecting-ip") || "?";
+
+async function sendCode(env, email, code) {
+  if (!env.RESEND_KEY) {
+    console.log(`sign-in code for ${email}: ${code}`); // dev: read it with "npx wrangler tail"
+    return true;
+  }
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.RESEND_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      from: env.MAIL_FROM,
+      to: [email],
+      subject: `${code} is your Echo sign-in code`,
+      text: `Your Echo sign-in code is ${code}\n\nIt works for ${CODE_MINUTES} minutes. If you didn't ask for it, ignore this email.`,
+      html: `<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:420px;margin:0 auto;padding:24px;color:#111">`
+        + `<h2 style="margin:0 0 16px">Your Echo sign-in code</h2>`
+        + `<div style="font-size:32px;font-weight:700;letter-spacing:6px;background:#f2f2f5;border-radius:10px;padding:16px;text-align:center">${code}</div>`
+        + `<p style="color:#555;font-size:14px;margin-top:16px">It works for ${CODE_MINUTES} minutes. If you didn't ask for it, you can ignore this email.</p></div>`,
+    }),
+  });
+  if (!r.ok) console.log("resend failed", r.status, await r.text());
+  return r.ok;
+}
+
+async function userFromToken(req, env) {
+  const h = req.headers.get("authorization") || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
+  if (!token) return null;
+  const th = await sha256(token);
+  const s = await env.DB.prepare("SELECT user_id, last_seen FROM sessions WHERE token_hash = ?").bind(th).first();
+  if (!s) return null;
+  if (s.last_seen < now() - SESSION_DAYS * 86400) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(th).run();
+    return null;
+  }
+  await env.DB.prepare("UPDATE sessions SET last_seen = ? WHERE token_hash = ?").bind(now(), th).run();
+  return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
+}
+
+/// bytes stored under u/<id>/ (counted from R2, cached for a few minutes)
+async function usage(env, user, fresh = false) {
+  if (now() - user.used_at < (fresh ? USAGE_FRESH_SECONDS : USAGE_CACHE_SECONDS)) return user.used_bytes;
+  let used = 0, cursor;
+  for (let page = 0; page < 200; page++) {
+    const l = await env.BUCKET.list({ prefix: `u/${user.id}/`, cursor, limit: 1000 });
+    for (const o of l.objects) used += o.size;
+    if (!l.truncated) break;
+    cursor = l.cursor;
+  }
+  await env.DB.prepare("UPDATE users SET used_bytes = ?, used_at = ? WHERE id = ?").bind(used, now(), user.id).run();
+  return used;
+}
+
+function me(user, used) {
+  return { id: user.id, email: user.email, plan: user.plan, paid: !!user.polar_sub, until: user.plan_until || 0, used, quota: user.quota_bytes };
+}
+
+async function authStart(req, env) {
+  const email = cleanEmail((await body(req)).email);
+  if (!email) return fail("Enter a valid email address");
+  // stop guessing (new code = 5 new tries) and email spam / using up the Resend quota
+  if (!(await allow(env, `ip:${ipOf(req)}`, 10, 3600)) || !(await allow(env, `mail:${email}`, 5, 3600)))
+    return fail("Too many sign-in emails - try again in an hour", 429);
+  if (!(await allow(env, "mail:all", Number(env.MAIL_DAY_LIMIT || 90), 86400)))
+    return fail("Echo Cloud can't send more sign-in emails today - try again tomorrow", 429);
+  const old = await env.DB.prepare("SELECT sent FROM codes WHERE email = ?").bind(email).first();
+  if (old && now() - old.sent < 45) return fail("A code was just sent - wait a moment before asking again", 429);
+  const code = sixDigits();
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO codes (email, code_hash, expires, tries, sent) VALUES (?, ?, ?, 0, ?)"
+  ).bind(email, await sha256(`${email}:${code}`), now() + CODE_MINUTES * 60, now()).run();
+  if (!(await sendCode(env, email, code))) return fail("Couldn't send the email - try again later", 502);
+  return json({ ok: true });
+}
+
+async function authVerify(req, env) {
+  const b = await body(req);
+  const email = cleanEmail(b.email);
+  const code = String(b.code || "").replace(/\D/g, "");
+  if (!email || code.length !== 6) return fail("Enter the 6-digit code from the email");
+  if (!(await allow(env, `try:${email}`, 10, 3600)) || !(await allow(env, `tryip:${ipOf(req)}`, 30, 3600)))
+    return fail("Too many tries - wait an hour and ask for a new code", 429);
+  const row = await env.DB.prepare("SELECT * FROM codes WHERE email = ?").bind(email).first();
+  if (!row || row.expires < now()) return fail("The code expired - ask for a new one");
+  if (row.tries >= 5) return fail("Too many wrong codes - ask for a new one");
+  if ((await sha256(`${email}:${code}`)) !== row.code_hash) {
+    await env.DB.prepare("UPDATE codes SET tries = tries + 1 WHERE email = ?").bind(email).run();
+    return fail("Wrong code");
+  }
+  await env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(email).run();
+  let user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+  if (!user) {
+    const id = randomId();
+    const quota = Number(env.FREE_GB || 10) * GB;
+    await env.DB.prepare(
+      "INSERT INTO users (id, email, plan, quota_bytes, used_bytes, used_at, created) VALUES (?, ?, 'free', ?, 0, 0, ?)"
+    ).bind(id, email, quota, now()).run();
+    user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  }
+  const token = randomHex(32);
+  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, created, last_seen) VALUES (?, ?, ?, ?)")
+    .bind(await sha256(token), user.id, now(), now()).run();
+  return json({ token, ...me(user, await usage(env, user)) });
+}
+
+async function creds(user, env) {
+  if (!env.CF_API_TOKEN || !env.ACCOUNT_ID || !env.PARENT_ACCESS_KEY_ID)
+    return fail("Echo Cloud storage isn't set up yet", 503);
+  const used = await usage(env, user, true);
+  const readOnly = used >= user.quota_bytes;
+  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.ACCOUNT_ID}/r2/temp-access-credentials`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      bucket: env.BUCKET_NAME,
+      parentAccessKeyId: env.PARENT_ACCESS_KEY_ID,
+      permission: readOnly ? "object-read-only" : "object-read-write",
+      ttlSeconds: CREDS_SECONDS,
+      prefixes: [`u/${user.id}/`],
+    }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.success) {
+    console.log("temp creds failed", r.status, JSON.stringify(j.errors || j));
+    return fail("Echo Cloud couldn't hand out storage keys - try again later", 502);
+  }
+  return json({
+    endpoint: `https://${env.ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    bucket: env.BUCKET_NAME,
+    root: `${env.BUCKET_NAME}/u/${user.id}`,
+    access_key_id: j.result.accessKeyId,
+    secret_access_key: j.result.secretAccessKey,
+    session_token: j.result.sessionToken,
+    expires: now() + CREDS_SECONDS,
+    read_only: readOnly,
+    ...me(user, used),
+  });
+}
+
+// ----- share links: /s/<id> streams a clip straight from R2 (plays in Discord / any browser) -----
+let migrated = false;
+async function migrate(env) {
+  if (migrated) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS shares_key ON shares (key)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS limits (k TEXT PRIMARY KEY, n INTEGER NOT NULL, reset INTEGER NOT NULL)"),
+    env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
+    // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
+    env.DB.prepare("UPDATE users SET quota_bytes = ? WHERE plan = 'free' AND quota_bytes = ?").bind(Number(env.FREE_GB || 10) * GB, Number(env.FREE_GB || 10) * 1024 ** 3),
+  ]);
+  // paid plans (Polar): which subscription gave the quota, and until when it's paid
+  const cols = new Set(((await env.DB.prepare("PRAGMA table_info(users)").all()).results || []).map((c) => c.name));
+  for (const [c, type] of [["polar_sub", "TEXT"], ["plan_until", "INTEGER NOT NULL DEFAULT 0"], ["polar_at", "INTEGER NOT NULL DEFAULT 0"]]) {
+    if (!cols.has(c)) await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${c} ${type}`).run();
+  }
+  migrated = true;
+}
+
+async function share(req, user, env, origin) {
+  const b = await body(req);
+  const path = String(b.path || "").replace(/^\/+/, "");
+  if (!path || path.length > 1000 || path.split("/").some((p) => p === ".." || p === "")) return fail("Bad clip path");
+  const key = `u/${user.id}/${path}`;
+  if (!(await env.BUCKET.head(key))) return fail("This clip isn't in Echo Cloud yet - upload it first", 404);
+  const days = Math.max(0, Math.min(3650, Number(b.days) || 0));
+  const expires = days ? now() + days * 86400 : 0;
+  const old = await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).first();
+  let id = old && old.id;
+  if (id) {
+    await env.DB.prepare("UPDATE shares SET expires = ? WHERE id = ?").bind(expires, id).run();
+  } else {
+    id = randomId();
+    await env.DB.prepare("INSERT INTO shares (id, user_id, key, created, expires) VALUES (?, ?, ?, ?, ?)")
+      .bind(id, user.id, key, now(), expires).run();
+  }
+  return json({ url: `${origin}/s/${id}`, expires });
+}
+
+
+// ----- paid plans through Polar (merchant of record: handles payment, VAT, invoices, cancelling) -----
+async function polar(env, method, path, b) {
+  if (!env.POLAR_TOKEN) throw new Error("POLAR_TOKEN missing");
+  const r = await fetch(`${env.POLAR_API || "https://api.polar.sh"}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${env.POLAR_TOKEN}`, "content-type": "application/json", accept: "application/json" },
+    body: b ? JSON.stringify(b) : undefined,
+  });
+  const t = await r.text();
+  if (!r.ok) {
+    console.log("polar", method, path, r.status, t.slice(0, 800));
+    throw new Error(`polar ${r.status}`);
+  }
+  try { return JSON.parse(t); } catch { return {}; }
+}
+
+const planName = (gb) => (gb >= 1000 ? `${gb / 1000} TB` : `${gb} GB`);
+let plansCache = null, plansAt = 0;
+/// products for sale: [{id, name, gb, interval, price, currency}], small first, monthly before yearly
+async function plans(env) {
+  if (plansCache && now() - plansAt < 600) return plansCache;
+  const j = await polar(env, "GET", "/v1/products/?is_recurring=true&is_archived=false&limit=100");
+  plansCache = (j.items || []).map((p) => {
+    const pr = (p.prices || []).find((x) => x.amount_type === "fixed" && !x.is_archived);
+    const gb = Number(p.metadata && p.metadata.quota_gb);
+    if (!pr || !gb) return null;
+    return { id: p.id, name: p.name, gb, interval: p.recurring_interval, price: pr.price_amount / 100, currency: pr.price_currency };
+  }).filter(Boolean).sort((a, b) => a.gb - b.gb || (a.interval === "month" ? -1 : 1));
+  plansAt = now();
+  return plansCache;
+}
+
+async function portal(user, env) {
+  const j = await polar(env, "POST", "/v1/customer-sessions/", { external_customer_id: user.id });
+  return json({ url: j.customer_portal_url, portal: true });
+}
+
+async function checkout(req, user, env, origin) {
+  const b = await body(req);
+  const p = (await plans(env)).find((x) => x.id === b.product_id);
+  if (!p) return fail("That plan isn't available");
+  // already paying: switching plan or cancelling happens on Polar's subscription page
+  if (user.polar_sub) return portal(user, env);
+  const j = await polar(env, "POST", "/v1/checkouts/", {
+    products: [p.id],
+    external_customer_id: user.id,
+    customer_email: user.email,
+    metadata: { echo_user: user.id },
+    success_url: `${origin}/thanks`,
+  });
+  return json({ url: j.url });
+}
+
+/// Standard Webhooks signature (Polar): HMAC-SHA256 of "<id>.<timestamp>.<body>"
+async function polarVerify(req, env, raw) {
+  const id = req.headers.get("webhook-id"), ts = req.headers.get("webhook-timestamp");
+  const given = (req.headers.get("webhook-signature") || "").split(" ").map((x) => x.split(",")[1]).filter(Boolean);
+  const secret = String(env.POLAR_WEBHOOK_SECRET || "").trim();
+  if (!id || !ts || !secret || !given.length || Math.abs(now() - Number(ts)) > 600) return false;
+  const keys = [new TextEncoder().encode(secret)]; // older Polar secrets: the whole whsec_ string
+  try { keys.unshift(Uint8Array.from(atob(secret.replace(/^whsec_/, "")), (c) => c.charCodeAt(0))); } catch { /* not base64 */ }
+  const msg = new TextEncoder().encode(`${id}.${ts}.${raw}`);
+  for (const k of keys) {
+    const key = await crypto.subtle.importKey("raw", k, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const sig = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, msg))));
+    if (given.includes(sig)) return true;
+  }
+  return false;
+}
+
+async function polarWebhook(req, env) {
+  const raw = await req.text();
+  if (!(await polarVerify(req, env, raw))) return fail("bad signature", 403);
+  let ev;
+  try { ev = JSON.parse(raw); } catch { return fail("bad json"); }
+  const type = String(ev.type || ""), s = ev.data || {};
+  if (!type.startsWith("subscription.")) return json({ ok: true }, 202);
+  const uid = (s.customer && s.customer.external_id) || (s.metadata && s.metadata.echo_user);
+  const user = uid && (await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(uid).first());
+  if (!user) { console.log("polar: no Echo user for", type, s.id, uid); return json({ ok: true }, 202); }
+  // a late retry of an older event must not undo a newer one (e.g. "active" arriving after "revoked")
+  const at = Date.parse(s.modified_at || ev.timestamp || "") || 0;
+  if (at && at < (user.polar_at || 0)) { console.log("polar: old event skipped", type, s.id); return json({ ok: true }, 202); }
+  if (at) await env.DB.prepare("UPDATE users SET polar_at = ? WHERE id = ?").bind(at, uid).run();
+  let gb = Number(s.product && s.product.metadata && s.product.metadata.quota_gb);
+  if (!gb && s.product_id) {
+    try { const p = await polar(env, "GET", `/v1/products/${s.product_id}`); gb = Number(p.metadata && p.metadata.quota_gb); } catch { /* logged */ }
+  }
+  // active until the paid period ends (also after cancelling); "revoked" = access is over
+  const live = type !== "subscription.revoked" && ["active", "trialing", "past_due"].includes(s.status);
+  if (live && gb) {
+    const until = s.current_period_end ? Math.floor(Date.parse(s.current_period_end) / 1000) || 0 : 0;
+    await env.DB.prepare("UPDATE users SET plan = ?, quota_bytes = ?, polar_sub = ?, plan_until = ? WHERE id = ?")
+      .bind(planName(gb), gb * GB, s.id, until, uid).run();
+    console.log("polar:", type, uid, "->", planName(gb));
+  } else if (!live && (!user.polar_sub || user.polar_sub === s.id)) {
+    await env.DB.prepare("UPDATE users SET plan = 'free', quota_bytes = ?, polar_sub = NULL, plan_until = 0 WHERE id = ?")
+      .bind(Number(env.FREE_GB || 10) * GB, uid).run();
+    console.log("polar:", type, uid, "-> free");
+  }
+  return json({ ok: true }, 202);
+}
+
+const page = (title, text) => new Response(
+  `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>`
+  + `<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0e0f13;color:#e8e8ee;font-family:system-ui,Segoe UI,Arial,sans-serif">`
+  + `<div style="max-width:420px;padding:24px;text-align:center"><h1 style="font-size:26px">${title}</h1><p style="color:#a0a3ad;line-height:1.5">${text}</p></div>`,
+  { headers: { "content-type": "text/html; charset=utf-8" } });
+
+// ----- downloads: the GitHub repo is private, so /download/<what> redirects to a short-lived signed GitHub link -----
+// Secret GITHUB_TOKEN = fine-grained token, only repo Resister0/echo, permission "Contents: Read-only".
+const DOWNLOADS = {
+  "windows": "Echo-Setup.exe",
+  "windows-portable": "Echo.exe",
+  "linux": "Echo-x86_64.AppImage",
+  "linux-tar": "Echo-linux-x86_64.tar.gz",
+};
+let releaseCache = null, releaseAt = 0;
+const ghFetch = (env, url, accept) => fetch(url, {
+  headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept, "user-agent": "echo-cloud", "x-github-api-version": "2022-11-28" },
+  redirect: "manual",
+});
+/// the GitHub release "latest" (cached 5 min), or null
+async function release(env) {
+  if (releaseCache && now() - releaseAt < 300) return releaseCache;
+  const r = await ghFetch(env, `https://api.github.com/repos/${env.GITHUB_REPO || "Resister0/echo"}/releases/tags/latest`, "application/vnd.github+json");
+  if (!r.ok) {
+    console.log("github: release lookup failed", r.status, (await r.text()).slice(0, 300));
+    return null;
+  }
+  releaseCache = await r.json();
+  releaseAt = now();
+  return releaseCache;
+}
+/// short-lived signed download address of a release file
+async function assetLink(env, asset) {
+  const r = await ghFetch(env, asset.url, "application/octet-stream");
+  const to = r.headers.get("location");
+  if (!to) console.log("github: no redirect for", asset.name, r.status);
+  return to;
+}
+
+async function download(env, what) {
+  const file = DOWNLOADS[what];
+  if (!file) return null;
+  if (!env.GITHUB_TOKEN) return page("Downloads are coming soon", "Echo can't be downloaded here yet. Email support@echoclip.link.");
+  const rel = await release(env);
+  if (!rel) return page("Download not available", "The download couldn't be found right now - try again in a few minutes.");
+  const asset = (rel.assets || []).find((a) => a.name === file);
+  if (!asset) { releaseAt = 0; return page("Download not available", "This build isn't ready right now - a new version may be building. Try again in about 10 minutes."); }
+  const to = await assetLink(env, asset);
+  if (!to) return page("Download not available", "Try again in a few minutes.");
+  return new Response(null, { status: 302, headers: { location: to, "cache-control": "no-store" } });
+}
+
+// ----- updates for Echo (Tauri updater): GET /update/<windows|linux>/<arch>/<current version> -----
+// 204 = up to date; otherwise {version, notes, pub_date, url, signature}. The version comes from the
+// release title "Echo 1.0.<n>" (ci/build.yml), the signature from the <file>.sig next to the installer.
+const UPDATE_FILES = { windows: "windows", linux: "linux" };
+const verNum = (v) => String(v || "").split(/[.+-]/).slice(0, 3).map((x) => parseInt(x, 10) || 0);
+function newer(a, b) {
+  const x = verNum(a), y = verNum(b);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+const sigCache = new Map();
+async function update(env, target, current) {
+  const what = UPDATE_FILES[target];
+  const none = () => new Response(null, { status: 204 });
+  if (!what || !env.GITHUB_TOKEN) return none();
+  const rel = await release(env);
+  const version = rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
+  if (!version || !newer(version, current)) return none();
+  const file = DOWNLOADS[what];
+  const sig = (rel.assets || []).find((a) => a.name === `${file}.sig`);
+  if (!sig || !(rel.assets || []).some((a) => a.name === file)) return none(); // still building / unsigned build
+  let signature = sigCache.get(sig.id);
+  if (!signature) {
+    const to = await assetLink(env, sig);
+    const r = to && (await fetch(to));
+    if (!r || !r.ok) return none();
+    signature = (await r.text()).trim();
+    sigCache.set(sig.id, signature);
+  }
+  const notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
+  return json({ version, notes, pub_date: rel.published_at || rel.created_at, url: `https://echoclip.link/download/${what}`, signature });
+}
+
+async function notFound(req, env) {
+  // browsers get the site's 404 page, Echo gets JSON
+  if (req.method === "GET" && env.ASSETS && (req.headers.get("accept") || "").includes("text/html")) {
+    const p = await env.ASSETS.fetch(new Request(new URL("/404.html", req.url)));
+    if (p.ok) return new Response(p.body, { status: 404, headers: p.headers });
+  }
+  return fail("not found", 404);
+}
+
+function gone() {
+  return new Response("This clip link has expired or the clip was removed.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+async function serveShare(req, env, id) {
+  const row = await env.DB.prepare("SELECT key, expires FROM shares WHERE id = ?").bind(id).first();
+  if (!row || (row.expires && row.expires < now())) return gone();
+  const name = row.key.split("/").pop();
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
+  const h = new Headers({
+    "content-type": "video/mp4",
+    "accept-ranges": "bytes",
+    "cache-control": "public, max-age=3600",
+    "content-disposition": `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "access-control-allow-origin": "*",
+    // users upload whatever they like: never let a browser run it as a page on echoclip.link
+    "x-content-type-options": "nosniff",
+    // (only "sandbox": a stricter policy also blocks the browser's own video player)
+    "content-security-policy": "sandbox",
+  });
+  if (req.method === "HEAD") {
+    const o = await env.BUCKET.head(row.key);
+    if (!o) return gone();
+    h.set("content-length", String(o.size));
+    h.set("etag", o.httpEtag);
+    return new Response(null, { headers: h });
+  }
+  const wantsRange = req.headers.has("range");
+  let o;
+  try { o = await env.BUCKET.get(row.key, wantsRange ? { range: req.headers } : {}); }
+  catch { o = await env.BUCKET.get(row.key); }
+  if (!o) return gone();
+  h.set("etag", o.httpEtag);
+  const r = wantsRange && o.range;
+  if (r) {
+    let off, len;
+    if ("suffix" in r) { len = Math.min(r.suffix, o.size); off = o.size - len; }
+    else { off = r.offset || 0; len = r.length ?? o.size - off; }
+    h.set("content-range", `bytes ${off}-${off + len - 1}/${o.size}`);
+    h.set("content-length", String(len));
+    return new Response(o.body, { status: 206, headers: h });
+  }
+  h.set("content-length", String(o.size));
+  return new Response(o.body, { headers: h });
+}
+
+const AUTHED = new Set(["GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout"]);
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const route = `${req.method} ${url.pathname.replace(/\/+$/, "") || "/"}`;
+    try {
+      await migrate(env);
+      const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(?:\.mp4)?\/?$/);
+      if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1]);
+      // GET / and the other website pages come from site/ (static assets, answered before this code runs)
+      if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
+      const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
+      if (dm && req.method === "GET") return (await download(env, dm[1])) || (await notFound(req, env));
+      const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
+      if (um && req.method === "GET") return await update(env, um[1], um[3]);
+      if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
+      if (route === "GET /plans") return json({ plans: await plans(env) });
+      if (route === "POST /polar/webhook") return await polarWebhook(req, env);
+      if (route === "POST /auth/start") return await authStart(req, env);
+      if (route === "POST /auth/verify") return await authVerify(req, env);
+      const user = await userFromToken(req, env);
+      if (!user) return AUTHED.has(route) || req.headers.has("authorization")
+        ? fail("Signed out - sign in to Echo Cloud again", 401) : await notFound(req, env);
+      if (route === "GET /me") return json(me(user, await usage(env, user, url.searchParams.has("fresh"))));
+      if (route === "POST /creds") return await creds(user, env);
+      if (route === "POST /share") return await share(req, user, env, url.origin);
+      if (route === "POST /checkout") return await checkout(req, user, env, url.origin);
+      if (route === "POST /portal") return await portal(user, env);
+      if (route === "POST /auth/logout") {
+        const t = (req.headers.get("authorization") || "").slice(7).trim();
+        await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(t)).run();
+        return json({ ok: true });
+      }
+      return await notFound(req, env);
+    } catch (e) {
+      console.log("error", e && e.stack);
+      return fail("Echo Cloud had a problem - try again", 500);
+    }
+  },
+};
+
