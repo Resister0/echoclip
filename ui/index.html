@@ -804,6 +804,11 @@
           <h2>App Settings</h2>
           <p>How Echo behaves on your PC.</p>
           <div class="box">
+            <h3>About</h3>
+            <div class="row"><div class="lbl"><b id="appver">Echo</b><small id="updstate">Echo checks for updates by itself every few hours.</small></div>
+              <button class="btn" id="updnow" onclick="updManual()">Check for updates</button></div>
+          </div>
+          <div class="box">
             <h3>Appearance</h3>
             <div class="themegrid" id="themegrid"></div>
             <div class="row" id="custrow" hidden><div class="lbl"><b>Your own colours</b><small>Pick two colours, Echo works out the rest. Dark backgrounds read best.</small></div>
@@ -988,8 +993,22 @@
   if (IS_LINUX) setTimeout(() => invoke("hotkey_mode").then(m => { if (m === "portal") $("hkportal").style.display = ""; }).catch(() => {}), 1500);
   // ----- updates: check 30 s after start, then every 6 hours; never interrupts, the user clicks when ready -----
   let updInfo = null;
-  async function updCheck() {
-    try { updInfo = await invoke("update_check"); } catch (e) { return; }
+  let appVer = "";
+  invoke("app_version").then(v => { appVer = v; $("appver").textContent = v === "0.1.0" ? "Echo (built on this PC)" : `Echo ${v}`; }).catch(() => {});
+  async function updManual() {
+    const b = $("updnow"), st = $("updstate");
+    if (appVer === "0.1.0") { st.textContent = "Updates are off for builds made on this PC (build.cmd). The installed Echo updates itself."; return; }
+    b.disabled = true; st.textContent = "Checking…";
+    try {
+      const u = await invoke("update_check");
+      if (u) { await updCheck(u); st.textContent = `Echo ${u.version} is ready - click "${u.can_install ? "Restart Echo" : "Download"}" on the left.`; }
+      else st.textContent = "You have the newest version.";
+    } catch (e) { st.textContent = "Couldn't check: " + e; }
+    b.disabled = false;
+  }
+  async function updCheck(known) {
+    if (known) updInfo = known;
+    else try { updInfo = await invoke("update_check"); } catch (e) { return; }
     if (!updInfo) return;
     $("updtext").textContent = `Echo ${updInfo.version} is here (you have ${updInfo.current}).`;
     $("updbtn").textContent = updInfo.can_install ? "Restart Echo" : "Download";

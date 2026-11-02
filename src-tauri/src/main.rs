@@ -94,6 +94,12 @@ struct UpdateInfo {
     can_install: bool,
 }
 
+/// The version shown in Settings → App Settings (1.0.N from GitHub; 0.1.0 = built on this PC with build.cmd).
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[tauri::command]
 async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -1569,6 +1575,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_check,
+            app_version,
             update_install,
             hotkey_mode,
             hotkeys_paused,
