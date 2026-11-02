@@ -4,6 +4,10 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
+- The player's Share button makes the same kind of link as "Copy share link"
+
+## Same share link every time, safer stored logins
 - "Copy share link" hands out the same link again instead of making a new one (changing the lifetime keeps the link)
 - Signing out of a cloud removes its clips from the library right away
 - Sign-in tokens and storage keys are stored encrypted: Windows data protection (DPAPI) on Windows, the desktop keyring (KDE Wallet / GNOME Keyring) on Linux; the cloud login file (rclone config) is encrypted too

@@ -2783,49 +2783,8 @@ impl Recorder {
         Ok(out)
     }
 
-    /// Upload a clip to the user's Cloudflare R2 bucket (via rclone) and return its public link.
-    pub fn share_clip(&self, path: &str) -> Result<String, String> {
-        let cfg = self.settings();
-        if cfg.r2_account.trim().is_empty() || cfg.r2_key.trim().is_empty() || cfg.r2_secret.trim().is_empty()
-            || cfg.r2_bucket.trim().is_empty() || cfg.r2_url.trim().is_empty() {
-            return Err("Set up sharing first: Settings > Sharing".into());
-        }
-        let src = PathBuf::from(self.shareable(path)?);
-        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
-        let db = self.thumbs_dir().join("shared.json");
-        let mut m: std::collections::BTreeMap<String, String> = fs::read_to_string(&db).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let size = fs::metadata(&src).map_err(err)?.len();
-        let key = format!("{stem}|{size}");
-        if let Some(u) = m.get(&key) {
-            return Ok(u.clone());
-        }
-        let rclone = ensure_rclone()?;
-        let tag = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() % 1_000_000).unwrap_or(0);
-        let object: String = format!("{}-{tag}.mp4", safe_name(&stem).replace("__", "_"));
-        let t0 = Instant::now();
-        let o = hidden(&rclone.to_string_lossy())
-            .args(["copyto", "--s3-no-check-bucket"]).arg(&src).arg(format!("clipr2:{}/{object}", cfg.r2_bucket.trim()))
-            .env("RCLONE_CONFIG_CLIPR2_TYPE", "s3")
-            .env("RCLONE_CONFIG_CLIPR2_PROVIDER", "Cloudflare")
-            .env("RCLONE_CONFIG_CLIPR2_REGION", "auto")
-            .env("RCLONE_CONFIG_CLIPR2_ACCESS_KEY_ID", cfg.r2_key.trim())
-            .env("RCLONE_CONFIG_CLIPR2_SECRET_ACCESS_KEY", cfg.r2_secret.trim())
-            .env("RCLONE_CONFIG_CLIPR2_ENDPOINT", format!("https://{}.r2.cloudflarestorage.com", cfg.r2_account.trim()))
-            .output().map_err(err)?;
-        if !o.status.success() {
-            let e = String::from_utf8_lossy(&o.stderr).to_string();
-            log_line(&format!("share: upload failed: {}", e.trim().lines().last().unwrap_or("")));
-            return Err(format!("Upload failed: {}", e.trim().lines().last().unwrap_or("see log")));
-        }
-        let url = format!("{}/{object}", cfg.r2_url.trim().trim_end_matches('/'));
-        log_line(&format!("share: {} MB in {:.1}s -> {url}", size / 1_000_000, t0.elapsed().as_secs_f32()));
-        m.insert(key, url.clone());
-        let _ = fs::create_dir_all(self.thumbs_dir());
-        let _ = fs::write(&db, serde_json::to_string_pretty(&m).unwrap_or_default());
-        Ok(url)
-    }
-
-    /// Names of clips that were shared (for the cloud badge).
+    /// Names of clips that were shared (for the cloud badge): old links from the removed "own R2 bucket"
+    /// sharing (.thumbs/shared.json, they keep working) + links made through the cloud.
     pub fn shared_clips(&self) -> Vec<String> {
         let m: std::collections::BTreeMap<String, String> = fs::read_to_string(self.thumbs_dir().join("shared.json")).ok()
             .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();

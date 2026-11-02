@@ -731,7 +731,6 @@
         <h4>STORAGE</h4>
         <a data-sec="storage">Clips & Storage</a>
         <a data-sec="cloud">Cloud</a>
-        <a data-sec="share">Sharing</a>
         <h4>APP</h4>
         <a data-sec="app">App Settings</a>
       </nav>
@@ -866,20 +865,6 @@
             <div class="row"><div class="lbl"><b>Sync now</b><small id="cloudbusy">Syncs every 5 minutes and right after you save a clip</small></div><button class="btn" onclick="invoke('cloud_sync_now');toast('Syncing…')">Sync now</button></div>
           </div>
           <div class="note">"Remove from PC" on a clip keeps it only in the cloud: it stays in your library with a ☁ badge, plays straight from the cloud, and downloads again when you edit it.</div>
-        </div>
-
-        <div class="sec" id="sec-share">
-          <h2>Sharing</h2>
-          <p>The <b>Share</b> button uploads a clip to your own Cloudflare R2 bucket and copies a link that plays right inside Discord. R2 is free up to 10 GB with no download fees.</p>
-          <div class="box">
-            <h3>Cloudflare R2</h3>
-            <div class="row"><div class="lbl"><b>Account ID</b><small>Cloudflare dashboard › R2 › right side "Account ID"</small></div><input class="txtin" data-k="r2_account" data-lazy spellcheck="false"></div>
-            <div class="row"><div class="lbl"><b>Bucket name</b><small>e.g. clips</small></div><input class="txtin" data-k="r2_bucket" data-lazy spellcheck="false"></div>
-            <div class="row"><div class="lbl"><b>Access Key ID</b><small>R2 › Manage API tokens › Create token (Object Read & Write)</small></div><input class="txtin" data-k="r2_key" data-lazy spellcheck="false"></div>
-            <div class="row"><div class="lbl"><b>Secret Access Key</b><small>Shown once when you create the token</small></div><input class="txtin" type="password" data-k="r2_secret" data-lazy spellcheck="false"></div>
-            <div class="row"><div class="lbl"><b>Public URL</b><small>Bucket › Settings › Public access › "R2.dev subdomain" (https://pub-….r2.dev) or your own domain</small></div><input class="txtin" data-k="r2_url" data-lazy spellcheck="false" placeholder="https://pub-xxxx.r2.dev"></div>
-          </div>
-          <div class="note">Setup once: Cloudflare account → R2 → Create bucket → Settings → allow the r2.dev public URL → Manage API tokens → create a token with Object Read &amp; Write. Paste the 5 values above. The first Share downloads a small upload tool (rclone, ~25 MB). Shared clips get a ☁ badge; sharing the same clip again just copies the same link.</div>
         </div>
 
         <div class="sec" id="sec-storage">
@@ -1401,9 +1386,8 @@
       // several clouds: only fall back to Share when the clip sits on Filen - otherwise show the real problem
       catch (e) { if (cfg.cloud !== "multi" || !(cfg.cloud_accounts || []).some(a => a.provider === "filen")) throw e; }
     }
-    if (!cfg.r2_url) { toast("Filen doesn't allow links from other apps - set up Share once to get Discord links"); closePlayer(); openSettings("share"); return; }
-    const l = await ensureLocal(c);
-    await invoke("share_clip", { path: l.path }); shared.add(l.name); toast("Link copied - paste it in Discord");
+    // Filen makes no links other apps can play: Echo Cloud does (the free plan too)
+    toast("Filen can't make links that play in Discord - add Echo Cloud (free) under Settings → Cloud"); closePlayer(); openSettings("cloud");
   }
   // a clip that's only on this PC: upload it (Echo Cloud first, so the link plays in Discord), then copy the link
   async function uploadLink(c, days) {
@@ -2161,8 +2145,10 @@
     $("pshow").onclick = () => action("folder", c);
     $("pshare").onclick = async () => {
       const b = $("pshare"); if (b.disabled) return; b.disabled = true; b.lastChild.textContent = "Uploading…";
-      try { await invoke("share_clip", { path: c.path }); toast("Link copied - paste it in Discord"); shared.add(c.name); }
-      catch (e) { toast(String(e)); if (String(e).includes("Settings")) { closePlayer(); openSettings("share"); } }
+      // the link goes through the cloud (Echo Cloud first, so it plays in Discord); no cloud yet -> set one up
+      if (!cfg || !cfg.cloud) { toast("Sign in to Echo Cloud (free) to make share links"); closePlayer(); openSettings("cloud"); b.disabled = false; b.lastChild.textContent = "Share"; return; }
+      try { await (inCloud(c) ? copyLink(c) : uploadLink(c)); }
+      catch (e) { toast(String(e)); }
       b.disabled = false; b.lastChild.textContent = "Share";
     };
     $("pdel").onclick = () => action("del", c);

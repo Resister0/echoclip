@@ -760,12 +760,6 @@ async fn list_games(rec: State<'_, Recorder>) -> Result<Vec<recorder::GameInfo>,
     })
 }
 
-#[tauri::command]
-async fn share_clip(rec: State<'_, Recorder>, path: String) -> Result<String, String> {
-    let url = rec.share_clip(&path)?;
-    let _ = recorder::copy_text(&url);
-    Ok(url)
-}
 
 #[tauri::command]
 async fn shared_clips(rec: State<'_, Recorder>) -> Result<Vec<String>, String> {
@@ -1729,7 +1723,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, share_clip, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())
