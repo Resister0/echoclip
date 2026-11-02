@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod net;
 mod recorder;
 mod settings;
 mod pad;
@@ -403,8 +404,14 @@ async fn compress_clip(rec: State<'_, Recorder>, path: String, factor: f64) -> R
 }
 
 #[tauri::command]
-async fn cloud_link(rec: State<'_, Recorder>, rel: String) -> Result<String, String> {
-    let url = rec.cloud_link(&rel)?;
+async fn upload_and_link(rec: State<'_, Recorder>, path: String, days: Option<u32>) -> Result<String, String> {
+    let url = rec.upload_and_link(&path, days)?;
+    recorder::copy_text(&url)?;
+    Ok(url)
+}
+#[tauri::command]
+async fn cloud_link(rec: State<'_, Recorder>, rel: String, days: Option<u32>) -> Result<String, String> {
+    let url = rec.cloud_link(&rel, days)?;
     recorder::copy_text(&url)?;
     Ok(url)
 }
@@ -1585,6 +1592,7 @@ fn main() {
             media_base,
             toggle_mic,
             cloud_link,
+            upload_and_link,
             compress_clip,
             cloud_connect,
             cloud_disconnect,

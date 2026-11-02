@@ -1,0 +1,61 @@
+<!-- title: Echo Cloud plans | desc: Keep your clips safe and share links that play in Discord. 10 GB free, 250 GB from €4.95 a month. -->
+<section class="center">
+  <div class="wrap">
+    <h2 style="margin-top:24px">Echo Cloud plans</h2>
+    <p class="sub">Back up your clips, get them on every PC and share links that play right in Discord. Start free, upgrade from inside Echo whenever you need more space.</p>
+
+    <div class="toggle" role="group" aria-label="Billing period">
+      <button type="button" class="on" data-int="month">Monthly</button>
+      <button type="button" data-int="year">Yearly <em>2 months free</em></button>
+    </div>
+
+    <div class="plans" id="plans">
+      <div class="plan">
+        <div class="tag"></div>
+        <h3>10 GB</h3>
+        <div class="price">Free</div>
+        <ul><li>Automatic backup of new clips</li><li>Share links that play in Discord</li><li>Clips on all your PCs</li></ul>
+      </div>
+      <!-- paid plans are filled in from /plans (the live prices in Polar); these are the fallback -->
+      <div class="plan best" data-gb="250"><div class="tag">Most popular</div><h3>250 GB</h3>
+        <div class="price" data-month="€4.95" data-year="€47.95">€4.95 <small>/ month</small></div>
+        <ul><li>Everything in Free</li><li>Room for a big clip library</li><li>Cancel any time</li></ul></div>
+      <div class="plan" data-gb="500"><div class="tag"></div><h3>500 GB</h3>
+        <div class="price" data-month="€9.95" data-year="€95.95">€9.95 <small>/ month</small></div>
+        <ul><li>Everything in Free</li><li>For daily clippers</li><li>Cancel any time</li></ul></div>
+      <div class="plan" data-gb="1000"><div class="tag"></div><h3>1 TB</h3>
+        <div class="price" data-month="€19" data-year="€189">€19 <small>/ month</small></div>
+        <ul><li>Everything in Free</li><li>Keep (almost) everything</li><li>Cancel any time</li></ul></div>
+    </div>
+
+    <p class="fine" style="margin-top:28px;font-size:15px;color:var(--muted)">Don't want to pay? Echo also backs up to Google Drive, MEGA, pCloud, Filen, your own server or a NAS, for free.
+      Everything works except share links that play in Discord. <a href="/#storage">See your options</a>.</p>
+    <p class="fine">How to upgrade: in Echo open <b>Settings → Cloud</b>, sign in to Echo Cloud and click <b>Upgrade</b>.<br>
+      Payments are handled by <a href="https://polar.sh" rel="noopener">Polar</a>, our merchant of record. Tax may be added at checkout depending on your country.
+      Cancelling keeps your plan until the end of the period you paid for. See the <a href="/terms">terms</a>.</p>
+  </div>
+</section>
+
+<script>
+(() => {
+  let interval = "month";
+  const money = (n, cur) => new Intl.NumberFormat("en-IE", { style: "currency", currency: (cur || "eur").toUpperCase(),
+    minimumFractionDigits: n % 1 ? 2 : 0 }).format(n);
+  const show = () => {
+    document.querySelectorAll(".toggle button").forEach((b) => b.classList.toggle("on", b.dataset.int === interval));
+    document.querySelectorAll(".plan .price[data-month]").forEach((p) => {
+      p.innerHTML = `${p.dataset[interval]} <small>/ ${interval}</small>`;
+    });
+  };
+  document.querySelectorAll(".toggle button").forEach((b) => b.onclick = () => { interval = b.dataset.int; show(); });
+  // live prices from Polar (same list Echo shows)
+  fetch("/plans").then((r) => r.ok ? r.json() : null).then((j) => {
+    if (!j || !j.plans) return;
+    for (const p of j.plans) {
+      const card = document.querySelector(`.plan[data-gb="${p.gb >= 1000 ? 1000 : p.gb}"] .price`);
+      if (card && (p.interval === "month" || p.interval === "year")) card.dataset[p.interval] = money(p.price, p.currency);
+    }
+    show();
+  }).catch(() => {});
+})();
+</script>

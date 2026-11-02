@@ -392,6 +392,17 @@ pub fn clipboard_text(text: &str) -> bool {
     set_clipboard(vec![(CF_UNICODETEXT.0 as u32, d)])
 }
 
+/// Open a link in the default browser the normal Windows way (ShellExecute "open"), instead of
+/// starting rundll32 - antivirus heuristics treat rundll32 launches from unsigned apps as suspicious.
+pub fn open_url(url: &str) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let (verb, file) = (wide("open"), wide(url));
+    let h = unsafe { ShellExecuteW(HWND::default(), PCWSTR(verb.as_ptr()), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+    h.0 as isize > 32
+}
+
 /// Start a program with admin rights (Windows shows its permission prompt).
 /// wait = true: waits and returns the exit code; false: returns Some(0) once it started. None = declined / failed.
 pub fn run_elevated(exe: &str, args: &str, wait: bool) -> Option<i32> {

@@ -833,10 +833,10 @@ pub fn ensure_ffmpeg() {
 
 fn download(url: &str, to: &Path) -> Result<(), String> {
     let tmp = to.with_extension("part");
-    let ok = hidden("curl")
-        .args(["-L", "--fail", "--silent", "--show-error", "--retry", "2", "-o"]).arg(&tmp).arg(url)
-        .status().map_err(|e| format!("curl not available: {e}"))?.success();
-    if !ok || fs::metadata(&tmp).map_or(true, |m| m.len() < 1000) {
+    if let Err(e) = crate::net::download(url, &tmp) {
+        log_line(&format!("download failed: {e}"));
+    }
+    if fs::metadata(&tmp).map_or(true, |m| m.len() < 1000) {
         let _ = fs::remove_file(&tmp);
         return Err(format!("download failed: {url}"));
     }
@@ -4515,6 +4515,24 @@ fn acc_path(a: &crate::settings::CloudAccount, sub: &str) -> String {
     if r.ends_with(':') { format!("{r}{sub}") } else { format!("{r}/{sub}") }
 }
 
+/// With several clouds and a chosen upload target: the account new clips go to.
+/// None = let the union pick (most free space) - also when Echo Cloud is picked but the clip doesn't fit.
+/// `for_link`: the clip is uploaded to make a share link - Echo Cloud first (links that play in Discord).
+fn upload_target(cfg: &crate::settings::Settings, size: u64, for_link: bool) -> Option<crate::settings::CloudAccount> {
+    if cfg.cloud_accounts.len() < 2 || (cfg.cloud_target.is_empty() && !for_link) {
+        return None;
+    }
+    let acc = if for_link || cfg.cloud_target == "echocloud" {
+        cfg.cloud_accounts.iter().find(|a| a.provider == "echocloud")?
+    } else {
+        cfg.cloud_accounts.iter().find(|a| a.id.to_string() == cfg.cloud_target)?
+    };
+    if acc.provider == "echocloud" && (ec_full() || ec_space_left().map_or(false, |left| size > left)) {
+        return None; // Echo Cloud is full: this one goes to the other clouds
+    }
+    Some(acc.clone())
+}
+
 /// Rebuild the "echo" remote over all accounts: alias for one, union for several
 /// (new clips go to the account with the most free space; reads/moves/deletes look everywhere).
 fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), String> {
@@ -4588,9 +4606,8 @@ fn filen_api_key(email: &str, pass: &str, code: &str) -> Result<String, String> 
     let exe = dir.join(if cfg!(windows) { "filen.exe" } else { "filen" });
     if !exe.exists() {
         log_line("cloud: downloading the Filen CLI");
-        let json = hidden("curl").args(["-sL", "-H", "User-Agent: Echo", "https://api.github.com/repos/FilenCloudDienste/filen-cli-releases/releases/latest"])
-            .output().map_err(err)?;
-        let v: serde_json::Value = serde_json::from_slice(&json.stdout).map_err(|_| "Couldn't reach GitHub to get the Filen tool".to_string())?;
+        let v = crate::net::get_json("https://api.github.com/repos/FilenCloudDienste/filen-cli-releases/releases/latest")
+            .map_err(|e| { log_line(&format!("filen: {e}")); "Couldn't reach GitHub to get the Filen tool".to_string() })?;
         let want_os = if cfg!(windows) { "windows" } else { "linux-gnu" };
         let url = v["assets"].as_array().into_iter().flatten()
             .filter_map(|a| a["browser_download_url"].as_str())
@@ -4740,30 +4757,21 @@ fn ec_api(cfg: &crate::settings::Settings) -> String {
     a.trim_end_matches('/').to_string()
 }
 
-/// Call the Echo Cloud server (curl, JSON in and out). Server errors come back as Err(message).
+/// Call the Echo Cloud server (JSON in and out). Server errors come back as Err(message).
 fn ec_call(api: &str, method: &str, path: &str, token: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    let mut c = hidden("curl");
-    c.args(["-sS", "--max-time", "30", "-X", method, "-H", "content-type: application/json", "-H", "user-agent: Echo", "-w", "\n%{http_code}"]);
+    let mut h = vec![("content-type".to_string(), "application/json".to_string())];
     if !token.is_empty() {
-        c.args(["-H", &format!("authorization: Bearer {token}")]);
+        h.push(("authorization".into(), format!("Bearer {token}")));
     }
-    if body.is_some() {
-        c.args(["--data-binary", "@-"]);
-    }
-    c.arg(format!("{api}{path}")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut ch = c.spawn().map_err(|e| format!("curl not available: {e}"))?;
-    if let (Some(b), Some(mut i)) = (body, ch.stdin.take()) {
-        let _ = i.write_all(b.to_string().as_bytes());
-    }
-    let o = ch.wait_with_output().map_err(err)?;
-    let text = String::from_utf8_lossy(&o.stdout).to_string();
-    let (json, code) = text.trim_end().rsplit_once('\n').unwrap_or(("", text.trim()));
-    let code: u32 = code.trim().parse().unwrap_or(0);
-    if code == 0 {
-        // log why (DNS, TLS, timeout…) - curl's exit code + message
-        log_line(&format!("echo cloud: {api}{path} unreachable: curl exit {:?} {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim()));
-        return Err("Couldn't reach Echo Cloud - check your internet".into());
-    }
+    let (code, json) = match crate::net::request(method, &format!("{api}{path}"), h, body.map(|b| b.to_string()), 30) {
+        Ok(r) => r,
+        Err(e) => {
+            // log why (DNS, TLS, timeout…)
+            log_line(&format!("echo cloud: {api}{path} unreachable: {e}"));
+            return Err("Couldn't reach Echo Cloud - check your internet".into());
+        }
+    };
+    let json = json.as_str();
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
     if let Some(e) = v["error"].as_str() {
         return Err(e.to_string());
@@ -4868,7 +4876,9 @@ pub fn open_web(url: &str) -> Result<(), String> {
         return Err("Echo Cloud sent no link - try again".into());
     }
     #[cfg(windows)]
-    hidden("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn().map_err(err)?;
+    if !crate::winutil::open_url(url) {
+        return Err("Couldn't open the browser".into());
+    }
     #[cfg(not(windows))]
     Command::new("xdg-open").arg(url).spawn().map_err(err)?;
     Ok(())
@@ -5261,6 +5271,20 @@ impl Recorder {
     }
 
     pub fn cloud_upload(&self, path: &str) -> Result<(), String> {
+        self.upload_inner(path, false)
+    }
+
+    /// "Copy share link" on a clip that's only on this PC: upload it (to Echo Cloud when there is one and it
+    /// has room, so the link plays in Discord), then make the link. Returns the link (also copied by the caller).
+    pub fn upload_and_link(&self, path: &str, days: Option<u32>) -> Result<String, String> {
+        let rel = self.rel_of(path).ok_or("not a clip")?;
+        if !self.cloud_state().files.iter().any(|f| f.rel == rel) {
+            self.upload_inner(path, true)?;
+        }
+        self.cloud_link(&rel, days)
+    }
+
+    fn upload_inner(&self, path: &str, for_link: bool) -> Result<(), String> {
         let rel = self.rel_of(path).ok_or("not a clip")?;
         ec_ensure();
         let only_ec = self.settings().cloud_accounts.len() == 1 && EC.lock().map(|g| g.is_some()).unwrap_or(false);
@@ -5290,7 +5314,11 @@ impl Recorder {
             if p.count == 0 { p.idx = 1; p.count = 1; }
             p.rel = rel.clone(); p.got = 0; p.total = fsize;
         }
-        let r = rclone_progress(&["copyto", path, &remote(&cp)], |b, t| {
+        // several clouds: the one picked in Settings → Cloud ("Upload new clips to"), else the union decides
+        let dst = upload_target(&self.settings(), fsize, for_link)
+            .map(|a| acc_path(&a, &format!("Echo/{}", cp.trim_start_matches('/'))))
+            .unwrap_or_else(|| remote(&cp));
+        let r = rclone_progress(&["copyto", path, &dst], |b, t| {
             let mut p = UP_PROGRESS.lock().unwrap();
             if p.rel == rel { p.got = b; if t > 0 { p.total = t; } }
         });
@@ -5511,8 +5539,9 @@ impl Recorder {
     }
 
     /// A link to the cloud copy (pCloud / MEGA / Filen public link); copied to the clipboard by the caller.
-    pub fn cloud_link(&self, rel: &str) -> Result<String, String> {
-        let days = self.settings().link_days;
+    /// `days`: this link's lifetime (None = the default from Settings → Sharing, 0 = never expires).
+    pub fn cloud_link(&self, rel: &str, days: Option<u32>) -> Result<String, String> {
+        let days = days.map(|d| d.min(3650)).unwrap_or_else(|| self.settings().link_days);
         let exp = format!("{days}d");
         let mut args = vec!["link"];
         if days > 0 {
@@ -5714,9 +5743,8 @@ pub fn presentmon_exe() -> Result<PathBuf, String> {
         return Ok(exe);
     }
     fs::create_dir_all(&dir).map_err(err)?;
-    let json = hidden("curl").args(["-sL", "-H", "User-Agent: Echo", "https://api.github.com/repos/GameTechDev/PresentMon/releases/latest"])
-        .output().map_err(err)?.stdout;
-    let v: serde_json::Value = serde_json::from_slice(&json).map_err(|_| "couldn't reach GitHub".to_string())?;
+    let v = crate::net::get_json("https://api.github.com/repos/GameTechDev/PresentMon/releases/latest")
+        .map_err(|e| format!("couldn't reach GitHub: {e}"))?;
     let url = v["assets"].as_array().and_then(|a| a.iter().find_map(|x| {
         let n = x["name"].as_str()?.to_lowercase();
         (n.starts_with("presentmon") && n.ends_with("-x64.exe") && !n.contains("service")).then(|| x["browser_download_url"].as_str().map(String::from)).flatten()

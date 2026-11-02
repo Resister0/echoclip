@@ -271,13 +271,19 @@ function sharePage(req, row, id) {
   const w = row.w || 1920, h = row.h || 1080;
   const mins = row.dur ? `${Math.floor(row.dur / 60)}:${String(Math.round(row.dur % 60)).padStart(2, "0")}` : "";
   const img = row.thumb ? `${base}.jpg` : `${u.origin}/og.png`;
+  // the game: the clip's folder in Echo (Echo/<year>/<month>/<day>/<game>/<clip>.mp4), if it isn't a date
+  const parts = row.key.split("/"), folder = parts.length > 2 ? parts[parts.length - 2] : "";
+  const game = folder && !/^\d|^(january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(folder) && folder !== "Echo" ? folder : "";
+  const desc = [mins, game, "Clipped with Echo, the lightweight clipping app"].filter(Boolean).join(" · ");
+  const logo = `<svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(name)} - Echo</title>
+<meta name="description" content="${esc(desc)}">
 <meta name="theme-color" content="#7c5cff">
 <meta property="og:site_name" content="Echo">
 <meta property="og:title" content="${esc(name)}">
-<meta property="og:description" content="${mins ? `${mins} · ` : ""}Clipped with Echo · echoclip.link">
+<meta property="og:description" content="${esc(desc)}">
 <meta property="og:type" content="video.other">
 <meta property="og:url" content="${base}">
 <meta property="og:image" content="${img}">
@@ -295,24 +301,76 @@ function sharePage(req, row, id) {
 <meta name="twitter:player:height" content="${h}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
-*{box-sizing:border-box;margin:0}body{min-height:100vh;background:#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
-.wrap{width:100%;max-width:1100px}video{width:100%;max-height:78vh;background:#000;border-radius:14px;display:block;box-shadow:0 20px 60px #0009}
-h1{font-size:22px;margin:16px 0 4px;word-break:break-word}.meta{color:#a0a0ab;font-size:14px}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:6px}
+*{box-sizing:border-box;margin:0}
+body{min-height:100vh;background:radial-gradient(1000px 420px at 50% -160px,#6a4cf540,transparent 70%),#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:#9d85ff;text-decoration:none}a:hover{text-decoration:underline}
-.btn{display:inline-flex;align-items:center;height:38px;padding:0 16px;border-radius:10px;font-weight:600;border:1px solid #26262c;background:#1e1e23;color:#f5f5f7}
-.btn.p{background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);border-color:transparent}.btn:hover{text-decoration:none;filter:brightness(1.1)}
-.by{margin-top:28px;color:#6b6b76;font-size:13px}
-</style></head><body><div class="wrap">
-<video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>
-<div class="row"><div><h1>${esc(name)}</h1><div class="meta">${mins ? `${mins} · ` : ""}Shared with Echo</div></div>
-<div style="display:flex;gap:8px"><a class="btn" href="${base}.mp4" download>Download</a><a class="btn p" href="https://echoclip.link/">Get Echo</a></div></div>
-<p class="by">Echo is a free, lightweight game clipping app for Windows and Linux. <a href="https://echoclip.link/">echoclip.link</a></p>
-</div></body></html>`;
+header{max-width:1180px;margin:0 auto;padding:18px 20px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:9px;color:#f5f5f7;font-weight:700;font-size:17px}.brand:hover{text-decoration:none}
+.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);display:grid;place-items:center;box-shadow:0 6px 18px #6a4cf555}
+.top{margin-left:auto;font-size:14px;color:#a0a0ab}
+main{max-width:1180px;margin:0 auto;padding:4px 20px 40px}
+.player{position:relative;border-radius:16px;overflow:hidden;background:#000;border:1px solid #26262c;box-shadow:0 30px 80px #000a,0 0 0 1px #7c5cff22}
+video{width:100%;max-height:76vh;display:block;background:#000}
+.info{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;margin-top:18px}
+h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:26px;line-height:1.2;letter-spacing:-.01em;word-break:break-word}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.chip{font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:99px;background:#16161a;border:1px solid #26262c;color:#a0a0ab}
+.chip.g{color:#9d85ff;background:#7c5cff1a;border-color:#7c5cff4d}
+.acts{display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-radius:11px;font-weight:600;border:1px solid #26262c;background:#1e1e23;color:#f5f5f7;transition:transform .15s,filter .15s}
+.btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.btn.p{background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);border-color:transparent;box-shadow:0 8px 24px #6a4cf540}
+.btn:hover{text-decoration:none;transform:translateY(-1px);filter:brightness(1.1)}
+.promo{margin-top:34px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;background:linear-gradient(160deg,#7c5cff1a,#16161a 60%);border:1px solid #7c5cff40;border-radius:16px;padding:20px 22px}
+.promo .logo{width:46px;height:46px;border-radius:13px;flex:none}.promo .logo svg{width:28px;height:28px}
+.promo b{display:block;font-size:16.5px}.promo p{color:#a0a0ab;font-size:14px;margin-top:2px}
+.promo .btn{margin-left:auto}
+.pts{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;color:#6b6b76;font-size:13px}.pts span+span::before{content:"·";margin-right:10px}
+footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-size:13px}
+.ep video{cursor:pointer}
+.epui{position:absolute;inset:0;pointer-events:none}
+.epbig{position:absolute;left:50%;top:50%;width:76px;height:76px;margin:-38px 0 0 -38px;border-radius:50%;background:#7c5cffd9;display:grid;place-items:center;pointer-events:auto;cursor:pointer;opacity:0;transform:scale(.85);transition:opacity .2s,transform .2s;box-shadow:0 10px 40px #6a4cf580}
+.epbig svg{width:34px;height:34px;fill:#fff;margin-left:4px}
+.ep.paused .epbig{opacity:1;transform:none}
+.epbar{position:absolute;left:0;right:0;bottom:0;padding:34px 16px 10px;background:linear-gradient(transparent,#000c);pointer-events:auto;transition:opacity .25s}
+.ep.idle .epbar{opacity:0}.ep.idle{cursor:none}
+.eptl{position:relative;height:18px;display:flex;align-items:center;cursor:pointer;touch-action:none;outline:none}
+.eptrack{position:relative;width:100%;height:6px;border-radius:6px;background:#ffffff33;overflow:hidden;transition:height .12s}
+.eptl:hover .eptrack,.ep.seeking .eptrack{height:9px}
+.eptrack i{position:absolute;inset:0;transform-origin:0 50%;transform:scaleX(0)}
+.epbuf{background:#ffffff40}.epdone{background:linear-gradient(90deg,#8b6cff,#7c5cff 60%,#9d85ff)}
+.epknob{position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px #7c5cff66,0 2px 8px #0008;transform:scale(0);transition:transform .12s}
+.eptl:hover .epknob,.ep.seeking .epknob,.eptl:focus-visible .epknob{transform:scale(1)}
+.eptip{position:absolute;bottom:22px;transform:translateX(-50%);background:#16161ae6;border:1px solid #26262c;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap}
+.eptl:hover .eptip{opacity:1}
+.eprow{display:flex;align-items:center;gap:6px;margin-top:4px}
+.epb{width:38px;height:38px;border:0;border-radius:10px;background:none;color:#fff;display:grid;place-items:center;cursor:pointer;transition:background .15s}
+.epb:hover{background:#ffffff1f}.epb svg{width:22px;height:22px;fill:#fff}
+.epb svg .w{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.epvol{display:flex;align-items:center}.epvol input{width:0;opacity:0;transition:width .2s,opacity .2s;accent-color:#7c5cff;cursor:pointer}
+.epvol:hover input,.epvol input:focus{width:84px;opacity:1;margin:0 6px}
+.eptime{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;color:#f5f5f7;margin-left:4px}
+.epgrow{flex:1}
+.ep:fullscreen{border-radius:0;border:0}.ep:fullscreen video{max-height:none;height:100vh}
+@media(max-width:640px){h1{font-size:21px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}.promo .btn{margin-left:0;width:100%;justify-content:center}.top{display:none}}
+</style></head><body>
+<header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
+<main>
+<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video></div>
+<div class="info"><div><h1>${esc(name)}</h1><div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
+<div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
+<div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>
+<div><b>Clip your own moments with Echo</b><p>Free and light enough for low-end PCs. Press one key to save what just happened.</p>
+<div class="pts"><span>No account needed</span><span>Copy straight into Discord</span><span>Windows &amp; Linux</span></div></div>
+<a class="btn p" href="https://echoclip.link/">Get Echo, it's free</a></div>
+</main>
+<footer>Shared with <a href="https://echoclip.link/">Echo</a> · <a href="https://echoclip.link/terms">Terms</a> · Report this clip: <a href="mailto:support@echoclip.link?subject=Report%20${id}">support@echoclip.link</a></footer>
+<script src="/player.js" defer></script>
+</body></html>`;
   return new Response(req.method === "HEAD" ? null : html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300",
-    // no scripts on this page at all; the video and poster come from this site
-    "content-security-policy": "default-src 'none'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    // only our own player script (/player.js); the video and poster come from this site
+    "content-security-policy": "default-src 'none'; script-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
   } });
 }

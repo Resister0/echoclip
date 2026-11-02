@@ -741,6 +741,7 @@
             <h3>Sync</h3>
             <div class="row"><div class="lbl"><b>Upload automatically</b><small>Anything else: the cloud button on a clip, or Upload in the player</small></div>
               <select data-k="cloud_upload"><option value="off">Nothing</option><option value="favs">Favourites</option><option value="game">Every new clip, when the game closes</option><option value="all">Every new clip, right away</option></select></div>
+            <div class="row" id="ctrow" style="display:none"><div class="lbl"><b>Upload new clips to</b><small>With several clouds. Echo Cloud first gives you share links that play in Discord; when it's full, clips go to your other clouds.</small></div><select data-k="cloud_target" id="ctsel"></select></div>
             <div class="row"><div class="lbl"><b>Free up space after uploading</b><small>Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud)</small></div><label class="switch"><input type="checkbox" data-k="cloud_free_after"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Share links expire</b><small>"Copy share link" on a clip in the cloud makes a link anyone can open</small></div>
               <select data-k="link_days" data-num><option value="0">Never</option><option value="1">After 1 day</option><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option></select></div>
@@ -1043,7 +1044,17 @@
   });
 
   /* ---------- status + library ---------- */
+  // thumbnails load when their card is about to scroll into view (big libraries open faster);
+  // sorting by length needs every clip's duration, so then they all load right away
+  const thumbIO = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
+    if (!e.isIntersecting) return; thumbIO.unobserve(e.target); const f = e.target._load; e.target._load = null; if (f) f();
+  }), { rootMargin: "900px 0px" }) : null;
+  function lazyThumb(el, f) { if (!thumbIO || ($("sort") && $("sort").value === "long")) return f(); el._load = f; thumbIO.observe(el); }
+
+  // while Echo is hidden (tray / minimised) the library isn't refreshed; it catches up the moment it's shown
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh().catch(() => {}); });
   async function refresh() {
+    if (document.hidden && refresh.done) return;
     status = await invoke("get_status");
     const on = status.recording;
     $("dot").classList.toggle("on", on); $("raildot").classList.toggle("on", on);
@@ -1058,19 +1069,24 @@
     $("encnote").textContent = status.mode === "gpu" ? `Zero-copy GPU pipeline (hardware ${({ hevc: "HEVC", av1: "AV1" })[cfg && cfg.codec] || "H.264"})` : status.mode.startsWith("cpu") ? "Fallback: CPU copy + " + ({ cpu: "AMD AMF", "cpu-nvenc": "NVIDIA NVENC", "cpu-qsv": "Intel Quick Sync" }[status.mode] || "hardware encoder") : "Starting…";
     $("lognote").textContent = "Log: " + status.log;
     drawMic();
-    try { const m = await invoke("clip_meta"); const k3 = JSON.stringify(m); if (k3 !== metaKey) { metaKey = k3; meta = m; listKey = ""; } } catch {}
-    clips = await invoke("list_clips");
-    try { folderList = await invoke("list_folders"); } catch { folderList = []; }
+    // these don't depend on each other: ask for all of them at once
+    const [mR, cR, fR, cfR, shR, fvR] = await Promise.allSettled([invoke("clip_meta"), invoke("list_clips"), invoke("list_folders"),
+      cfg && cfg.cloud ? invoke("cloud_files") : Promise.resolve([]), invoke("list_shots"), invoke("get_favorites")]);
+    if (mR.status === "fulfilled") { const m = mR.value, k3 = JSON.stringify(m); if (k3 !== metaKey) { metaKey = k3; meta = m; listKey = ""; } }
+    if (cR.status !== "fulfilled") throw cR.reason;
+    clips = cR.value;
+    folderList = fR.status === "fulfilled" ? fR.value : [];
     // cloud: clips only in the cloud join the library (path "cloud:<rel>")
-    try { cloudList = cfg && cfg.cloud ? await invoke("cloud_files") : []; } catch { cloudList = []; }
+    cloudList = cfR.status === "fulfilled" ? cfR.value : [];
     cloudRels = new Set(cloudList.map(f => f.rel)); cloudPaths = new Map(cloudList.map(f => [f.rel, f.path || f.rel]));
     if (cloudList.some(f => !f.local)) ensureBase().catch(() => {});   // warm up the streaming server before a cloud clip is opened
     for (const f of cloudList) if (!f.local) clips.push({ path: "cloud:" + f.rel, rel: f.rel, name: f.name, folder: f.folder, size: f.size, modified: f.modified, cloud: true });
     if (cloudList.length) clips.sort((a, b) => b.modified - a.modified);
-    try { shots = await invoke("list_shots"); } catch { shots = []; }
-    try { const f = await invoke("get_favorites"); const k2 = f.join("|"); if (k2 !== [...favs].join("|")) { favs = new Set(f); listKey = ""; } } catch {}
+    shots = shR.status === "fulfilled" ? shR.value : [];
+    if (fvR.status === "fulfilled") { const f = fvR.value, k2 = f.join("|"); if (k2 !== [...favs].join("|")) { favs = new Set(f); listKey = ""; } }
     const key = clips.concat(shots).map(c => c.path + c.size).join("|") + "#" + folderList.join("|");
     if (key !== listKey) { listKey = key; renderGrid(); }
+    refresh.done = true;
   }
 
   // no page zoom from Ctrl+scroll / Ctrl+plus/minus (the timeline uses Ctrl+scroll for its own zoom)
@@ -1184,9 +1200,10 @@
     try { return await job; } finally { clearInterval(t); if (inPlayer) { o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; } else $("cprog").classList.remove("on"); }
   }
   // share link: rclone link, but Filen can't make public links for other apps -> use Share (R2) instead
-  async function copyLink(c) {
+  const linkLife = d => !d ? "never expires" : d === 1 ? "expires in 24 hours" : `expires in ${d} days`;
+  async function copyLink(c, days) {
     if (cfg.cloud !== "filen") {
-      try { await invoke("cloud_link", { rel: relOf(c) }); toast("Link copied"); return; }
+      try { await invoke("cloud_link", { rel: relOf(c), days: days ?? null }); toast(`Link copied - ${linkLife(days ?? cfg.link_days)}`); return; }
       // several clouds: only fall back to Share when the clip sits on Filen - otherwise show the real problem
       catch (e) { if (cfg.cloud !== "multi" || !(cfg.cloud_accounts || []).some(a => a.provider === "filen")) throw e; }
     }
@@ -1194,20 +1211,32 @@
     const l = await ensureLocal(c);
     await invoke("share_clip", { path: l.path }); shared.add(l.name); toast("Link copied - paste it in Discord");
   }
+  // a clip that's only on this PC: upload it (Echo Cloud first, so the link plays in Discord), then copy the link
+  async function uploadLink(c, days) {
+    if (cfg.cloud === "filen" && !(cfg.cloud_accounts || []).some(a => a.provider === "echocloud")) return copyLink(c, days);
+    await invoke("upload_and_link", { path: c.path, days: days ?? null });
+    toast(`Uploaded - link copied, ${linkLife(days ?? cfg.link_days)}`);
+  }
   function cloudMenu(anchor, c) {
     const r = anchor.getBoundingClientRect(), ev = { preventDefault() {}, clientX: r.left, clientY: r.bottom + 4 };
     const run = (msg, fn) => async () => { try { toast(msg); await fn(); listKey = ""; await refresh(); } catch (e) { toast(String(e)); } };
     if (!cfg || !cfg.cloud) return ctxMenu(ev, [["Set up the cloud first…", () => { closePlayer(); openSettings("cloud"); }]]);
+    // "Copy share link" uses the default from Settings → Sharing; the other lifetimes are one click away
+    const linkItems = [["Copy share link", run("Making a link…", () => copyLink(c))]]
+      .concat([0, 1, 7, 30].filter(d => d !== (cfg.link_days || 0)).map(d => [`  … that ${linkLife(d)}`, run("Making a link…", () => copyLink(c, d))]));
     const items = c.cloud
-      ? [["Copy share link", run("Making a link…", () => copyLink(c))],
+      ? [...linkItems,
          ["Download to this PC", run("Downloading…", () => withDlProgress(c, invoke("cloud_download", { rel: c.rel })))],
          ["Delete from the cloud", async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }]]
       : inCloud(c)
-        ? [["Copy share link", run("Making a link…", () => copyLink(c))],
+        ? [...linkItems,
            ["Remove from this PC (keep in cloud)", run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); })],
            ["Upload again", run("Uploading…", () => invoke("cloud_upload", { path: c.path }))],
            ["Delete from the cloud only", run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))]]
-        : [["Upload to the cloud", run("Uploading…", async () => {
+        : [["Copy share link", run("Uploading and making a link…", () => uploadLink(c))],
+           ...[0, 1, 7, 30].filter(d => d !== (cfg.link_days || 0)).map(d => [`  … that ${linkLife(d)}`, run("Uploading and making a link…", () => uploadLink(c, d))]),
+           "-",
+           ["Upload to the cloud", run("Uploading…", async () => {
             await invoke("cloud_upload", { path: c.path });
             if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
           })]];
@@ -1544,11 +1573,11 @@
       vid.oncanplay = () => vid && vid.classList.add("on"); th.prepend(vid); vid.play().catch(() => {});
     }, 450); };
     th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
-    (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(t => {
+    lazyThumb(th, () => (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(t => {
       th.style.backgroundImage = `url("${convertFileSrc(t.thumb)}?${c.size}${thumbVer(c.name)}")`;
       if (t.duration > 0 && !durs[c.path]) { durs[c.path] = t.duration; if ($("sort").value === "long") { clearTimeout(window._lr); window._lr = setTimeout(() => { listKey = ""; renderGrid(); }, 300); } }
       if (t.duration > 0) { const d = el.querySelector(".dur"); d.textContent = fmtDur(t.duration); d.hidden = false; }
-    }).catch(() => {});
+    }).catch(() => {}));
     return el;
   }
   try { $("sort").value = localStorage.getItem("sort") || "new"; } catch {}
@@ -3935,7 +3964,16 @@
   });
   function themeReset() { cfg.theme = ""; cfg.theme_accent = ""; cfg.theme_bg = ""; applyTheme(); changed(true); }
 
+  function fillCloudTargets() {   // "Upload new clips to": only with 2+ clouds, options = the connected clouds
+    const sel = $("ctsel"), accs = (cfg && cfg.cloud_accounts) || []; if (!sel) return;
+    $("ctrow").style.display = accs.length > 1 ? "" : "none";
+    const opts = [["", "The cloud with the most free space"]]
+      .concat(accs.map(a => a.provider === "echocloud" ? ["echocloud", "Echo Cloud first (then the others when it's full)"] : [String(a.id), (CLOUD_NAMES[a.provider] || a.provider) + (a.label ? " · " + a.label : "")]));
+    const key = JSON.stringify(opts); if (sel.dataset.key === key) return; sel.dataset.key = key;
+    sel.innerHTML = opts.map(([v, n]) => `<option value="${v}">${esc(n)}</option>`).join("");
+  }
   function renderSettings() {
+    fillCloudTargets();
     document.querySelectorAll("[data-k]").forEach(el => {
       const v = cfg[el.dataset.k];
       if (el.type === "checkbox") el.checked = v; else el.value = String(v);

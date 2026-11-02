@@ -146,6 +146,9 @@ pub struct Settings {
     pub cloud_free_after: bool,
     /// cloud share links expire after this many days (0 = never)
     pub link_days: u32,
+    /// with several clouds: where new uploads go. "" = the one with the most free space (old behaviour),
+    /// "echocloud" = Echo Cloud while it has room (Discord share links), or a cloud account id ("3")
+    pub cloud_target: String,
     /// copy the share link after uploading a clip by hand
     pub auto_copy_link: bool,
     /// renamed / merged game folders: game (or old folder) name -> folder name ("" = main folder)
@@ -248,6 +251,7 @@ impl Default for Settings {
             mic_mono: false,
             cloud_free_after: false,
             link_days: 0,
+            cloud_target: String::new(),
             auto_copy_link: true,
             cloud: String::new(),
             cloud_accounts: Vec::new(),
