@@ -13,6 +13,10 @@ routes = [{ pattern = "echoclip.link", custom_domain = true }]
 directory = "./site"
 binding = "ASSETS"
 
+# once a day: expired share links lose their share copy (frees Echo Cloud space)
+[triggers]
+crons = ["23 3 * * *"]
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "echo-cloud"
@@ -29,3 +33,6 @@ BUCKET_NAME = "echo-cloud"
 MAIL_FROM = "Echo <noreply@echoclip.link>"
 # plans: free quota in GB
 FREE_GB = "10"
+# storage keys from /creds are read-only: uploads, deletes and moves go through the server (/upload, /delete, /move),
+# so nobody can write past their plan with the keys (Echo from chat 16 on; "rw" = old behaviour)
+UPLOAD_KEYS = "ro"

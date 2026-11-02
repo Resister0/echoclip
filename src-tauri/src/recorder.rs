@@ -4732,6 +4732,12 @@ fn upload_target(cfg: &crate::settings::Settings, size: u64, for_link: bool) -> 
     Some(acc.clone())
 }
 
+/// Union upstream for an account: Echo Cloud is read-only there (":ro") - its uploads, deletes and moves go
+/// through the server, so its storage keys never need write access (UPLOAD_KEYS="ro" on the server).
+fn union_upstream(a: &crate::settings::CloudAccount) -> String {
+    if a.provider == "echocloud" { format!("{}:ro", acc_remote(a)) } else { acc_remote(a) }
+}
+
 /// Rebuild the "echo" remote over all accounts: alias for one, union for several
 /// (new clips go to the account with the most free space; reads/moves/deletes look everywhere).
 fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), String> {
@@ -4740,7 +4746,7 @@ fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), Str
         0 => Ok(()),
         1 => rclone_out(&["config", "create", "echo", "alias", "remote", &acc_remote(&accs[0])]).map(|_| ()),
         _ => {
-            let ups = accs.iter().map(acc_remote).collect::<Vec<_>>().join(" ");
+            let ups = accs.iter().map(union_upstream).collect::<Vec<_>>().join(" ");
             rclone_out(&["config", "create", "echo", "union", "upstreams", &ups,
                 "action_policy", "epall", "create_policy", "mfs", "search_policy", "ff"]).map(|_| ())
         }
@@ -4748,7 +4754,20 @@ fn rebuild_echo_remote(accs: &[crate::settings::CloudAccount]) -> Result<(), Str
 }
 
 /// Old single-account setup ([echo] was the provider itself) -> account acc_1 + alias.
+/// Also: unions made before chat 16 had Echo Cloud writable -> rebuilt once with Echo Cloud ":ro".
 fn migrate_cloud(cfg: &mut crate::settings::Settings) {
+    if cfg.cloud_accounts.len() > 1 && cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") {
+        let want = cfg.cloud_accounts.iter().map(union_upstream).collect::<Vec<_>>().join(" ");
+        let t = fs::read_to_string(cloud_conf()).unwrap_or_default();
+        let have = t.split("\n[").find(|sec| sec.trim_start_matches('[').starts_with("echo]"))
+            .and_then(|sec| sec.lines().find_map(|l| l.trim().strip_prefix("upstreams").map(|v| v.trim_start_matches([' ', '=']).trim().to_string())));
+        if have.as_deref().map_or(false, |h| h != want) {
+            match rebuild_echo_remote(&cfg.cloud_accounts) {
+                Ok(()) => log_line("cloud: Echo Cloud is now read-only in the combined cloud (writes go through the server)"),
+                Err(e) => log_line(&format!("cloud: couldn't update the combined cloud: {e}")),
+            }
+        }
+    }
     if cfg.cloud.is_empty() || !cfg.cloud_accounts.is_empty() {
         return;
     }
@@ -5657,10 +5676,13 @@ impl Recorder {
                 Some(serde_json::json!({ "paths": [format!("Echo/{}", cp.trim_start_matches('/'))] }))).is_ok();
         }
         let only_ec = cfg.cloud_accounts.len() == 1 && cfg.cloud_accounts[0].provider == "echocloud";
-        if !(only_ec && server_ok) {
-            if let Err(e) = rclone_out(&["deletefile", &remote(&cp)]) {
-                if !server_ok { return Err(e); }   // it was only in Echo Cloud: already gone
-            }
+        if server_ok && !only_ec {
+            // Echo Cloud's copy is gone; a copy on the other clouds (Google Drive answers slowly) is removed in the
+            // background, so the button doesn't wait ~10 s for a copy that usually isn't there
+            let cp2 = cp.clone();
+            std::thread::spawn(move || { let _ = rclone_out(&["deletefile", "--retries", "1", &remote(&cp2)]); });
+        } else if !server_ok {
+            rclone_out(&["deletefile", "--retries", "1", &remote(&cp)])?;
         }
         let mut st = self.cloud_state();
         st.files.retain(|f| f.rel != rel);
@@ -5729,17 +5751,20 @@ impl Recorder {
         }
         self.save_cloud_state(&st);
         let cfg = self.settings();
-        let only_ec = cfg.cloud_accounts.len() == 1 && cfg.cloud_accounts[0].provider == "echocloud" && !cfg.ec_token.is_empty();
+        let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
+        let only_ec = has_ec && cfg.cloud_accounts.len() == 1;
         std::thread::spawn(move || {
-            if only_ec {
+            // Echo Cloud's copy moves on the server (its keys may be read-only); other clouds through rclone -
+            // in the combined cloud Echo Cloud is read-only, so rclone only touches the other accounts
+            if has_ec {
                 let b = serde_json::json!({ "from": format!("Echo/{}", old_p.trim_start_matches('/')), "to": format!("Echo/{}", new_p.trim_start_matches('/')) });
                 match ec_call(&ec_api(&cfg), "POST", "/move", &cfg.ec_token, Some(b)) {
-                    Ok(_) => return,
-                    Err(e) if !e.contains("not found") => { log_line(&format!("echo cloud: move failed: {e}")); return; }
-                    Err(_) => {}   // older server: keys
+                    Ok(_) => if only_ec { return },
+                    Err(e) if e.contains("not found") && only_ec => {}   // older server: keys
+                    Err(e) => { if only_ec { log_line(&format!("echo cloud: move failed: {e}")); return; } }   // multi: maybe not in Echo Cloud
                 }
             }
-            let _ = rclone_out(&["moveto", &remote(&old_p), &remote(&new_p)]);
+            let _ = rclone_out(&["moveto", "--retries", "1", &remote(&old_p), &remote(&new_p)]);
         });
     }
 

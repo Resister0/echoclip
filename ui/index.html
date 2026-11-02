@@ -585,6 +585,8 @@
   .delb:hover { background:#ff7590; border-color:#ff7590; }
   #toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%,90px); background:var(--panel2); border:1px solid var(--line); padding:11px 18px; border-radius:11px; transition:.25s; z-index:20; box-shadow:0 10px 30px #0008; }
   #toast.show { transform:translate(-50%,0); }
+  /* the progress box (upload, shrink…) sits in the same spot: a message then shows just above it */
+  body:has(#cprog.on) #toast.show { transform:translate(-50%,-78px); }
   #cprog { position:fixed; bottom:24px; left:50%; transform:translate(-50%,120px); width:340px; background:var(--panel2); border:1px solid var(--line); padding:12px 16px; border-radius:12px; transition:.25s; z-index:21; box-shadow:0 10px 30px #0008; font-size:13px; }
   #cprog.on { transform:translate(-50%,0); }
   #cprog .bar { height:6px; border-radius:99px; background:var(--panel); margin-top:8px; overflow:hidden; }
@@ -1180,6 +1182,7 @@
   const thumbIO = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
     if (!e.isIntersecting) return; thumbIO.unobserve(e.target); const f = e.target._load; e.target._load = null; if (f) f();
   }), { rootMargin: "900px 0px" }) : null;
+  const thumbMem = new Map();   // clip -> {thumb, duration} already loaded this session
   function lazyThumb(el, f) { if (!thumbIO || ($("sort") && $("sort").value === "long")) return f(); el._load = f; thumbIO.observe(el); }
 
   // while Echo is hidden (tray / minimised) the library isn't refreshed; it catches up the moment it's shown
@@ -1372,8 +1375,14 @@
     await withLinkProgress(c, invoke("upload_and_link", { path: c.path, days: days ?? null }));
     toast(`Uploaded - link copied, ${linkLife(days ?? cfg.link_days)}`);
   }
+  const cloudBusy = new Set();   // clips with a cloud delete / free-up running: a second click does nothing
   function cloudMenu(anchor, c) {
     const r = anchor.getBoundingClientRect(), ev = { preventDefault() {}, clientX: r.left, clientY: r.bottom + 4 };
+    const bkey = c.path || relOf(c);
+    const once = fn => async () => {
+      if (cloudBusy.has(bkey)) return toast("Already working on this clip…");
+      cloudBusy.add(bkey); try { await fn(); } finally { cloudBusy.delete(bkey); }
+    };
     const run = (msg, fn) => async () => { try { toast(msg); await fn(); listKey = ""; await refresh(); } catch (e) { toast(String(e)); } };
     if (!cfg || !cfg.cloud) return ctxMenu(ev, [["Set up the cloud first…", () => { closePlayer(); openSettings("cloud"); }]]);
     // simple menu: one "Copy share link" + a row of lifetimes (the highlighted one is the default from Settings → Sharing)
@@ -1384,10 +1393,10 @@
       { label: "Expires", chips: [[0, "Never"], [1, "1 day"], [7, "7 days"], [30, "30 days"]].map(([d, t]) => [t, link(d), d === def]) }, "-"];
     if (c.cloud) items.push(
       ["Download to this PC", run("Downloading…", () => withDlProgress(c, invoke("cloud_download", { rel: c.rel })))],
-      ["Delete from the cloud", async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }, "", false, "warn"]);
+      ["Delete from the cloud", once(async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) await run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }), "", false, "warn"]);
     else if (inCloud(c)) items.push(
-      ["Free up space on this PC", run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); })],
-      ["Delete from the cloud", run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) })), "", false, "warn"]);
+      ["Free up space on this PC", once(run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); }))],
+      ["Delete from the cloud", once(run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))), "", false, "warn"]);
     else items.push(["Upload to the cloud", run("Uploading…", async () => {
       await invoke("cloud_upload", { path: c.path });
       if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
@@ -1968,10 +1977,18 @@
       if (c.cloud && !cloudBase) ensureBase().then(go).catch(() => {}); else go();
     }, 450); };
     th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
-    lazyThumb(th, () => (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(t => {
+    // a thumbnail seen before is put back at once when the library is rebuilt (rename, upload, delete…):
+    // no blank cards flashing while they load again
+    const tkey = (c.cloud ? "c:" + c.rel : c.path) + "|" + c.size + "|" + thumbVer(c.name);
+    const showThumb = t => {
       th.style.backgroundImage = `url("${convertFileSrc(t.thumb)}?${c.size}${thumbVer(c.name)}")`;
-      if (t.duration > 0 && !durs[c.path]) { durs[c.path] = t.duration; if ($("sort").value === "long") { clearTimeout(window._lr); window._lr = setTimeout(() => { listKey = ""; renderGrid(); }, 300); } }
       if (t.duration > 0) { const d = el.querySelector(".dur"); d.textContent = fmtDur(t.duration); d.hidden = false; }
+    };
+    if (thumbMem.has(tkey)) showThumb(thumbMem.get(tkey));
+    else lazyThumb(th, () => (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(t => {
+      if (t && t.thumb) thumbMem.set(tkey, t);
+      showThumb(t);
+      if (t.duration > 0 && !durs[c.path]) { durs[c.path] = t.duration; if ($("sort").value === "long") { clearTimeout(window._lr); window._lr = setTimeout(() => { listKey = ""; renderGrid(); }, 300); } }
     }).catch(() => {}));
     return el;
   }

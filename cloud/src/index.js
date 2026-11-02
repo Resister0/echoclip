@@ -332,14 +332,44 @@ async function move(req, user, env) {
   return json({ ok: true });
 }
 
-/// "Stop sharing": the link stops working, the clip stays
+// share copies (watermark / AV1 -> H.264, or clips that live on another cloud) only exist for their link
+const isShareCopy = (key) => key.includes("/Echo/.shared/");
+
+/// "Stop sharing": the link stops working, the clip stays (a share copy made just for the link is deleted)
 async function unshare(req, user, env) {
   const key = userKey(user, (await body(req)).path);
   if (!key) return fail("Bad clip path");
   const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
   for (const r of rows) await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
   await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
-  return json({ ok: true, removed: rows.length });
+  let copyDeleted = false;
+  if (isShareCopy(key) && (await env.BUCKET.head(key))) {
+    await env.BUCKET.delete(key);
+    await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount next time
+    copyDeleted = true;
+  }
+  return json({ ok: true, removed: rows.length, copy_deleted: copyDeleted });
+}
+
+/// Daily (cron in wrangler.toml): links that have expired lose their share copy, so the space comes back.
+/// Links to the clip itself just stop working (the clip stays).
+async function cleanupExpired(env) {
+  await migrate(env);
+  const rows = (await env.DB.prepare("SELECT id, key, user_id FROM shares WHERE expires > 0 AND expires < ? LIMIT 500").bind(now()).all()).results || [];
+  let copies = 0;
+  for (const r of rows) {
+    if (!isShareCopy(r.key)) continue;
+    await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
+    await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(r.id).run();
+    const still = await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? LIMIT 1").bind(r.key).first();
+    if (!still) {
+      await env.BUCKET.delete(r.key);
+      await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(r.user_id).run();
+      copies++;
+    }
+  }
+  console.log("cleanup: expired links", rows.length, "share copies deleted", copies);
+  return { expired: rows.length, copies };
 }
 
 /// Delete the account and everything in it. Big accounts take several calls: {done:false} = call again.
@@ -879,6 +909,9 @@ export default {
       console.log("error", e && e.stack);
       return fail("Echo Cloud had a problem - try again", 500);
     }
+  },
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(cleanupExpired(env).catch((e) => console.log("cleanup error", e && e.stack)));
   },
 };
 
