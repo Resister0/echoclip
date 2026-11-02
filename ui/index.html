@@ -336,6 +336,9 @@
   .estage.gap video { visibility:hidden; }
   .etx { position:absolute; transform:translate(-50%,-50%); white-space:pre; text-align:center; font-weight:700; font-family:"Segoe UI",sans-serif; line-height:1.2; cursor:move; padding:2px 6px; border:1.5px dashed transparent; border-radius:4px; }
   .etx.sel { border-color:#ffffffaa; }
+  .etx i[data-h] { position:absolute; width:11px; height:11px; background:#fff; border:1px solid #0009; border-radius:3px; }
+  .etx i[data-h=tl] { left:-7px; top:-7px; cursor:nwse-resize; } .etx i[data-h=br] { right:-7px; bottom:-7px; cursor:nwse-resize; }
+  .etx i[data-h=tr] { right:-7px; top:-7px; cursor:nesw-resize; } .etx i[data-h=bl] { left:-7px; bottom:-7px; cursor:nesw-resize; }
   .etx.msel { border-color:#ffd23f; background:#ffd23f1a; }
   .ecbox { position:absolute; transform:translate(-50%,-50%); border:2px dashed #ffd23fcc; border-radius:6px; background:#ffd23f14; cursor:move; z-index:2; }
   .ecbox i { position:absolute; width:12px; height:12px; background:#ffd23f; border-radius:3px; }
@@ -2004,10 +2007,17 @@
         v.onpointerdown = e => {
           e.preventDefault(); const k = OVV.indexOf(v), ob = ed.over[k]; if (!ob) return;
           select({ k: "ov", i: k }); pushHist();
-          const r = $("estage").getBoundingClientRect();
-          const mv = e => { ob.x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); ob.y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)); syncOverlays(); };
+          const r = $("estage").getBoundingClientRect(), cx = e.clientX, cy = e.clientY, x0 = ob.x, y0 = ob.y;   // move by the drag distance (no jump on grab)
+          const mv = e => { ob.x = Math.min(1, Math.max(0, x0 + (e.clientX - cx) / r.width)); ob.y = Math.min(1, Math.max(0, y0 + (e.clientY - cy) / r.height)); syncOverlays(); };
           const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); };
           addEventListener("pointermove", mv); addEventListener("pointerup", up);
+        };
+        v.onwheel = e => {   // scroll on a selected layer to resize it
+          const k = OVV.indexOf(v), ob = ed.over[k]; if (!ob || !(ed.sel && ed.sel.k === "ov" && ed.sel.i === k)) return;
+          e.preventDefault();
+          if (!ed.wheelHist) pushHist(); clearTimeout(ed.wheelHist); ed.wheelHist = setTimeout(() => ed.wheelHist = null, 600);
+          ob.scale = Math.min(1, Math.max(0.15, ob.scale * (e.deltaY < 0 ? 1.05 : 1 / 1.05))); syncOverlays();
+          const sl = $("eos"), lv = $("eosv"); if (sl) { sl.value = ob.scale; lv.textContent = Math.round(ob.scale * 100) + "%"; }
         };
       }
       { const ws = o.src ? convertFileSrc(o.src) : src; if (v.dataset.src !== ws) { v.src = ws; v.dataset.src = ws; } }
@@ -2219,8 +2229,24 @@
         }
         d.style.transform = tf; d.style.opacity = op;
       }
+      if (isSel && !t.cap && !inMulti) d.insertAdjacentHTML("beforeend", '<i data-h="tl"></i><i data-h="tr"></i><i data-h="bl"></i><i data-h="br"></i>');
+      // normal text: corner handles and the mouse wheel change its size (captions use the caption box / size slider)
+      if (isSel && !t.cap) d.onwheel = e => {
+        e.preventDefault();
+        if (!ed.wheelHist) pushHist(); clearTimeout(ed.wheelHist); ed.wheelHist = setTimeout(() => ed.wheelHist = null, 600);
+        t.size = Math.min(0.4, Math.max(0.02, t.size * (e.deltaY < 0 ? 1.06 : 1 / 1.06))); drawTexts(); syncTextSize(t);
+      };
       d.onpointerdown = e => {
         e.preventDefault();
+        if (e.target.dataset && e.target.dataset.h && isSel && !t.cap) {   // resize from a corner: size follows the distance to the text's centre
+          pushHist();
+          const r = d.getBoundingClientRect(), cx0 = r.left + r.width / 2, cy0 = r.top + r.height / 2, s0 = t.size;
+          const dist0 = Math.max(4, Math.hypot(e.clientX - cx0, e.clientY - cy0));
+          const mv = ev => { t.size = Math.min(0.4, Math.max(0.02, s0 * Math.hypot(ev.clientX - cx0, ev.clientY - cy0) / dist0)); drawTexts(); syncTextSize(t); };
+          const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); };
+          addEventListener("pointermove", mv); addEventListener("pointerup", up);
+          return;
+        }
         if (e.ctrlKey || e.shiftKey) {   // Ctrl/Shift-click on the video: add / remove from the selection
           if (!ed.msel) ed.msel = new Set();
           if (ed.sel) ed.msel.add(ed.sel.k + ":" + ed.sel.i);
@@ -2236,6 +2262,7 @@
           const dx = (e.clientX - cx) / W, dy = (e.clientY - cy) / H;
           starts.forEach(([o, x0, y0]) => {
             o.x = Math.min(1, Math.max(0, x0 + dx)); o.y = Math.min(1, Math.max(0, y0 + dy));
+            if (starts.length === 1 && !e.altKey && Math.abs(o.x - 0.5) < 0.012) o.x = 0.5;   // snaps to the middle (hold Alt to place freely)
             if (o.cap) o.own = true;   // keeps its own spot (the caption box moves all of them)
           });
           drawTexts();
@@ -2750,7 +2777,7 @@
         <div class="seg-btns" style="grid-template-columns:1fr 1fr;margin-top:12px"><button id="eofull">Full frame</button><button id="eopip">Corner (PiP)</button></div>
         <div class="row" style="border:0;padding:12px 0"><div class="lbl">Include its sound</div><label class="switch"><input type="checkbox" id="eosnd" ${o.sound ? "checked" : ""}><span></span></label></div>
         <label>Speed</label><div class="seg-btns">${[0.25, 0.5, 0.75, 1, 1.5, 2].map(x => `<button data-v="${x}" class="${o.speed === x ? "on" : ""}">${x}x</button>`).join("")}</div>
-        <label>Drag it on the video to move it. Drag its block down onto the main track to put it back.</label>
+        <label>Drag it on the video to move it, scroll on it to resize. Drag its block down onto the main track to put it back.</label>
         <button class="btn" style="margin-top:14px;width:100%;justify-content:center" id="eidel">Delete layer piece</button>`;
       $("eos").onpointerdown = () => pushHist();
       $("eos").oninput = e => { o.scale = +e.target.value; $("eosv").textContent = Math.round(o.scale * 100) + "%"; syncOverlays(); };
@@ -2825,10 +2852,10 @@
     } else if (sel && sel.k === "txt" && ed.texts[sel.i]) {
       const t = ed.texts[sel.i], COLORS = ["ffffff", "ffd23f", "ff5c7a", "3ddc97", "4cc2ff", "b388ff", "000000"];
       el.innerHTML = `<h3>Text</h3><textarea id="eitext"></textarea>
-        <label>Size</label><input type="range" id="eisize" min="0.03" max="0.25" step="0.005" value="${t.size}">
-        <label>Color</label><div class="swatch">${COLORS.map(c => `<button data-c="${c}" style="background:#${c}" class="${t.color === c ? "on" : ""}"></button>`).join("")}</div>
+        <label>Size <span id="eisizev">${Math.round(t.size * 1000) / 10}%</span>${t.cap ? "" : " · or drag a corner / scroll on the text"}</label><input type="range" id="eisize" min="0.02" max="0.4" step="0.005" value="${t.size}">
+        <label>Color</label><div class="swatch">${COLORS.map(c => `<button data-c="${c}" style="background:#${c}" class="${t.color === c ? "on" : ""}"></button>`).join("")}<input type="color" id="eicolor" title="Any colour" value="#${t.color || "ffffff"}" style="width:30px;height:26px;border:1px solid var(--line);border-radius:7px;background:none;padding:0 2px;cursor:pointer;${COLORS.includes(t.color) ? "" : "outline:2px solid var(--accent);"}"></div>
         <label>Animation</label><div class="seg-btns" id="eanim">${ANIMS.map(([k, n]) => `<button data-an="${k}" class="${(t.anim || "") === k ? "on" : ""}">${n}</button>`).join("")}</div>
-        <label>Shows ${fmtT(t.start)} – ${fmtT(t.end)} · drag it on the video to move</label>
+        <label>Shows ${fmtT(t.start)} – ${fmtT(t.end)} · drag it on the video to move${t.cap ? "" : " (it snaps to the middle; hold Alt to place freely) · Ctrl+D duplicates"}</label>
         <button class="btn" style="margin-top:14px;width:100%;justify-content:center" id="eidel">Delete text</button>`;
       const ta = $("eitext"); ta.value = t.text;
       ta.onfocus = () => pushHist();
@@ -2843,7 +2870,10 @@
       }
       el.querySelectorAll("[data-an]").forEach(b => b.onclick = () => { pushHist(); t.anim = b.dataset.an; renderInsp(); seekOut(t.start); edPlay(); });
       $("eisize").onpointerdown = () => pushHist();
-      $("eisize").oninput = e => { t.size = +e.target.value; drawTexts(); };
+      $("eisize").oninput = e => { t.size = +e.target.value; $("eisizev").textContent = Math.round(t.size * 1000) / 10 + "%"; drawTexts(); };
+      $("eicolor").onpointerdown = () => pushHist();
+      $("eicolor").oninput = e => { t.color = e.target.value.slice(1).toLowerCase(); drawTexts(); };
+      $("eicolor").onchange = () => renderInsp();
       el.querySelectorAll(".swatch button").forEach(b => b.onclick = () => { pushHist(); t.color = b.dataset.c; renderInsp(); drawTexts(); });
       $("eidel").onclick = delSel;
     } else {
@@ -3110,6 +3140,20 @@
     else { pushHist(); ed.texts.splice(sel.i, 1); }
     ed.sel = null; clampT(); renderEd();
   }
+  function syncTextSize(t) {   // keep the inspector's size slider in step with dragging / scrolling on the video
+    const r = $("eisize"), v = $("eisizev"); if (!r || !ed.sel || ed.texts[ed.sel.i] !== t) return;
+    r.value = t.size; if (v) v.textContent = Math.round(t.size * 1000) / 10 + "%";
+  }
+  function duplicateSel() {   // Ctrl+D: a copy of the selected text / box, a little lower, then selected
+    const sel = ed.sel; if (!sel) return toast("Select a text or box first");
+    if (sel.k === "txt" && ed.texts[sel.i] && !ed.texts[sel.i].cap) {
+      pushHist(); const c = JSON.parse(JSON.stringify(ed.texts[sel.i])); c.y = Math.min(0.97, c.y + c.size * 1.3);
+      ed.texts.push(c); select({ k: "txt", i: ed.texts.length - 1 }); drawTexts();
+    } else if (sel.k === "box" && ed.boxes[sel.i]) {
+      pushHist(); const c = JSON.parse(JSON.stringify(ed.boxes[sel.i])); c.x = Math.min(1 - c.w / 2, c.x + 0.03); c.y = Math.min(1 - c.h / 2, c.y + 0.03);
+      ed.boxes.push(c); select({ k: "box", i: ed.boxes.length - 1 }); drawTexts();
+    } else toast("Only texts and boxes can be duplicated");
+  }
   function addText() {
     pushHist(); const T = total();
     ed.texts.push({ text: "Text", start: Math.min(ed.T, Math.max(0, T - 1)), end: Math.min(ed.T + 3, T), x: 0.5, y: 0.2, size: 0.08, color: "ffffff" });
@@ -3332,6 +3376,7 @@
     else if (e.code === "KeyO") setRng(ed.rng ? Math.min(ed.rng.a, ed.T - 0.1) : 0, ed.T);
     else if (e.code === "KeyX" && !e.ctrlKey) cutRange();
     else if (e.code === "KeyT") addText();
+    else if (e.ctrlKey && e.code === "KeyD") { e.preventDefault(); duplicateSel(); }
     else if (e.code === "KeyB" && !e.ctrlKey) addBox();
     else if (e.code === "KeyZ" && !e.ctrlKey) addBox("zoom");
     else if (e.code === "KeyU") detachAudio();

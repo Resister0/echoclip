@@ -1951,6 +1951,13 @@ impl Recorder {
         self.stop_inner();
     }
 
+    /// Echo is quitting or updating: also stop the helpers that outlive the recorder (the cloud streaming
+    /// server). Left running, it kept tools\rclone.exe locked so the installer couldn't replace it.
+    pub fn shutdown(&self) {
+        self.stop();
+        self.stop_serve();
+    }
+
     fn stop_inner(&self) {
         self.audio_stop.lock().unwrap().store(true, Ordering::Relaxed);
         if let Some(mut c) = self.child.lock().unwrap().take() {
@@ -4716,6 +4723,10 @@ struct EcState {
     exp: u64,
     /// over the quota: keys only read
     read_only: bool,
+    /// bytes in Echo Cloud and the plan's size (from the server; `used` also counts our own uploads since then).
+    /// Echo pauses uploads that wouldn't fit instead of relying on the server alone. 0 quota = not known yet.
+    used: u64,
+    quota: u64,
 }
 static EC: Mutex<Option<EcState>> = Mutex::new(None);
 /// new keys were written: the streaming server must restart to use them
@@ -4790,6 +4801,8 @@ fn ec_ensure() {
             Ok(()) => {
                 s.exp = j["expires"].as_u64().unwrap_or(now_unix() + 3600);
                 s.read_only = j["read_only"].as_bool().unwrap_or(false);
+                s.used = j["used"].as_u64().unwrap_or(s.used);
+                s.quota = j["quota"].as_u64().unwrap_or(s.quota);
                 EC_NEW_KEYS.store(true, Ordering::Relaxed);
                 log_line(&format!("echo cloud: new storage keys{}", if s.read_only { " (read only - over the quota)" } else { "" }));
             }
@@ -4808,7 +4821,7 @@ fn ec_sync_state(cfg: &crate::settings::Settings, exp: u64) {
     let acc = cfg.cloud_accounts.iter().find(|a| a.provider == "echocloud");
     let mut g = EC.lock().unwrap_or_else(|e| e.into_inner());
     *g = match acc {
-        Some(a) if !cfg.ec_token.is_empty() => Some(EcState { api: ec_api(cfg), token: cfg.ec_token.clone(), acc: format!("acc_{}", a.id), exp, read_only: false }),
+        Some(a) if !cfg.ec_token.is_empty() => Some(EcState { api: ec_api(cfg), token: cfg.ec_token.clone(), acc: format!("acc_{}", a.id), exp, read_only: false, used: 0, quota: 0 }),
         _ => None,
     };
 }
@@ -4818,7 +4831,34 @@ fn ec_room_again(used: u64, total: u64) {
     if let Ok(mut g) = EC.lock() {
         if let Some(s) = g.as_mut() {
             if s.read_only && used < total { s.read_only = false; s.exp = 0; }
+            if total > 0 { s.used = used; s.quota = total; }
         }
+    }
+}
+
+/// Standard base64 (for small files sent to Echo Cloud as JSON).
+fn base64(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity((b.len() + 2) / 3 * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        o.push(T[(n >> 18 & 63) as usize] as char);
+        o.push(T[(n >> 12 & 63) as usize] as char);
+        o.push(if c.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
+        o.push(if c.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    o
+}
+
+/// Free space left in Echo Cloud as far as Echo knows (None = not known yet).
+fn ec_space_left() -> Option<u64> {
+    EC.lock().ok().and_then(|g| g.as_ref().and_then(|s| (s.quota > 0).then(|| s.quota.saturating_sub(s.used))))
+}
+
+/// Count an upload against the space left until the server's next number arrives.
+fn ec_add_used(bytes: u64) {
+    if let Ok(mut g) = EC.lock() {
+        if let Some(s) = g.as_mut() { s.used = s.used.saturating_add(bytes); }
     }
 }
 
@@ -5223,8 +5263,21 @@ impl Recorder {
     pub fn cloud_upload(&self, path: &str) -> Result<(), String> {
         let rel = self.rel_of(path).ok_or("not a clip")?;
         ec_ensure();
-        if ec_full() && self.settings().cloud_accounts.len() == 1 {
+        let only_ec = self.settings().cloud_accounts.len() == 1 && EC.lock().map(|g| g.is_some()).unwrap_or(false);
+        if ec_full() && only_ec {
             return Err("Echo Cloud is full - delete some clips from the cloud or upgrade your plan".into());
+        }
+        // pause instead of going over the plan: a clip that doesn't fit isn't uploaded
+        // (the server also stops handing out upload keys once the account is full)
+        if only_ec {
+            let need = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if let Some(left) = ec_space_left() {
+                if need > left {
+                    log_line(&format!("echo cloud: upload paused - {rel} needs {:.2} GB, {:.2} GB left", need as f64 / 1e9, left as f64 / 1e9));
+                    return Err(format!("Echo Cloud is full - this clip needs {:.1} GB but only {:.1} GB is left. Uploads are paused until you free up space or upgrade your plan.",
+                        need as f64 / 1e9, left as f64 / 1e9));
+                }
+            }
         }
         let t0 = Instant::now();
         // new uploads go into Echo/<year>/<month>/<day>/<folder>/; re-uploads overwrite where the clip already is
@@ -5246,6 +5299,7 @@ impl Recorder {
             if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
         }
         r?;
+        ec_add_used(fsize);
         log_line(&format!("cloud: uploaded {rel} in {:.0}s", t0.elapsed().as_secs_f32()));
         let mut st = self.cloud_state();
         st.keep_remote.remove(&rel);
@@ -5422,6 +5476,40 @@ impl Recorder {
         Ok(Thumb { thumb: img.to_string_lossy().into(), duration: d })
     }
 
+    /// What an Echo Cloud share page / Discord embed shows: the clip's name, video size, length and a
+    /// thumbnail (1280 px from the clip on this PC, else the cached library thumbnail). All best-effort.
+    fn share_preview(&self, rel: &str, req: &mut serde_json::Value) {
+        let stem = Path::new(rel).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        req["title"] = serde_json::json!(stem);
+        let local = self.clips_dir().join(rel);
+        let tdir = self.thumbs_dir();
+        if let Some(d) = fs::read_to_string(tdir.join(format!("{stem}.dur"))).ok().and_then(|s| s.trim().parse::<f64>().ok()) {
+            req["duration"] = serde_json::json!(d);
+        }
+        let mut jpg: Option<Vec<u8>> = None;
+        if local.exists() {
+            if let Ok(o) = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
+                .arg(&local).output() {
+                let t = String::from_utf8_lossy(&o.stdout);
+                if let Some((w, h)) = t.trim().lines().next().and_then(|l| l.split_once('x')) {
+                    if let (Ok(w), Ok(h)) = (w.trim().parse::<u32>(), h.trim().parse::<u32>()) { req["width"] = w.into(); req["height"] = h.into(); }
+                }
+            }
+            let tmp = std::env::temp_dir().join(format!("echo_share_{}.jpg", std::process::id()));
+            let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i"]).arg(&local)
+                .args(["-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "5"]).arg(&tmp)
+                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+            if ok { jpg = fs::read(&tmp).ok(); }
+            let _ = fs::remove_file(&tmp);
+        }
+        if jpg.as_ref().map_or(true, |b| b.len() > 280_000) {
+            jpg = fs::read(tdir.join(format!("{stem}.jpg"))).ok();
+        }
+        if let Some(b) = jpg.filter(|b| b.len() <= 280_000) {
+            req["thumb"] = serde_json::json!(base64(&b));
+        }
+    }
+
     /// A link to the cloud copy (pCloud / MEGA / Filen public link); copied to the clipboard by the caller.
     pub fn cloud_link(&self, rel: &str) -> Result<String, String> {
         let days = self.settings().link_days;
@@ -5437,8 +5525,9 @@ impl Recorder {
         // Echo Cloud first and without a listing: the server checks the clip itself and answers in ~1 s
         // (looking the file up in e.g. a big Google Drive first took up to a minute)
         if cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty() {
-            match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token,
-                Some(serde_json::json!({ "path": format!("Echo/{}", cp.trim_start_matches('/')), "days": days }))) {
+            let mut req = serde_json::json!({ "path": format!("Echo/{}", cp.trim_start_matches('/')), "days": days });
+            self.share_preview(rel, &mut req);
+            match ec_call(&ec_api(&cfg), "POST", "/share", &cfg.ec_token, Some(req)) {
                 Ok(j) => {
                     let url = j["url"].as_str().unwrap_or("").to_string();
                     if url.starts_with("http") {

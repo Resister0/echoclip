@@ -121,7 +121,7 @@ async fn update_install(app: AppHandle) -> Result<(), String> {
         "The update couldn't be downloaded - try again later".to_string()
     })?;
     recorder::log_line(&format!("update: installing {}", u.version));
-    app.state::<Recorder>().stop();
+    app.state::<Recorder>().shutdown();
     // Windows: starts the installer (it reopens Echo when done) and quits Echo
     u.install(bytes).map_err(|e| {
         recorder::log_line(&format!("update: install failed: {e}"));
@@ -1615,7 +1615,7 @@ fn main() {
 
     app.run(|app, event| {
         if let RunEvent::Exit = event {
-            app.state::<Recorder>().stop();
+            app.state::<Recorder>().shutdown();
         }
     });
 }

@@ -13,7 +13,7 @@
 const GB = 1e9; // decimal GB, like Echo shows sizes
 const PLANS = { free: 10 * GB, plus: 250 * GB, pro: 1024 * GB };
 const CODE_MINUTES = 10;
-const CREDS_SECONDS = 3 * 3600;
+const CREDS_SECONDS = 3600;     // short: upload keys can't be taken back, so an account can only overshoot its plan this long
 const USAGE_CACHE_SECONDS = 300;
 const USAGE_FRESH_SECONDS = 20; // "fresh" usage is still cached this long (listing the bucket costs money)
 const SESSION_DAYS = 180;       // signed out after this long without using Echo Cloud
@@ -148,6 +148,9 @@ async function authVerify(req, env) {
   await env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(email).run();
   let user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   if (!user) {
+    // one person making lots of free accounts: at most 3 new accounts per network per day
+    if (!(await allow(env, `newacc:${ipOf(req)}`, Number(env.NEW_ACCOUNTS_PER_DAY || 3), 86400)))
+      return fail("Too many new Echo Cloud accounts from this network today - try again tomorrow", 429);
     const id = randomId();
     const quota = Number(env.FREE_GB || 10) * GB;
     await env.DB.prepare(
@@ -212,6 +215,11 @@ async function migrate(env) {
   for (const [c, type] of [["polar_sub", "TEXT"], ["plan_until", "INTEGER NOT NULL DEFAULT 0"], ["polar_at", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!cols.has(c)) await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${c} ${type}`).run();
   }
+  // share pages (Discord / browser embeds): clip title, size, length and whether a thumbnail was uploaded
+  const scols = new Set(((await env.DB.prepare("PRAGMA table_info(shares)").all()).results || []).map((c) => c.name));
+  for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"]]) {
+    if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
+  }
   migrated = true;
 }
 
@@ -232,7 +240,81 @@ async function share(req, user, env, origin) {
     await env.DB.prepare("INSERT INTO shares (id, user_id, key, created, expires) VALUES (?, ?, ?, ?, ?)")
       .bind(id, user.id, key, now(), expires).run();
   }
+  // what the share page and Discord show: name, video size, length and a small thumbnail (all optional)
+  const title = String(b.title || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 120);
+  const w = Math.max(0, Math.min(8192, Math.round(Number(b.width) || 0)));
+  const h = Math.max(0, Math.min(8192, Math.round(Number(b.height) || 0)));
+  const dur = Math.max(0, Math.min(86400, Number(b.duration) || 0));
+  let thumb = 0;
+  if (typeof b.thumb === "string" && b.thumb.length < 400000) {
+    try {
+      const bytes = Uint8Array.from(atob(b.thumb), (c) => c.charCodeAt(0));
+      if (bytes[0] === 0xff && bytes[1] === 0xd8) {   // a JPEG
+        await env.BUCKET.put(`thumbs/${id}.jpg`, bytes, { httpMetadata: { contentType: "image/jpeg" } });
+        thumb = 1;
+      }
+    } catch { /* bad base64: no thumbnail */ }
+  }
+  await env.DB.prepare("UPDATE shares SET title = ?, w = ?, h = ?, dur = ?, thumb = MAX(thumb, ?) WHERE id = ?")
+    .bind(title || null, w, h, dur, thumb, id).run();
   return json({ url: `${origin}/s/${id}`, expires });
+}
+
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const BOTS = /discordbot|twitterbot|facebookexternalhit|slackbot|telegrambot|whatsapp|linkedinbot|redditbot|skypeuripreview|embedly|mastodon/i;
+
+/// /s/<id> in a browser or a chat app's link preview: a small player page with Open Graph tags
+/// (Discord plays og:video inline, like Medal links). Video players and downloads use /s/<id>.mp4.
+function sharePage(req, row, id) {
+  const u = new URL(req.url), base = `${u.origin}/s/${id}`;
+  const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
+  const w = row.w || 1920, h = row.h || 1080;
+  const mins = row.dur ? `${Math.floor(row.dur / 60)}:${String(Math.round(row.dur % 60)).padStart(2, "0")}` : "";
+  const img = row.thumb ? `${base}.jpg` : `${u.origin}/og.png`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(name)} - Echo</title>
+<meta name="theme-color" content="#7c5cff">
+<meta property="og:site_name" content="Echo">
+<meta property="og:title" content="${esc(name)}">
+<meta property="og:description" content="${mins ? `${mins} · ` : ""}Clipped with Echo · echoclip.link">
+<meta property="og:type" content="video.other">
+<meta property="og:url" content="${base}">
+<meta property="og:image" content="${img}">
+<meta property="og:video" content="${base}.mp4">
+<meta property="og:video:url" content="${base}.mp4">
+<meta property="og:video:secure_url" content="${base}.mp4">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="${w}">
+<meta property="og:video:height" content="${h}">
+<meta name="twitter:card" content="player">
+<meta name="twitter:title" content="${esc(name)}">
+<meta name="twitter:image" content="${img}">
+<meta name="twitter:player" content="${base}.mp4">
+<meta name="twitter:player:width" content="${w}">
+<meta name="twitter:player:height" content="${h}">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+*{box-sizing:border-box;margin:0}body{min-height:100vh;background:#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+.wrap{width:100%;max-width:1100px}video{width:100%;max-height:78vh;background:#000;border-radius:14px;display:block;box-shadow:0 20px 60px #0009}
+h1{font-size:22px;margin:16px 0 4px;word-break:break-word}.meta{color:#a0a0ab;font-size:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:6px}
+a{color:#9d85ff;text-decoration:none}a:hover{text-decoration:underline}
+.btn{display:inline-flex;align-items:center;height:38px;padding:0 16px;border-radius:10px;font-weight:600;border:1px solid #26262c;background:#1e1e23;color:#f5f5f7}
+.btn.p{background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);border-color:transparent}.btn:hover{text-decoration:none;filter:brightness(1.1)}
+.by{margin-top:28px;color:#6b6b76;font-size:13px}
+</style></head><body><div class="wrap">
+<video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>
+<div class="row"><div><h1>${esc(name)}</h1><div class="meta">${mins ? `${mins} · ` : ""}Shared with Echo</div></div>
+<div style="display:flex;gap:8px"><a class="btn" href="${base}.mp4" download>Download</a><a class="btn p" href="https://echoclip.link/">Get Echo</a></div></div>
+<p class="by">Echo is a free, lightweight game clipping app for Windows and Linux. <a href="https://echoclip.link/">echoclip.link</a></p>
+</div></body></html>`;
+  return new Response(req.method === "HEAD" ? null : html, { headers: {
+    "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300",
+    // no scripts on this page at all; the video and poster come from this site
+    "content-security-policy": "default-src 'none'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+  } });
 }
 
 
@@ -437,9 +519,19 @@ function gone() {
   return new Response("This clip link has expired or the clip was removed.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
-async function serveShare(req, env, id) {
-  const row = await env.DB.prepare("SELECT key, expires FROM shares WHERE id = ?").bind(id).first();
+async function serveShare(req, env, id, ext) {
+  const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
   if (!row || (row.expires && row.expires < now())) return gone();
+  if (ext === ".jpg") {
+    const t = row.thumb && (await env.BUCKET.get(`thumbs/${id}.jpg`));
+    if (!t) return new Response("no thumbnail", { status: 404 });
+    return new Response(req.method === "HEAD" ? null : t.body, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
+  }
+  // the bare link: a page for browsers and link previews (Discord, …); video players get the file as before
+  if (!ext) {
+    const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";
+    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id);
+  }
   const name = row.key.split("/").pop();
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
   const h = new Headers({
@@ -487,8 +579,8 @@ export default {
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "") || "/"}`;
     try {
       await migrate(env);
-      const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(?:\.mp4)?\/?$/);
-      if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1]);
+      const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(\.mp4|\.jpg)?\/?$/);
+      if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1], sm[2] || "");
       // GET / and the other website pages come from site/ (static assets, answered before this code runs)
       if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
       const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
