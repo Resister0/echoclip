@@ -30,11 +30,45 @@
       </div>
     </div>`;
   box.appendChild(ui);
+  // Echo watermark: sits on the picture itself (not on black bars), same size/spot as the burned-in one,
+  // and its 1 s animation starts when the video does
+  const wm = box.querySelector(".wm");
+  if (wm) {
+    const src = wm.getAttribute("src");
+    wm.removeAttribute("src");
+    wm.style.visibility = "hidden";
+    const place = () => {
+      const bw = box.clientWidth, bh = box.clientHeight, vw = v.videoWidth, vh = v.videoHeight;
+      if (!vw || !vh || !bw || !bh) return;
+      const vb = v.getBoundingClientRect(), bb = box.getBoundingClientRect();
+      const s = Math.min(vb.width / vw, vb.height / vh), pw = vw * s, ph = vh * s;
+      const left = vb.left - bb.left + (vb.width - pw) / 2, top = vb.top - bb.top + (vb.height - ph) / 2;
+      wm.style.maxHeight = "none";
+      wm.style.height = Math.max(12, ph * 0.075) + "px";
+      wm.style.right = bw - (left + pw) + ph * 0.025 + "px";
+      wm.style.bottom = bh - (top + ph) + ph * 0.025 + "px";
+    };
+    let shown = false;
+    const show = () => { if (shown) return; shown = true; place(); wm.src = src; wm.style.visibility = ""; };
+    v.addEventListener("loadedmetadata", place);
+    v.addEventListener("playing", show);
+    v.addEventListener("pause", () => { if (!shown) show(); });
+    addEventListener("resize", place);
+    document.addEventListener("fullscreenchange", () => setTimeout(place, 50));
+    document.addEventListener("webkitfullscreenchange", () => setTimeout(place, 50));
+    if (window.ResizeObserver) new ResizeObserver(place).observe(box);
+    setTimeout(show, 4000);   // autoplay blocked and nobody pressed play: show it anyway
+  }
   const $ = (s) => ui.querySelector(s);
   const tl = $(".eptl"), done = $(".epdone"), buf = $(".epbuf"), knob = $(".epknob"), tip = $(".eptip");
   const bPlay = $('[data-a="play"]'), bMute = $('[data-a="mute"]'), bFull = $('[data-a="full"]'), vol = $(".epvol input"), time = $(".eptime"), big = $(".epbig");
   const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, "0")}`; };
   const dur = () => (isFinite(v.duration) ? v.duration : 0);
+  // phones/tablets: tap shows/hides the controls (like YouTube), the middle button plays/pauses
+  let touch = matchMedia("(hover: none)").matches;
+  const setTouch = (t) => { touch = t; box.classList.toggle("touch", t); };
+  setTouch(touch);
+  box.addEventListener("pointerdown", (e) => setTouch(e.pointerType === "touch" || e.pointerType === "pen"), true);
 
   // ---- smooth timeline: redraw every animation frame while playing (timeupdate only fires ~4x a second)
   let dragging = false, dragT = 0;
@@ -55,13 +89,18 @@
     bPlay.innerHTML = svg(v.paused ? "play" : "pause");
     bPlay.setAttribute("aria-label", v.paused ? "Play" : "Pause");
     box.classList.toggle("paused", v.paused);
+    big.innerHTML = svg(v.paused ? "play" : "pause");
   };
   v.addEventListener("play", syncPlay); v.addEventListener("pause", syncPlay); v.addEventListener("ended", syncPlay);
   const toggle = () => (v.paused ? v.play().catch(() => {}) : v.pause());
   bPlay.onclick = toggle;
-  big.onclick = toggle;
-  v.addEventListener("click", toggle);
-  v.addEventListener("dblclick", () => fullscreen());
+  big.onclick = (e) => { e.stopPropagation(); toggle(); wake(); };
+  v.addEventListener("click", () => {
+    if (!touch) return toggle();
+    if (box.classList.contains("idle") || v.paused) wake();   // tap: show the controls
+    else { clearTimeout(idle); box.classList.add("idle"); }   // tap again: hide them
+  });
+  v.addEventListener("dblclick", () => { if (!touch) fullscreen(); });
 
   // ---- seeking: click or drag anywhere on the (thick) bar
   const at = (e) => { const r = tl.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur(); };
@@ -97,17 +136,36 @@
   bMute.onclick = () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.6; };
 
   // ---- fullscreen
+  // iPhone Safari can't put a <div> in fullscreen, only the <video> itself (then iOS shows its own player)
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
   const fullscreen = () => {
-    const r = document.fullscreenElement ? document.exitFullscreen() : (box.requestFullscreen || box.webkitRequestFullscreen).call(box);
-    if (r && r.catch) r.catch(() => {});
+    try {
+      let r;
+      if (fsEl()) r = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else if (box.requestFullscreen) r = box.requestFullscreen({ navigationUI: "hide" });
+      else if (box.webkitRequestFullscreen) r = box.webkitRequestFullscreen();
+      else if (v.webkitEnterFullscreen) r = v.webkitEnterFullscreen();
+      if (r && r.then) r.then(() => {
+        // phones: turn sideways for wide clips (Android Chrome; ignored elsewhere)
+        if (touch && fsEl() && v.videoWidth > v.videoHeight && screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(() => {});
+      }).catch(() => {});
+    } catch (e) {}
   };
   bFull.onclick = fullscreen;
-  document.addEventListener("fullscreenchange", () => { bFull.innerHTML = svg(document.fullscreenElement ? "exit" : "full"); });
+  const fsChange = () => {
+    bFull.innerHTML = svg(fsEl() ? "exit" : "full");
+    if (!fsEl() && screen.orientation && screen.orientation.unlock) try { screen.orientation.unlock(); } catch (e) {}
+  };
+  document.addEventListener("fullscreenchange", fsChange);
+  document.addEventListener("webkitfullscreenchange", fsChange);
 
   // ---- controls fade out while playing and the mouse rests
   let idle = 0;
-  const wake = () => { box.classList.remove("idle"); clearTimeout(idle); idle = setTimeout(() => { if (!v.paused && !dragging) box.classList.add("idle"); }, 2200); };
-  box.addEventListener("pointermove", wake); box.addEventListener("pointerleave", () => { if (!v.paused) box.classList.add("idle"); });
+  const wake = () => { box.classList.remove("idle"); clearTimeout(idle); idle = setTimeout(() => { if (!v.paused && !dragging) box.classList.add("idle"); }, touch ? 3000 : 2200); };
+  // mouse only: on phones a tap also sends move/leave events, which would hide the controls straight away
+  box.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse") wake(); });
+  box.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !v.paused) box.classList.add("idle"); });
+  ui.querySelector(".epbar").addEventListener("pointerdown", () => wake());   // using the bar keeps it visible
   v.addEventListener("play", wake);
 
   // ---- keyboard: Space/K play, ←/→ 5 s, J/L 10 s, ↑/↓ volume, F fullscreen, M mute, 0-9 jump

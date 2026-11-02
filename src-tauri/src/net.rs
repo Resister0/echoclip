@@ -83,6 +83,37 @@ fn fetch(c: &reqwest::blocking::Client, url: &str, to: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// Upload a file with a plain HTTP PUT (Echo Cloud: a presigned link for exactly this file and size).
+/// `progress(sent, total)` is called while sending. No overall timeout: big clips on slow connections take long.
+pub fn put_file(url: &str, path: &Path, progress: impl Fn(u64, u64) + Send + 'static) -> Result<(), String> {
+    let (url, path) = (url.to_string(), path.to_path_buf());
+    off_thread(move || {
+        let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+        let f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        struct Counting<R, F: Fn(u64, u64)> { inner: R, sent: u64, total: u64, last: u64, cb: F }
+        impl<R: std::io::Read, F: Fn(u64, u64)> std::io::Read for Counting<R, F> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.sent += n as u64;
+                if self.sent - self.last >= 1 << 20 || self.sent == self.total {
+                    self.last = self.sent;
+                    (self.cb)(self.sent, self.total);
+                }
+                Ok(n)
+            }
+        }
+        let body = reqwest::blocking::Body::sized(Counting { inner: std::io::BufReader::with_capacity(1 << 20, f), sent: 0, total: size, last: 0, cb: progress }, size);
+        let c = client(None)?;
+        let resp = c.put(&url).header("content-length", size.to_string()).body(body).send().map_err(describe)?;
+        let code = resp.status().as_u16();
+        if code >= 300 {
+            let t = resp.text().unwrap_or_default();
+            return Err(format!("upload answered {code}: {}", t.chars().take(300).collect::<String>()));
+        }
+        Ok(())
+    })
+}
+
 /// Short reason for the log (DNS, TLS, timeout…).
 fn describe(e: reqwest::Error) -> String {
     use std::error::Error;

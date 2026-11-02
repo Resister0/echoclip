@@ -8,6 +8,10 @@
 //   RESEND_KEY             Resend API key for the sign-in emails (without it the code is only logged: wrangler tail)
 //   POLAR_TOKEN            Polar organization access token (products:read, checkouts:write, customer_sessions:write)
 //   POLAR_WEBHOOK_SECRET   secret of the Polar webhook pointing at https://echoclip.link/polar/webhook
+//   ADMIN_KEY              (optional) long random string for /admin/takedown (removing reported share links)
+// Var UPLOAD_KEYS: "rw" (default) = /creds hands out read-write keys like before; "ro" = read-only keys, and Echo
+// uploads / deletes / moves through /upload, /delete, /move (per-file, size-checked). Switch to "ro" once every
+// Echo in use has updated (chat 15+): then nobody can upload past their plan with the keys.
 // Plans are the Polar products with metadata quota_gb; paying sets the user's quota, ending it goes back to free.
 
 const GB = 1e9; // decimal GB, like Echo shows sizes
@@ -168,7 +172,8 @@ async function creds(user, env) {
   if (!env.CF_API_TOKEN || !env.ACCOUNT_ID || !env.PARENT_ACCESS_KEY_ID)
     return fail("Echo Cloud storage isn't set up yet", 503);
   const used = await usage(env, user, true);
-  const readOnly = used >= user.quota_bytes;
+  const full = used >= user.quota_bytes;
+  const readOnly = full || env.UPLOAD_KEYS === "ro";
   const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.ACCOUNT_ID}/r2/temp-access-credentials`, {
     method: "POST",
     headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
@@ -193,9 +198,194 @@ async function creds(user, env) {
     secret_access_key: j.result.secretAccessKey,
     session_token: j.result.sessionToken,
     expires: now() + CREDS_SECONDS,
-    read_only: readOnly,
+    read_only: full,
+    keys_read_only: readOnly,
+    writes: "server",   // this server has /upload, /delete, /move (Echo from chat 15 uses them)
     ...me(user, used),
   });
+}
+
+// ----- writes through the server: one presigned upload per file (size checked against the plan), delete, move -----
+const enc3986 = (s) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+async function hmac(key, msg) {
+  const k = await crypto.subtle.importKey("raw", typeof key === "string" ? new TextEncoder().encode(key) : key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(msg)));
+}
+const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+/// AWS Signature V4 presigned URL (query auth). `headers` = extra headers that must be sent exactly like this
+/// (e.g. content-length, so the upload can't be bigger than what was checked). Exported for the test.
+export async function presign({ method, host, path, accessKey, secretKey, sessionToken, region = "auto", service = "s3", expires = 3600, headers = {}, date = new Date() }) {
+  const amzDate = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const day = amzDate.slice(0, 8);
+  const scope = `${day}/${region}/${service}/aws4_request`;
+  const hs = { host, ...Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v).trim()])) };
+  const signed = Object.keys(hs).sort();
+  const q = {
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": `${accessKey}/${scope}`,
+    "X-Amz-Date": amzDate,
+    "X-Amz-Expires": String(expires),
+    "X-Amz-SignedHeaders": signed.join(";"),
+  };
+  if (sessionToken) q["X-Amz-Security-Token"] = sessionToken;
+  const query = Object.keys(q).sort().map((k) => `${enc3986(k)}=${enc3986(q[k])}`).join("&");
+  const canonPath = path.split("/").map(enc3986).join("/");
+  const canon = [method, canonPath, query, signed.map((k) => `${k}:${hs[k]}\n`).join(""), signed.join(";"), "UNSIGNED-PAYLOAD"].join("\n");
+  const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, await sha256(canon)].join("\n");
+  let k = await hmac(`AWS4${secretKey}`, day);
+  for (const part of [region, service, "aws4_request"]) k = await hmac(k, part);
+  const sig = hex(await hmac(k, toSign));
+  return `https://${host}${canonPath}?${query}&X-Amz-Signature=${sig}`;
+}
+
+/// "Echo/2026/11/02/FiveM/clip.mp4" -> "u/<id>/Echo/…" (null if the path is odd)
+function userKey(user, p) {
+  const path = String(p || "").replace(/^\/+/, "");
+  if (!path || path.length > 1000 || path.split("/").some((x) => x === ".." || x === "" || x === ".")) return null;
+  return `u/${user.id}/${path}`;
+}
+
+/// temporary R2 keys for exactly one object (or a prefix)
+async function tempKeys(env, permission, prefixes, ttl) {
+  const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.ACCOUNT_ID}/r2/temp-access-credentials`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ bucket: env.BUCKET_NAME, parentAccessKeyId: env.PARENT_ACCESS_KEY_ID, permission, ttlSeconds: ttl, prefixes }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.success) { console.log("temp creds failed", r.status, JSON.stringify(j.errors || j)); return null; }
+  return j.result;
+}
+
+const UPLOAD_SECONDS = 6 * 3600;   // big clips on slow connections
+async function upload(req, user, env) {
+  if (!env.CF_API_TOKEN || !env.ACCOUNT_ID || !env.PARENT_ACCESS_KEY_ID) return fail("Echo Cloud storage isn't set up yet", 503);
+  const b = await body(req);
+  const key = userKey(user, b.path);
+  const size = Math.floor(Number(b.size));
+  if (!key) return fail("Bad clip path");
+  if (!(size > 0) || size > 5e9) return fail("Clips over 5 GB can't be uploaded to Echo Cloud yet");
+  if (!(await allow(env, `up:${user.id}`, 600, 3600))) return fail("Too many uploads - try again in a while", 429);
+  // uploads that got a link but aren't finished yet still count (else many links could be fetched first and
+  // all used later); finished ones are in R2 and counted by usage(), expired ones are forgotten
+  const pend = (await env.DB.prepare("SELECT key, size FROM uploads WHERE user_id = ? AND expires > ?").bind(user.id, now()).all()).results || [];
+  if (pend.length > 50) return fail("Too many uploads at once - wait for some to finish", 429);
+  let pending = 0;
+  for (const p of pend) {
+    if (p.key === key) continue;   // this file again (a retry): replaced below
+    const o = await env.BUCKET.head(p.key);
+    if (o && o.size === p.size) await env.DB.prepare("DELETE FROM uploads WHERE key = ?").bind(p.key).run();
+    else pending += p.size;
+  }
+  await env.DB.prepare("DELETE FROM uploads WHERE expires <= ?").bind(now()).run();
+  const used = await usage(env, user, true);
+  const old = await env.BUCKET.head(key);
+  const after = used + pending - (old ? old.size : 0) + size;
+  if (after > user.quota_bytes)
+    return json({ error: `Echo Cloud is full - this clip needs ${(size / GB).toFixed(2)} GB but only ${(Math.max(0, user.quota_bytes - used - pending) / GB).toFixed(2)} GB is left`, full: true, used: used + pending, quota: user.quota_bytes }, 413);
+  const k = await tempKeys(env, "object-read-write", [key], UPLOAD_SECONDS);
+  if (!k) return fail("Echo Cloud couldn't prepare the upload - try again later", 502);
+  const url = await presign({
+    method: "PUT", host: `${env.ACCOUNT_ID}.r2.cloudflarestorage.com`, path: `/${env.BUCKET_NAME}/${key}`,
+    accessKey: k.accessKeyId, secretKey: k.secretAccessKey, sessionToken: k.sessionToken,
+    expires: UPLOAD_SECONDS, headers: { "content-length": size },
+  });
+  await env.DB.prepare("INSERT OR REPLACE INTO uploads (key, user_id, size, expires) VALUES (?, ?, ?, ?)")
+    .bind(key, user.id, size, now() + UPLOAD_SECONDS).run();
+  return json({ url, size, expires: now() + UPLOAD_SECONDS });
+}
+
+async function deleteKeys(env, user, keys) {
+  if (!keys.length) return;
+  for (let i = 0; i < keys.length; i += 1000) await env.BUCKET.delete(keys.slice(i, i + 1000));
+  // their share links go too
+  for (const key of keys) {
+    const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
+    for (const r of rows) await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
+    if (rows.length) await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+  }
+  await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount next time
+}
+
+async function del(req, user, env) {
+  const b = await body(req);
+  const keys = (Array.isArray(b.paths) ? b.paths : [b.path]).slice(0, 1000).map((p) => userKey(user, p));
+  if (!keys.length || keys.some((k) => !k)) return fail("Bad clip path");
+  await deleteKeys(env, user, keys);
+  return json({ ok: true, deleted: keys.length });
+}
+
+async function move(req, user, env) {
+  const b = await body(req);
+  const from = userKey(user, b.from), to = userKey(user, b.to);
+  if (!from || !to) return fail("Bad clip path");
+  if (from === to) return json({ ok: true });
+  const o = await env.BUCKET.get(from);
+  if (!o) return fail("That clip isn't in Echo Cloud", 404);
+  // R2 has no server-side copy in Workers: stream it over (doesn't use more space for long: the old one is deleted)
+  const { readable, writable } = new FixedLengthStream(o.size);
+  const put = env.BUCKET.put(to, readable, { httpMetadata: o.httpMetadata, customMetadata: o.customMetadata });
+  await o.body.pipeTo(writable);
+  await put;
+  await env.BUCKET.delete(from);
+  await env.DB.prepare("UPDATE shares SET key = ? WHERE key = ? AND user_id = ?").bind(to, from, user.id).run();
+  return json({ ok: true });
+}
+
+/// "Stop sharing": the link stops working, the clip stays
+async function unshare(req, user, env) {
+  const key = userKey(user, (await body(req)).path);
+  if (!key) return fail("Bad clip path");
+  const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
+  for (const r of rows) await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
+  await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+  return json({ ok: true, removed: rows.length });
+}
+
+/// Delete the account and everything in it. Big accounts take several calls: {done:false} = call again.
+async function deleteAccount(req, user, env) {
+  const b = await body(req);
+  if (cleanEmail(b.confirm) !== user.email) return fail("Type your email address to confirm");
+  if (user.polar_sub && (user.plan_until || 0) > now())
+    return fail("You still have a paid plan. Cancel it under Manage plan first - when the paid time ends you can delete the account, or email support@echoclip.link to delete it right away.", 409);
+  let n = 0;
+  for (let round = 0; round < 5; round++) {
+    const l = await env.BUCKET.list({ prefix: `u/${user.id}/`, limit: 1000 });
+    if (!l.objects.length) break;
+    await env.BUCKET.delete(l.objects.map((o) => o.key));
+    n += l.objects.length;
+    if (!l.truncated) break;
+  }
+  const left = await env.BUCKET.list({ prefix: `u/${user.id}/`, limit: 1 });
+  if (left.objects.length) return json({ done: false, deleted: n });
+  const shares = (await env.DB.prepare("SELECT id FROM shares WHERE user_id = ?").bind(user.id).all()).results || [];
+  for (let i = 0; i < shares.length; i += 1000) await env.BUCKET.delete(shares.slice(i, i + 1000).map((r) => `thumbs/${r.id}.jpg`));
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM shares WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(user.email),
+    env.DB.prepare("DELETE FROM uploads WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
+  ]);
+  console.log("account deleted", user.id);
+  return json({ done: true, deleted: n });
+}
+
+/// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
+async function takedown(req, env) {
+  const key = req.headers.get("x-admin-key") || "";
+  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
+  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const b = await body(req);
+  const id = String(b.id || "").replace(/^.*\/s\//, "").replace(/\.(mp4|jpg)$/, "").trim();
+  const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
+  if (!row) return fail("No share link with that id", 404);
+  const owner = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(row.user_id).first();
+  await env.BUCKET.delete(`thumbs/${id}.jpg`);
+  await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
+  if (b.delete_clip) { await env.BUCKET.delete(row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
+  console.log("takedown", id, row.key, b.delete_clip ? "(clip deleted)" : "");
+  return json({ ok: true, id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!b.delete_clip });
 }
 
 // ----- share links: /s/<id> streams a clip straight from R2 (plays in Discord / any browser) -----
@@ -206,6 +396,8 @@ async function migrate(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS shares_key ON shares (key)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS limits (k TEXT PRIMARY KEY, n INTEGER NOT NULL, reset INTEGER NOT NULL)"),
+    // upload links handed out but not finished yet (they count toward the plan until done or expired)
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, size INTEGER NOT NULL, expires INTEGER NOT NULL)"),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
     // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
     env.DB.prepare("UPDATE users SET quota_bytes = ? WHERE plan = 'free' AND quota_bytes = ?").bind(Number(env.FREE_GB || 10) * GB, Number(env.FREE_GB || 10) * 1024 ** 3),
@@ -217,7 +409,7 @@ async function migrate(env) {
   }
   // share pages (Discord / browser embeds): clip title, size, length and whether a thumbnail was uploaded
   const scols = new Set(((await env.DB.prepare("PRAGMA table_info(shares)").all()).results || []).map((c) => c.name));
-  for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"]]) {
+  for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"], ["wm", "TEXT"]]) {
     if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
   }
   migrated = true;
@@ -255,8 +447,10 @@ async function share(req, user, env, origin) {
       }
     } catch { /* bad base64: no thumbnail */ }
   }
-  await env.DB.prepare("UPDATE shares SET title = ?, w = ?, h = ?, dur = ?, thumb = MAX(thumb, ?) WHERE id = ?")
-    .bind(title || null, w, h, dur, thumb, id).run();
+  // Echo watermark the page lays over the video ("kimbo" / "echo"; none = no logo). The clip itself stays as uploaded.
+  const wm = b.wm === "kimbo" || b.wm === "echo" ? b.wm : null;
+  await env.DB.prepare("UPDATE shares SET title = ?, w = ?, h = ?, dur = ?, thumb = MAX(thumb, ?), wm = ? WHERE id = ?")
+    .bind(title || null, w, h, dur, thumb, wm, id).run();
   return json({ url: `${origin}/s/${id}`, expires });
 }
 
@@ -273,7 +467,7 @@ function sharePage(req, row, id) {
   const img = row.thumb ? `${base}.jpg` : `${u.origin}/og.png`;
   // the game: the clip's folder in Echo (Echo/<year>/<month>/<day>/<game>/<clip>.mp4), if it isn't a date
   const parts = row.key.split("/"), folder = parts.length > 2 ? parts[parts.length - 2] : "";
-  const game = folder && !/^\d|^(january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(folder) && folder !== "Echo" ? folder : "";
+  const game = folder && !folder.startsWith(".") && !/^\d|^(january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(folder) && folder !== "Echo" ? folder : "";
   const desc = [mins, game, "Clipped with Echo, the lightweight clipping app"].filter(Boolean).join(" · ");
   const logo = `<svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -311,6 +505,8 @@ header{max-width:1180px;margin:0 auto;padding:18px 20px;display:flex;align-items
 main{max-width:1180px;margin:0 auto;padding:4px 20px 40px}
 .player{position:relative;border-radius:16px;overflow:hidden;background:#000;border:1px solid #26262c;box-shadow:0 30px 80px #000a,0 0 0 1px #7c5cff22}
 video{width:100%;max-height:76vh;display:block;background:#000}
+.wm{position:absolute;right:2.5%;bottom:3.5%;height:7.5%;max-height:64px;pointer-events:none;user-select:none}
+.player:fullscreen .wm,.player:-webkit-full-screen .wm{max-height:none}
 .info{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;margin-top:18px}
 h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:26px;line-height:1.2;letter-spacing:-.01em;word-break:break-word}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
@@ -352,11 +548,19 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 .eptime{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;color:#f5f5f7;margin-left:4px}
 .epgrow{flex:1}
 .ep:fullscreen{border-radius:0;border:0}.ep:fullscreen video{max-height:none;height:100vh}
+.ep.touch .epbig{opacity:0;pointer-events:none;z-index:2;width:60px;height:60px;margin:-30px 0 0 -30px}.ep.touch .epbig svg{width:28px;height:28px}.ep.touch .epbar{padding-top:18px}
+.ep.touch:not(.idle) .epbig,.ep.touch.paused .epbig{opacity:1;transform:none;pointer-events:auto}
+.ep.touch .epbig svg{margin-left:0}.ep.touch.paused .epbig svg{margin-left:4px}
+.ep.touch.idle .epui{pointer-events:none}.ep.touch.idle .epbar{pointer-events:none}
+.ep.touch .eptrack{height:8px}.ep.touch .epknob{transform:scale(1)}
+.ep.touch .epvol input{display:none}.ep.touch .eptip{display:none}
+.ep:-webkit-full-screen{border-radius:0;border:0;width:100%;height:100%}
+.ep:-webkit-full-screen video{max-height:none;height:100vh}
 @media(max-width:640px){h1{font-size:21px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}.promo .btn{margin-left:0;width:100%;justify-content:center}.top{display:none}}
 </style></head><body>
 <header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
 <main>
-<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video></div>
+<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
 <div class="info"><div><h1>${esc(name)}</h1><div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
 <div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
 <div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>
@@ -629,7 +833,8 @@ async function serveShare(req, env, id, ext) {
   return new Response(o.body, { headers: h });
 }
 
-const AUTHED = new Set(["GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout"]);
+const AUTHED = new Set(["GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout",
+  "POST /upload", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
   async fetch(req, env) {
@@ -650,12 +855,18 @@ export default {
       if (route === "POST /polar/webhook") return await polarWebhook(req, env);
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
+      if (route === "POST /admin/takedown") return await takedown(req, env);
       const user = await userFromToken(req, env);
       if (!user) return AUTHED.has(route) || req.headers.has("authorization")
         ? fail("Signed out - sign in to Echo Cloud again", 401) : await notFound(req, env);
       if (route === "GET /me") return json(me(user, await usage(env, user, url.searchParams.has("fresh"))));
       if (route === "POST /creds") return await creds(user, env);
       if (route === "POST /share") return await share(req, user, env, url.origin);
+      if (route === "POST /share/remove") return await unshare(req, user, env);
+      if (route === "POST /upload") return await upload(req, user, env);
+      if (route === "POST /delete") return await del(req, user, env);
+      if (route === "POST /move") return await move(req, user, env);
+      if (route === "POST /account/delete") return await deleteAccount(req, user, env);
       if (route === "POST /checkout") return await checkout(req, user, env, url.origin);
       if (route === "POST /portal") return await portal(user, env);
       if (route === "POST /auth/logout") {

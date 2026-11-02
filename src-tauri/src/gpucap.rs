@@ -71,6 +71,10 @@ pub struct Opts {
     pub monitor: String,
     /// "h264" | "hevc" | "av1"
     pub codec: String,
+    /// smart bitrate: constant quality capped at bitrate_mbps (calm moments use far fewer bits), else CBR
+    pub smart_bitrate: bool,
+    /// 0-100, higher = sharper
+    pub smart_quality: u32,
     /// window to record (HWND as isize); 0 = whole monitor
     pub window: isize,
 }
@@ -740,8 +744,14 @@ unsafe fn set_codec(api: &ICodecAPI, key: &GUID, v: u32) {
     let _ = api.SetValue(key, &VARIANT::from(v));
 }
 
+/// Set a rate control mode and read it back: some encoders accept the call but keep their old mode.
+unsafe fn try_rate_mode(api: &ICodecAPI, m: eAVEncCommonRateControlMode) -> bool {
+    api.SetValue(&CODECAPI_AVEncCommonRateControlMode, &VARIANT::from(m.0 as u32)).is_ok()
+        && api.GetValue(&CODECAPI_AVEncCommonRateControlMode).ok().and_then(|v| u32::try_from(&v).ok()) == Some(m.0 as u32)
+}
+
 impl Encoder {
-    fn new(cap: &Capture, fps: u32, bitrate: u32, gop: u32, codec: &str, log: Log) -> Result<Self, String> {
+    fn new(cap: &Capture, fps: u32, bitrate: u32, gop: u32, codec: &str, smart: bool, quality: u32, log: Log) -> Result<Self, String> {
         unsafe {
             let (subtype, cname) = match codec {
                 "hevc" => (MFVideoFormat_HEVC, "HEVC"),
@@ -805,9 +815,27 @@ impl Encoder {
                 .map_err(e("SET_D3D_MANAGER"))?;
 
             let api = mft.cast::<ICodecAPI>().ok();
+            // average the encoder aims for: the full bitrate for CBR, lower for smart bitrate (some encoders, e.g. AMD,
+            // take their target from the output type's MF_MT_AVG_BITRATE rather than from ICodecAPI)
+            let mut avg_target = bitrate;
             if let Some(api) = &api {
-                set_codec(&api, &CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32);
-                set_codec(&api, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
+                // Smart bitrate: peak-limited VBR. The bitrate setting is a hard ceiling (never bigger than the old CBR clips);
+                // the average target follows the quality level (72 -> 60%, 82 -> 75%, 90 -> 90%), and calm moments fall far
+                // below it. (MF "Quality" mode was tried in chat 15: AMD ignored MaxBitRate there - 88 Mbps at a 12 Mbps cap.)
+                let pct = if quality <= 72 { 60 } else if quality <= 82 { 75 } else { 90 };
+                let mean = bitrate / 100 * pct;
+                let vbr = smart && try_rate_mode(api, eAVEncCommonRateControlMode_PeakConstrainedVBR);
+                if vbr { avg_target = mean; }
+                let mode = if vbr {
+                    set_codec(&api, &CODECAPI_AVEncCommonMeanBitRate, mean);
+                    set_codec(&api, &CODECAPI_AVEncCommonMaxBitRate, bitrate);
+                    format!("peak-limited VBR, average {pct}%")
+                } else {
+                    set_codec(&api, &CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32);
+                    set_codec(&api, &CODECAPI_AVEncCommonMeanBitRate, bitrate);
+                    if smart { "CBR (smart bitrate not supported by this encoder)".to_string() } else { "CBR".to_string() }
+                };
+                log(&format!("gpu: rate control {mode}, max {} Mbps", bitrate / 1_000_000));
                 set_codec(&api, &CODECAPI_AVEncMPVGOPSize, gop);
                 set_codec(&api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
             }
@@ -817,7 +845,7 @@ impl Encoder {
             let ot = MFCreateMediaType().map_err(e("MFCreateMediaType"))?;
             ot.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(e("out major"))?;
             ot.SetGUID(&MF_MT_SUBTYPE, &subtype).map_err(e("out subtype"))?;
-            ot.SetUINT32(&MF_MT_AVG_BITRATE, bitrate).map_err(e("out bitrate"))?;
+            ot.SetUINT32(&MF_MT_AVG_BITRATE, avg_target).map_err(e("out bitrate"))?;
             ot.SetUINT64(&MF_MT_FRAME_SIZE, size).map_err(e("out size"))?;
             ot.SetUINT64(&MF_MT_FRAME_RATE, rate).map_err(e("out rate"))?;
             ot.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1).map_err(e("out par"))?;
@@ -832,6 +860,15 @@ impl Encoder {
                 _ => ot.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32).map_err(e("out profile"))?,
             }
             mft.SetOutputType(0, &ot, 0).map_err(e("SetOutputType"))?;
+            // setting the output type can reset rate control on some drivers: apply it again
+            if let (Some(api), true) = (&api, avg_target != bitrate) {
+                if try_rate_mode(api, eAVEncCommonRateControlMode_PeakConstrainedVBR) {
+                    set_codec(&api, &CODECAPI_AVEncCommonMeanBitRate, avg_target);
+                    set_codec(&api, &CODECAPI_AVEncCommonMaxBitRate, bitrate);
+                }
+                let got = api.GetValue(&CODECAPI_AVEncCommonMeanBitRate).ok().and_then(|v| u32::try_from(&v).ok()).unwrap_or(0);
+                log(&format!("gpu: average bitrate after setup {:.1} Mbps", got as f64 / 1e6));
+            }
 
             let it = MFCreateMediaType().map_err(e("MFCreateMediaType"))?;
             it.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(e("in major"))?;
@@ -929,7 +966,7 @@ pub fn run(pipe: Pipe, stop: Arc<AtomicBool>, o: Opts, log: Log) {
         let gop = o.gop;
         let mut cap = Capture::new(pool, &o, log)?;
         log(&format!("gpu: capturing {}x{} -> {}x{} @{}fps (zero-copy)", cap.width, cap.height, cap.out_w, cap.out_h, fps));
-        let enc = Encoder::new(&cap, fps, o.bitrate_mbps * 1_000_000, gop, &o.codec, log)?;
+        let enc = Encoder::new(&cap, fps, o.bitrate_mbps * 1_000_000, gop, &o.codec, o.smart_bitrate, o.smart_quality, log)?;
 
         unsafe {
             if let Err(err) = ConnectNamedPipe(pipe, None) {

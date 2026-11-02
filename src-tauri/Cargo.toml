@@ -19,6 +19,8 @@ cpal = "0.15"
 # Echo's own HTTPS calls (same crates the auto-updater already brings in; replaces hidden curl.exe)
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# unpack downloaded helper zips in-process (no hidden tar.exe - looks dropper-like to antivirus)
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = "0.9"

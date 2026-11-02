@@ -405,19 +405,53 @@ async fn cloud_thumb(rec: State<'_, Recorder>, rel: String) -> Result<recorder::
 }
 
 #[tauri::command]
-async fn compress_clip(rec: State<'_, Recorder>, path: String, factor: f64) -> Result<(u64, u64), String> {
-    rec.compress_clip(&path, factor)
+async fn compress_clip(app: AppHandle, rec: State<'_, Recorder>, path: String, factor: f64, av1: Option<bool>) -> Result<(u64, u64), String> {
+    let last = std::sync::Mutex::new(-1i32);
+    rec.compress_clip(&path, factor, av1.unwrap_or(false), &|f: f64| {
+        let pct = (f * 100.0) as i32;
+        let mut l = last.lock().unwrap();
+        if pct != *l { *l = pct; let _ = app.emit("copy-progress", (path.clone(), f)); }
+    })
 }
 
 #[tauri::command]
-async fn upload_and_link(rec: State<'_, Recorder>, path: String, days: Option<u32>) -> Result<String, String> {
-    let url = rec.upload_and_link(&path, days)?;
+async fn cloud_unshare(rec: State<'_, Recorder>, rel: String) -> Result<(), String> {
+    rec.cloud_unshare(&rel)
+}
+
+#[tauri::command]
+async fn echocloud_delete_account(rec: State<'_, Recorder>, confirm: String) -> Result<(), String> {
+    rec.echocloud_delete_account(&confirm)
+}
+
+/// The UI reports whether its player decodes AV1 in hardware; returns the AV1 encoder Echo will use ("" = none, stays H.264).
+#[tauri::command]
+async fn av1_support(plays: bool) -> String {
+    recorder::AV1_PLAYS.store(plays, std::sync::atomic::Ordering::Relaxed);
+    if recorder::av1_ready() { recorder::av1_encoder().unwrap_or("").to_string() } else { String::new() }
+}
+
+#[tauri::command]
+async fn upload_and_link(app: AppHandle, rec: State<'_, Recorder>, path: String, days: Option<u32>) -> Result<String, String> {
+    let last = std::sync::Mutex::new(-1i32);
+    let url = rec.upload_and_link(&path, days, &|f: f64| {
+        let pct = (f * 100.0) as i32;
+        let mut l = last.lock().unwrap();
+        if pct != *l { *l = pct; let _ = app.emit("copy-progress", (path.clone(), f)); }
+    })?;
     recorder::copy_text(&url)?;
     Ok(url)
 }
 #[tauri::command]
-async fn cloud_link(rec: State<'_, Recorder>, rel: String, days: Option<u32>) -> Result<String, String> {
-    let url = rec.cloud_link(&rel, days)?;
+async fn cloud_link(app: AppHandle, rec: State<'_, Recorder>, rel: String, days: Option<u32>, path: Option<String>) -> Result<String, String> {
+    // progress is reported under the clip's path (the card shows it); cloud-only clips use their rel
+    let key = path.unwrap_or_else(|| rel.clone());
+    let last = std::sync::Mutex::new(-1i32);
+    let url = rec.cloud_link(&rel, days, &|f: f64| {
+        let pct = (f * 100.0) as i32;
+        let mut l = last.lock().unwrap();
+        if pct != *l { *l = pct; let _ = app.emit("copy-progress", (key.clone(), f)); }
+    })?;
     recorder::copy_text(&url)?;
     Ok(url)
 }
@@ -447,6 +481,11 @@ fn list_monitors() -> Vec<Monitor> {
     }
     #[allow(unreachable_code)]
     Vec::new()
+}
+
+#[tauri::command]
+async fn library_stamp(rec: State<'_, Recorder>) -> Result<String, String> {
+    Ok(rec.library_stamp())
 }
 
 #[tauri::command]
@@ -674,7 +713,10 @@ fn do_session(app: &AppHandle) -> Result<Option<String>, String> {
         toast(app, "Saving recording…", "One moment", true);
         let r = rec.stop_session().map(Some);
         match &r {
-            Ok(Some(p)) => toast(app, "Recording saved", &std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), true),
+            Ok(Some(p)) => {
+                let _ = rec.thumb(p);   // preview + length ready before the library shows the new card
+                toast(app, "Recording saved", &std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), true)
+            }
             Err(e) => toast(app, "Recording failed", e, false),
             _ => {}
         }
@@ -977,8 +1019,8 @@ fn captions_ready(rec: State<Recorder>) -> bool {
 }
 
 #[tauri::command]
-async fn copy_clip(path: String) -> Result<(), String> {
-    recorder::copy_to_clipboard(&path)
+async fn copy_clip(rec: State<'_, Recorder>, path: String) -> Result<(), String> {
+    recorder::copy_to_clipboard(&rec.shareable(&path)?)
 }
 
 /// Copy a clip shrunk to fit `mb` megabytes (0 = original). Returns (copied file, its size in bytes).
@@ -991,7 +1033,9 @@ async fn copy_clip_sized(app: AppHandle, rec: State<'_, Recorder>, path: String,
             let mut l = last.lock().unwrap();
             if pct != *l { *l = pct; let _ = app.emit("copy-progress", (path.clone(), f)); }
         })?
-    } else { path };
+    } else { path.clone() };
+    // AV1 clip that already fits (or full size): copy the H.264 version, so it plays in Discord and on phones
+    let p = if p == path { rec.shareable(&path)? } else { p };
     recorder::copy_to_clipboard(&p)?;
     let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
     Ok((p, size))
@@ -1148,7 +1192,19 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// When Echo started (for the "startup: …" log line).
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// The window drew its first library: log how long startup took (to spot slow starts in users' logs).
+#[tauri::command]
+fn ui_ready(clips: u32) {
+    if let Some(t) = STARTED.get() {
+        recorder::log_line(&format!("startup: library shown {} ms after launch ({clips} clips)", t.elapsed().as_millis()));
+    }
+}
+
 fn main() {
+    STARTED.get_or_init(std::time::Instant::now);
     // Linux: map the Windows folders the code uses to their Linux homes
     #[cfg(target_os = "linux")]
     {
@@ -1601,6 +1657,9 @@ fn main() {
             cloud_link,
             upload_and_link,
             compress_clip,
+            av1_support,
+            cloud_unshare,
+            echocloud_delete_account,
             cloud_connect,
             cloud_disconnect,
             cloud_info,
@@ -1619,6 +1678,8 @@ fn main() {
             save_sticker,
             pick_image,
             clip_meta,
+            library_stamp,
+            ui_ready,
             set_meta,
             set_thumb,
             cleanup_now,

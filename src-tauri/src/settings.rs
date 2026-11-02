@@ -160,6 +160,17 @@ pub struct Settings {
     /// re-encode clips older than shrink_days to about half their size while the PC is idle
     pub shrink_old: bool,
     pub shrink_days: u32,
+    /// shrink with AV1 instead of H.264 when this PC can encode AND play AV1 in hardware (same quality at about half the size)
+    pub shrink_av1: bool,
+    /// record with constant quality capped at bitrate_mbps instead of a constant bitrate (smaller clips, same sharpness in action)
+    pub smart_bitrate: bool,
+    /// share links play a copy with the watermark (slower to make); off = the clip itself, fast
+    pub share_watermark: bool,
+    /// quality level for smart bitrate (0-100, higher = sharper and bigger): 72 balanced, 82 high, 90 very high
+    pub smart_quality: u32,
+    /// settings version for smart bitrate: 0 = file from before it existed (migrated once in load())
+    #[serde(default)]
+    pub smart_v: u32,
     /// controller combo that saves a clip (XInput bits, 0 = off) and its length (0 = first hotkey's length)
     pub pad_buttons: u16,
     pub pad_seconds: u32,
@@ -184,7 +195,7 @@ impl Default for Settings {
             ],
             resolution: "native".into(),
             fps: 60,
-            bitrate_mbps: 20,
+            bitrate_mbps: 33,
             desktop_audio: true,
             desktop_volume: 1.0,
             mic: true,
@@ -234,6 +245,11 @@ impl Default for Settings {
             setup_done: false,
             shrink_old: false,
             shrink_days: 30,
+            shrink_av1: true,
+            smart_bitrate: true,
+            share_watermark: true,
+            smart_quality: 72,
+            smart_v: 1,
             pad_buttons: 0,
             pad_seconds: 0,
             watermark_style: "kimbo".into(),
@@ -268,16 +284,33 @@ impl Default for Settings {
 }
 
 impl Settings {
-    fn path() -> PathBuf {
+    pub fn path() -> PathBuf {
         let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
         base.join("Clipper").join("settings.json")
     }
 
     pub fn load() -> Self {
-        fs::read_to_string(Self::path())
+        let mut s: Self = fs::read_to_string(Self::path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Smart bitrate arrived (chat 15): the old bitrate becomes the AVERAGE (Balanced = 60% of the maximum),
+        // so clips stay about the same size, busy moments get up to ~1.7x the bits, and nothing gets softer.
+        if s.smart_v < 1 {
+            let max = (s.bitrate_mbps as f64 / 0.6).round() as u32;
+            if max <= 80 {
+                s.smart_bitrate = true;
+                s.smart_quality = 72;
+                s.bitrate_mbps = max.max(4);
+            } else {
+                // very high fixed bitrates (over 48 Mbps) can't keep their average under the 80 Mbps ceiling:
+                // they stay on the fixed bitrate they chose, so nobody's quality drops
+                s.smart_bitrate = false;
+            }
+            s.smart_v = 1;
+            let _ = s.save();
+        }
+        s
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -318,6 +351,8 @@ impl Settings {
         self.resolution != new.resolution
             || self.fps != new.fps
             || self.bitrate_mbps != new.bitrate_mbps
+            || self.smart_bitrate != new.smart_bitrate
+            || self.smart_quality != new.smart_quality
             || self.desktop_audio != new.desktop_audio
             || self.mic != new.mic
             || self.mic_device != new.mic_device

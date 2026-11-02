@@ -101,6 +101,50 @@
   /* library */
   .toolbar { display:flex; align-items:center; gap:10px; padding:4px 28px 6px; }
   .toolbar .count { color:var(--muted); font-size:13px; }
+  .fbar { display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap; }
+  .fbtn { height:30px; padding:0 11px 0 9px; border-radius:99px; border:1px dashed var(--line); background:none; color:var(--muted); display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:500; transition:.15s; }
+  .fbtn svg { width:15px; height:15px; stroke-width:2.2; }
+  .fbtn:hover, .fbtn.open { color:var(--text); border-color:var(--muted); border-style:solid; }
+  .fbtn.on { border-style:solid; border-color:rgba(var(--accent-rgb),0.55); color:var(--text); }
+  .fbtn .fn { min-width:18px; height:18px; border-radius:99px; background:var(--accent); color:#fff; font-size:11px; font-weight:700; display:grid; place-items:center; padding:0 5px; } .fbtn .fn:empty { display:none; }
+  .factive { display:flex; gap:6px; flex-wrap:wrap; }
+  .fpill { height:30px; display:inline-flex; align-items:center; gap:6px; padding:0 6px 0 11px; border-radius:99px; background:rgba(var(--accent-rgb),0.14); color:var(--text); font-size:12.5px; border:0; max-width:200px; }
+  .fpill span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .fpill em { font-style:normal; color:var(--muted); }
+  .fpill i { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; color:var(--muted); font-style:normal; font-size:14px; line-height:1; }
+  .fpill:hover i { background:#ffffff1a; color:var(--text); }
+  .fclr2 { border:0; background:none; color:var(--muted); font-size:12.5px; height:30px; padding:0 6px; } .fclr2:hover { color:var(--text); text-decoration:underline; }
+  #fmenu { position:fixed; z-index:200; width:min(520px, 92vw); max-height:70vh; overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px 16px; box-shadow:0 18px 50px #000b; display:none; }
+  #fmenu.on { display:block; }
+  #fmenu input { width:100%; height:34px; background:var(--bg); border:1px solid var(--line); border-radius:9px; color:var(--text); padding:0 12px; margin-bottom:6px; outline:none; }
+  #fmenu input:focus { border-color:rgba(var(--accent-rgb),0.6); }
+  #fmenu .fsec { padding-top:12px; }
+  #fmenu .fh { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); font-weight:600; margin-bottom:8px; }
+  #fmenu .fchips { display:flex; flex-wrap:wrap; gap:6px; }
+  .fchip { display:inline-flex; align-items:center; gap:7px; height:28px; padding:0 10px; border-radius:8px; border:1px solid transparent; background:var(--panel2); color:var(--muted); font-size:12.5px; max-width:100%; transition:.12s; }
+  .fchip:hover { color:var(--text); border-color:var(--line); }
+  .fchip.on { color:var(--text); background:rgba(var(--accent-rgb),0.2); border-color:rgba(var(--accent-rgb),0.7); }
+  .fchip img { width:16px; height:16px; border-radius:4px; object-fit:cover; flex:none; margin-left:-3px; }
+  .fchip .fl { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .fchip small { color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
+  @media (max-width:1150px) { .toolbar .count { display:none; } }
+  #tidy { position:fixed; inset:0; z-index:120; background:#000a; display:none; place-items:center; padding:28px; }
+  #tidy.on { display:grid; }
+  #tidy .tp { width:min(860px,100%); max-height:100%; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 30px 80px #000c; overflow:hidden; }
+  #tidy .th { padding:18px 22px 12px; border-bottom:1px solid var(--line); display:flex; align-items:flex-start; gap:12px; }
+  #tidy .th h3 { font-size:19px; } #tidy .th p { color:var(--muted); font-size:13px; margin-top:2px; }
+  #tidy .tdb { overflow:auto; padding:6px 22px 16px; flex:1; display:block; }
+  #tidy .ts { margin-top:14px; } #tidy .ts h4 { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--dim); margin-bottom:6px; display:flex; gap:8px; }
+  #tidy .ts h4 small { text-transform:none; letter-spacing:0; font-weight:500; color:var(--muted); }
+  #tidy .tg { border:1px solid var(--line); border-radius:12px; padding:4px; margin-bottom:8px; }
+  #tidy .tr { display:flex; align-items:center; gap:12px; padding:6px 8px; border-radius:9px; }
+  #tidy .tr:hover { background:var(--panel2); }
+  #tidy .tr input { width:17px; height:17px; accent-color:var(--accent); flex:none; }
+  #tidy .tt { width:96px; height:54px; border-radius:7px; background:#000 center/cover; flex:none; cursor:pointer; }
+  #tidy .tn { flex:1; min-width:0; } #tidy .tn b { display:block; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #tidy .tn small { color:var(--muted); font-size:12px; } #tidy .keep { color:#3ddc97; font-size:11px; font-weight:700; margin-left:6px; }
+  #tidy .tf { padding:12px 22px; border-top:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  #tidy .tf .spacer { flex:1; } #tidy .empty2 { color:var(--muted); padding:26px 4px; text-align:center; }
+  #fmenu .fnone { color:var(--dim); font-size:12.5px; padding:4px 2px; }
   .searchbox { position:relative; }
   .searchbox svg { position:absolute; left:11px; top:10px; width:16px; height:16px; color:var(--dim); pointer-events:none; }
   .search { height:36px; width:260px; border-radius:10px; border:1px solid var(--line); background:var(--panel); padding:0 12px 0 34px; outline:none; transition:.15s; }
@@ -114,6 +158,9 @@
   /* list view */
   .grid.list { grid-template-columns:1fr; gap:8px; }
   .grid.list .card { display:flex; align-items:center; }
+  /* long libraries: the browser skips layout + painting for cards that are off screen */
+  .grid .card { content-visibility:auto; contain-intrinsic-size:auto 330px; }
+  .grid.list .card { contain-intrinsic-size:auto 76px; }
   .grid.list .card:hover { transform:none; }
   .grid.list .thumb { width:176px; flex:none; }
   .grid.list .info { flex:1; min-width:0; }
@@ -134,7 +181,7 @@
   @keyframes spin { to { transform:rotate(360deg); } }
   .tchip { font-size:11px; background:rgba(var(--accent-rgb),0.15); color:var(--accent2); border:1px solid rgba(var(--accent-rgb),0.33); border-radius:99px; padding:1px 8px; display:inline-flex; align-items:center; gap:4px; }
   .tchip button { border:0; background:none; color:inherit; padding:0; cursor:pointer; font-size:12px; line-height:1; }
-  .card .note { font-size:12px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card .note { font-size:12px; color:var(--muted); margin-top:3px; padding:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #pmeta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 2px 0; font-size:12.5px; color:var(--muted); }
   #pmeta input { height:28px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; color:var(--text); padding:0 9px; font-size:12.5px; }
   #ptagin { width:120px; } #pnote { flex:1; min-width:180px; }
@@ -162,6 +209,10 @@
   .thumb .play svg { fill:#111; stroke:none; margin-left:3px; }
   .card:hover .play { opacity:1; } .card:hover .play div { transform:scale(1); }
   .ovl { display:flex; gap:4px; flex:none; }
+  /* Copy + Star always visible, the rest slides in on hover */
+  /* the extra buttons always keep their space (invisible until hover), so Copy never moves under the mouse */
+  .ovl .more { display:flex; gap:2px; margin-right:6px; opacity:0; visibility:hidden; transition:opacity .15s, visibility 0s .15s; }
+  .card:hover .ovl .more, .card:focus-within .ovl .more { opacity:1; visibility:visible; transition:opacity .15s; }
   .ib { width:34px; height:34px; border-radius:9px; border:0; background:none; color:var(--muted); display:grid; place-items:center; transition:.15s; }
   .ib:hover { background:var(--panel2); color:var(--text); }
   .cgrp { display:inline-flex; border:1px solid var(--line); border-radius:10px; margin-right:4px; transition:.15s; }
@@ -186,6 +237,13 @@
   .thumb .pick svg { width:14px; height:14px; stroke:#fff; stroke-width:3; opacity:0; }
   .card:hover .pick, .card.picked .pick, body.picking .pick { opacity:1; }
   .card.picked { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+  /* per-clip job (convert / make smaller): label + bar over the bottom of the preview */
+  .thumb .job { position:absolute; left:0; right:0; bottom:0; z-index:4; padding:22px 10px 8px; background:linear-gradient(transparent,#000c); pointer-events:none; }
+  .thumb .job span { display:block; font-size:12px; font-weight:600; margin-bottom:5px; text-shadow:0 1px 3px #000; font-variant-numeric:tabular-nums; }
+  .thumb .job b { display:block; height:5px; border-radius:99px; background:#ffffff26; overflow:hidden; }
+  .thumb .job b i { display:block; height:100%; width:0; background:var(--accent); transition:width .25s; }
+  .thumb .job.wait span { color:var(--muted); } .thumb .job.wait b { display:none; }
+  .thumb:has(.job) .tag, .thumb:has(.job) .dur { opacity:0; }
   .card.picked .pick { background:var(--accent); border-color:var(--accent); }
   .card.picked .pick svg { opacity:1; }
   /* floats at the bottom over the clips, so starting a selection doesn't push the page down */
@@ -305,6 +363,33 @@
   .x:hover { color:var(--bad); background:var(--panel2); }
   .x svg { width:16px; height:16px; }
   .presets { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; padding:16px 0; }
+  /* Quality page */
+  .qhero { display:flex; align-items:center; gap:24px; padding:22px 24px; margin-bottom:22px; border-radius:var(--radius); background:linear-gradient(135deg, rgba(var(--accent-rgb),0.22), rgba(var(--accent-rgb),0.04) 60%); border:1px solid rgba(var(--accent-rgb),0.28); }
+  .qmain { flex:1; min-width:0; }
+  .qbig { font-size:26px; font-weight:700; letter-spacing:-.01em; font-variant-numeric:tabular-nums; }
+  .qbig span { color:var(--muted); font-weight:500; margin:0 6px; }
+  .qsub { color:var(--muted); font-size:12.5px; margin-top:4px; }
+  .qsub::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--good, #3ddc97); margin-right:7px; vertical-align:1px; }
+  .qest { display:flex; gap:22px; }
+  .qest div { text-align:right; } .qest b { display:block; font-size:18px; font-variant-numeric:tabular-nums; } .qest small { color:var(--muted); font-size:12px; }
+  .seg, .qseg { display:inline-flex; background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:3px; gap:2px; flex:none; }
+  .seg button, .qseg .preset { border:0; background:none; color:var(--muted); height:30px; padding:0 14px; border-radius:8px; font-size:13px; font-weight:500; transition:.15s; white-space:nowrap; }
+  .seg button:hover, .qseg .preset:hover { color:var(--text); }
+  .seg button.on, .qseg .preset.on { background:var(--panel2); color:var(--text); box-shadow:0 1px 0 #ffffff12 inset, 0 2px 8px #0006; }
+  .qseg { display:flex; margin:14px 0 4px; } .qseg .preset { flex:1; height:auto; padding:9px 8px; text-align:center; }
+  .qseg .preset b { display:block; margin:0; font-weight:600; } .qseg .preset small { font-size:11px; color:var(--dim); }
+  .qseg .preset.on small { color:var(--muted); }
+  .qseg .qcustom { flex:1; display:grid; place-items:center; font-size:12px; color:var(--dim); border-radius:8px; }
+  .qseg .qcustom.on { color:var(--accent2); background:rgba(var(--accent-rgb),0.12); }
+  .segsrc { display:none !important; }
+  .row.col { flex-wrap:wrap; } .row.col .lbl { flex-basis:100%; } 
+  /* calmer settings look: label-style section titles, softer dividers, accent marker in the side list */
+  .box { padding:2px 22px 4px; }
+  .box > h3 { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--dim); font-weight:700; padding:16px 0 2px; border-bottom:0; }
+  .row { border-bottom-color:#ffffff0d; }
+  .snav a { position:relative; }
+  .snav a.on { background:rgba(var(--accent-rgb),0.12); color:var(--text); }
+  .snav a.on::before { content:""; position:absolute; left:0; top:8px; bottom:8px; width:3px; border-radius:3px; background:var(--accent); }
   .preset { text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:10px; padding:12px; transition:.15s; }
   .preset:hover { border-color:var(--hover); }
   .preset.on { border-color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
@@ -387,6 +472,13 @@
   #ectx button { display:flex; width:100%; align-items:center; gap:10px; padding:7px 10px; border:0; background:none; color:var(--text); border-radius:7px; font-size:13px; text-align:left; }
   #ectx button:hover { background:var(--panel2); } #ectx button:disabled { opacity:.35; }
   #ectx kbd { margin-left:auto; font-size:10.5px; } #ectx hr { border:0; border-top:1px solid var(--line); margin:4px 2px; }
+  #ectx button.main { font-weight:600; }
+  #ectx button.warn { color:#ff8a8a; }
+  #ectx .chips { display:flex; align-items:center; gap:4px; padding:2px 10px 6px; }
+  #ectx .chips small { color:var(--muted); font-size:11.5px; margin-right:4px; }
+  #ectx .chips button { display:inline-flex; width:auto; padding:3px 9px; border-radius:99px; border:1px solid var(--line); font-size:12px; color:var(--muted); }
+  #ectx .chips button:hover { color:var(--text); background:var(--panel2); }
+  #ectx .chips button.on { color:var(--text); border-color:var(--accent); }
   .etl { height:200px; flex:none; overflow-x:auto; overflow-y:auto; position:relative; background:var(--rail); border-top:1px solid var(--line); }
   .etlin { position:relative; min-height:100%; padding:0 24px 10px 104px; min-width:100%; }
   .tlab { position:sticky; left:0; margin-left:-104px; width:96px; height:100%; z-index:7; display:flex; align-items:center; gap:7px; padding:0 10px; font-size:11.5px; font-weight:600; color:var(--muted); background:var(--rail); border-right:1px solid var(--line); box-shadow:6px 0 10px -6px #000; pointer-events:auto; }
@@ -597,15 +689,22 @@
     <div class="pickbar" id="pickbar"><b id="pickn"></b><span class="spacer"></span>
       <button class="btn" id="pickjoin" title="Join the selected clips into one video (oldest first)"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="8" height="12" rx="1"/><rect x="14" y="6" width="8" height="12" rx="1"/><path d="M10 12h4"/></svg>Combine</button>
       <button class="btn" id="pickmove" title="Move the selected clips into a folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13h6M13 10l3 3-3 3"/></svg>Move</button>
+      <button class="btn" id="pickav1" style="display:none" title="Re-encode the selected clips with your graphics card's AV1 encoder: about half the size, same quality"><svg viewBox="0 0 24 24"><path d="M4 14l4-4 4 4 8-8"/><path d="M14 6h6v6"/></svg>Convert to AV1</button>
       <button class="btn" id="pickfav"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>Favourite</button>
       <button class="btn danger" id="pickdel"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete</button>
       <button class="btn" id="pickclr">Clear</button></div>
     <div class="toolbar">
       <span class="count" id="count"></span>
+      <div class="fbar" id="fbar">
+        <button class="fbtn" id="fbtn" title="Filter clips"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>Filter<span class="fn"></span></button>
+        <div class="factive" id="factive"></div>
+      </div>
+      <div id="fmenu"></div>
       <div class="spacer"></div>
       <div class="searchbox"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input class="search" id="search" placeholder="Search clips…"></div>
       <select id="sort"><option value="new">Newest</option><option value="old">Oldest</option><option value="big">Largest</option><option value="long">Longest</option><option value="name">Name</option></select>
       <button class="btn vbtn" id="viewbtn" title="Grid / list view"></button>
+      <button class="btn" id="tidybtn" title="Find clips saved twice, very short clips and the biggest ones"><svg viewBox="0 0 24 24"><path d="M4 20h16M7 20l2-9h6l2 9M12 11V4"/></svg>Tidy up</button>
       <button class="btn" onclick="invoke('open_in_folder',{path:status.clips_dir})"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open folder</button>
     </div>
     <div id="grid"></div>
@@ -645,26 +744,34 @@
 
         <div class="sec" id="sec-quality">
           <h2>Quality</h2>
-          <p>Recording resolution, frame rate and bitrate. Higher settings mean bigger clips.</p>
-          <div class="box">
-            <h3>Recording quality</h3>
-            <div class="presets" id="presets"></div>
-            <div class="row"><div class="lbl"><b>Resolution</b><small>Scaled on the GPU, never upscaled</small></div>
-              <select data-k="resolution"><option value="native">Native</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option></select></div>
-            <div class="row"><div class="lbl"><b>Frame rate</b></div>
-              <select data-k="fps" data-num><option>30</option><option>60</option><option>120</option><option>144</option></select></div>
-            <div class="row"><div class="lbl"><b>Bitrate</b><small>Around 20 Mbps is plenty for 1440p60</small></div>
-              <input type="range" min="4" max="80" step="1" data-k="bitrate_mbps" data-num><span class="val" id="v-bitrate"></span></div>
-            <div class="row"><div class="lbl"><b>Encoder</b><small id="encnote"></small></div></div>
+          <p>How sharp and smooth your clips are, and how much space they take.</p>
+          <div class="qhero">
+            <div class="qmain"><div class="qbig" id="qbig"></div><div class="qsub" id="encnote"></div></div>
+            <div class="qest"><div><b id="qmin"></b><small>per minute</small></div><div><b id="qclip"></b><small id="qcliplbl">per clip</small></div></div>
           </div>
           <div class="box">
-            <h3>What to record</h3>
-            <div class="row"><div class="lbl"><b>Monitor</b><small>Which screen the replay buffer records. HDR monitors are converted to normal colours automatically.</small></div>
+            <h3>Preset</h3>
+            <div class="qseg" id="presets"></div>
+            <div class="row"><div class="lbl"><b>Resolution</b><small>Scaled on the GPU, never upscaled</small></div>
+              <select data-k="resolution" class="segsrc"><option value="native">Native</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option></select></div>
+            <div class="row"><div class="lbl"><b>Frame rate</b></div>
+              <select data-k="fps" data-num class="segsrc"><option>30</option><option>60</option><option>120</option><option>144</option></select></div>
+            <div class="row"><div class="lbl"><b>Bitrate</b><small id="brhint">Around 20 Mbps is plenty for 1440p60</small></div>
+              <input type="range" min="4" max="80" step="1" id="brslider"><span class="val" id="v-bitrate"></span></div>
+            <div class="row"><div class="lbl"><b>Smart bitrate</b><small>Busy moments (running, driving, fights) can go well above the bitrate, calm moments use much less. Clips stay about the same size, but action looks sharper.</small></div>
+              <label class="switch"><input type="checkbox" data-k="smart_bitrate"><span></span></label></div>
+            <div class="row col" id="sqrow"><div class="lbl"><b>Smart bitrate quality</b><small id="sqhint"></small></div>
+              <select data-k="smart_quality" data-num class="segsrc"><option value="72" data-hint="Busy moments get up to 1.7x the bitrate. The presets use this.">Balanced</option><option value="82" data-hint="Same maximum as Balanced, but a higher average: about 25% bigger clips, a little sharper overall.">High</option><option value="90" data-hint="Same maximum, highest average: the biggest clips, close to always using the maximum.">Very high</option></select></div>
+          </div>
+          <div class="box">
+            <h3>Capture</h3>
+            <div class="row"><div class="lbl"><b>Monitor</b><small>HDR monitors are converted to normal colours automatically.</small></div>
               <select data-k="monitor" id="monsel" style="max-width:340px"><option value="">Main monitor</option></select></div>
-            <div class="row"><div class="lbl"><b>Record</b><small>The second option records the whole monitor, and switches to just the game window while a game is open (so Discord or other windows on top aren't in the clip). Switching takes a few seconds and starts a fresh buffer.</small></div>
-              <select data-k="capture"><option value="screen">Always the whole monitor</option><option value="game">Whole monitor, game window when a game is open</option></select></div>
-            <div class="row"><div class="lbl"><b>Video format</b><small>H.264 plays everywhere (Discord, phones). HEVC is about 30-40% smaller at the same quality but may not play in Discord. AV1 is the smallest and needs a newer GPU (Radeon RX 7000 / GeForce RTX 40 or newer). Edited and shrunk copies are always H.264.</small></div>
-              <select data-k="codec"><option value="h264">H.264 (best compatibility)</option><option value="hevc">HEVC / H.265 (smaller)</option><option value="av1">AV1 (smallest, newest GPUs)</option></select></div>
+            <div class="row col"><div class="lbl"><b>Record</b><small id="caphint"></small></div>
+              <select data-k="capture" class="segsrc"><option value="screen" data-hint="Records everything on the monitor, including Discord or anything else on top.">Whole monitor</option><option value="game" data-hint="Switches to just the game window while a game is open, so overlays on top stay out of the clip. Switching takes a few seconds and starts a fresh buffer.">Game window when open</option></select></div>
+            <div class="row col"><div class="lbl"><b>Video format</b><small id="codechint"></small></div>
+              <select data-k="codec" class="segsrc"><option value="h264" data-hint="Plays everywhere: Discord, phones, browsers.">H.264</option><option value="hevc" data-hint="About 30-40% smaller at the same quality, but may not play in Discord.">HEVC</option><option value="av1" data-hint="The smallest. Needs a Radeon RX 7000 / GeForce RTX 40 or newer.">AV1</option></select></div>
+            <div class="note" style="padding:4px 0 14px">Edited and shrunk copies are always H.264.</div>
           </div>
         </div>
 
@@ -712,7 +819,7 @@
           <p>Choose per game whether Echo records it and gives it its own folder. Games show up here after you've played them with Echo running.</p>
           <div class="box">
             <h3>When to record</h3>
-            <div class="row"><div class="lbl"><b>Only record while a game is running</b><small>The replay buffer waits until a game is open (handy if you don't want desktop clips). Starts a few seconds after the game appears.</small></div><label class="switch"><input type="checkbox" data-k="only_while_game"><span></span></label></div>
+            <div class="row"><div class="lbl"><b>Only record while a game is running</b><small>Echo waits until a game is open (handy if you don't want desktop clips). Starts a few seconds after the game appears.</small></div><label class="switch"><input type="checkbox" data-k="only_while_game"><span></span></label></div>
           </div>
           <div class="box"><h3>Your games</h3><div id="gamerules"></div></div>
         </div>
@@ -745,6 +852,7 @@
             <div class="row"><div class="lbl"><b>Free up space after uploading</b><small>Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud)</small></div><label class="switch"><input type="checkbox" data-k="cloud_free_after"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Share links expire</b><small>"Copy share link" on a clip in the cloud makes a link anyone can open</small></div>
               <select data-k="link_days" data-num><option value="0">Never</option><option value="1">After 1 day</option><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option></select></div>
+            <div class="row"><div class="lbl"><b>Watermark on share links</b><small>The share page shows the Echo logo over the video, and it's on the preview picture in Discord (style under Clips &amp; Storage). The clip itself is uploaded as it is, so links are quick.</small></div><label class="switch"><input type="checkbox" data-k="share_watermark"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Copy the link after uploading</b><small>When you upload a clip yourself, its share link lands on your clipboard</small></div><label class="switch"><input type="checkbox" data-k="auto_copy_link"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Get clips from my other PCs</b><small>New clips uploaded by Echo on another PC (or Linux) download here by themselves</small></div><label class="switch"><input type="checkbox" data-k="cloud_download"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Sync now</b><small id="cloudbusy">Syncs every 5 minutes and right after you save a clip</small></div><button class="btn" onclick="invoke('cloud_sync_now');toast('Syncing…')">Sync now</button></div>
@@ -779,14 +887,15 @@
             <div class="row"><div class="lbl"><b>Auto-delete old clips</b><small>Clips older than this go to the Recycle Bin (checked at start and every few hours). Favourites are always kept.</small></div>
               <select data-k="cleanup_days" data-num><option value="0">Never</option><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option><option value="60">After 60 days</option><option value="90">After 90 days</option><option value="180">After 6 months</option></select>
               <button class="btn" id="cleannow" onclick="cleanNow()">Clean up now</button></div>
-            <div class="row"><div class="lbl"><b>Shrink old clips</b><small>While the PC is idle and no game runs, clips older than this are re-encoded to about half their size (each clip once). Favourites stay as they are.</small></div>
+            <div class="row"><div class="lbl"><b>Shrink old clips</b><small>While the PC is idle and no game runs, clips older than this are re-encoded at a steady quality: calm clips shrink a lot, busy ones less, and clips that wouldn't get at least 15% smaller are left alone. Each clip once; favourites stay as they are.</small></div>
               <select data-k="shrink_days" data-num><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option><option value="60">After 60 days</option><option value="90">After 90 days</option></select><label class="switch"><input type="checkbox" data-k="shrink_old"><span></span></label></div>
+            <div class="row" id="av1row" style="display:none"><div class="lbl"><b>Shrink with AV1</b><small>Your graphics card can make AV1 files: the same quality at about half the size. Copies, share links and cloud uploads still go out as H.264, so they play on every phone and PC.</small></div><label class="switch"><input type="checkbox" data-k="shrink_av1"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Name clips after the game</b><small>"Valorant 2026-10-31 …" instead of "Clip 2026-10-31 …", based on the window in front when you press the hotkey</small></div><label class="switch"><input type="checkbox" data-k="name_by_game"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Game folders</b><small>Save each game's clips in its own folder (…\Valorant\…). Clips outside a game stay in the main folder.</small></div><label class="switch"><input type="checkbox" data-k="game_folders"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Sort older clips into game folders</b><small>Moves clips with a game in their name ("FiveM 2026-…", "fivem_chase.mp4", "GTA V - Moments") from the main folder and "Exported Clips" into that game's folder. Imports do this by themselves.</small></div><button class="btn" id="sortfold" onclick="sortFolders()">Sort clips</button></div>
             <div class="row"><div class="lbl"><b>Copy button copies</b><small>Clips bigger than the size are shrunk (cached copy, the original is kept). The small arrow next to Copy, or Ctrl+click, lets you pick each time.</small></div>
               <select data-k="copy_default"><option value="full">Full size</option><option value="free">Discord Free</option><option value="basic">Nitro Basic</option><option value="nitro">Nitro</option><option value="custom">Custom</option></select></div>
-            <div class="row"><div class="lbl"><b>Watermark</b><small>An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs. Your recorded clips and full-size copies stay clean.</small></div><select data-k="watermark_style"><option value="kimbo">Echo · By Kimbo</option><option value="echo">Echo</option><option value="off">Off</option></select></div>
+            <div class="row"><div class="lbl"><b>Watermark</b><small>An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs, and on share link pages. Your recorded clips and full-size copies stay clean.</small></div><select data-k="watermark_style"><option value="kimbo">Echo · By Kimbo</option><option value="echo">Echo</option><option value="off">Off</option></select></div>
             <div class="row"><div class="lbl"><b>Discord limits (MB)</b><small>Free / Nitro Basic / Nitro / Custom - change them if Discord does</small></div>
               <span style="display:flex;gap:6px"><input type="number" min="1" data-k="discord_free_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_basic_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_nitro_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_custom_mb" data-num data-lazy style="width:70px"></span></div>
             <div class="row"><div class="lbl"><b>Currently used</b></div><span class="val" style="width:auto" id="used"></span></div>
@@ -819,7 +928,7 @@
             <div class="row"><div class="lbl"><b>Start with Windows</b><small>Starts quietly in the tray and begins buffering</small></div><label class="switch"><input type="checkbox" data-k="start_with_windows"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Start minimized</b><small>When Echo starts with your PC it stays in the tray (opening Echo yourself always shows the window)</small></div><label class="switch"><input type="checkbox" data-k="start_minimized"><span></span></label></div>
             <div class="row"><div class="lbl"><b>In-game popup</b><small>A small "Clip saved" notice in the top-right corner (works in borderless / windowed games)</small></div><label class="switch"><input type="checkbox" data-k="show_overlay"><span></span></label></div>
-            <div class="row"><div class="lbl"><b>Pause when idle</b><small>Stop the replay buffer while you're away from the PC; it starts again on your next key or mouse move</small></div>
+            <div class="row"><div class="lbl"><b>Pause when idle</b><small>Pause background recording while you're away from the PC; it starts again on your next key or mouse move</small></div>
               <select data-k="idle_pause_min" data-num><option value="0">Never</option><option value="5">After 5 min</option><option value="10">After 10 min</option><option value="20">After 20 min</option><option value="30">After 30 min</option></select></div>
             <div class="row"><div class="lbl"><b>Close to tray</b><small>The X button hides Echo; it keeps recording. Quit from the tray icon.</small></div><label class="switch"><input type="checkbox" data-k="close_to_tray"><span></span></label></div>
           </div>
@@ -960,6 +1069,9 @@
   <div class="srow"><b>5 · Save disk space <i>(optional)</i></b><div class="sline"><small style="flex:1">Shrink clips older than 30 days to about half their size while the PC is idle. Favourites stay as they are.</small><label class="switch"><input type="checkbox" data-k="shrink_old"><span></span></label></div></div>
   <div class="srow"><b>6 · Test it</b><div class="sline"><small style="flex:1">Play some sound and say something while it runs.</small><button class="btn" onclick="setupTest(this)">Run self-test</button></div><div id="sutest" style="font-size:12.5px;margin-top:6px"></div></div>
   <div class="dbtn" style="margin-top:14px"><button class="btn primary" onclick="finishSetup()">Done</button></div></div></div>
+<div id="tidy"><div class="tp"><div class="th"><div style="flex:1"><h3>Tidy up</h3><p>Clips saved twice, very short clips and the biggest ones. Favourites are never listed, and deleted clips go to the Recycle Bin.</p></div><button class="x" id="tidyx" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+  <div class="tdb" id="tidyb"></div>
+  <div class="tf"><label class="chk" id="tidycl"><input type="checkbox" id="tidycloud" checked>Also delete their cloud copies</label><span class="spacer"></span><span id="tidysum" style="color:var(--muted);font-size:13px"></span><button class="btn danger" id="tidydel">Delete selected</button></div></div></div>
 <div id="confirm"><div class="dlg"><h3 id="ctitle">Delete clip?</h3><p id="cmsg"></p>
   <div class="dbtn"><button class="btn" id="cno">Cancel</button><button class="btn delb" id="cyes">Delete</button></div></div></div>
 <div id="details"><div class="dlg" style="width:460px"><h3>Clip details</h3><p id="dinfo" style="margin-bottom:14px;font-size:12.5px"></p>
@@ -1072,22 +1184,33 @@
 
   // while Echo is hidden (tray / minimised) the library isn't refreshed; it catches up the moment it's shown
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh().catch(() => {}); });
-  async function refresh() {
+  // The status bar updates every tick; the library (clip list, metadata, cloud list, games…) only reloads when
+  // Echo's library_stamp says something changed on disk, plus once more right after (files still being
+  // written), plus every 30 s as a safety net. Any other caller (events, buttons) always reloads.
+  let libStamp = null, libAt = 0, libAgain = false;
+  async function refresh(why) {
     if (document.hidden && refresh.done) return;
     status = await invoke("get_status");
     const on = status.recording;
     $("dot").classList.toggle("on", on); $("raildot").classList.toggle("on", on);
     const PAUSE = { idle: "Paused · you're idle", game: "Paused · this game isn't recorded", nogame: "Waiting for a game" };
     $("state").textContent = PAUSE[status.paused] || (on ? `Recording · last ${fmtLen(status.buffer_seconds)}` : "Not recording");
-    $("railstate").textContent = PAUSE[status.paused] || (on ? "Replay buffer on" : "Recorder stopped");
+    $("railstate").textContent = PAUSE[status.paused] || (on ? "Ready to clip" : "Recorder stopped");
     sessAt = status.session == null ? null : Date.now() / 1000 - status.session; drawLong();
-    invoke("list_games").then(g => { const m = {}; g.forEach(x => m[x.name] = x.icon); const k = JSON.stringify(Object.keys(m).filter(n => m[n])); const gk = g.map(x => x.name + !!x.icon).join("|"); gameList = g; if (gk !== gamesKey) { gamesKey = gk; renderGameRules(); } if (k !== iconKey) { iconKey = k; gameIcons = m; listKey = ""; renderGrid(); } }).catch(() => {});
-    invoke("shared_clips").then(v => { const k = v.join("|"); if (k !== sharedKey) { sharedKey = k; shared = new Set(v); listKey = ""; renderGrid(); } }).catch(() => {});
-    $("railmode").textContent = on ? (status.mode === "gpu" ? `GPU capture · keeps last ${fmtLen(status.buffer_seconds)}` : `CPU fallback · keeps last ${fmtLen(status.buffer_seconds)}`) : "Settings → App → Restart recorder";
+    $("railmode").textContent = on ? (status.mode === "gpu" ? `Your last ${fmtLen(status.buffer_seconds)} is always ready · GPU` : `Your last ${fmtLen(status.buffer_seconds)} is always ready · CPU fallback`) : "Settings → App → Restart recorder";
     drawHealth();
     $("encnote").textContent = status.mode === "gpu" ? `Zero-copy GPU pipeline (hardware ${({ hevc: "HEVC", av1: "AV1" })[cfg && cfg.codec] || "H.264"})` : status.mode.startsWith("cpu") ? "Fallback: CPU copy + " + ({ cpu: "AMD AMF", "cpu-nvenc": "NVIDIA NVENC", "cpu-qsv": "Intel Quick Sync" }[status.mode] || "hardware encoder") : "Starting…";
     $("lognote").textContent = "Log: " + status.log;
     drawMic();
+    let stamp = null;
+    try { stamp = await invoke("library_stamp"); } catch (e) {}
+    const changed = stamp == null || stamp !== libStamp;
+    const need = why !== "tick" || !refresh.done || listKey === "" || changed || libAgain || Date.now() - libAt > 30000;
+    libAgain = changed && refresh.done; libStamp = stamp;
+    if (!need) return;
+    libAt = Date.now();
+    invoke("list_games").then(g => { const m = {}; g.forEach(x => m[x.name] = x.icon); const k = JSON.stringify(Object.keys(m).filter(n => m[n])); const gk = g.map(x => x.name + !!x.icon).join("|"); gameList = g; if (gk !== gamesKey) { gamesKey = gk; renderGameRules(); } if (k !== iconKey) { iconKey = k; gameIcons = m; listKey = ""; renderGrid(); } }).catch(() => {});
+    invoke("shared_clips").then(v => { const k = v.join("|"); if (k !== sharedKey) { sharedKey = k; shared = new Set(v); listKey = ""; renderGrid(); } }).catch(() => {});
     // these don't depend on each other: ask for all of them at once
     const [mR, cR, fR, cfR, shR, fvR] = await Promise.allSettled([invoke("clip_meta"), invoke("list_clips"), invoke("list_folders"),
       cfg && cfg.cloud ? invoke("cloud_files") : Promise.resolve([]), invoke("list_shots"), invoke("get_favorites")]);
@@ -1098,7 +1221,9 @@
     // cloud: clips only in the cloud join the library (path "cloud:<rel>")
     cloudList = cfR.status === "fulfilled" ? cfR.value : [];
     cloudRels = new Set(cloudList.map(f => f.rel)); cloudPaths = new Map(cloudList.map(f => [f.rel, f.path || f.rel]));
-    if (cloudList.some(f => !f.local)) ensureBase().catch(() => {});   // warm up the streaming server before a cloud clip is opened
+    // the streaming server (rclone) is started only when it's about to be needed: the Cloud view is open,
+    // or the mouse rests on a cloud-only clip - not just because cloud-only clips exist
+    if (filter === "cloud" && cloudList.some(f => !f.local)) ensureBase().catch(() => {});
     for (const f of cloudList) if (!f.local) clips.push({ path: "cloud:" + f.rel, rel: f.rel, name: f.name, folder: f.folder, size: f.size, modified: f.modified, cloud: true });
     if (cloudList.length) clips.sort((a, b) => b.modified - a.modified);
     shots = shR.status === "fulfilled" ? shR.value : [];
@@ -1117,7 +1242,7 @@
     b.classList.toggle("on", sessAt != null);
     $("longtxt").textContent = sessAt == null ? "Record" : "Stop · " + fmtDur(Date.now() / 1000 - sessAt);
   }
-  setInterval(drawLong, 1000);
+  setInterval(() => { if (!document.hidden) drawLong(); }, 1000);
   $("longbtn").onclick = async () => {
     const b = $("longbtn"); if (b.disabled) return; b.disabled = true;
     if (sessAt != null) toast("Saving recording…");
@@ -1161,7 +1286,12 @@
   const relOf = c => c.rel || (c.folder ? c.folder + "/" : "") + c.name + ".mp4";
   const inCloud = c => !!c.cloud || cloudRels.has(relOf(c));
   const streamUrl = c => cloudBase + "/" + (cloudPaths.get(relOf(c)) || relOf(c)).split("/").map(encodeURIComponent).join("/");
-  async function ensureBase() { if (!cloudBase) cloudBase = await invoke("cloud_stream_base"); return cloudBase; }
+  let basePending = null;   // one start at a time, however many cards ask
+  async function ensureBase() {
+    if (cloudBase) return cloudBase;
+    if (!basePending) basePending = invoke("cloud_stream_base").then(b => (cloudBase = b)).finally(() => { basePending = null; });
+    return basePending;
+  }
   // cloud-only clip -> download it first (edit, copy, trim…); returns the local clip
   async function ensureLocal(c) {
     if (!c.cloud) return c;
@@ -1220,9 +1350,15 @@
   }
   // share link: rclone link, but Filen can't make public links for other apps -> use Share (R2) instead
   const linkLife = d => !d ? "never expires" : d === 1 ? "expires in 24 hours" : `expires in ${d} days`;
+  // "Making link 40%" on the clip's preview while the share copy is made and uploaded
+  async function withLinkProgress(c, job) {
+    const key = c.path || relOf(c);
+    jobs.set(key, { label: "Making link", pct: 0, state: "run", name: c.name }); drawJob(key);
+    try { return await job; } finally { jobs.delete(key); drawJob(key); }
+  }
   async function copyLink(c, days) {
     if (cfg.cloud !== "filen") {
-      try { await invoke("cloud_link", { rel: relOf(c), days: days ?? null }); toast(`Link copied - ${linkLife(days ?? cfg.link_days)}`); return; }
+      try { await withLinkProgress(c, invoke("cloud_link", { rel: relOf(c), days: days ?? null, path: c.path || relOf(c) })); toast(`Link copied - ${linkLife(days ?? cfg.link_days)}`); return; }
       // several clouds: only fall back to Share when the clip sits on Filen - otherwise show the real problem
       catch (e) { if (cfg.cloud !== "multi" || !(cfg.cloud_accounts || []).some(a => a.provider === "filen")) throw e; }
     }
@@ -1233,37 +1369,37 @@
   // a clip that's only on this PC: upload it (Echo Cloud first, so the link plays in Discord), then copy the link
   async function uploadLink(c, days) {
     if (cfg.cloud === "filen" && !(cfg.cloud_accounts || []).some(a => a.provider === "echocloud")) return copyLink(c, days);
-    await invoke("upload_and_link", { path: c.path, days: days ?? null });
+    await withLinkProgress(c, invoke("upload_and_link", { path: c.path, days: days ?? null }));
     toast(`Uploaded - link copied, ${linkLife(days ?? cfg.link_days)}`);
   }
   function cloudMenu(anchor, c) {
     const r = anchor.getBoundingClientRect(), ev = { preventDefault() {}, clientX: r.left, clientY: r.bottom + 4 };
     const run = (msg, fn) => async () => { try { toast(msg); await fn(); listKey = ""; await refresh(); } catch (e) { toast(String(e)); } };
     if (!cfg || !cfg.cloud) return ctxMenu(ev, [["Set up the cloud first…", () => { closePlayer(); openSettings("cloud"); }]]);
-    // "Copy share link" uses the default from Settings → Sharing; the other lifetimes are one click away
-    const linkItems = [["Copy share link", run("Making a link…", () => copyLink(c))]]
-      .concat([0, 1, 7, 30].filter(d => d !== (cfg.link_days || 0)).map(d => [`  … that ${linkLife(d)}`, run("Making a link…", () => copyLink(c, d))]));
-    const items = c.cloud
-      ? [...linkItems,
-         ["Download to this PC", run("Downloading…", () => withDlProgress(c, invoke("cloud_download", { rel: c.rel })))],
-         ["Delete from the cloud", async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }]]
-      : inCloud(c)
-        ? [...linkItems,
-           ["Remove from this PC (keep in cloud)", run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); })],
-           ["Upload again", run("Uploading…", () => invoke("cloud_upload", { path: c.path }))],
-           ["Delete from the cloud only", run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))]]
-        : [["Copy share link", run("Uploading and making a link…", () => uploadLink(c))],
-           ...[0, 1, 7, 30].filter(d => d !== (cfg.link_days || 0)).map(d => [`  … that ${linkLife(d)}`, run("Uploading and making a link…", () => uploadLink(c, d))]),
-           "-",
-           ["Upload to the cloud", run("Uploading…", async () => {
-            await invoke("cloud_upload", { path: c.path });
-            if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
-          })]];
+    // simple menu: one "Copy share link" + a row of lifetimes (the highlighted one is the default from Settings → Sharing)
+    const local = !c.cloud && !inCloud(c);
+    const link = d => local ? run("Uploading and making a link…", () => uploadLink(c, d)) : run("Making a link…", () => copyLink(c, d));
+    const def = cfg.link_days || 0;
+    const items = [["Copy share link", link(), "", false, "main"],
+      { label: "Expires", chips: [[0, "Never"], [1, "1 day"], [7, "7 days"], [30, "30 days"]].map(([d, t]) => [t, link(d), d === def]) }, "-"];
+    if (c.cloud) items.push(
+      ["Download to this PC", run("Downloading…", () => withDlProgress(c, invoke("cloud_download", { rel: c.rel })))],
+      ["Delete from the cloud", async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }, "", false, "warn"]);
+    else if (inCloud(c)) items.push(
+      ["Free up space on this PC", run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); })],
+      ["Delete from the cloud", run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) })), "", false, "warn"]);
+    else items.push(["Upload to the cloud", run("Uploading…", async () => {
+      await invoke("cloud_upload", { path: c.path });
+      if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
+    })]);
+    if (!local && (cfg.cloud_accounts || []).some(a => a.provider === "echocloud"))
+      items.push(["Stop sharing", run("Removing the link…", async () => { await invoke("cloud_unshare", { rel: c.cloud ? c.rel : relOf(c) }); toast("Link removed - it no longer works"); })]);
     ctxMenu(ev, items);
   }
   const FILTERS = { cloud: c => inCloud(c), fav: c => favs.has(c.name), all: () => true, today: c => c.modified >= dayStart(), week: c => c.modified >= dayStart() - 6 * 86400, edited: isEdited };
   document.querySelectorAll(".flt").forEach(b => b.onclick = () => {
-    filter = b.dataset.f; document.querySelectorAll(".flt").forEach(x => x.classList.toggle("on", x === b));
+    filter = b.dataset.f; if (filter === "cloud" && cloudList.some(f => !f.local)) ensureBase().catch(() => {});
+    document.querySelectorAll(".flt").forEach(x => x.classList.toggle("on", x === b));
     document.querySelector('[data-page=library]').click(); renderGrid();
   });
   function renderGames() {
@@ -1358,11 +1494,228 @@
     return new Date(t * 1000).toLocaleDateString(undefined, { month: "long", year: "numeric" });
   }
   const ICON_EDIT = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>';
+  // ----- filter (one "Filter" button -> panel with Game / Where / Type / Tags; picks show as removable pills) -----
+  // several picks in one section = any of them; sections combine
+  const isRec = c => /^Recording\b/.test(c.name);
+  const isSound = c => (gameOf(c) || "").toLowerCase() === "sounds";
+  const FGROUPS = {
+    game: { head: "Game" },
+    where: { head: "Where", opts: [["pc", "On this PC", c => !c.cloud], ["cloud", "In the cloud", c => inCloud(c)], ["cloudonly", "Cloud only", c => !!c.cloud], ["shared", "Has a share link", c => shared.has(c.name)]] },
+    type: { head: "Type", opts: [["clip", "Clips", c => !isEdited(c) && !isRec(c) && !isSound(c)], ["rec", "Recordings", isRec], ["edit", "Edited", isEdited], ["sound", "Sounds", isSound], ["fav", "Favourites", c => favs.has(c.name)]] },
+    tag: { head: "Tags" },
+  };
+  let fsel = { game: [], where: [], type: [], tag: [] };
+  try { const o = JSON.parse(localStorage.getItem("echo_filters") || "{}"); for (const k in fsel) if (Array.isArray(o[k])) fsel[k] = o[k]; } catch {}
+  const fsave = () => { try { localStorage.setItem("echo_filters", JSON.stringify(fsel)); } catch {} };
+  const fmatch = (g, key) => g === "game" ? (c => key === "" ? !gameOf(c) : inFolder(c, key))
+    : g === "tag" ? (c => ((meta[c.name] || {}).tags || []).includes(key))
+    : ((FGROUPS[g].opts.find(o => o[0] === key) || [])[2] || (() => true));
+  function fpass(c) {
+    for (const g in fsel) if (fsel[g].length && !fsel[g].some(k => fmatch(g, k)(c))) return false;
+    return true;
+  }
+  function fopts(g) {   // [key, label, imgUrl, count]
+    const cnt = f => clips.filter(f).length;
+    if (g === "game") {
+      const names = [...new Set(clips.map(gameOf).filter(Boolean).map(x => x.split("/")[0]))].sort((a, b) => a.localeCompare(b));
+      const out = names.map(n => [n, n, gameIcons[n] || "", cnt(c => inFolder(c, n))]);
+      const none = cnt(c => !gameOf(c)); if (none) out.push(["", "No game", "", none]);
+      return out;
+    }
+    if (g === "tag") {
+      const n = {}; clips.forEach(c => ((meta[c.name] || {}).tags || []).forEach(t => n[t] = (n[t] || 0) + 1));
+      return Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b)).map(t => [t, "#" + t, "", n[t]]);
+    }
+    return FGROUPS[g].opts.map(o => [o[0], o[1], "", cnt(o[2])]);
+  }
+  const flabel = (g, k) => g === "game" ? (k || "No game") : g === "tag" ? "#" + k : ((FGROUPS[g].opts.find(o => o[0] === k) || [])[1] || k);
+  function drawFbar() {
+    const n = Object.values(fsel).reduce((a, x) => a + x.length, 0);
+    $("fbtn").classList.toggle("on", n > 0); $("fbtn").querySelector(".fn").textContent = n || "";
+    const box = $("factive"); box.innerHTML = "";
+    for (const g in fsel) for (const k of fsel[g]) {
+      const b = document.createElement("button"); b.className = "fpill"; b.title = "Remove this filter";
+      b.innerHTML = `<em>${FGROUPS[g].head}:</em><span></span><i>×</i>`; b.querySelector("span").textContent = flabel(g, k);
+      b.onclick = () => { fsel[g] = fsel[g].filter(x => x !== k); fsave(); renderGrid(); };
+      box.appendChild(b);
+    }
+    if (n > 1) { const c = document.createElement("button"); c.className = "fclr2"; c.textContent = "Clear all"; c.onclick = () => { for (const k in fsel) fsel[k] = []; fsave(); renderGrid(); }; box.appendChild(c); }
+    if ($("fmenu").classList.contains("on")) fillFmenu(true);
+  }
+  let fopen = false;
+  function fillFmenu(keep) {
+    const m = $("fmenu"), old = m.querySelector("input"), q = old ? old.value : "";
+    if (!keep || !old) {
+      m.innerHTML = `<input placeholder="Search games and tags…"><div class="fbody"></div>`;
+      const inp = m.querySelector("input"); inp.value = q;
+      inp.oninput = () => fillFmenu(true); inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Escape") closeFmenu(); };
+    }
+    const body = m.querySelector(".fbody"), w = q.trim().toLowerCase(); body.innerHTML = "";
+    for (const g in FGROUPS) {
+      const opts = fopts(g).filter(o => !w || g === "where" || g === "type" || o[1].toLowerCase().includes(w));
+      if (!opts.length) continue;
+      const sec = document.createElement("div"); sec.className = "fsec";
+      sec.innerHTML = `<div class="fh">${FGROUPS[g].head}</div><div class="fchips"></div>`;
+      for (const [key, label, img, n] of opts) {
+        const b = document.createElement("button"); b.className = "fchip" + (fsel[g].includes(key) ? " on" : ""); b.title = label;
+        b.innerHTML = `${img ? `<img src="${img}">` : ""}<span class="fl"></span><small>${n}</small>`; b.querySelector(".fl").textContent = label;
+        b.onclick = () => { const i = fsel[g].indexOf(key); i < 0 ? fsel[g].push(key) : fsel[g].splice(i, 1); fsave(); renderGrid(); };
+        sec.querySelector(".fchips").appendChild(b);
+      }
+      body.appendChild(sec);
+    }
+  }
+  function closeFmenu() { $("fmenu").classList.remove("on"); fopen = false; $("fbtn").classList.remove("open"); }
+  $("fbtn").onclick = () => {
+    if (fopen) return closeFmenu();
+    fopen = true; $("fbtn").classList.add("open");
+    const m = $("fmenu"); m.innerHTML = ""; fillFmenu(); m.classList.add("on");
+    const r = $("fbtn").getBoundingClientRect();
+    m.style.top = (r.bottom + 8) + "px"; m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
+    m.querySelector("input").focus();
+  };
+  document.addEventListener("pointerdown", e => { if (fopen && !e.target.closest("#fmenu,#fbtn")) closeFmenu(); });
+  document.addEventListener("keydown", e => { if (fopen && e.key === "Escape") { e.stopPropagation(); closeFmenu(); } }, true);
+  // AV1: only offered when the GPU encodes it (checked by Echo) AND this player decodes it in hardware (smooth, power-efficient).
+  // Older / low-end PCs never see it, so their libraries never fill up with clips that stutter.
+  let av1Enc = "";
+  setTimeout(async () => {
+    let plays = false;
+    try {
+      const r = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: 'video/mp4; codecs="av01.0.09M.08"', width: 2560, height: 1440, bitrate: 20e6, framerate: 60 } });
+      plays = !!(r.supported && r.smooth && r.powerEfficient);
+    } catch {}
+    try { av1Enc = await invoke("av1_support", { plays }); } catch {}
+    const row = $("av1row"); if (row) row.style.display = av1Enc ? "" : "none";
+    $("pickav1").style.display = av1Enc ? "" : "none";
+  }, 15000);
+  // ----- Tidy up: clips saved twice (same game, overlapping time), very short ones, the biggest -----
+  async function openTidy() {
+    $("tidy").classList.add("on"); const box = $("tidyb");
+    box.innerHTML = `<div class="empty2">Looking through your clips…</div>`;
+    const list = clips.filter(c => !favs.has(c.name));
+    // clip lengths: the library only knows the ones it has shown; ask for the rest (on this PC), 4 at a time
+    const need = list.filter(c => !c.cloud && !durs[c.path]); let k = 0;
+    await Promise.all([0, 1, 2, 3].map(async () => { while (k < need.length) { const c = need[k++]; try { const t = await invoke("thumb", { path: c.path }); if (t.duration > 0) durs[c.path] = t.duration; } catch {} } }));
+    const dur = c => durs[c.path] || 0;
+    // a clip covers [saved - length, saved]; two clips of the same game overlapping by over half = saved twice
+    const groups = [], byGame = {};
+    list.filter(c => dur(c) > 0).forEach(c => (byGame[gameOf(c) || ""] ||= []).push(c));
+    for (const g of Object.values(byGame)) {
+      g.sort((a, b) => a.modified - b.modified);
+      let cur = null;
+      for (let i = 0; i < g.length; i++) {
+        const a = g[i], prev = cur && cur[cur.length - 1];
+        if (prev) {
+          const s1 = prev.modified - dur(prev), s2 = a.modified - dur(a);
+          const ov = Math.min(prev.modified, a.modified) - Math.max(s1, s2);
+          if (ov > 0.5 * Math.min(dur(prev), dur(a))) { cur.push(a); continue; }
+        }
+        if (cur && cur.length > 1) groups.push(cur);
+        cur = [a];
+      }
+      if (cur && cur.length > 1) groups.push(cur);
+    }
+    const inDup = new Set(groups.flat().map(c => c.path));
+    const short = list.filter(c => dur(c) > 0 && dur(c) < 5 && !inDup.has(c.path));
+    const big = [...list].filter(c => !inDup.has(c.path) && !short.includes(c)).sort((a, b) => b.size - a.size).slice(0, 10).filter(c => c.size > 100e6);
+    box.innerHTML = "";
+    const row = (c, checked, keep) => {
+      const r = document.createElement("label"); r.className = "tr";
+      r.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}><span class="tt"></span><span class="tn"><b></b><small></small></span>`;
+      r.querySelector("b").textContent = c.name; if (keep) r.querySelector("b").insertAdjacentHTML("beforeend", `<span class="keep">KEEP (longest)</span>`);
+      r.querySelector("small").textContent = [fmtSize(c.size), dur(c) ? fmtDur(dur(c)) : "", ago(c.modified), gameOf(c) || "", c.cloud ? "only in the cloud" : inCloud(c) ? "also in the cloud" : ""].filter(Boolean).join(" · ");
+      const cb = r.querySelector("input"); cb._clip = c; cb.onchange = tidySum;
+      const t = r.querySelector(".tt"); t.onclick = e => { e.preventDefault(); $("tidy").classList.remove("on"); openPlayer(c); };
+      (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(x => t.style.backgroundImage = `url("${convertFileSrc(x.thumb)}?${c.size}${thumbVer(c.name)}")`).catch(() => {});
+      return r;
+    };
+    const sec = (title, note, fill) => { const d = document.createElement("div"); d.className = "ts"; d.innerHTML = `<h4>${title}<small></small></h4>`; d.querySelector("small").textContent = note; fill(d); box.appendChild(d); };
+    if (groups.length) sec("Saved twice", `${groups.length} group${groups.length === 1 ? "" : "s"} - hotkey pressed twice, or overlapping clips. The longest one is kept.`, d => groups.forEach(g => {
+      const gl = document.createElement("div"); gl.className = "tg"; const longest = g.reduce((a, b) => dur(b) > dur(a) ? b : a);
+      g.forEach(c => gl.appendChild(row(c, c !== longest, c === longest))); d.appendChild(gl); }));
+    if (short.length) sec("Very short", "Under 5 seconds - often saved by accident.", d => { const gl = document.createElement("div"); gl.className = "tg"; short.forEach(c => gl.appendChild(row(c, true))); d.appendChild(gl); });
+    if (big.length) sec("Biggest clips", "Not selected - pick the ones you don't need (or make them smaller from the right-click menu).", d => { const gl = document.createElement("div"); gl.className = "tg"; big.forEach(c => gl.appendChild(row(c, false))); d.appendChild(gl); });
+    if (!box.children.length) box.innerHTML = `<div class="empty2">Nothing to tidy up - no clips saved twice, no very short ones.</div>`;
+    $("tidycl").style.display = cfg && cfg.cloud ? "" : "none";
+    tidySum();
+  }
+  function tidySum() {
+    const sel = [...$("tidyb").querySelectorAll("input:checked")].map(x => x._clip);
+    $("tidysum").textContent = sel.length ? `${sel.length} clip${sel.length === 1 ? "" : "s"} · ${fmtSize(sel.reduce((n, c) => n + c.size, 0))}` : "";
+    $("tidydel").disabled = !sel.length;
+  }
+  $("tidybtn").onclick = openTidy;
+  $("tidyx").onclick = () => $("tidy").classList.remove("on");
+  $("tidy").addEventListener("pointerdown", e => { if (e.target.id === "tidy") $("tidy").classList.remove("on"); });
+  $("tidydel").onclick = async () => {
+    const sel = [...$("tidyb").querySelectorAll("input:checked")].map(x => x._clip); if (!sel.length) return;
+    const alsoCloud = cfg && cfg.cloud && $("tidycloud").checked;
+    if (!(await confirmBox(`Delete ${sel.length} clip${sel.length === 1 ? "" : "s"}?`, `${fmtSize(sel.reduce((n, c) => n + c.size, 0))}. Clips on this PC go to the Recycle Bin${alsoCloud ? "; their cloud copies are deleted for good" : ""}. Clips only in the cloud are deleted for good.`, "Delete"))) return;
+    let n = 0;
+    for (const c of sel) {
+      try {
+        if (c.cloud) await invoke("cloud_delete", { rel: c.rel });
+        else { if (alsoCloud && inCloud(c)) { try { await invoke("cloud_delete", { rel: relOf(c) }); } catch {} } await invoke("delete_clip", { path: c.path }); }
+        n++;
+      } catch (e) { toast(`${c.name}: ${e}`); }
+    }
+    toast(`${n} clip${n === 1 ? "" : "s"} deleted`); listKey = ""; await refresh(); openTidy();
+  };
+  // small text question (reuses the confirm dialog): resolves to the text, or null on Cancel
+  function askText(title, msg, placeholder, yes) {
+    return new Promise(res => {
+      $("ctitle").textContent = title; $("cyes").textContent = yes; $("cno").textContent = "Cancel";
+      $("cmsg").textContent = msg;
+      const inp = document.createElement("input"); inp.placeholder = placeholder; inp.spellcheck = false;
+      inp.style.cssText = "display:block;width:100%;margin-top:12px;height:36px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:0 10px";
+      $("cmsg").appendChild(inp); $("confirm").classList.add("open"); setTimeout(() => inp.focus(), 50);
+      const done = v => { $("confirm").classList.remove("open"); res(v); };
+      $("cyes").onclick = () => done(inp.value.trim()); $("cno").onclick = () => done(null);
+      inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") done(inp.value.trim()); if (e.key === "Escape") done(null); };
+    });
+  }
+
+  // ----- clip jobs (convert to AV1 / make smaller), one at a time, progress shown on each clip's preview -----
+  const jobs = new Map();   // path -> { label, pct, state: "wait" | "run" }
+  let jobRunning = false;
+  function drawJob(path) {
+    const card = document.querySelector(`.card[data-path="${CSS.escape(path)}"]`); if (!card) return;
+    const th = card.querySelector(".thumb"); let el = th.querySelector(".job"); const j = jobs.get(path);
+    if (!j) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement("div"); el.className = "job"; el.innerHTML = "<span></span><b><i></i></b>"; th.appendChild(el); }
+    el.classList.toggle("wait", j.state === "wait");
+    el.querySelector("span").textContent = j.state === "wait" ? "Waiting…" : `${j.label} ${j.pct}%`;
+    el.querySelector("i").style.width = j.pct + "%";
+  }
+  listen("copy-progress", e => { const [path, f] = e.payload; const j = jobs.get(path); if (j && j.state === "run") { j.pct = Math.round(f * 100); drawJob(path); } });
+  function queueJobs(list, factor, av1) {
+    const label = av1 ? "Converting to AV1" : "Making smaller";
+    let added = 0;
+    for (const c of list) if (!c.cloud && !jobs.has(c.path)) { jobs.set(c.path, { label, pct: 0, state: "wait", factor, av1, name: c.name }); drawJob(c.path); added++; }
+    if (added > 1) toast(`${added} clips queued - each one shows its progress`);
+    runJobs();
+  }
+  async function runJobs() {
+    if (jobRunning) return; jobRunning = true;
+    let saved = 0, done = 0;
+    try {
+      for (;;) {
+        const next = [...jobs].find(([, j]) => j.state === "wait"); if (!next) break;
+        const [path, j] = next; j.state = "run"; drawJob(path);
+        try { const [a, b] = await invoke("compress_clip", { path, factor: j.factor, av1: !!j.av1 }); saved += a - b; done++;
+          if (![...jobs.values()].some(x => x.state === "wait")) toast(done > 1 ? `${done} clips done · ${fmtSize(saved)} saved` : `${fmtSize(a)} → ${fmtSize(b)}`); }
+        catch (err) { toast(`${j.name}: ${err}`); }
+        jobs.delete(path); drawJob(path); listKey = ""; refresh();
+      }
+    } finally { jobRunning = false; }
+  }
   function renderGrid() {
     const q = $("search").value.toLowerCase(), sort = $("sort").value;
     const pass = filter.startsWith("game:") ? (c => inFolder(c, filter.slice(5))) : filter.startsWith("tag:") ? (c => ((meta[c.name] || {}).tags || []).includes(filter.slice(4))) : FILTERS[filter] || (() => true);
     const words = q.split(/\s+/).filter(Boolean);
-    let list = clips.filter(c => pass(c) && (!words.length || (st => words.every(w => st.includes(w)))(searchText(c))));
+    let list = clips.filter(c => pass(c) && fpass(c) && (!words.length || (st => words.every(w => st.includes(w)))(searchText(c))));
+    drawFbar();
     renderGames(); renderTags();
     if (sort === "old") list = [...list].reverse();
     if (sort === "big") list = [...list].sort((a, b) => b.size - a.size);
@@ -1376,7 +1729,8 @@
     const cap = cfg && cfg.max_storage_gb ? cfg.max_storage_gb * 1e9 : 0;
     $("m-cap").textContent = cap ? "of " + fmtSize(cap) : "no limit";
     $("meter").style.width = (cap ? Math.min(100, total / cap * 100) : Math.min(100, total / 50e9 * 100)) + "%";
-    const g = $("grid"); g.innerHTML = "";
+    const g = $("grid"), pg = g.closest(".page"), deep = pg && pg.scrollTop > 200;   // read before the grid is emptied
+    g.innerHTML = "";
     $("n-shots").textContent = shots.length || "";
     if (filter === "shots") return renderShots(g, q);
     if (!list.length) {
@@ -1392,12 +1746,23 @@
       if (!groups.length || groups[groups.length - 1].name !== name) groups.push({ name, items: [] });
       groups[groups.length - 1].items.push(c);
     }
+    // Big libraries: build the first screens at once and the rest over the next frames, so the window
+    // reacts straight away. Only when scrolled to the top - further down, everything is built at once so
+    // the scroll position doesn't jump while the page grows.
+    const jobs = [];
     for (const gr of groups) {
       const sec = document.createElement("div"); sec.className = "group";
       sec.innerHTML = `<h2>${gr.name}<small>${gr.items.length}</small></h2><div class="grid${libView === "list" ? " list" : ""}"></div>`;
       const grid = sec.querySelector(".grid"); g.appendChild(sec);
-      for (const c of gr.items) grid.appendChild(makeCard(c));
+      for (const c of gr.items) jobs.push([grid, c]);
     }
+    const gen = renderGrid.gen = (renderGrid.gen || 0) + 1;
+    let i = 0;
+    const build = n => {
+      for (const end = Math.min(jobs.length, i + n); i < end; i++) jobs[i][0].appendChild(makeCard(jobs[i][1]));
+      if (i < jobs.length) requestAnimationFrame(() => { if (renderGrid.gen === gen) build(60); });
+    };
+    build(deep ? jobs.length : 48);
   }
   // ----- screenshots -----
   function renderShots(g, q) {
@@ -1446,6 +1811,13 @@
     $("pickn").textContent = `${picked.size} clip${picked.size === 1 ? "" : "s"} selected`;
   }
   $("pickclr").onclick = () => { picked.clear(); renderPickBar(); renderGrid(); };
+  $("pickav1").onclick = async () => {
+    const sel = clips.filter(c => picked.has(c.path) && !c.cloud);
+    if (!sel.length) return toast("Pick clips that are on this PC");
+    const total = sel.reduce((n, c) => n + c.size, 0);
+    if (!(await confirmBox(`Convert ${sel.length} clip${sel.length === 1 ? "" : "s"} to AV1?`, `About ${fmtSize(total)} becomes roughly ${fmtSize(total / 2)}. Each clip is replaced when it's done (same quality, all audio tracks kept); copies and share links still go out as H.264. They run one at a time - you can keep using Echo.`, "Convert"))) return;
+    picked.clear(); renderPickBar(); renderGrid(); queueJobs(sel, 0.5, true);
+  };
   $("pickfav").onclick = async () => {
     const sel = clips.filter(c => picked.has(c.path)), on = sel.some(c => !favs.has(c.name));
     for (const c of sel) { await invoke("set_favorite", { name: c.name, on }); on ? favs.add(c.name) : favs.delete(c.name); }
@@ -1541,17 +1913,18 @@
     addEventListener("pointermove", mv); addEventListener("pointerup", up);
   }
   function makeCard(c) {
-    const el = document.createElement("div"); el.className = "card"; el.dataset.rel = relOf(c);
+    const el = document.createElement("div"); el.className = "card"; el.dataset.rel = relOf(c); el.dataset.path = c.path;
     const gi = gameIcons[gameOf(c)];
     el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}${shared.has(c.name) ? '<span class="shr" title="Shared - link copied before">☁ Shared</span>' : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there">☁ Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud">☁</span>' : ""}</div>
       <div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
-        <div class="ovl"><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></div></div>`;
+        <div class="ovl"><span class="more"><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></span><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button></div></div>`;
     const nm = el.querySelector(".name"); nm.textContent = c.name; nm.title = "Click to rename";
     { const m = meta[c.name]; if (m && (m.tags.length || m.note)) {
       const tx = el.querySelector(".txt");
       if (m.tags.length) { const tg = document.createElement("div"); tg.className = "tags"; m.tags.forEach(t => { const x = document.createElement("span"); x.className = "tchip"; x.textContent = "#" + t; tg.appendChild(x); }); tx.appendChild(tg); }
       if (m.note) { const nt = document.createElement("div"); nt.className = "note"; nt.textContent = m.note; nt.title = m.note; tx.appendChild(nt); }
     } }
+    if (jobs.has(c.path)) setTimeout(() => drawJob(c.path));
     nm.onclick = e => {
       if (e.ctrlKey || e.shiftKey || nm.contentEditable === "true") return;
       e.stopPropagation();
@@ -1576,20 +1949,23 @@
     th.addEventListener("pointerdown", e => cardDrag(e, c));
     el.addEventListener("contextmenu", e => {
       if (c.cloud) return;
-      const shrink = f => async () => {
-        if (!(await confirmBox("Make this clip smaller?", `"${c.name}" is re-encoded at ${Math.round(f * 100)}% of its quality budget and replaced. Same length, all audio tracks kept.`, "Make smaller"))) return;
-        toast("Making it smaller… (this takes a moment)");
-        try { const [a, b] = await invoke("compress_clip", { path: c.path, factor: f }); toast(`${fmtSize(a)} → ${fmtSize(b)}`); listKey = ""; refresh(); } catch (err) { toast(String(err)); }
+      const shrink = (f, av1) => async () => {
+        if (!(await confirmBox(av1 ? "Convert this clip to AV1?" : "Make this clip smaller?", av1
+          ? `"${c.name}" is re-encoded with your graphics card's AV1 encoder and replaced: about half the size, same quality, all audio tracks kept. When you copy or share it, Echo sends an H.264 version so it plays everywhere.`
+          : `"${c.name}" is re-encoded at ${Math.round(f * 100)}% of its quality budget and replaced. Same length, all audio tracks kept.`, av1 ? "Convert" : "Make smaller"))) return;
+        queueJobs([c], f, av1);
       };
-      ctxMenu(e, [["Make smaller (about half the size)", shrink(0.5)], ["Make much smaller (about a third)", shrink(0.33)], "-", ["Show in folder", () => action("folder", c)]]);
+      ctxMenu(e, [...(av1Enc ? [["Convert to AV1 (about half the size, same quality)", shrink(0.5, true)]] : []),
+        ["Make smaller (about half the size)", shrink(0.5)], ["Make much smaller (about a third)", shrink(0.33)], "-", ["Show in folder", () => action("folder", c)]]);
     });
     el.querySelectorAll(".ib").forEach(b => b.onclick = e => (b.dataset.a === "copymenu" || (b.dataset.a === "copy" && e.ctrlKey)) ? copyMenu(b, c) : action(b.dataset.a, c, b));
     // hover preview: muted video after a short delay
     let hv = null, vid = null;
-    th.onmouseenter = () => { hv = setTimeout(() => {
+    th.onmouseenter = () => { if (c.cloud && !cloudBase) ensureBase().catch(() => {}); hv = setTimeout(() => {
       vid = document.createElement("video"); vid.muted = true; vid.loop = true;
-      if (c.cloud) { if (!cloudBase) { ensureBase().catch(() => {}); return; } vid.src = streamUrl(c); } else vid.src = convertFileSrc(c.path);
-      vid.oncanplay = () => vid && vid.classList.add("on"); th.prepend(vid); vid.play().catch(() => {});
+      const v0 = vid; v0.oncanplay = () => v0.classList.add("on"); th.prepend(v0);
+      const go = () => { if (vid !== v0) return; v0.src = c.cloud ? streamUrl(c) : convertFileSrc(c.path); v0.play().catch(() => {}); };
+      if (c.cloud && !cloudBase) ensureBase().then(go).catch(() => {}); else go();
     }, 450); };
     th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
     lazyThumb(th, () => (c.cloud ? invoke("cloud_thumb", { rel: c.rel }) : invoke("thumb", { path: c.path })).then(t => {
@@ -3383,7 +3759,14 @@
     m.innerHTML = "";
     items.forEach(it => {
       if (it === "-") return m.appendChild(document.createElement("hr"));
-      const b = document.createElement("button"); b.innerHTML = `<span>${it[0]}</span>${it[2] ? `<kbd>${it[2]}</kbd>` : ""}`; b.disabled = !!it[3];
+      // { chips: [[label, onClick, active]], label } = a row of small pill buttons
+      if (it.chips) {
+        const row = document.createElement("div"); row.className = "chips";
+        if (it.label) { const l = document.createElement("small"); l.textContent = it.label; row.appendChild(l); }
+        it.chips.forEach(([t, fn, on]) => { const b = document.createElement("button"); b.textContent = t; if (on) b.className = "on"; b.onclick = () => { close(); fn(); }; row.appendChild(b); });
+        return m.appendChild(row);
+      }
+      const b = document.createElement("button"); if (it[4]) b.className = it[4]; b.innerHTML = `<span>${it[0]}</span>${it[2] ? `<kbd>${it[2]}</kbd>` : ""}`; b.disabled = !!it[3];
       b.onclick = () => { close(); it[1](); }; m.appendChild(b);
     });
     m.classList.add("on");
@@ -3649,7 +4032,16 @@
         use.innerHTML = `<div class="ecbar"><i class="${p > .95 ? "full" : ""}" style="width:${Math.min(100, p * 100).toFixed(1)}%"></i></div>`;
       } else $("ecsub").textContent = info ? "Clips you upload go here" : "Checking space…";
       const paid = info && info.total > 10.5e9;
-      f.innerHTML = `<button class="btn primary" id="ecup">${paid ? "Manage plan" : "Upgrade"}</button><button class="btn" id="ecout">Sign out</button>`;
+      f.innerHTML = `<button class="btn primary" id="ecup">${paid ? "Manage plan" : "Upgrade"}</button><button class="btn" id="ecout">Sign out</button><button class="btn sm" id="ecdel" style="margin-left:auto;color:var(--muted)">Delete account…</button>`;
+      $("ecdel").onclick = async () => {
+        const email = (cfg.ec_email || "").trim();
+        const v = await askText("Delete your Echo Cloud account?", `Everything in Echo Cloud is deleted for good: all clips, share links and the account itself. Clips on this PC stay. ${paid ? "Cancel your plan under Manage plan first. " : ""}Type your email address to confirm.`, email || "you@example.com", "Delete account");
+        if (v === null) return;
+        toast("Deleting your Echo Cloud account…");
+        try { await invoke("echocloud_delete_account", { confirm: v }); cfg = await invoke("get_settings"); cloudBase = ""; toast("Echo Cloud account deleted"); listKey = ""; refresh(); }
+        catch (e) { toast(String(e)); }
+        drawCloud(true);
+      };
       $("ecup").onclick = () => paid ? ecManage() : ecPlans();
       $("ecout").onclick = async () => {
         if (!(await confirmBox("Sign out of Echo Cloud?", "Your clips stay in Echo Cloud - sign in again with the same email to get them back.", "Sign out"))) return;
@@ -3823,7 +4215,7 @@
   // ----- cloud upload progress (favourites / auto uploads / Upload button): card bar, bottom bar, player bar -----
   var upState = { rel: "" }, upOwnsBar = false, upT0 = 0, upLastRel = "";
   setInterval(async () => {
-    if (!cfg || !cfg.cloud) return;
+    if (!cfg || !cfg.cloud || document.hidden) return;   // window in the tray: nothing to draw
     let p; try { p = await invoke("cloud_up_progress"); } catch { return; }
     if (p.rel !== upLastRel) {   // a clip finished (or the next one started): refresh so it gets its cloud badge
       if (upLastRel) { listKey = ""; refresh(); }
@@ -3991,6 +4383,59 @@
     const key = JSON.stringify(opts); if (sel.dataset.key === key) return; sel.dataset.key = key;
     sel.innerHTML = opts.map(([v, n]) => `<option value="${v}">${esc(n)}</option>`).join("");
   }
+  // select.segsrc -> segmented buttons right after it (the hidden select keeps the data-k saving)
+  // switching smart bitrate keeps the average where it was (runs before or after the generic data-k handler: uses .checked)
+  document.querySelector('[data-k="smart_bitrate"]').addEventListener("input", e => {
+    if (!cfg) return;
+    const on = e.target.checked, pct = cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
+    cfg.smart_bitrate = on;
+    cfg.bitrate_mbps = Math.max(4, Math.min(80, Math.round(on ? cfg.bitrate_mbps / pct : cfg.bitrate_mbps * pct)));
+    changed();
+  });
+  function syncSegs() {
+    document.querySelectorAll("select.segsrc").forEach(sel => {
+      let seg = sel.nextElementSibling;
+      if (!seg || !seg.classList.contains("seg")) {
+        seg = document.createElement("div"); seg.className = "seg"; sel.after(seg);
+        [...sel.options].forEach(o => { const b = document.createElement("button"); b.textContent = o.textContent; b.dataset.v = o.value;
+          b.onclick = () => { sel.value = o.value; sel.dispatchEvent(new Event("input")); sel.dispatchEvent(new Event("change")); }; seg.appendChild(b); });
+      }
+      seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === sel.value));
+      const hint = sel.closest(".row") && sel.closest(".row").querySelector("small[id$=hint]");
+      if (hint) { const o = sel.selectedOptions[0]; hint.textContent = (o && o.dataset.hint) || ""; }
+    });
+  }
+  // The slider shows the AVERAGE bitrate (= the fixed bitrate older Echo versions recorded at), so the number
+  // people chose before never changes. cfg.bitrate_mbps stays the encoder's maximum: average / pct with smart bitrate.
+  const smartPct = () => !cfg.smart_bitrate ? 1 : cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
+  $("brslider").addEventListener("input", e => {
+    const avg = +e.target.value;
+    cfg.bitrate_mbps = Math.max(4, Math.min(80, Math.round(avg / smartPct())));
+    $("v-bitrate").textContent = avg + " Mbps";
+    changed(true);
+  });
+  function drawQuality() {
+    if (!$("qbig") || !cfg) return;
+    { const sl = $("brslider"), top = Math.floor(80 * smartPct());
+      sl.max = top; if (document.activeElement !== sl) sl.value = Math.round(cfg.bitrate_mbps * smartPct());
+      $("v-bitrate").textContent = Math.round(cfg.bitrate_mbps * smartPct()) + " Mbps"; }
+    const res = { native: "Native", 1440: "1440p", 1080: "1080p", 720: "720p" }[cfg.resolution] || cfg.resolution;
+    const avgB = cfg.smart_bitrate ? Math.round(cfg.bitrate_mbps * (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9)) : cfg.bitrate_mbps;
+    $("qbig").innerHTML = cfg.smart_bitrate ? `${res}<span>·</span>${cfg.fps} fps<span>·</span>avg ${avgB} Mbps` : `${res}<span>·</span>${cfg.fps} fps<span>·</span>${cfg.bitrate_mbps} Mbps`;
+    // video + roughly 2 MB/min of audio; smart bitrate: the estimate uses the average target (calm clips come out smaller)
+    const mbMin = cfg.bitrate_mbps * 60 / 8 * (cfg.smart_bitrate ? (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9) : 1) + 2;
+    $("sqrow").style.display = cfg.smart_bitrate ? "" : "none";
+    const pct = cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
+    const rec = { 720: "6-8", 1080: "12", 1440: "20", native: "20 (1440p) or 40 (4K)" }[cfg.resolution] || "20";
+    const recTxt = `About ${rec} Mbps ${cfg.smart_bitrate ? "average " : ""}is plenty for ${cfg.resolution === "native" ? "native resolution" : cfg.resolution + "p"} at ${cfg.fps} fps.`;
+    $("brhint").textContent = cfg.smart_bitrate ? `Average. Busy moments can use up to ${cfg.bitrate_mbps} Mbps. ${recTxt}` : recTxt;
+    const secs = (cfg.hotkeys && cfg.hotkeys[0] && cfg.hotkeys[0].seconds) || 60;
+    $("qmin").textContent = "≈ " + fmtSize(mbMin * 1e6);
+    $("qclip").textContent = "≈ " + fmtSize(mbMin * 1e6 * secs / 60);
+    $("qcliplbl").textContent = "per " + fmtLen(secs) + " clip";
+    const box = $("presets");
+    if (box && !box.querySelector(".preset.on")) { const c = document.createElement("div"); c.className = "qcustom on"; c.textContent = "Custom"; box.appendChild(c); }
+  }
   function renderSettings() {
     fillCloudTargets();
     document.querySelectorAll("[data-k]").forEach(el => {
@@ -4006,14 +4451,17 @@
     $(box).innerHTML = "";
     for (const p of PRESETS) {
       const b = document.createElement("button");
-      const on = cfg.resolution === p.resolution && cfg.fps === p.fps && cfg.bitrate_mbps === p.bitrate_mbps;
+      // preset bitrates are the AVERAGE; with smart bitrate the maximum is avg / 60% (Balanced)
+      const maxOf = p => cfg.smart_bitrate ? Math.round(p.bitrate_mbps / 0.6) : p.bitrate_mbps;
+      const on = cfg.resolution === p.resolution && cfg.fps === p.fps && cfg.bitrate_mbps === maxOf(p) && (!cfg.smart_bitrate || cfg.smart_quality === 72);
       b.className = "preset" + (on ? " on" : ""); b.innerHTML = `<b>${p.name}</b><small>${p.desc}</small>`;
-      b.onclick = () => { Object.assign(cfg, { resolution: p.resolution, fps: p.fps, bitrate_mbps: p.bitrate_mbps }); changed(); };
+      b.onclick = () => { Object.assign(cfg, { resolution: p.resolution, fps: p.fps, bitrate_mbps: maxOf(p) }, cfg.smart_bitrate ? { smart_quality: 72 } : {}); changed(); };
       $(box).appendChild(b);
     }
     }
     document.querySelectorAll(".padnames").forEach(el => el.textContent = cfg.pad_buttons ? padName(cfg.pad_buttons) : "Off");
     renderHotkeys(); renderGameRules(); renderSoundFiles(); renderThemes();
+    syncSegs(); drawQuality();
     $("chips").innerHTML = cfg.hotkeys.map((h, i) => `<div class="chip"><button class="chk-k" data-i="${i}" title="Click, then press the new keys">${kbdHtml(h.keys)}</button><span>Clip</span><select class="chk-l" data-i="${i}" title="Clip length">${LENGTHS.map(s => `<option value="${s}" ${s === h.seconds ? "selected" : ""}>${fmtLen(s)}</option>`).join("")}</select></div>`).join("");
     $("chips").querySelectorAll(".chk-k").forEach(b => b.onclick = () => listenHotkey(b, +b.dataset.i));
     $("chips").querySelectorAll(".chk-l").forEach(s => s.onchange = () => { cfg.hotkeys[+s.dataset.i].seconds = +s.value; changed(); });
@@ -4027,7 +4475,7 @@
     gameList.forEach(g => {
       const r = rule(g.name), row = document.createElement("div"); row.className = "grow";
       row.innerHTML = (g.icon ? `<img src="${g.icon}">` : `<span class="gl">${g.name[0].toUpperCase()}</span>`) + `<b></b>
-        <label class="chk" title="Off = the replay buffer pauses while this game runs"><input type="checkbox" data-r="record" ${r.record ? "checked" : ""}>Record</label>
+        <label class="chk" title="Off = Echo pauses recording while this game runs"><input type="checkbox" data-r="record" ${r.record ? "checked" : ""}>Record</label>
         <label class="chk" title="Off = its clips go in the main folder"><input type="checkbox" data-r="folder" ${r.folder ? "checked" : ""}>Own folder</label>
         <button class="btn sm" data-x title="Not a game? Remove it">Remove</button>`;
       row.querySelector("[data-x]").onclick = e => ctxMenu(e, [
@@ -4219,7 +4667,7 @@
     await loadMics(); await loadMonitors();
     renderSettings();
     if (!cfg.setup_done) openSetup();
-    refresh(); setInterval(refresh, 4000);
+    refresh().then(() => invoke("ui_ready", { clips: clips.length })).catch(() => {}); setInterval(() => refresh("tick").catch(() => {}), 4000);
   })();
 </script>
 </body>
