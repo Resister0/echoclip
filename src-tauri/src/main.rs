@@ -1556,6 +1556,7 @@ fn main() {
                 std::thread::spawn(move || {
                     let mut game: Option<(String, u32)> = None;
                     let mut game_hwnd: isize = 0;
+                    let mut vr_hwnd: isize = 0;
                     let mut down = 0u32;
                     let mut last_fix = std::time::Instant::now() - std::time::Duration::from_secs(120);
                     loop {
@@ -1569,6 +1570,27 @@ fn main() {
                             *rec.last_game.lock().unwrap() = Some((name.clone(), std::time::Instant::now()));
                             game = Some((name, pid));
                             game_hwnd = winutil::foreground_hwnd();
+                        }
+                        // VR game (Quest Link / Air Link, SteamVR, Virtual Desktop): the monitor shows the desktop,
+                        // the game's own window shows the player's view -> record that window, even in the background
+                        match winutil::vr_game().and_then(|(pid, hwnd, stem, title)| recorder::vr_game_name(&stem, &title).map(|n| (n, pid, hwnd))) {
+                            Some((name, pid, hwnd)) => {
+                                if hwnd != vr_hwnd {
+                                    recorder::log_line(&format!("vr: {name} is a VR game - recording its window"));
+                                    recorder::remember_game(&name, &winutil::exe_path(pid).unwrap_or_default());
+                                }
+                                vr_hwnd = hwnd;
+                                if game.as_ref().map_or(true, |g| g.1 == pid || !winutil::pid_alive(g.1)) {
+                                    game = Some((name, pid));
+                                    game_hwnd = hwnd;
+                                }
+                            }
+                            None => {
+                                if vr_hwnd != 0 {
+                                    recorder::log_line("vr: VR game closed");
+                                }
+                                vr_hwnd = 0;
+                            }
                         }
                         if game.as_ref().is_some_and(|g| !winutil::pid_alive(g.1)) {
                             game = None;
@@ -1619,7 +1641,8 @@ fn main() {
                             continue;
                         }
                         // "Game window only": record just the game's window while it runs (restart when it changes)
-                        let want = if cfg.capture == "game" { game_hwnd } else { 0 };
+                        // ("Whole screen" too while a VR game runs: its window is the only place the game is visible)
+                        let want = if cfg.capture == "game" { game_hwnd } else if vr_hwnd != 0 && !winutil::window_alive(vr_hwnd) { 0 } else { vr_hwnd };
                         if cur.is_empty() && want != rec.window.load(std::sync::atomic::Ordering::Relaxed) && rec.session_secs().is_none() && !rec.busy() && !FPS_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
                             rec.window.store(want, std::sync::atomic::Ordering::Relaxed);
                             recorder::log_line(if want != 0 { "capture: switching to the game window" } else { "capture: back to the whole monitor" });

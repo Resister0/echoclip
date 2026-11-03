@@ -585,6 +585,12 @@ pub fn game_in_front() -> Option<(String, u32, String)> {
     None
 }
 
+/// Name for a VR game found by winutil::vr_game() (None = the user said it's not a game, or a browser etc.).
+#[cfg(windows)]
+pub fn vr_game_name(stem: &str, title: &str) -> Option<String> {
+    game_name(stem, title, true)
+}
+
 /// Linux: Wayland doesn't tell apps which window is in front, so look for a running game instead:
 /// Steam games (steamapps/common/<Game>/), Wine / Proton / Lutris / Heroic games (*.exe), Minecraft.
 /// Several running: the one using the most memory. Returns (name, pid, exe path).
@@ -1237,8 +1243,17 @@ impl Resampler {
     fn push(&mut self, input: &[f32], q: &mut VecDeque<f32>) {
         let mut cur = vec![0.0f32; self.cout];
         for f in input.chunks(self.cin) {
-            for (c, v) in cur.iter_mut().enumerate() {
-                *v = if self.cin == 1 { f[0] } else { *f.get(c).unwrap_or(&0.0) };
+            if self.cin >= 6 && self.cout == 2 && f.len() >= 6 {
+                // surround -> stereo (Windows order FL FR FC LFE BL BR [SL SR]): centre (voices) and the
+                // rear/side speakers go into both sides, LFE is left out
+                let g = |i: usize| *f.get(i).unwrap_or(&0.0);
+                let (sl, sr) = (g(4) + g(6), g(5) + g(7));
+                cur[0] = g(0) + 0.707 * g(2) + 0.5 * sl;
+                cur[1] = g(1) + 0.707 * g(2) + 0.5 * sr;
+            } else {
+                for (c, v) in cur.iter_mut().enumerate() {
+                    *v = if self.cin == 1 { f[0] } else { *f.get(c).unwrap_or(&0.0) };
+                }
             }
             while self.t < 1.0 {
                 let t = self.t as f32;
@@ -1946,6 +1961,13 @@ impl Recorder {
         ensure_ffmpeg();
         kill_leftovers();
         let (rate, ch) = loopback_format().unwrap_or((48000, 2));
+        // Echo's tracks are mono or stereo. Surround speakers (virtual 7.1 headsets like the Logitech G733
+        // report 8 channels) used to build "pan=stereo|c0=c0|…|c7=c7" -> ffmpeg refused, the recorder
+        // couldn't start at all (1660 Super friend, chat 18). Record stereo; the capture mixes surround down.
+        if ch > 2 {
+            log_line(&format!("audio: speakers have {ch} channels (surround) - recording stereo"));
+        }
+        let ch = ch.min(2);
         #[cfg(windows)]
         let out_idx = crate::gpucap::output_index(&cfg.monitor);
         #[cfg(not(windows))]

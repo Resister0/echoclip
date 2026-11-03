@@ -160,6 +160,103 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     out
 }
 
+/// VR (Quest Link / Air Link, SteamVR, Virtual Desktop): the game draws into the headset and the monitor
+/// shows the desktop, but the game's own PC window shows the player's view (that's what Moments records).
+/// When a VR runtime runs: the biggest visible window of a process that loaded a VR library.
+/// Returns (pid, window, exe stem, window title). Cheap when no VR runtime runs (one process list).
+pub fn vr_game() -> Option<(u32, isize, String, String)> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowRect, IsIconic, IsWindowVisible};
+    const RUNTIMES: &[&str] = &["vrserver.exe", "vrcompositor.exe", "ovrserver_x64.exe", "virtualdesktop.streamer.exe"];
+    // runtimes, their helpers and launchers are never "the game"
+    const SKIP: &[&str] = &["vrserver.exe", "vrcompositor.exe", "vrmonitor.exe", "vrdashboard.exe", "vrwebhelper.exe",
+        "vrstartup.exe", "vrserverhelper.exe", "vrprismhost.exe", "ovrserver_x64.exe", "ovrserverhelper_x64.exe",
+        "oculusclient.exe", "oculusdash.exe", "oculusmirror.exe", "ovrredir.exe", "virtualdesktop.streamer.exe",
+        "virtualdesktop.server.exe", "steam.exe", "steamwebhelper.exe", "echo.exe", "explorer.exe"];
+    let procs = processes();
+    if !procs.iter().any(|(_, _, n)| RUNTIMES.contains(&n.as_str())) {
+        return None;
+    }
+    let names: HashMap<u32, String> = procs.iter().map(|(p, _, n)| (*p, n.clone())).collect();
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
+        let v = &mut *(l.0 as *mut Vec<(isize, u32, i64)>);
+        if IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() {
+            let mut r = RECT::default();
+            if GetWindowRect(h, &mut r).is_ok() {
+                let area = (r.right - r.left) as i64 * (r.bottom - r.top) as i64;
+                if area >= 320 * 240 {
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(h, Some(&mut pid));
+                    v.push((h.0 as isize, pid, area));
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut wins: Vec<(isize, u32, i64)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut wins as *mut _ as isize));
+    }
+    // pid -> (uses VR, checked at); "no" is checked again after 20 s (a game loads its VR library a bit after start)
+    static CACHE: Mutex<Option<HashMap<u32, (bool, Instant)>>> = Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.get_or_insert_with(HashMap::new);
+    cache.retain(|p, _| names.contains_key(p));
+    let me = std::process::id();
+    let mut best: Option<(i64, u32, isize)> = None;
+    for (h, pid, area) in wins {
+        if pid == me {
+            continue;
+        }
+        let Some(n) = names.get(&pid) else { continue };
+        if SKIP.contains(&n.as_str()) {
+            continue;
+        }
+        let e = cache.entry(pid).or_insert_with(|| (uses_vr(pid), Instant::now()));
+        if !e.0 && e.1.elapsed() > Duration::from_secs(20) {
+            *e = (uses_vr(pid), Instant::now());
+        }
+        if e.0 && best.map_or(true, |b| area > b.0) {
+            best = Some((area, pid, h));
+        }
+    }
+    drop(guard);
+    let (_, pid, h) = best?;
+    let mut title = [0u16; 256];
+    let n = unsafe { GetWindowTextW(HWND(h as _), &mut title) };
+    let title = String::from_utf16_lossy(&title[..n.max(0) as usize]);
+    let stem = names.get(&pid).map(|n| n.trim_end_matches(".exe").to_string()).unwrap_or_default();
+    Some((pid, h, stem, title))
+}
+
+/// The process loaded OpenVR / OpenXR / the Oculus runtime (= it's a VR app).
+fn uses_vr(pid: u32) -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32,
+    };
+    const LIBS: &[&str] = &["openvr_api.dll", "openxr_loader.dll", "libovrrt64_1.dll", "libovrrt32_1.dll", "vrclient_x64.dll", "vrclient.dll"];
+    unsafe {
+        // fails for protected (anti-cheat) processes -> not detected, fine
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) else { return false };
+        let mut e = MODULEENTRY32W { dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Module32FirstW(snap, &mut e).is_ok();
+        let mut found = false;
+        while ok {
+            let n = e.szModule.iter().position(|&c| c == 0).unwrap_or(e.szModule.len());
+            if LIBS.contains(&String::from_utf16_lossy(&e.szModule[..n]).to_lowercase().as_str()) {
+                found = true;
+                break;
+            }
+            ok = Module32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+        found
+    }
+}
+
 /// Per-app audio (process loopback, Windows 10 2004+): pushes the sound of `pid` and its child
 /// processes into `push` as f32 interleaved at `rate`/`ch` until `stop` is set.
 pub fn app_loopback(pid: u32, rate: u32, ch: u16, stop: std::sync::Arc<std::sync::atomic::AtomicBool>,

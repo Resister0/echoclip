@@ -4,6 +4,8 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- VR games (Quest Link / Air Link, SteamVR, Virtual Desktop): Echo records the game's own window instead of the desktop, automatically
+- **Fixed: Echo couldn't record at all with surround / virtual 7.1 headsets** (e.g. Logitech G733); surround sound is now mixed down to stereo, voices from the centre speaker included
 - **Fixed: installed Echo (Echo-Setup.exe) recorded clips without any sound** - the installer now includes ffmpeg 9.0.2 instead of 8.0
 - Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
 - The player's Share button makes the same kind of link as "Copy share link"
