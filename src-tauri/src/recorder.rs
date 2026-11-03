@@ -1432,18 +1432,23 @@ struct AppSrc {
 /// All captures of one app track (e.g. several browsers on the Browser track).
 type Group = Arc<Mutex<Vec<AppSrc>>>;
 
-/// Extra tracks, in file order after mix/desktop/mic: a:3 game, a:4 Discord, a:5 browsers.
-pub const APP_TRACKS: [&str; 3] = ["Game", "Discord", "Browser"];
+/// Extra tracks, in file order after mix/desktop/mic: a:3 game, a:4 Discord, a:5 browsers, a:6 music apps
+/// (a:6 since chat 19 - older clips have 6 tracks, the editor and self-test handle both).
+pub const APP_TRACKS: [&str; 4] = ["Game", "Discord", "Browser", "Music"];
 
 #[allow(dead_code)]
 const DISCORD_EXES: &[&str] = &["discord.exe", "discordcanary.exe", "discordptb.exe"];
 #[allow(dead_code)]
 const BROWSER_EXES: &[&str] = &["chrome.exe", "brave.exe", "msedge.exe", "firefox.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe", "librewolf.exe", "zen.exe"];
+/// music / media players (Spotify etc.): their own track, so music can be cut out or kept in the editor
+#[allow(dead_code)]
+const MUSIC_EXES: &[&str] = &["spotify.exe", "applemusic.exe", "itunes.exe", "tidal.exe", "deezer.exe", "amazon music.exe",
+    "musicbee.exe", "foobar2000.exe", "aimp.exe", "winamp.exe", "vlc.exe", "youtube music.exe", "youtube music desktop app.exe"];
 
 /// Every ~2 s: works out which processes are the game / Discord / browsers and starts or
 /// stops a per-app loopback capture for each (whole process tree).
 #[cfg(windows)]
-fn app_supervisor(groups: [Group; 3], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     std::thread::spawn(move || {
         let mut game: Option<u32> = None;
         let mut failed: std::collections::HashSet<u32> = Default::default();
@@ -1467,7 +1472,10 @@ fn app_supervisor(groups: [Group; 3], stop: Arc<AtomicBool>, rate: u32, ch: u16)
                     .map(|p| p.0)
                     .collect()
             };
-            let want: [Vec<u32>; 3] = [game.into_iter().collect(), roots(DISCORD_EXES), roots(BROWSER_EXES)];
+            let mut want: [Vec<u32>; 4] = [game.into_iter().collect(), roots(DISCORD_EXES), roots(BROWSER_EXES), roots(MUSIC_EXES)];
+            // a music app that is also the game in front (unlikely) stays on the Game track only
+            let g0 = want[0].clone();
+            want[3].retain(|p| !g0.contains(p));
             for (k, g) in groups.iter().enumerate() {
                 let mut list = g.lock().unwrap();
                 list.retain(|s| {
@@ -1520,7 +1528,7 @@ fn app_supervisor(groups: [Group; 3], stop: Arc<AtomicBool>, rate: u32, ch: u16)
 }
 
 #[cfg(not(windows))]
-fn app_supervisor(_: [Group; 3], _: Arc<AtomicBool>, _: u32, _: u16) {}
+fn app_supervisor(_: [Group; 4], _: Arc<AtomicBool>, _: u32, _: u16) {}
 
 /// Mixes desktop + mic and writes to ffmpeg at exactly real-time pace,
 /// padding with silence when nothing is playing (keeps A/V in sync).
@@ -1569,9 +1577,9 @@ fn ask_restart(why: &str) {
     RESTART_REC.store(true, Ordering::Relaxed);
 }
 /// live mixer settings: per-app volume (f32 bits) and "mix only these apps"
-static APP_VOL: [AtomicU32; 3] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000)];
+static APP_VOL: [AtomicU32; 4] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000)];
 static MIX_APPS: AtomicBool = AtomicBool::new(false);
-static MIX_INC: [AtomicBool; 3] = [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false)];
+static MIX_INC: [AtomicBool; 4] = [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false), AtomicBool::new(false)];
 static MIC_MONO: AtomicBool = AtomicBool::new(false);
 /// the mic is added to the mix by ffmpeg (after the noise filter), not here
 static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
@@ -1579,11 +1587,11 @@ static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
 static NOT_GAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 fn set_mixer(c: &Settings) {
     *NOT_GAMES.lock().unwrap() = c.not_games.iter().map(|n| n.to_lowercase()).collect();
-    for (i, v) in [c.vol_game, c.vol_discord, c.vol_browser].iter().enumerate() {
+    for (i, v) in [c.vol_game, c.vol_discord, c.vol_browser, c.vol_music].iter().enumerate() {
         APP_VOL[i].store(v.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
     }
     MIX_APPS.store(c.mix_mode == "apps" && c.app_tracks, Ordering::Relaxed);
-    for (i, b) in [c.mix_game, c.mix_discord, c.mix_browser].iter().enumerate() {
+    for (i, b) in [c.mix_game, c.mix_discord, c.mix_browser, c.mix_music].iter().enumerate() {
         MIX_INC[i].store(*b, Ordering::Relaxed);
     }
     MIC_MONO.store(c.mic_mono, Ordering::Relaxed);
@@ -1614,7 +1622,7 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
     if mic {
         spawn_capture(true, mic_name.clone(), bm.clone(), stop.clone(), rate, ch);
     }
-    let groups: [Group; 3] = Default::default();
+    let groups: [Group; 4] = Default::default();
     if apps {
         app_supervisor(groups.clone(), stop.clone(), rate, ch);
     }
@@ -1713,11 +1721,11 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
         let put = |chunk: &mut Vec<u8>, x: f32| chunk.extend_from_slice(&(if x.is_finite() { x.clamp(-1.0, 1.0) } else { 0.0 }).to_le_bytes());
         let mix_apps = MIX_APPS.load(Ordering::Relaxed);
         let no_mic = MIX_NO_MIC.load(Ordering::Relaxed);
-        let inc = [MIX_INC[0].load(Ordering::Relaxed), MIX_INC[1].load(Ordering::Relaxed), MIX_INC[2].load(Ordering::Relaxed)];
+        let inc = [MIX_INC[0].load(Ordering::Relaxed), MIX_INC[1].load(Ordering::Relaxed), MIX_INC[2].load(Ordering::Relaxed), MIX_INC[3].load(Ordering::Relaxed)];
         for f in 0..(n / ch) {
             let r = f * ch..f * ch + ch;
             // mix: everything, or only the apps ticked in Settings > Audio (+ mic)
-            if mix_apps && g.len() == 3 {
+            if mix_apps && g.len() == 4 {
                 for i in r.clone() {
                     let mut x = if no_mic { 0.0 } else { m[i] };
                     for (gi, a) in g.iter().enumerate() {
@@ -2045,7 +2053,7 @@ impl Recorder {
             let t0 = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_err(err)?.as_secs_f64();
             let audio_start = Instant::now();
             let offset = if mode == "gpu" { Some(t0) } else { None };
-            let tracks = if cfg.app_tracks { 6 } else { 3 };
+            let tracks = if cfg.app_tracks { 7 } else { 3 };
             let nr = if cfg.mic && cfg.mic_denoise {
                 Some(match denoise_model() {
                     Some(p) => format!("arnndn=m='{}':mix=0.9", ff_path(&p)),
@@ -2315,7 +2323,7 @@ impl Recorder {
         if counts.is_empty() || !counts.iter().any(|&c| c == 0) {
             return Ok(false);
         }
-        let names = ["mix", "desktop", "mic", "game", "Discord", "browsers"];
+        let names = ["mix", "desktop", "mic", "game", "Discord", "browsers", "music"];
         let empty: Vec<String> = counts.iter().enumerate().filter(|(_, c)| **c == 0)
             .map(|(i, _)| names.get(i).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}"))).collect();
         log_line(&format!("save: audio track(s) {} had no sound data at all - saved with silence there", empty.join(", ")));
@@ -2475,11 +2483,11 @@ impl Recorder {
             r.push(("Picture".into(), avg > 18.0, if avg > 18.0 { "Not black".into() } else { "The picture is (almost) black - wrong monitor, or the screen was dark".into() }));
         }
         // audio tracks
-        let names = ["Mix (what players hear)", "All desktop sound", "Microphone", "Game", "Discord", "Browsers"];
+        let names = ["Mix (what players hear)", "All desktop sound", "Microphone", "Game", "Discord", "Browsers", "Music apps"];
         let n = self.audio_tracks(&out.to_string_lossy());
-        let want = if cfg.app_tracks { 6 } else { 3 };
+        let want = if cfg.app_tracks { 7 } else { 3 };
         r.push(("Audio tracks".into(), n as usize == want, format!("{n} of {want}")));
-        for t in 0..n.min(6) {
+        for t in 0..n.min(7) {
             let o = ffmpeg().args(["-hide_banner", "-nostats", "-i"]).arg(&out)
                 .args(["-map", &format!("0:a:{t}"), "-af", "volumedetect", "-f", "null", "-"])
                 .output().map(|o| String::from_utf8_lossy(&o.stderr).to_string()).unwrap_or_default();
@@ -4291,7 +4299,7 @@ impl Recorder {
         fs::write(self.favs_path(), serde_json::to_string(&f).map_err(err)?).map_err(err)
     }
 
-    /// Number of audio tracks in a clip (3 = mix, desktop, mic; 6 adds game, Discord, browsers).
+    /// Number of audio tracks in a clip (3 = mix, desktop, mic; 6 adds game, Discord, browsers; 7 also music apps).
     pub fn audio_tracks(&self, clip: &str) -> u32 {
         let out = hidden("ffprobe")
             .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"])

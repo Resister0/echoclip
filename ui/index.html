@@ -869,7 +869,7 @@
           </div>
           <div class="box">
             <h3>Mix (what players hear)</h3>
-            <div class="row"><div class="lbl"><b>Mix contains</b><small>"Only the apps below" leaves out everything else on the PC (music, notifications…). Needs Per-app tracks.</small></div>
+            <div class="row"><div class="lbl"><b>Mix contains</b><small>"Only the apps below" leaves out everything else on the PC (notifications, other apps…). Needs Per-app tracks.</small></div>
               <select data-k="mix_mode"><option value="all">Everything on the PC + mic</option><option value="apps">Only the apps below + mic</option></select></div>
             <div class="row"><div class="lbl"><b>Game</b><small>In the mix (when "only the apps below") · volume</small></div>
               <input type="range" min="0" max="2" step="0.05" data-k="vol_game" data-num><span class="val" id="v-vg"></span><label class="switch"><input type="checkbox" data-k="mix_game"><span></span></label></div>
@@ -877,10 +877,12 @@
               <input type="range" min="0" max="2" step="0.05" data-k="vol_discord" data-num><span class="val" id="v-vd"></span><label class="switch"><input type="checkbox" data-k="mix_discord"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Browsers</b><small>In the mix · volume (Chrome, Brave, Edge, Firefox, Opera)</small></div>
               <input type="range" min="0" max="2" step="0.05" data-k="vol_browser" data-num><span class="val" id="v-vb"></span><label class="switch"><input type="checkbox" data-k="mix_browser"><span></span></label></div>
+            <div class="row"><div class="lbl"><b>Music apps</b><small>In the mix · volume (Spotify, Apple Music, TIDAL, Deezer, VLC…)</small></div>
+              <input type="range" min="0" max="2" step="0.05" data-k="vol_music" data-num><span class="val" id="v-vmu"></span><label class="switch"><input type="checkbox" data-k="mix_music"><span></span></label></div>
           </div>
           <div class="box">
             <h3>Separate tracks</h3>
-            <div class="row"><div class="lbl"><b>Per-app tracks</b><small>Also record the game, Discord and your browser (Chrome, Brave, Edge, Firefox, Opera) on their own tracks, so you can mute or lower each one in the editor</small></div>
+            <div class="row"><div class="lbl"><b>Per-app tracks</b><small>Also record the game, Discord, your browser (YouTube, Twitch…) and music apps (Spotify…) on their own tracks, so you can mute or lower each one in the editor</small></div>
               <label class="switch"><input type="checkbox" data-k="app_tracks"><span></span></label></div>
           </div>
           <div class="note">Clips also store Mic and each app as separate tracks - press <kbd>U</kbd> in the editor to split them. Any microphone works (it's resampled automatically).</div>
@@ -3830,13 +3832,14 @@
       ed.audio.push({ ...base, track: 0, label: fileName(s.src), src: s.src });
       select({ k: "aud", i: ed.audio.length - 1 }); return toast("Audio separated");
     } else if (ed.tracks >= 6) {
-      // per-app tracks: 3 game, 4 Discord, 5 browsers, 2 mic; 1 = all desktop sound (muted, it already contains the apps)
-      const lv = ed.levels || [], loud = t => lv[t] == null || lv[t] > -70;
-      const rows = [[3, "Game"], [4, "Discord"], [5, "Browser"]].filter(([t]) => loud(t));
+      // per-app tracks: 3 game, 4 Discord, 5 browsers (YouTube…), 6 music apps (Spotify…; clips since chat 19), 2 mic;
+      // 1 = all desktop sound (muted, it already contains the apps)
+      const lv = ed.levels || [], loud = t => t < ed.tracks && (lv[t] == null || lv[t] > -70);
+      const rows = [[3, "Game"], [4, "Discord"], [5, "Browser"], [6, "Music"]].filter(([t]) => loud(t));
       rows.forEach(([t, label]) => ed.audio.push({ ...base, track: t, label }));
       ed.audio.push({ ...base, track: 1, label: rows.length ? "All desktop sound" : "Desktop", mute: rows.length > 0 });
       if (loud(2)) ed.audio.push({ ...base, track: 2, label: "Mic" });
-      toast(rows.length ? "Split into " + rows.map(r => r[1]).concat(loud(2) ? ["Mic"] : []).join(", ") + " (All desktop sound is muted - unmute it for other apps)" : "No game / Discord / browser sound in this clip - split into Desktop and Mic");
+      toast(rows.length ? "Split into " + rows.map(r => r[1]).concat(loud(2) ? ["Mic"] : []).join(", ") + " (All desktop sound is muted - unmute it for other apps)" : "No game / Discord / browser / music sound in this clip - split into Desktop and Mic");
     } else if (ed.tracks === 3) {
       ed.audio.push({ ...base, track: 1, label: "Game" }, { ...base, track: 2, label: "Mic" });
       toast("Split into Game and Mic tracks");
@@ -4775,7 +4778,7 @@
     $("v-bitrate").textContent = cfg.bitrate_mbps + " Mbps";
     $("v-dv").textContent = Math.round(cfg.desktop_volume * 100) + "%";
     $("v-mv").textContent = Math.round(cfg.mic_volume * 100) + "%";
-    $("v-vg").textContent = Math.round(cfg.vol_game * 100) + "%"; $("v-vd").textContent = Math.round(cfg.vol_discord * 100) + "%"; $("v-vb").textContent = Math.round(cfg.vol_browser * 100) + "%";
+    $("v-vg").textContent = Math.round(cfg.vol_game * 100) + "%"; $("v-vd").textContent = Math.round(cfg.vol_discord * 100) + "%"; $("v-vb").textContent = Math.round(cfg.vol_browser * 100) + "%"; $("v-vmu").textContent = Math.round((cfg.vol_music ?? 1) * 100) + "%";
     $("v-sv").textContent = Math.round(cfg.sound_volume * 100) + "%";
     for (const box of ["presets", "supresets"]) {
     $(box).innerHTML = "";

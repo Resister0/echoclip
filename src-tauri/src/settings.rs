@@ -136,10 +136,13 @@ pub struct Settings {
     pub vol_game: f32,
     pub vol_discord: f32,
     pub vol_browser: f32,
+    /// music apps (Spotify…) track, a:6
+    pub vol_music: f32,
     /// in "apps" mode: which apps go into the mix
     pub mix_game: bool,
     pub mix_discord: bool,
     pub mix_browser: bool,
+    pub mix_music: bool,
     /// mic only sends one channel: copy it to both ears
     pub mic_mono: bool,
     /// cloud: delete the PC copy after an automatic upload
@@ -267,9 +270,11 @@ impl Default for Settings {
             vol_game: 1.0,
             vol_discord: 1.0,
             vol_browser: 1.0,
+            vol_music: 1.0,
             mix_game: true,
             mix_discord: true,
             mix_browser: false,
+            mix_music: false,
             mic_mono: false,
             cloud_free_after: false,
             link_days: 0,
