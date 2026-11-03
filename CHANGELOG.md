@@ -4,6 +4,9 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- "Send log" uploads the log and copies a private link to paste into Discord (email addresses removed, deleted after 14 days); without internet the file is copied like before
+- Echo looks for updates when you open or click its window (at most every 15 minutes) and every 2 hours, so you don't have to press "Check for updates"
+- Echo Cloud over your plan (e.g. after a paid plan ends): a red note in Settings → Cloud and a daily reminder show the date the oldest clips above the plan will be removed
 - Fixed: the recorder kept restarting (and losing the replay buffer) on busy PCs while a heavy game ran - short slowdowns are now caught up instead
 
 ## 1.0.25 - Surround headsets and VR games

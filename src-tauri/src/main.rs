@@ -807,12 +807,22 @@ async fn import_clips(rec: State<'_, Recorder>, paths: Vec<String>) -> Result<(V
 /// the watchdog leaves the recorder alone while the FPS test pauses it
 static FPS_TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Log + settings as a .txt on the clipboard (paste it into Discord to send it).
+/// "Send log": uploads log + settings to echoclip.link and copies the link (paste it into Discord / to William).
+/// Upload failed: the .txt file goes on the clipboard instead, like before. Returns the link ("" = file copied).
 #[tauri::command]
 async fn send_log(rec: State<'_, Recorder>) -> Result<String, String> {
     let f = rec.support_file()?;
-    recorder::copy_to_clipboard(&f)?;
-    Ok(f)
+    match rec.upload_log(&f) {
+        Ok(url) => {
+            recorder::copy_text(&url)?;
+            Ok(url)
+        }
+        Err(e) => {
+            recorder::log_line(&format!("log: upload failed ({e}) - copying the file"));
+            recorder::copy_to_clipboard(&f)?;
+            Ok(String::new())
+        }
+    }
 }
 
 /// Waits for the user to press a controller combo; returns (bits, names).

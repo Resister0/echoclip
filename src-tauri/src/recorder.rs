@@ -4236,6 +4236,29 @@ impl Recorder {
         Ok(file.to_string_lossy().to_string())
     }
 
+    /// "Send log": uploads the log file to echoclip.link (email addresses removed) and returns the link
+    /// (William pastes it to Claude, who reads it directly). Kept 14 days by the server.
+    pub fn upload_log(&self, file: &str) -> Result<String, String> {
+        let text = fs::read_to_string(file).map_err(err)?;
+        let mut text = redact_emails(&text);
+        if text.len() > 390_000 {
+            let mut cut = text.len() - 390_000;
+            while !text.is_char_boundary(cut) { cut += 1; }
+            text = format!("(start cut off)\n{}", &text[cut..]);
+        }
+        let cfg = self.settings();
+        let body = serde_json::json!({
+            "text": text,
+            "version": option_env!("ECHO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+            "os": if cfg!(windows) { "Windows" } else { "Linux" },
+        });
+        let v = ec_call(&ec_api(&cfg), "POST", "/log", "", Some(body))?;
+        let url = v["url"].as_str().unwrap_or("").to_string();
+        if url.is_empty() { return Err("no link".into()); }
+        log_line(&format!("log: uploaded {url}"));
+        Ok(url)
+    }
+
     fn favs_path(&self) -> PathBuf {
         self.thumbs_dir().join("favorites.json")
     }
@@ -4842,6 +4865,36 @@ fn ensure_rclone() -> Result<PathBuf, String> {
 }
 
 /// Put text (a share link) on the clipboard.
+/// "name@example.com" -> "[email]" (uploaded logs: settings and cloud labels contain the Echo Cloud email)
+fn redact_emails(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let local = |ch: char| ch.is_alphanumeric() || "._%+-".contains(ch);
+    let dom = |ch: char| ch.is_alphanumeric() || ".-".contains(ch);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '@' {
+            let tail: Vec<char> = out.chars().collect();
+            let mut k = tail.len();
+            while k > 0 && local(tail[k - 1]) { k -= 1; }
+            let mut j = i + 1;
+            while j < c.len() && dom(c[j]) { j += 1; }
+            let d: String = c[i + 1..j].iter().collect();
+            let d = d.trim_end_matches('.');
+            if k < tail.len() && d.contains('.') {
+                let a = tail[..k].iter().collect::<String>().len();
+                out.truncate(a);
+                out.push_str("[email]");
+                i += 1 + d.chars().count();
+                continue;
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out
+}
+
 pub fn copy_text(text: &str) -> Result<(), String> {
     #[cfg(windows)]
     {

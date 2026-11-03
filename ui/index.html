@@ -951,7 +951,7 @@
           <div class="box"><h3>Troubleshooting</h3>
             <div class="row"><div class="lbl"><b>Self-test</b><small>Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.</small></div><button class="btn" id="stbtn" onclick="selfTest()">Run self-test</button></div>
             <div id="stres"></div>
-            <div class="row"><div class="lbl"><b>Send log</b><small>Copies a text file with Echo's log and settings (passwords and keys left out) - paste it into Discord for whoever helps you</small></div><button class="btn" onclick="sendLog()">Copy log file</button></div>
+            <div class="row"><div class="lbl"><b>Send log</b><small>Uploads Echo's log and settings (passwords, keys and email addresses left out) and copies a private link - paste it into Discord for whoever helps you. Links stop working after 14 days. Without internet the log file is copied instead.</small></div><button class="btn" onclick="sendLog()">Send log</button></div>
             <div class="row"><div class="lbl"><b>FPS test</b><small>How much does recording cost in your game? Open the game first, click Start, allow the Windows prompt, then switch to the game within 15 s and play normally for about a minute. Recording is paused for the first half.</small></div><button class="btn" id="fpsbtn" onclick="fpsTest()">Start</button></div>
             <div class="note" id="fpsres" style="display:none;margin:4px 0 8px"></div>
             <div class="row"><div class="lbl"><b>Welcome setup</b><small>The quick setup shown on the first start</small></div><button class="btn" onclick="openSetup()">Show again</button></div>
@@ -1126,7 +1126,9 @@
     } catch (e) { st.textContent = "Couldn't check: " + e; }
     b.disabled = false;
   }
+  let updLast = 0;   // when Echo last asked for an update
   async function updCheck(known) {
+    if (!known) updLast = Date.now();
     if (known) updInfo = known;
     else try { updInfo = await invoke("update_check"); } catch (e) { return; }
     if (!updInfo) return;
@@ -1146,7 +1148,24 @@
   }
   $("updbtn").onclick = updInstall;
   setTimeout(updCheck, 30000);
-  setInterval(updCheck, 6 * 3600 * 1000);
+  // Echo Cloud over the plan: remind once a day (details in Settings → Cloud)
+  setTimeout(async () => {
+    try {
+      if (!(cfg.cloud_accounts || []).some(a => a.provider === "echocloud")) return;
+      const me = await invoke("echocloud_me");
+      if (!me || !me.delete_at) return;
+      const today = new Date().toDateString();
+      try { if (localStorage.getItem("echo_overwarn") === today) return; localStorage.setItem("echo_overwarn", today); } catch { }
+      const d = new Date(me.delete_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+      toast(`Echo Cloud is over your plan - oldest clips are removed on ${d}. See Settings → Cloud.`);
+    } catch { }
+  }, 40000);
+  setInterval(updCheck, 2 * 3600 * 1000);
+  // friends kept Echo in the tray for days and had to press "Check for updates": also check when the window
+  // is opened / clicked again (at most every 15 min; one tiny request to echoclip.link)
+  const updSoon = () => { if (!document.hidden && updLast && Date.now() - updLast > 15 * 60 * 1000) updCheck(); };
+  window.addEventListener("focus", updSoon);
+  document.addEventListener("visibilitychange", updSoon);
 
   function toast(msg) { msg = plat(msg); const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600); }
   const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
@@ -4015,7 +4034,10 @@
   function padOff() { cfg.pad_buttons = 0; changed(); }
   // ----- send log / FPS test -----
   async function sendLog() {
-    try { await invoke("send_log"); toast("Log file copied - paste it into Discord"); } catch (e) { toast(String(e)); }
+    try {
+      const url = await invoke("send_log");
+      toast(url ? "Log sent - link copied, paste it into Discord" : "Couldn't upload the log - the file is copied instead, paste it into Discord");
+    } catch (e) { toast(String(e)); }
   }
   async function fpsTest() {
     const b = $("fpsbtn"), r = $("fpsres"); if (b.disabled) return;
@@ -4109,6 +4131,12 @@
         drawCloud(true);
       };
       $("ecup").onclick = () => paid ? ecManage() : ecPlans();
+      // over the plan (e.g. a paid plan ended): the server removes the oldest clips on delete_at
+      invoke("echocloud_me").then(me => {
+        if (!me || !me.delete_at || !use.isConnected || use.querySelector(".ecwarn")) return;
+        const d = new Date(me.delete_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+        use.insertAdjacentHTML("beforeend", `<div class="ecwarn" style="color:#f87171;font-size:12.5px;margin-top:6px;line-height:1.45">Over your ${esc(fmtSize(me.quota))} plan: on ${esc(d)} Echo Cloud removes your oldest clips until you're under it. Delete or download clips, or pick a plan, to keep them.</div>`);
+      }).catch(() => { });
       $("ecout").onclick = async () => {
         if (!(await confirmBox("Sign out of Echo Cloud?", "Your clips stay in Echo Cloud - sign in again with the same email to get them back.", "Sign out"))) return;
         try { await invoke("cloud_remove_account", { id: acc.id }); cfg = await invoke("get_settings"); cloudBase = ""; toast("Signed out of Echo Cloud"); listKey = ""; refresh(); } catch (e) { toast(String(e)); }

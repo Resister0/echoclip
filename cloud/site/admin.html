@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Echo stats</title>
+<style>
+  :root { --bg:#0e0f12; --card:#16181d; --line:#262a31; --text:#eceef2; --muted:#9097a3; --faint:#5e6570; --good:#3fb27f; --bad:#e5534b; --accent:#8b7cf6; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f7f9; --card:#fff; --line:#e3e6eb; --text:#16181d; --muted:#5b6270; --faint:#8a919c; --good:#1f8a5b; --bad:#c93a32; --accent:#6d5ce8; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,Segoe UI,Arial,sans-serif; }
+  main { max-width:1080px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:22px; margin:0; } h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:28px 0 10px; font-weight:600; }
+  .top { display:flex; align-items:center; gap:12px; flex-wrap:wrap; } .top .sp { flex:1; }
+  .sub { color:var(--muted); font-size:13px; }
+  button, input { font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:7px 12px; }
+  button { cursor:pointer; } button:hover { border-color:var(--muted); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .tile .k { color:var(--muted); font-size:12.5px; } .tile .v { font-size:26px; font-weight:650; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .tile .s { color:var(--faint); font-size:12px; margin-top:2px; }
+  .hero { grid-column:span 2; } .hero .v { font-size:32px; }
+  .pill { display:inline-block; font-size:12px; font-weight:600; padding:2px 8px; border-radius:99px; margin-left:6px; vertical-align:middle; }
+  .pill.good { color:var(--good); background:color-mix(in srgb,var(--good) 14%,transparent); }
+  .pill.bad { color:var(--bad); background:color-mix(in srgb,var(--bad) 14%,transparent); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; font-size:13px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12px; } tr:last-child td { border-bottom:0; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .wrap { overflow-x:auto; border-radius:12px; }
+  .bar { height:6px; border-radius:3px; background:var(--line); width:90px; display:inline-block; vertical-align:middle; margin-left:8px; }
+  .bar i { display:block; height:100%; border-radius:3px; background:var(--accent); }
+  .bar i.full { background:var(--bad); }
+  .login { max-width:420px; margin:80px auto; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px; }
+  .login input { width:100%; margin:12px 0; }
+  .err { color:var(--bad); margin-top:8px; } .note { color:var(--faint); font-size:12px; margin-top:24px; }
+  @media (max-width:520px) { .hero { grid-column:span 1; } }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const gb = (b) => { b = b || 0; return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB" : b >= 1e9 ? (b / 1e9).toFixed(b >= 100e9 ? 0 : 1) + " GB" : (b / 1e6).toFixed(0) + " MB"; };
+const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
+const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-";
+const money = (v, c) => (v || 0).toLocaleString(undefined, { style: "currency", currency: c || "EUR" });
+let key = ""; try { key = localStorage.getItem("echo_admin_key") || ""; } catch { }
+
+function login(msg) {
+  $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Paste your ADMIN_KEY (Bitwarden). It's remembered in this browser only.</div>
+    <input id="k" type="password" placeholder="ADMIN_KEY" autocomplete="off"><button id="go">Open</button>${msg ? `<div class="err">${esc(msg)}</div>` : ""}</div>`;
+  $("#go").onclick = () => { key = $("#k").value.trim(); try { localStorage.setItem("echo_admin_key", key); } catch { } load(); };
+  $("#k").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
+  $("#k").focus();
+}
+
+async function load() {
+  if (!key) return login();
+  let r;
+  try { r = await fetch("/admin/stats", { headers: { "x-admin-key": key } }); } catch { return login("Couldn't reach echoclip.link"); }
+  if (r.status === 403) { try { localStorage.removeItem("echo_admin_key"); } catch { } return login("Wrong key"); }
+  if (!r.ok) return login("Error " + r.status);
+  draw(await r.json());
+}
+
+function tile(k, v, s, cls) { return `<div class="tile ${cls || ""}"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`; }
+
+function draw(j) {
+  const m = j.money, cur = m.currency;
+  // costs are in USD (Cloudflare bills USD); shown next to EUR income, close enough for a glance
+  const costs = m.r2_usd_month + m.domain_usd_month;
+  const left = m.net_month - costs;
+  const verdict = left >= 0 ? `<span class="pill good">▲ pays for itself</span>` : `<span class="pill bad">▼ costs you money</span>`;
+  const u = j.users, a = j.active;
+  const rows = (list, f) => list.length ? list.map(f).join("") : `<tr><td colspan="9" class="sub">None</td></tr>`;
+  $("#app").innerHTML = `
+    <div class="top"><h1>Echo stats</h1><span class="sub">updated ${new Date(j.at * 1000).toLocaleTimeString()}</span><span class="sp"></span>
+      <button id="re">Refresh</button><button id="out">Forget key</button></div>
+
+    <h2>Money per month</h2>
+    <div class="grid">
+      ${tile("Left over" + verdict, money(left, cur), "income after fees + VAT, minus costs", "hero")}
+      ${tile("Income (est.)", money(m.gross_month, cur), `${u.paid} paying · ${money(m.net_month, cur)} after Polar + VAT`)}
+      ${tile("Storage cost (R2)", "$" + m.r2_usd_month.toFixed(2), `${gb(j.storage.used_bytes)} stored · first 10 GB free`)}
+      ${tile("Domain", "$" + m.domain_usd_month.toFixed(2), "echoclip.link, $7.20 a year")}
+    </div>
+
+    <h2>People</h2>
+    <div class="grid">
+      ${tile("Echo Cloud accounts", u.total, `+${u.new_1d} today · +${u.new_7d} this week · +${u.new_30d} in 30 days`)}
+      ${tile("Active today", a.d1, `${a.d7} this week · ${a.d30} in 30 days`)}
+      ${tile("Paying", u.paid, u.total ? `${(u.paid / u.total * 100).toFixed(1)}% of accounts` : "")}
+      ${tile("Over their plan", u.over, u.over ? "clips get removed after 30 days" : "nobody")}
+      ${tile("Share links", j.shares.live, `+${j.shares.new_7d} this week · ${j.shares.total} made`)}
+      ${tile("Logs sent (14 days)", j.logs, j.backup ? "last backup " + esc(j.backup.replace("backups/db-", "").replace(".json.gz", "")) : "no backup yet")}
+    </div>
+
+    <h2>Plans</h2>
+    <div class="wrap"><table><tr><th>Plan</th><th class="n">Accounts</th><th class="n">Stored</th></tr>
+      ${rows(j.plans, (p) => `<tr><td>${esc(p.plan)}</td><td class="n">${p.n}</td><td class="n">${gb(p.used)}</td></tr>`)}</table></div>
+
+    <h2>Biggest accounts</h2>
+    <div class="wrap"><table><tr><th>Email</th><th>Plan</th><th class="n">Stored</th><th>Of plan</th><th>Counted</th><th>Joined</th></tr>
+      ${rows(j.top, (t) => { const p = t.quota ? t.used / t.quota : 0; return `<tr><td>${esc(t.email)}</td><td>${esc(t.plan)}</td><td class="n">${gb(t.used)}</td>
+        <td>${Math.round(p * 100)}%<span class="bar"><i class="${p > 1 ? "full" : ""}" style="width:${Math.min(100, p * 100).toFixed(0)}%"></i></span></td><td>${ago(t.used_at)}</td><td>${day(t.created)}</td></tr>`; })}</table></div>
+
+    <h2>Over their plan</h2>
+    <div class="wrap"><table><tr><th>Email</th><th class="n">Stored</th><th class="n">Plan</th><th>Warned</th><th>Clips removed on</th></tr>
+      ${rows(j.over, (o) => `<tr><td>${esc(o.email)}</td><td class="n">${gb(o.used)}</td><td class="n">${gb(o.quota)}</td><td>${day(o.over_since)}${o.over_stage >= 2 ? " + reminder" : ""}</td><td>${day(o.over_since + 30 * 86400)}</td></tr>`)}</table></div>
+
+    <h2>Newest accounts</h2>
+    <div class="wrap"><table><tr><th>Email</th><th>Plan</th><th>Joined</th></tr>
+      ${rows(j.newest, (n) => `<tr><td>${esc(n.email)}</td><td>${esc(n.plan)}</td><td>${ago(n.created)}</td></tr>`)}</table></div>
+
+    <div class="note">Only Echo Cloud accounts are counted (people who only record or use their own cloud aren't visible here).
+      Storage is the last count per account. Income is estimated from monthly prices (yearly buyers pay ~17% less);
+      Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.</div>`;
+  $("#re").onclick = load;
+  $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
+}
+load();
+</script>
+</body>
+</html>

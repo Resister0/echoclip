@@ -21,6 +21,9 @@ const CREDS_SECONDS = 3600;     // short: upload keys can't be taken back, so an
 const USAGE_CACHE_SECONDS = 300;
 const USAGE_FRESH_SECONDS = 20; // "fresh" usage is still cached this long (listing the bucket costs money)
 const SESSION_DAYS = 180;       // signed out after this long without using Echo Cloud
+const OVER_GRACE_DAYS = 30;     // over the plan (e.g. a paid plan ended): clips above it are removed after this many days
+const OVER_REMIND_DAYS = 23;    // reminder email (7 days before)
+const OVER_DELETE_PER_RUN = 1000; // files removed per account per daily run (big accounts finish over several days)
 
 const now = () => Math.floor(Date.now() / 1000);
 const json = (body, status = 200) =>
@@ -114,7 +117,10 @@ async function usage(env, user, fresh = false) {
 }
 
 function me(user, used) {
-  return { id: user.id, email: user.email, plan: user.plan, paid: !!user.polar_sub, until: user.plan_until || 0, used, quota: user.quota_bytes };
+  // over_since > 0: over the plan, clips above it go on delete_at (Echo shows a warning)
+  const since = user.over_since || 0;
+  return { id: user.id, email: user.email, plan: user.plan, paid: !!user.polar_sub, until: user.plan_until || 0, used, quota: user.quota_bytes,
+    over_since: since, delete_at: since ? since + OVER_GRACE_DAYS * 86400 : 0 };
 }
 
 async function authStart(req, env) {
@@ -393,6 +399,48 @@ async function feedback(req, env, user) {
   return json({ ok: true });
 }
 
+// ----- support logs: Echo → Settings → "Send log" uploads the log, the person pastes the link -----
+// Echo strips passwords, keys and email addresses before uploading. Readable by anyone with the link (14 random
+// characters, ~70 bits - can't be guessed), deleted after LOG_DAYS. Meant for William + Claude to read without
+// passing files around (chat 18, Will's request).
+const LOG_DAYS = 14;
+const LOG_MAX = 400_000;
+function logId() {
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+  return [...crypto.getRandomValues(new Uint8Array(14))].map((b) => abc[b % abc.length]).join("");
+}
+async function logUpload(req, env, origin) {
+  if (!(await allow(env, `log:${ipOf(req)}`, 10, 3600))) return fail("Too many logs from this network - try again in an hour", 429);
+  if (!(await allow(env, "log:day", Number(env.LOG_DAY_LIMIT || 500), 86400))) return fail("Log uploads are paused for today", 429);
+  const b = await body(req);
+  const text = String(b.text || "");
+  if (!text.trim()) return fail("Empty log");
+  if (text.length > LOG_MAX) return fail("Log too big", 413);
+  const id = logId();
+  await env.BUCKET.put(`logs/${id}.txt`, text, {
+    httpMetadata: { contentType: "text/plain; charset=utf-8" },
+    customMetadata: { v: String(b.version || "").slice(0, 20), os: String(b.os || "").slice(0, 20) },
+  });
+  console.log("log uploaded", id, text.length, b.version || "");
+  return json({ id, url: `${origin}/log/${id}` });
+}
+async function logRead(req, env, id) {
+  if (!(await allow(env, `logread:${ipOf(req)}`, 120, 3600))) return new Response("slow down", { status: 429 });
+  const o = await env.BUCKET.get(`logs/${id}.txt`);
+  if (!o || now() - Math.floor(o.uploaded.getTime() / 1000) > LOG_DAYS * 86400) return new Response("This log doesn't exist or has expired (logs are kept 14 days).", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  return new Response(o.body, { headers: {
+    "content-type": "text/plain; charset=utf-8", "cache-control": "private, no-store", "x-robots-tag": "noindex, nofollow",
+    "x-content-type-options": "nosniff", "content-security-policy": "sandbox",
+  } });
+}
+/// Daily (cron): logs older than LOG_DAYS go
+async function cleanupLogs(env) {
+  const l = await env.BUCKET.list({ prefix: "logs/", limit: 1000 });
+  const old = l.objects.filter((o) => now() - Math.floor(new Date(o.uploaded).getTime() / 1000) > LOG_DAYS * 86400).map((o) => o.key);
+  if (old.length) await env.BUCKET.delete(old);
+  console.log("logs: deleted", old.length);
+}
+
 /// Daily (cron): a copy of the database (accounts, sessions, share links) in R2 under backups/, the last 14 kept.
 /// Not reachable from outside (share links only serve objects listed in the shares table; user keys only see u/<id>/).
 /// Restore: download the file in the Cloudflare dashboard (R2 → echo-cloud → backups/), the tables are JSON rows.
@@ -434,6 +482,110 @@ async function cleanupExpired(env) {
   return { expired: rows.length, copies };
 }
 
+// ----- over the plan (terms: email at least 30 days before clips above the plan are removed) -----
+// A paid plan that ended leaves its clips in R2 (William pays for them). Daily: warn by email, remind after
+// 23 days, after 30 days remove the oldest clips until the account fits its plan again (clips with a working
+// share link last). Never touches accounts with a paid plan; nothing is removed unless the warning email went
+// out. Freeing up space or paying again cancels it (next run / webhook).
+const fmtGB = (b) => `${+(b / GB).toFixed(b < 100 * GB ? 1 : 0)} GB`;
+const fmtDay = (t) => new Date(t * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+
+async function plainMail(env, to, subject, text) {
+  if (!env.RESEND_KEY) { console.log("mail (no RESEND_KEY):", to, subject); return false; }
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.RESEND_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ from: env.MAIL_FROM, to: [to], reply_to: env.SUPPORT_TO || "support@echoclip.link", subject, text }),
+  });
+  if (!r.ok) console.log("mail failed", r.status, await r.text());
+  return r.ok;
+}
+
+async function enforceQuota(env) {
+  await migrate(env);
+  const day = 86400, t = now();
+  // used_bytes is the last count; it's recounted below for every candidate
+  const rows = (await env.DB.prepare("SELECT * FROM users WHERE (used_bytes > quota_bytes OR over_since > 0) ORDER BY over_since DESC LIMIT 25").all()).results || [];
+  const report = [];
+  for (const u of rows) {
+    const set = (sql, ...v) => env.DB.prepare(`UPDATE users SET ${sql} WHERE id = ?`).bind(...v, u.id).run();
+    if (u.polar_sub) {   // paid plan running: never
+      if (u.over_since) await set("over_since = 0, over_stage = 0, over_removed = 0");
+      continue;
+    }
+    const used = await usage(env, { ...u, used_at: 0 });
+    const quota = u.quota_bytes, limit = fmtGB(quota);
+    if (used <= quota) {
+      if (u.over_since) { await set("over_since = 0, over_stage = 0, over_removed = 0"); report.push([u.id, "back under"]); console.log("quota:", u.id, "back under the plan"); }
+      continue;
+    }
+    if (!u.over_since) {
+      const at = t + 30 * day;
+      const ok = await plainMail(env, u.email, `Your Echo Cloud holds more than your ${limit} plan`,
+        `Hi,\n\nYour Echo Cloud holds ${fmtGB(used)} of clips, more than your plan's ${limit} (this happens when a paid plan ends).\n\n`
+        + `Nothing has been deleted. You can still watch, download, share and delete your clips - you just can't upload new ones.\n\n`
+        + `On ${fmtDay(at)} we'll remove your oldest clips from Echo Cloud until you're under ${limit} (clips with a working share link go last), unless before then you:\n`
+        + `- delete clips you don't need, or download the ones you want to keep (in Echo: Cloud), or\n`
+        + `- pick a plan again (Echo: Settings > Cloud > Upgrade).\n\n`
+        + `Clips on your PC are never touched. Questions? Just reply to this email.\n\nEcho - echoclip.link`);
+      if (ok) { await set("over_since = ?, over_stage = 1, over_removed = 0", t); report.push([u.id, "warned"]); console.log("quota:", u.id, "warned", fmtGB(used), ">", limit); }
+      continue;
+    }
+    const due = u.over_since + OVER_GRACE_DAYS * day;
+    if (t < due) {
+      if (u.over_stage < 2 && t >= u.over_since + OVER_REMIND_DAYS * day) {
+        const ok = await plainMail(env, u.email, `Reminder: Echo Cloud removes clips on ${fmtDay(due)}`,
+          `Hi,\n\nA reminder: your Echo Cloud holds ${fmtGB(used)}, more than your plan's ${limit}.\n\n`
+          + `On ${fmtDay(due)} we'll remove your oldest clips until you're under ${limit}. To keep them, delete or download clips in Echo (Cloud), or pick a plan again (Settings > Cloud > Upgrade).\n\n`
+          + `Clips on your PC are never touched.\n\nEcho - echoclip.link`);
+        if (ok) { await set("over_stage = 2"); report.push([u.id, "reminded"]); }
+      }
+      continue;
+    }
+    if (u.over_stage < 1) continue;   // never remove without the warning email
+    // remove: oldest first, clips with a working share link last
+    const objs = [];
+    let cursor;
+    for (let page = 0; page < 200; page++) {
+      const l = await env.BUCKET.list({ prefix: `u/${u.id}/`, cursor, limit: 1000 });
+      objs.push(...l.objects);
+      if (!l.truncated) break;
+      cursor = l.cursor;
+    }
+    const shared = new Set((((await env.DB.prepare("SELECT key FROM shares WHERE user_id = ? AND (expires = 0 OR expires > ?)").bind(u.id, t).all()).results) || []).map((r) => r.key));
+    const ts = (o) => (o.uploaded ? new Date(o.uploaded).getTime() : 0);
+    objs.sort((a, b) => (shared.has(a.key) - shared.has(b.key)) || (ts(a) - ts(b)));
+    const keys = [];
+    let left = objs.reduce((n, o) => n + o.size, 0), freed = 0;
+    for (const o of objs) {
+      if (left <= quota || keys.length >= OVER_DELETE_PER_RUN) break;
+      keys.push(o.key); left -= o.size; freed += o.size;
+    }
+    if (keys.length) {
+      await env.BUCKET.delete(keys);
+      for (let i = 0; i < keys.length; i += 50) {
+        const part = keys.slice(i, i + 50), q = part.map(() => "?").join(",");
+        const ids = (((await env.DB.prepare(`SELECT id FROM shares WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).all()).results) || []).map((r) => r.id);
+        if (ids.length) {
+          await env.BUCKET.delete(ids.map((id) => `thumbs/${id}.jpg`));
+          await env.DB.prepare(`DELETE FROM shares WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).run();
+        }
+      }
+    }
+    const removed = (u.over_removed || 0) + keys.length;
+    await set("used_at = 0, over_stage = 3, over_removed = ?", removed);
+    console.log("quota:", u.id, "removed", keys.length, "files,", fmtGB(freed), left <= quota ? "- now under the plan" : "- more next run");
+    report.push([u.id, "removed", keys.length]);
+    if (left <= quota) {
+      await plainMail(env, u.email, "Echo Cloud: clips above your plan were removed",
+        `Hi,\n\nAs announced, we removed ${removed} of your oldest files from Echo Cloud so it fits your plan's ${limit} again.\n\n`
+        + `Clips on your PC were not touched. Want more space again? Echo: Settings > Cloud > Upgrade.\n\nEcho - echoclip.link`);
+      await set("over_since = 0, over_stage = 0, over_removed = 0");
+    }
+  }
+  return report;
+}
+
 /// Delete the account and everything in it. Big accounts take several calls: {done:false} = call again.
 async function deleteAccount(req, user, env) {
   const b = await body(req);
@@ -461,6 +613,57 @@ async function deleteAccount(req, user, env) {
   ]);
   console.log("account deleted", user.id);
   return json({ done: true, deleted: n });
+}
+
+/// William's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
+/// Storage numbers are the last counts Echo Cloud made per account (recounted whenever someone uses it).
+async function adminStats(req, env) {
+  const key = req.headers.get("x-admin-key") || "";
+  if (!(await allow(env, `adminstats:${ipOf(req)}`, 120, 3600))) return fail("slow down", 429);
+  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("Wrong admin key", 403);
+  const t = now(), d = 86400;
+  const one = async (sql, ...v) => (await env.DB.prepare(sql).bind(...v).first()) || {};
+  const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
+  const users = await one(`SELECT COUNT(*) AS total,
+      SUM(created > ?) AS d1, SUM(created > ?) AS d7, SUM(created > ?) AS d30,
+      SUM(polar_sub IS NOT NULL) AS paid, SUM(used_bytes) AS used, SUM(over_since > 0) AS over FROM users`, t - d, t - 7 * d, t - 30 * d);
+  const active = await one(`SELECT COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d1,
+      COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d7, COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d30 FROM sessions`,
+    t - d, t - 7 * d, t - 30 * d);
+  const byPlan = await all("SELECT plan, COUNT(*) AS n, SUM(used_bytes) AS used FROM users GROUP BY plan ORDER BY n DESC");
+  const top = await all("SELECT email, plan, used_bytes AS used, quota_bytes AS quota, used_at, over_since, created FROM users ORDER BY used_bytes DESC LIMIT 15");
+  const newest = await all("SELECT email, plan, created FROM users ORDER BY created DESC LIMIT 10");
+  const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 ORDER BY over_since LIMIT 20");
+  const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
+  // income estimate: paid accounts x the monthly price of their plan size (yearly buyers pay ~17% less)
+  let plist = [];
+  try { plist = await plans(env); } catch { /* Polar unreachable: no prices */ }
+  const monthly = new Map(plist.filter((p) => p.interval === "month").map((p) => [p.gb, p]));
+  const paidRows = await all("SELECT quota_bytes FROM users WHERE polar_sub IS NOT NULL");
+  let gross = 0, cur = "EUR";
+  for (const u of paidRows) {
+    const p = monthly.get(Math.round(u.quota_bytes / GB));
+    if (p) { gross += p.price; cur = (p.currency || cur).toUpperCase(); }
+  }
+  // Polar keeps 5% + 0.50 per payment; prices include VAT, which Polar pays to the tax office (~20% in the EU)
+  const net = Math.max(0, paidRows.length ? gross / 1.2 * 0.95 - 0.5 * paidRows.length : 0);
+  const usedGB = (users.used || 0) / GB;
+  const r2 = Math.max(0, usedGB - 10) * 0.015;   // R2: first 10 GB free, then $0.015 per GB-month
+  const domain = 7.2 / 12;
+  let logs = 0;
+  try { logs = (await env.BUCKET.list({ prefix: "logs/", limit: 1000 })).objects.length; } catch { /* ignore */ }
+  let backup = null;
+  try { const b = await env.BUCKET.list({ prefix: "backups/db-" }); backup = b.objects.map((o) => o.key).sort().pop() || null; } catch { /* ignore */ }
+  return json({
+    at: t,
+    users: { total: users.total || 0, new_1d: users.d1 || 0, new_7d: users.d7 || 0, new_30d: users.d30 || 0, paid: users.paid || 0, over: users.over || 0 },
+    active: { d1: active.d1 || 0, d7: active.d7 || 0, d30: active.d30 || 0 },
+    plans: byPlan,
+    storage: { used_bytes: users.used || 0 },
+    money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
+    shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
+    logs, backup, top, newest, over,
+  });
 }
 
 /// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
@@ -496,7 +699,9 @@ async function migrate(env) {
   ]);
   // paid plans (Polar): which subscription gave the quota, and until when it's paid
   const cols = new Set(((await env.DB.prepare("PRAGMA table_info(users)").all()).results || []).map((c) => c.name));
-  for (const [c, type] of [["polar_sub", "TEXT"], ["plan_until", "INTEGER NOT NULL DEFAULT 0"], ["polar_at", "INTEGER NOT NULL DEFAULT 0"]]) {
+  for (const [c, type] of [["polar_sub", "TEXT"], ["plan_until", "INTEGER NOT NULL DEFAULT 0"], ["polar_at", "INTEGER NOT NULL DEFAULT 0"],
+    // over the plan: since when (0 = not), which email went out (1 = warning, 2 = reminder, 3 = removing), files removed so far
+    ["over_since", "INTEGER NOT NULL DEFAULT 0"], ["over_stage", "INTEGER NOT NULL DEFAULT 0"], ["over_removed", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!cols.has(c)) await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${c} ${type}`).run();
   }
   // share pages (Discord / browser embeds): clip title, size, length and whether a thumbnail was uploaded
@@ -764,7 +969,7 @@ async function polarWebhook(req, env) {
   const live = type !== "subscription.revoked" && ["active", "trialing", "past_due"].includes(s.status);
   if (live && gb) {
     const until = s.current_period_end ? Math.floor(Date.parse(s.current_period_end) / 1000) || 0 : 0;
-    await env.DB.prepare("UPDATE users SET plan = ?, quota_bytes = ?, polar_sub = ?, plan_until = ? WHERE id = ?")
+    await env.DB.prepare("UPDATE users SET plan = ?, quota_bytes = ?, polar_sub = ?, plan_until = ?, over_since = 0, over_stage = 0, over_removed = 0 WHERE id = ?")
       .bind(planName(gb), gb * GB, s.id, until, uid).run();
     console.log("polar:", type, uid, "->", planName(gb));
   } else if (!live && (!user.polar_sub || user.polar_sub === s.id)) {
@@ -800,10 +1005,11 @@ const ghFetch = (env, url, accept, auth = true) => fetch(url, {
 });
 const publicRepo = (env) => env.PUBLIC_REPO || "Resister0/echoclip";
 const privateRepo = (env) => env.GITHUB_REPO || "Resister0/echo";
-/// the GitHub release "latest" of one repo (cached 5 min), or null
+/// the GitHub release "latest" of one repo (cached 2 min), or null
 async function releaseOf(env, repo, isPublic) {
   const c = releaseCache.get(repo);
-  if (c && now() - c.at < 300) return c.rel;
+  // 2 min: right after a release, Cloudflare locations kept saying "newest version" for up to 5 min (chat 18)
+  if (c && now() - c.at < 120) return c.rel;
   const url = `https://api.github.com/repos/${repo}/releases/tags/latest`;
   let r = isPublic || env.GITHUB_TOKEN ? await ghFetch(env, url, "application/vnd.github+json") : null;
   // the token may only be allowed for the private repo: public releases can be read without it
@@ -974,6 +1180,10 @@ export default {
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
+      if (route === "GET /admin/stats") return await adminStats(req, env);
+      if (route === "POST /log") return await logUpload(req, env, url.origin);
+      const lm = url.pathname.match(/^\/log\/([a-z2-9]{14})\/?$/);
+      if (lm && req.method === "GET") return await logRead(req, env, lm[1]);
       if (route === "POST /feedback") return await feedback(req, env, await userFromToken(req, env).catch(() => null));
       const user = await userFromToken(req, env);
       if (!user) return AUTHED.has(route) || req.headers.has("authorization")
@@ -1002,6 +1212,8 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupExpired(env).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
+    ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));
+    ctx.waitUntil(enforceQuota(env).catch((e) => console.log("quota error", e && e.stack)));
   },
 };
 
