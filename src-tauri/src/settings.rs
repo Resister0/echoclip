@@ -183,6 +183,8 @@ pub struct Settings {
     pub theme: String,
     pub theme_accent: String,
     pub theme_bg: String,
+    /// small highlight colour (progress bars, trim handles…), custom theme only; "" = yellow
+    pub theme_hi: String,
 }
 
 impl Default for Settings {
@@ -259,6 +261,7 @@ impl Default for Settings {
             theme: String::new(),
             theme_accent: String::new(),
             theme_bg: String::new(),
+            theme_hi: String::new(),
             monitor: String::new(),
             mix_mode: "all".into(),
             vol_game: 1.0,

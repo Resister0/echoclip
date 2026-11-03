@@ -10,6 +10,7 @@
     --text:#f5f5f7; --muted:#a0a0ab; --dim:#6b6b76;
     --accent:#7c5cff; --accent2:#9d85ff; --accent-rgb:124,92,255; --grad:linear-gradient(135deg,#8b6cff 0%,#6a4cf5 55%,#4f7bff 100%);
     --ok:#34d399; --bad:#fb5c7c; --radius:14px;
+    --hi:#ffd23f; --hi-rgb:255,210,63;   /* the small highlight colour: progress bars, trim handles, favourites, editor selection */
   }
   * { box-sizing:border-box; margin:0; }
   html, body { height:100%; }
@@ -237,11 +238,11 @@
   #copymenu .ci, #foldmenu .ci { display:flex; align-items:center; gap:8px; width:100%; padding:8px 10px; border:0; background:none; border-radius:8px; text-align:left; color:var(--text); }
   #copymenu .ci:hover, #foldmenu .ci:hover { background:var(--panel2); }
   #copymenu .ci small, #foldmenu .ci small { color:var(--muted); margin-left:auto; font-variant-numeric:tabular-nums; }
-  #copymenu .ci .df, #foldmenu .ci .df { font-size:10.5px; color:#ffd23f; border:1px solid #ffd23f66; border-radius:99px; padding:0 6px; }
+  #copymenu .ci .df, #foldmenu .ci .df { font-size:10.5px; color:var(--hi); border:1px solid rgba(var(--hi-rgb),0.40); border-radius:99px; padding:0 6px; }
   #copymenu .ci input, #foldmenu .ci input { width:64px; height:26px; background:var(--panel2); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:0 6px; margin-left:auto; }
   #copymenu .cf, #foldmenu .cf { font-size:11.5px; color:var(--dim); padding:6px 10px 2px; border-top:1px solid var(--line); margin-top:4px; }
   .ib.del:hover { color:var(--bad); }
-  .ib.star.on { color:#ffd23f; } .ib.star.on svg { fill:#ffd23f; }
+  .ib.star.on { color:var(--hi); } .ib.star.on svg { fill:var(--hi); }
   .thumb .pick { position:absolute; left:9px; top:9px; width:26px; height:26px; border-radius:50%; border:2px solid #fffc; background:#0006; display:grid; place-items:center; opacity:0; transition:.15s; z-index:3; padding:0; }
   .thumb .pick svg { width:14px; height:14px; stroke:#fff; stroke-width:3; opacity:0; }
   .card:hover .pick, .card.picked .pick, body.picking .pick { opacity:1; }
@@ -302,7 +303,7 @@
   #player .bar { display:flex; gap:8px; align-items:center; width:min(100%, calc((100vh - var(--pv)) * 16 / 9)); }
   #player .bar #pname { flex:1; font-weight:600; font-size:15px; }
   #player #pname { min-width:140px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #ptrim.on { border-color:#ffd23f; color:#ffd23f; }
+  #ptrim.on { border-color:var(--hi); color:var(--hi); }
 
   /* quick trim (handles on the seek bar) */
   .seek .tsel, .seek .h { display:none; }
@@ -318,9 +319,9 @@
   .pstrip .seek:hover .fill { height:4px; }
   .pstrip .seek .fill { display:block; top:auto; bottom:0; height:4px; border-radius:0; background:var(--accent); z-index:2; pointer-events:none; }
   .pstrip .seek .tsel, .pstrip .seek .h { display:block; }
-  .pstrip .seek .tsel { top:0; bottom:0; border-width:2px 0; border-radius:0; border-color:#ffd23f00; box-shadow:0 0 0 9999px #000000a0; }
-  #player.trimming .pstrip .seek .tsel { border-color:#ffd23f; }
-  .pstrip .seek .h { top:0; bottom:0; width:12px; border-radius:0; background:#ffd23fcc; }
+  .pstrip .seek .tsel { top:0; bottom:0; border-width:2px 0; border-radius:0; border-color:rgba(var(--hi-rgb),0.00); box-shadow:0 0 0 9999px #000000a0; }
+  #player.trimming .pstrip .seek .tsel { border-color:var(--hi); }
+  .pstrip .seek .h { top:0; bottom:0; width:12px; border-radius:0; background:rgba(var(--hi-rgb),0.80); }
   .pstrip .seek #th0 { margin-left:0; border-radius:7px 0 0 7px; } .pstrip .seek #th1 { margin-left:-12px; border-radius:0 7px 7px 0; }
   .pstrip .seek .h::after { top:14px; bottom:14px; }
   .pstrip .seek .knob { top:0; bottom:0; width:3px; height:auto; margin-left:-1.5px; border-radius:2px; background:#fff; box-shadow:0 0 6px #000; transform:none; z-index:3; pointer-events:none; }
@@ -337,8 +338,8 @@
   .pnav:hover { background:#26262e; } .pnav:disabled { opacity:.25; cursor:default; }
   .pnav svg { width:22px; height:22px; } #pprev { left:18px; } #pnext { right:18px; }
   .phint { color:var(--dim); font-size:12px; } .phint kbd { font-size:11px; }
-  .seek .tsel { position:absolute; top:5px; bottom:5px; border:2px solid #ffd23f; border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px #0000; }
-  .seek .h { position:absolute; top:3px; bottom:3px; width:12px; margin-left:-6px; border-radius:4px; background:#ffd23f; cursor:ew-resize; z-index:2; }
+  .seek .tsel { position:absolute; top:5px; bottom:5px; border:2px solid var(--hi); border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px #0000; }
+  .seek .h { position:absolute; top:3px; bottom:3px; width:12px; margin-left:-6px; border-radius:4px; background:var(--hi); cursor:ew-resize; z-index:2; }
   .seek .h::after { content:""; position:absolute; left:5px; top:8px; bottom:8px; width:2px; border-radius:2px; background:#0008; }
   .seek .h.drag, .seek .h:hover { background:#ffe27a; }
   .tctl { display:none; align-items:center; gap:8px; }
@@ -348,7 +349,7 @@
   .tinfo b { color:var(--text); }
   .btn.sm { height:30px; padding:0 11px; font-size:13px; }
   .chk { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12.5px; cursor:pointer; }
-  .chk input { accent-color:#ffd23f; }
+  .chk input { accent-color:var(--hi); }
 
   /* settings */
   .settings { display:flex; height:100%; }
@@ -406,6 +407,19 @@
   .row { border-bottom-color:#ffffff0d; }
   .snav a { position:relative; }
   .snav a.on { background:rgba(var(--accent-rgb),0.12); color:var(--text); }
+  /* Discord invite at the bottom of the settings menu */
+  .snav { display:flex; flex-direction:column; }
+  .dccard { margin-top:auto; position:relative; overflow:hidden; display:flex; align-items:center; gap:10px; width:100%; padding:12px; text-align:left; cursor:pointer; color:#fff;
+    border:1px solid #ffffff26; border-radius:12px; background:linear-gradient(135deg,#5865f2 0%,#6d5cf0 55%,#8b5cf6 100%); box-shadow:0 8px 24px #5865f240; transition:transform .15s, box-shadow .15s; font:inherit; }
+  .dccard:hover { transform:translateY(-1px); box-shadow:0 12px 30px #5865f266; }
+  .dccard::after { content:""; position:absolute; top:0; bottom:0; left:-60%; width:40%; background:linear-gradient(100deg,transparent,#ffffff38,transparent); transform:skewX(-18deg); animation:dcshine 5s ease-in-out infinite; pointer-events:none; }
+  @keyframes dcshine { 0%, 70% { left:-60%; } 100% { left:130%; } }
+  .dccard .dci { width:34px; height:34px; flex:none; display:grid; place-items:center; border-radius:10px; background:#ffffff26; }
+  .dccard .dci svg { width:20px; height:20px; fill:none; stroke:#fff; stroke-width:1.8; stroke-linejoin:round; }
+  .dccard .dct { flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.25; } .dccard b { font-size:13px; } .dccard small { font-size:11.5px; opacity:.85; }
+  .dccard .dca { font-size:16px; opacity:.8; transition:transform .15s; } .dccard:hover .dca { transform:translateX(3px); }
+  html.lite .dccard::after { animation:none; display:none; }
+  @media (prefers-reduced-motion: reduce) { .dccard::after { animation:none; display:none; } }
   .snav a.on::before { content:""; position:absolute; left:0; top:8px; bottom:8px; width:3px; border-radius:3px; background:var(--accent); }
   .preset { text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:10px; padding:12px; transition:.15s; }
   .preset:hover { border-color:var(--hover); }
@@ -441,14 +455,14 @@
   .etx i[data-h] { position:absolute; width:11px; height:11px; background:#fff; border:1px solid #0009; border-radius:3px; }
   .etx i[data-h=tl] { left:-7px; top:-7px; cursor:nwse-resize; } .etx i[data-h=br] { right:-7px; bottom:-7px; cursor:nwse-resize; }
   .etx i[data-h=tr] { right:-7px; top:-7px; cursor:nesw-resize; } .etx i[data-h=bl] { left:-7px; bottom:-7px; cursor:nesw-resize; }
-  .etx.msel { border-color:#ffd23f; background:#ffd23f1a; }
-  .ecbox { position:absolute; transform:translate(-50%,-50%); border:2px dashed #ffd23fcc; border-radius:6px; background:#ffd23f14; cursor:move; z-index:2; }
-  .ecbox i { position:absolute; width:12px; height:12px; background:#ffd23f; border-radius:3px; }
+  .etx.msel { border-color:var(--hi); background:rgba(var(--hi-rgb),0.10); }
+  .ecbox { position:absolute; transform:translate(-50%,-50%); border:2px dashed rgba(var(--hi-rgb),0.80); border-radius:6px; background:rgba(var(--hi-rgb),0.08); cursor:move; z-index:2; }
+  .ecbox i { position:absolute; width:12px; height:12px; background:var(--hi); border-radius:3px; }
   .ecbox i[data-e="l"] { left:-7px; top:calc(50% - 6px); cursor:ew-resize; } .ecbox i[data-e="r"] { right:-7px; top:calc(50% - 6px); cursor:ew-resize; }
   .ecbox i[data-e="t"] { top:-7px; left:calc(50% - 6px); cursor:ns-resize; } .ecbox i[data-e="b"] { bottom:-7px; left:calc(50% - 6px); cursor:ns-resize; }
   .ecbox i[data-e="tl"] { left:-7px; top:-7px; cursor:nwse-resize; } .ecbox i[data-e="br"] { right:-7px; bottom:-7px; cursor:nwse-resize; }
   .ecbox i[data-e="tr"] { right:-7px; top:-7px; cursor:nesw-resize; } .ecbox i[data-e="bl"] { left:-7px; bottom:-7px; cursor:nesw-resize; }
-  .ecbox span { position:absolute; left:0; top:-22px; font-size:11px; color:#ffd23f; white-space:nowrap; text-shadow:0 0 3px #000; }
+  .ecbox span { position:absolute; left:0; top:-22px; font-size:11px; color:var(--hi); white-space:nowrap; text-shadow:0 0 3px #000; }
   .einsp { width:340px; flex:none; border-left:1px solid var(--line); background:var(--panel); padding:18px; overflow:auto; }
   .einsp h3 { font-size:14px; margin-bottom:14px; }
   .einsp label { display:block; color:var(--muted); font-size:12.5px; margin:14px 0 7px; }
@@ -480,7 +494,7 @@
   .tgrp { display:flex; align-items:center; gap:2px; padding:3px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; }
   .tb { height:30px; min-width:30px; padding:0 9px; border:0; border-radius:7px; background:none; color:var(--muted); display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:500; }
   .tb:hover { background:#ffffff12; color:var(--text); } .tb:disabled { opacity:.35; }
-  .tb.on { color:#ffd23f; background:#ffd23f14; }
+  .tb.on { color:var(--hi); background:rgba(var(--hi-rgb),0.08); }
   .tb svg { width:17px; height:17px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .zoomg input { width:110px; }
   @media (max-width:1250px) { .tb span { display:none; } }
@@ -504,9 +518,9 @@
   .etrack:not(.ov) { background:#ffffff05; }
   .eruler .tlab span { position:static; transform:none; font-size:12px; color:var(--text); }
   .eseg { border-width:1px !important; border-color:#ffffff30 !important; border-radius:8px !important; box-shadow:inset 0 0 0 1px #0006; }
-  .eseg.sel { border-color:#ffd23f !important; box-shadow:0 0 0 2px #ffd23f, 0 0 18px #ffd23f40; }
+  .eseg.sel { border-color:var(--hi) !important; box-shadow:0 0 0 2px var(--hi), 0 0 18px rgba(var(--hi-rgb),0.25); }
   .eab, .etb { border-width:1px !important; border-radius:7px !important; }
-  .eab.sel, .etb.sel { box-shadow:0 0 0 2px #ffd23f; }
+  .eab.sel, .etb.sel { box-shadow:0 0 0 2px var(--hi); }
   .ehead { background:#ff4d6d !important; width:2px; box-shadow:0 0 6px #ff4d6d99; }
   .ehead::before { border-top-color:#ff4d6d !important; }
   .eruler { background:var(--panel); }
@@ -515,38 +529,38 @@
   .ewrap { background:radial-gradient(ellipse at center,#16161c 0%,#0b0b0f 70%); }
   .eruler .tlab { height:26px; font-variant-numeric:tabular-nums; color:var(--text); font-weight:600; }
   .eruler { position:relative; height:26px; border-bottom:1px solid var(--line); cursor:pointer; }
-  .erng { position:absolute; top:0; bottom:0; background:#ffd23f22; border-left:2px solid #ffd23f; border-right:2px solid #ffd23f; pointer-events:none; z-index:5; }
+  .erng { position:absolute; top:0; bottom:0; background:rgba(var(--hi-rgb),0.13); border-left:2px solid var(--hi); border-right:2px solid var(--hi); pointer-events:none; z-index:5; }
   .eruler span { position:absolute; top:5px; font-size:11px; color:var(--dim); transform:translateX(-50%); }
-  .eruler b.emk, .seek .pmk { position:absolute; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:9px solid #ffd23f; transform:translateX(-50%); pointer-events:none; filter:drop-shadow(0 0 2px #000); }
+  .eruler b.emk, .seek .pmk { position:absolute; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:9px solid var(--hi); transform:translateX(-50%); pointer-events:none; filter:drop-shadow(0 0 2px #000); }
   .eruler b.emk { bottom:0; } .seek .pmk { top:-6px; z-index:3; }
   .eruler i { position:absolute; bottom:0; width:1px; height:6px; background:var(--dim); }
   .etrack { position:relative; height:64px; margin-top:12px; }
   .etrack.txt { height:34px; }
   .etrack.ov { height:0; margin-top:8px; }
   .eov { position:absolute; height:64px; border-radius:7px; background:#333 0 0 / auto 100% no-repeat; border:2px solid var(--accent2); overflow:hidden; cursor:pointer; touch-action:none; }
-  .eov.sel { border-color:#ffd23f; }
+  .eov.sel { border-color:var(--hi); }
   .eov .sp { position:absolute; left:8px; top:6px; background:#000c; border-radius:5px; padding:1px 6px; font-size:11px; font-weight:600; }
-  .eov.sel .eh { background:#ffd23f; }
+  .eov.sel .eh { background:var(--hi); }
   .eovv { position:absolute; transform:translate(-50%,-50%); display:none; cursor:move; box-shadow:0 4px 18px #000a; }
   .eovv.sel { outline:2px dashed #ffffffaa; }
   .estage .eovv { height:auto; }
   .etrack.aud { height:40px; display:none; }
   .etrack.aud.on { display:block; }
   .eab { position:absolute; top:0; bottom:0; border-radius:6px; background:repeating-linear-gradient(90deg,#1f6f55 0 2px,#1a5a46 2px 5px); border:2px solid #2fa57d; color:#fff; font-size:12px; padding:0 12px; display:flex; align-items:center; gap:6px; overflow:hidden; white-space:nowrap; cursor:grab; touch-action:none; }
-  .eab.sel { border-color:#ffd23f; }
+  .eab.sel { border-color:var(--hi); }
   .eab.muted { opacity:.45; }
   .eab.mic { background:repeating-linear-gradient(90deg,#1f4f7a 0 2px,#1a4266 2px 5px); border-color:#3b8fd6; }
   .eseg .am { position:absolute; right:8px; top:6px; background:#000c; border-radius:5px; padding:1px 6px; font-size:11px; }
   .eseg { touch-action:none; position:absolute; top:0; bottom:0; border-radius:7px; background:#333 0 0 / auto 100% repeat-x; border:2px solid #555; overflow:hidden; cursor:pointer; }
-  .eseg.sel { border-color:#ffd23f; }
+  .eseg.sel { border-color:var(--hi); }
   .eseg .sp { position:absolute; left:8px; top:6px; background:#000c; border-radius:5px; padding:1px 6px; font-size:11.5px; font-weight:600; }
   .eh { position:absolute; top:0; bottom:0; width:10px; cursor:ew-resize; z-index:2; }
   .eh.l { left:0; } .eh.r { right:0; }
-  .eseg.sel .eh, .etb.sel .eh { background:#ffd23f; }
+  .eseg.sel .eh, .etb.sel .eh { background:var(--hi); }
   .caprow { display:grid; grid-template-columns:28px 1fr 10px 1fr 28px; gap:5px; align-items:center; padding:8px; border-radius:9px; border:1px solid transparent; margin-bottom:4px; cursor:pointer; }
   .caprow:hover { background:var(--panel2); }
   .caprow.on { border-color:#3a3a46; background:var(--panel2); }
-  .caprow.sel { border-color:#ffd23f; }
+  .caprow.sel { border-color:var(--hi); }
   .caprow .ctx { grid-column:1 / -1; }
   .caprow textarea.ctx { width:100%; min-width:0; min-height:30px; border-radius:7px; border:1px solid var(--line); background:var(--bg); color:inherit; padding:6px 8px; outline:none; font:inherit; resize:none; line-height:1.3; }
   .caprow textarea.ctx:focus { border-color:var(--accent); }
@@ -563,12 +577,12 @@
   .etb.cap { background:#2b2b33; border-color:#55556a; }
   .etb.bx { background:#1f4d5c; border-color:#2f8fa8; }
   .ebx { position:absolute; pointer-events:auto; cursor:move; border:1.5px dashed transparent; box-sizing:border-box; }
-  .ebx.sel { border-color:#ffd23f; }
-  .ebx i { position:absolute; width:12px; height:12px; background:#ffd23f; border-radius:3px; }
+  .ebx.sel { border-color:var(--hi); }
+  .ebx i { position:absolute; width:12px; height:12px; background:var(--hi); border-radius:3px; }
   .ebx i[data-h=tl] { left:-6px; top:-6px; cursor:nwse-resize; } .ebx i[data-h=br] { right:-6px; bottom:-6px; cursor:nwse-resize; }
   .ebx i[data-h=tr] { right:-6px; top:-6px; cursor:nesw-resize; } .ebx i[data-h=bl] { left:-6px; bottom:-6px; cursor:nesw-resize; }
   .etb { position:absolute; top:0; bottom:0; border-radius:6px; background:#4a3b8f; border:2px solid #6d5bd0; color:#fff; font-size:12px; padding:0 12px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; cursor:grab; }
-  .etb.sel { border-color:#ffd23f; }
+  .etb.sel { border-color:var(--hi); }
   .emarq { position:absolute; border:1px solid var(--accent2); background:rgba(var(--accent-rgb),0.13); border-radius:4px; z-index:6; pointer-events:none; }
   .ehead { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:#fff; pointer-events:none; z-index:5; }
   .ehead::before { content:""; position:absolute; top:0; left:-6px; border:7px solid transparent; border-top-color:#fff; }
@@ -600,15 +614,17 @@
   .dbtn { display:flex; justify-content:flex-end; gap:8px; }
   .delb { background:var(--bad); border-color:var(--bad); color:#fff; font-weight:600; }
   .delb:hover { background:#ff7590; border-color:#ff7590; }
-  #toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%,90px); background:var(--panel2); border:1px solid var(--line); padding:11px 18px; border-radius:11px; transition:.25s; z-index:20; box-shadow:0 10px 30px #0008; }
-  #toast.show { transform:translate(-50%,0); }
-  /* the progress box (upload, shrink…) sits in the same spot: a message then shows just above it */
-  body:has(#cprog.on) #toast.show { transform:translate(-50%,-78px); }
-  #cprog { position:fixed; bottom:24px; left:50%; transform:translate(-50%,120px); width:340px; background:var(--panel2); border:1px solid var(--line); padding:12px 16px; border-radius:12px; transition:.25s; z-index:21; box-shadow:0 10px 30px #0008; font-size:13px; }
-  #cprog.on { transform:translate(-50%,0); }
-  #cprog .bar { height:6px; border-radius:99px; background:var(--panel); margin-top:8px; overflow:hidden; }
-  #cprog .bar i { display:block; height:100%; width:0; background:#ffd23f; transition:width .2s; }
-  #cprog .row2 { display:flex; justify-content:space-between; color:var(--muted); }
+  /* messages + progress boxes stack at the bottom (newest at the bottom) instead of covering each other */
+  #notes { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:20; display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none; transition:bottom .2s; max-width:min(560px, 92vw); }
+  body:has(.pickbar.on) #notes { bottom:84px; }
+  .note { background:var(--panel2); border:1px solid var(--line); border-radius:11px; box-shadow:0 10px 30px #0008; pointer-events:auto; opacity:0; transform:translateY(14px); transition:opacity .2s, transform .2s; }
+  .note.on { opacity:1; transform:none; }
+  .note.msg { padding:11px 18px; text-align:center; }
+  .note.prog { width:400px; max-width:92vw; padding:12px 16px; border-radius:12px; font-size:13px; }
+  .note.prog .bar { height:6px; border-radius:99px; background:var(--panel); margin-top:8px; overflow:hidden; }
+  .note.prog .bar i { display:block; height:100%; width:0; background:var(--hi); transition:width .2s; }
+  .note.prog .row2 { display:flex; justify-content:space-between; gap:10px; color:var(--muted); }
+  .note.prog .row2 b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .note.prog .row2 span { white-space:nowrap; }
   ::-webkit-scrollbar { width:10px; } ::-webkit-scrollbar-thumb { background:#333; border-radius:9px; border:2px solid var(--bg); }
   /* Linux (WebKitGTK) paints native selects in the light GTK theme: draw them ourselves */
   :root { color-scheme: dark; }
@@ -746,6 +762,10 @@
         <a data-sec="cloud">Cloud</a>
         <h4>APP</h4>
         <a data-sec="app">App Settings</a>
+        <button class="dccard" onclick="invoke('open_echo_link',{what:'discord'}).catch(()=>{})" title="discord.gg/JPVewEfUQs">
+          <span class="dci"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M19 9h1a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v3l-4-3h-3"/></svg></span>
+          <span class="dct"><b>Join the Discord</b><small>Help, ideas and new versions</small></span><span class="dca">→</span>
+        </button>
       </nav>
       <div class="sbody">
         <div class="sec on" id="sec-hotkeys">
@@ -931,7 +951,7 @@
             <h3>Appearance</h3>
             <div class="themegrid" id="themegrid"></div>
             <div class="row" id="custrow" hidden><div class="lbl"><b>Your own colours</b><small>Pick two colours, Echo works out the rest. Dark backgrounds read best.</small></div>
-              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><button class="btn" onclick="themeReset()">Reset</button></div></div>
+              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><label title="Progress bars, trim handles, favourites, editor selection"><input type="color" id="th-hi"> Highlight</label><button class="btn" onclick="themeReset()">Reset</button></div></div>
           </div>
           <div class="box">
             <h3>Behaviour</h3>
@@ -1027,7 +1047,7 @@
     <button class="btn" id="eback"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Back</button>
     <span id="ename"></span><span class="spacer"></span>
     <button class="btn" id="eundo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Undo</button>
-    <span id="erngbar" style="display:none;gap:6px;align-items:center"><span id="erngt" style="color:#ffd23f;font-size:12px"></span><button class="btn" id="erngcut" title="Remove the highlighted part (X)">Cut range</button><button class="btn" id="erngexp" title="Export only the highlighted part">Export range</button><button class="btn" id="erngclr" title="Clear highlight (Esc)">✕</button></span>
+    <span id="erngbar" style="display:none;gap:6px;align-items:center"><span id="erngt" style="color:var(--hi);font-size:12px"></span><button class="btn" id="erngcut" title="Remove the highlighted part (X)">Cut range</button><button class="btn" id="erngexp" title="Export only the highlighted part">Export range</button><button class="btn" id="erngclr" title="Clear highlight (Esc)">✕</button></span>
     <button class="btn" id="evert" title="Vertical 9:16 for TikTok / Shorts - drag the frame on the video"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/></svg>9:16</button>
     <button class="btn primary" id="eexport"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>Export</button>
   </div>
@@ -1089,8 +1109,7 @@
   <label class="dl">Tags</label><div class="dtagrow"><span id="dtags" style="display:contents"></span><input id="dtagin" class="din" placeholder="Type a tag, press Enter" list="dtaglist" style="flex:1;min-width:140px"><datalist id="dtaglist"></datalist></div>
   <label class="dl">Note</label><textarea id="dnote" class="din" rows="3" placeholder="Anything to remember about this clip…"></textarea>
   <div class="dbtn" style="margin-top:16px"><button class="btn" id="dcancel">Cancel</button><button class="btn primary" id="dsave">Save</button></div></div></div>
-<div id="toast"></div>
-<div id="cprog"><div class="row2"><b id="cpt">Shrinking…</b><span id="cpp">0%</span></div><div class="bar"><i id="cpb"></i></div></div>
+<div id="notes"></div>
 
 <script>
   const { invoke } = window.__TAURI__.core;
@@ -1213,7 +1232,31 @@
   window.addEventListener("focus", updSoon);
   document.addEventListener("visibilitychange", updSoon);
 
-  function toast(msg) { msg = plat(msg); const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600); }
+  // bottom messages: several at once stack; the same text again just stays up longer
+  const noteOut = el => { el._out = true; el.classList.remove("on"); setTimeout(() => el.remove(), 220); };
+  function toast(msg) {
+    msg = plat(String(msg)); const box = $("notes");
+    let t = [...box.querySelectorAll(".note.msg")].find(e => e.textContent === msg && !e._out);
+    if (!t) {
+      t = document.createElement("div"); t.className = "note msg"; t.textContent = msg; box.appendChild(t);
+      requestAnimationFrame(() => t.classList.add("on"));
+      const msgs = [...box.querySelectorAll(".note.msg")].filter(e => !e._out); if (msgs.length > 3) { clearTimeout(msgs[0]._h); noteOut(msgs[0]); }
+    }
+    clearTimeout(t._h); t._h = setTimeout(() => noteOut(t), Math.min(7000, Math.max(2600, msg.length * 55)));
+  }
+  // a progress box (upload, download, shrink, export…): each job gets its own
+  function progBox(title) {
+    const el = document.createElement("div"); el.className = "note prog";
+    el.innerHTML = '<div class="row2"><b></b><span></span></div><div class="bar"><i></i></div>';
+    const b = el.querySelector("b"), sp = el.querySelector("span"), i = el.querySelector("i");
+    b.textContent = title; $("notes").appendChild(el); requestAnimationFrame(() => el.classList.add("on"));
+    let gone = false;
+    return {
+      title(t) { b.textContent = t; return this; }, text(t) { sp.textContent = t; return this; },
+      pct(p) { i.style.width = Math.max(0, Math.min(100, p)).toFixed(1) + "%"; return this; },
+      done(ms = 0) { if (gone) return; gone = true; setTimeout(() => noteOut(el), ms); },
+    };
+  }
   const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
   const fmtDur = s => { s = Math.round(s); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const fmtLen = s => s < 60 ? s + "s" : (s % 60 ? (s / 60).toFixed(1) : s / 60) + "m";
@@ -1382,9 +1425,12 @@
   // while a cloud clip is open in the player, keep the streaming server alive
   setInterval(() => { if (!document.hidden && trim.clip && trim.clip.cloud && $("player").classList.contains("open")) ensureBase().catch(() => {}); }, 120000);
   // cloud-only clip -> download it first (edit, copy, trim…); returns the local clip
+  // one download per clip at a time: a second click / the player waits for the one already running
+  const dlJobs = new Map();
+  const cloudDl = c => { let p = dlJobs.get(c.rel); if (!p) { p = invoke("cloud_download", { rel: c.rel }).finally(() => dlJobs.delete(c.rel)); dlJobs.set(c.rel, p); } return p; };
   async function ensureLocal(c) {
     if (!c.cloud) return c;
-    const p = await withDlProgress(c, invoke("cloud_download", { rel: c.rel }));
+    const p = await withDlProgress(c, cloudDl(c));
     listKey = ""; await refresh(); toast("Downloaded");
     return clips.find(x => x.path === p) || clips.find(x => !x.cloud && relOf(x) === relOf(c)) || c;
   }
@@ -1424,18 +1470,20 @@
     const inPlayer = $("player").classList.contains("open") && trim.clip && (trim.clip === c || (trim.clip.rel && trim.clip.rel === c.rel));
     const o = $("pload"), ob = o.querySelector("i"), ot = o.querySelector("b"), os = o.querySelector("small");
     if (inPlayer) { o.classList.add("on"); o.classList.remove("ind"); ot.textContent = "Downloading from the cloud…"; ob.style.width = "0"; os.textContent = ""; }
-    else { $("cpt").textContent = "Downloading from the cloud…"; $("cpp").textContent = ""; $("cpb").style.width = "0"; $("cprog").classList.add("on"); }
+    const box = inPlayer ? null : progBox("Downloading from the cloud…");
     const t0 = Date.now();
+    let best = 0;   // never show less than before (a late answer must not make it jump back)
     const t = setInterval(async () => {
-      try { const [got, total] = await invoke("cloud_dl_progress", { rel: c.rel }); const tot = total || c.size;
+      try { let [got, total] = await invoke("cloud_dl_progress", { rel: c.rel }); const tot = total || c.size;
+        if (got < best) got = best; best = got;
         if (tot) {
           const f = Math.min(1, got / tot), secs = (Date.now() - t0) / 1000, left = got > 0 && f > 0.02 ? Math.round(secs * (1 - f) / f) : null;
           const txt = `${fmtSize(got)} of ${fmtSize(tot)} · ${Math.round(f * 100)}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "");
           if (inPlayer) { ob.style.width = (f * 100).toFixed(1) + "%"; os.textContent = txt; }
-          else { $("cpb").style.width = (f * 100).toFixed(1) + "%"; $("cpp").textContent = txt; }
+          else box.pct(f * 100).text(txt);
         } } catch {}
     }, 300);
-    try { return await job; } finally { clearInterval(t); if (inPlayer) { o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; } else $("cprog").classList.remove("on"); }
+    try { return await job; } finally { clearInterval(t); if (inPlayer) { o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; } else box.done(); }
   }
   // share link: rclone link, but Filen can't make public links for other apps -> use Share (R2) instead
   const linkLife = d => !d ? "never expires" : d === 1 ? "expires in 24 hours" : `expires in ${d} days`;
@@ -1477,7 +1525,7 @@
     const items = [["Copy share link", link(), "", false, "main"],
       { label: "Expires", chips: [[0, "Never"], [1, "1 day"], [7, "7 days"], [30, "30 days"]].map(([d, t]) => [t, link(d), d === def]) }, "-"];
     if (c.cloud) items.push(
-      ["Download to this PC", run("Downloading…", () => withDlProgress(c, invoke("cloud_download", { rel: c.rel })))],
+      ["Download to this PC", run("Downloading…", () => withDlProgress(c, cloudDl(c)))],
       ["Delete from the cloud", once(async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) await run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }), "", false, "warn"]);
     else if (inCloud(c)) items.push(
       ["Free up space on this PC", once(run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); }))],
@@ -1988,14 +2036,15 @@
     closePlayer(); await new Promise(r => setTimeout(r, 150));
     let n = 0, i = 0;
     const prog = sel.length > 1;
-    const show = () => { $("cpt").textContent = "Deleting clips…"; $("cpp").textContent = `${i} of ${sel.length}`; $("cpb").style.width = (i / sel.length * 100) + "%"; };
-    if (prog) { show(); $("cprog").classList.add("on"); }
+    const box = prog ? progBox("Deleting clips…") : null;
+    const show = () => box.text(`${i} of ${sel.length}`).pct(i / sel.length * 100);
+    if (prog) show();
     for (const c of sel) {
       try { await invoke("delete_clip", { path: c.path }); n++; } catch {}
       i++; if (prog) show();
       if (i % 5 === 0 && i < sel.length) { listKey = ""; refresh(); }   // cards disappear as it goes
     }
-    if (prog) setTimeout(() => $("cprog").classList.remove("on"), 600);
+    if (prog) box.done(600);
     picked.clear(); renderPickBar(); listKey = ""; await refresh(); toast(`Moved ${n} clip${n === 1 ? "" : "s"} to the Recycle Bin`);
   };
   document.addEventListener("keydown", e => {
@@ -2120,15 +2169,17 @@
   const COPY_SIZES = [["full", "Full size"], ["free", "Discord Free"], ["basic", "Nitro Basic"], ["nitro", "Nitro"], ["custom", "Custom"]];
   const copyMb = k => k === "full" || !cfg ? 0 : +cfg[`discord_${k}_mb`] || 0;
   const fmtMb = mb => mb >= 1000 ? (mb / 1000) + " GB" : mb + " MB";
+  const shrinkBoxes = new Set();
   async function copySized(c, k) {
     const mb = copyMb(k);
     try {
       c = await ensureLocal(c);
       const big = mb && c.size > mb * 1e6;
-      if (big) { $("cpt").textContent = `Shrinking to fit ${fmtMb(mb)}…`; $("cpp").textContent = "0%"; $("cpb").style.width = "0"; $("cprog").classList.add("on"); }
+      const box = big ? progBox(`Shrinking to fit ${fmtMb(mb)}…`).text("0%") : null;
+      if (box) shrinkBoxes.add(box);
       let size;
       try { [, size] = await invoke("copy_clip_sized", { path: c.path, mb }); }
-      finally { $("cprog").classList.remove("on"); }
+      finally { if (box) { shrinkBoxes.delete(box); box.done(); } }
       toast(`Copied${mb ? ` (${fmtSize(size)})` : ""} - paste it into Discord or anywhere`);
     } catch (e) { toast(String(e)); }
   }
@@ -2340,7 +2391,7 @@
     wrap.appendChild(tip);   // inside the fullscreen element, so it shows in fullscreen too
     const tc = tip.querySelector("canvas"), tx = tc.getContext("2d"), tt = tip.querySelector("span");
     // helper videos must be in the page: detached <video>s don't decode new frames after a seek (Chromium)
-    const hidden = vid => { vid.muted = true; vid.preload = "auto"; vid.playsInline = true; vid.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none"; document.body.appendChild(vid); return vid; };
+    const hidden = vid => { vid.muted = true; vid.preload = "metadata"; vid.playsInline = true; vid.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none"; document.body.appendChild(vid); return vid; };
     const pv = hidden(document.createElement("video"));
     let clip = null, stripImg = null, want = null, busy = false, hovering = false;
     const strips = new Map();   // cloud clip -> finished strip canvas (this session)
@@ -2400,10 +2451,16 @@
           cv.width = tw * N; cv.height = th; ctx = cv.getContext("2d");
           seek.prepend(cv); next();
         }, { once: true });
-        sv.addEventListener("seeked", () => onFrame(sv, () => { ctx.drawImage(sv, i * cv.width / N, 0, cv.width / N, cv.height); i++; setTimeout(next, 30); }));
+        const later = () => { if (clip !== c) return drop(); if (v.readyState < 3 && !v.paused) setTimeout(later, 500); else next(); };
+        sv.addEventListener("seeked", () => onFrame(sv, () => { ctx.drawImage(sv, i * cv.width / N, 0, cv.width / N, cv.height); i++; setTimeout(later, 120); }));
         sv.addEventListener("error", drop);
       };
-      v.addEventListener("playing", () => setTimeout(run, 1500), { once: true });   // don't fight the player for bandwidth
+      // don't fight the player for bandwidth: start once it has buffered well ahead (or after 20 s), and
+      // pause between frames while the player is waiting for data
+      const ahead = () => { const b = v.buffered; return v.duration && b.length && (b.end(b.length - 1) >= v.duration - 0.5 || b.end(b.length - 1) - v.currentTime > 20); };
+      const t0 = Date.now();
+      const wait = () => { if (clip !== c) return; if (ahead() || Date.now() - t0 > 20000) run(); else setTimeout(wait, 1000); };
+      v.addEventListener("playing", () => setTimeout(wait, 1500), { once: true });
     }
     return {
       open(c) {
@@ -2764,7 +2821,7 @@
     if (ed.vertical == null) { if (f) f.remove(); return; }
     if (!f) {
       f = document.createElement("div"); f.id = "evframe";
-      f.style.cssText = "position:absolute;top:0;bottom:0;box-shadow:0 0 0 4000px #000b;outline:2px solid #ffd23f;cursor:ew-resize;z-index:1";
+      f.style.cssText = "position:absolute;top:0;bottom:0;box-shadow:0 0 0 4000px #000b;outline:2px solid var(--hi);cursor:ew-resize;z-index:1";
       $("estage").style.overflow = "hidden"; $("estage").insertBefore(f, $("etexts"));
       f.onpointerdown = e => {
         e.preventDefault(); e.stopPropagation(); pushHist();
@@ -3868,7 +3925,7 @@
   }
   function stickerMenu(btn) {
     let m = $("estk"); if (!m) { m = document.createElement("div"); m.id = "estk"; document.body.appendChild(m); }
-    m.innerHTML = `<div class="emo">${EMOJI.map(e => `<button>${e}</button>`).join("")}</div><button class="btn" id="estkpic" style="width:100%;justify-content:center;margin-top:8px">Picture from your PC…</button>`;
+    m.innerHTML = `<div class="emo">${EMOJI.map(e => `<button>${e}</button>`).join("")}</div><button class="btn" id="estkpic" style="width:100%;justify-content:center;margin-top:8px">Picture or GIF from your PC…</button>`;
     const close = () => { m.classList.remove("on"); removeEventListener("pointerdown", out, true); };
     const out = ev => { if (!m.contains(ev.target)) close(); };
     m.querySelectorAll(".emo button").forEach(b => b.onclick = async () => {
@@ -3924,17 +3981,16 @@
 
   // export progress: the bottom bar + the Export button fill up (Rust reports 0..1000)
   function exportProgress(label, btn) {
-    $("cpt").textContent = label; $("cpp").textContent = "0%"; $("cpb").style.width = "0%"; $("cprog").classList.add("on");
+    const box = progBox(label).text("0%");
     const t0 = Date.now();
     const iv = setInterval(async () => {
       let p = 0; try { p = await invoke("export_progress"); } catch {}
       const pc = Math.round(p / 10), secs = (Date.now() - t0) / 1000;
       const left = p > 30 ? Math.max(0, Math.round(secs * (1000 - p) / p)) : null;
-      $("cpp").textContent = pc + "%" + (left != null && left > 2 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "");
-      $("cpb").style.width = pc + "%";
-      if (btn) { btn.lastChild.textContent = `Exporting ${pc}%`; btn.style.background = `linear-gradient(90deg, #ffd23f55 ${pc}%, transparent ${pc}%)`; }
+      box.text(pc + "%" + (left != null && left > 2 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "")).pct(pc);
+      if (btn) { btn.lastChild.textContent = `Exporting ${pc}%`; btn.style.background = `linear-gradient(90deg, rgba(var(--hi-rgb),0.33) ${pc}%, transparent ${pc}%)`; }
     }, 400);
-    return () => { clearInterval(iv); $("cpp").textContent = "100%"; $("cpb").style.width = "100%"; setTimeout(() => $("cprog").classList.remove("on"), 700); if (btn) btn.style.background = ""; };
+    return () => { clearInterval(iv); box.text("100%").pct(100).done(700); if (btn) btn.style.background = ""; };
   }
   // everything needed to open this edit again later (Edit on the exported video -> "Open project")
   const projectData = () => JSON.stringify({ v: 1, clip: ed.clip.path, state: JSON.parse(snap()),
@@ -4437,10 +4493,10 @@
 
   listen("copy-progress", e => {
     const p = Math.round((e.payload[1] || 0) * 100);
-    $("cpp").textContent = p + "%"; $("cpb").style.width = p + "%";
+    shrinkBoxes.forEach(b => b.text(p + "%").pct(p));
   });
   // ----- cloud upload progress (favourites / auto uploads / Upload button): card bar, bottom bar, player bar -----
-  var upState = { rel: "" }, upOwnsBar = false, upT0 = 0, upLastRel = "";
+  var upState = { rel: "" }, upBox = null, upT0 = 0, upLastRel = "";
   setInterval(async () => {
     if (!cfg || !cfg.cloud || document.hidden) return;   // window in the tray: nothing to draw
     let p; try { p = await invoke("cloud_up_progress"); } catch { return; }
@@ -4452,7 +4508,7 @@
     document.querySelectorAll(".card .upbar, .card .uplbl").forEach(e => { if (!p.rel || e.closest(".card").dataset.rel !== p.rel) e.remove(); });
     const ppl = $("pup"), plbl = $("puplbl");
     if (!p.rel) {
-      if (upOwnsBar) { upOwnsBar = false; $("cpb").style.width = "100%"; setTimeout(() => { if (!upOwnsBar) $("cprog").classList.remove("on"); }, 600); }
+      if (upBox) { upBox.pct(100).done(600); upBox = null; }
       ppl.classList.remove("on"); plbl.classList.remove("on"); return;
     }
     const f = p.total ? Math.min(1, p.got / p.total) : 0, pc = Math.round(f * 100), secs = (Date.now() - upT0) / 1000;
@@ -4467,11 +4523,9 @@
       let l = th.querySelector(".uplbl"); if (!l) { l = document.createElement("span"); l.className = "uplbl"; th.appendChild(l); }
       b.firstChild.style.width = pc + "%"; l.textContent = `☁ Uploading ${pc}%`;
     }
-    // bottom bar (unless an export / download is using it)
-    if (upOwnsBar || !$("cprog").classList.contains("on")) {
-      upOwnsBar = true; $("cprog").classList.add("on");
-      $("cpt").textContent = `Uploading ${name}`; $("cpp").textContent = txt; $("cpb").style.width = pc + "%";
-    }
+    // its own box at the bottom (stacks with downloads, exports, messages)
+    if (!upBox) upBox = progBox("");
+    upBox.title(`Uploading ${name}`).text(txt).pct(pc);
     // the player, when that clip is open
     const open = $("player").classList.contains("open") && trim.clip && relOf(trim.clip) === p.rel;
     ppl.classList.toggle("on", !!open); plbl.classList.toggle("on", !!open);
@@ -4480,8 +4534,8 @@
   /* drag & drop videos from Explorer / Discord / browser downloads -> import as clips */
   const dropUI = on => {
     let d = $("dropov");
-    if (!d) { d = document.createElement("div"); d.id = "dropov"; d.style.cssText = "position:fixed;inset:12px;z-index:9999;border:3px dashed #ffd23f;border-radius:16px;background:#000a;display:none;align-items:center;justify-content:center;font:700 26px Segoe UI,sans-serif;color:#ffd23f;pointer-events:none"; d.textContent = "Drop videos or sounds (.wav, .mp3…) to add them"; document.body.appendChild(d); }
-    d.textContent = $("editor").classList.contains("open") ? "Drop videos or sounds to add them to the timeline" : "Drop videos or sounds (.wav, .mp3…) to add them";
+    if (!d) { d = document.createElement("div"); d.id = "dropov"; d.style.cssText = "position:fixed;inset:12px;z-index:9999;border:3px dashed var(--hi);border-radius:16px;background:#000a;display:none;align-items:center;justify-content:center;font:700 26px Segoe UI,sans-serif;color:var(--hi);pointer-events:none"; d.textContent = "Drop videos or sounds (.wav, .mp3…) to add them"; document.body.appendChild(d); }
+    d.textContent = $("editor").classList.contains("open") ? "Drop videos, sounds, pictures or GIFs to add them" : "Drop videos or sounds (.wav, .mp3…) to add them";
     d.style.display = on ? "flex" : "none";
   };
   listen("tauri://drag-enter", () => dropUI(true));
@@ -4491,7 +4545,11 @@
     dropUI(false);
     const paths = (e.payload && e.payload.paths) || [];
     if (!paths.length) return;
-    if ($("editor").classList.contains("open")) return addFilesToEditor(paths);   // into the timeline, not the library player
+    if ($("editor").classList.contains("open")) {   // into the timeline, not the library player; pictures / GIFs become stickers
+      const pics = paths.filter(p => /\.(png|jpe?g|webp|gif|bmp)$/i.test(p)), rest = paths.filter(p => !pics.includes(p));
+      for (const p of pics) await addSticker(p);
+      return rest.length ? addFilesToEditor(rest) : undefined;
+    }
     toast(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}…`);
     try {
       const [ok, bad] = await invoke("import_clips", { paths });
@@ -4557,7 +4615,7 @@
   const rgbHex = c => "#" + c.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("");
   const mix = (a, b, t) => { const x = hexRgb(a), y = hexRgb(b); return rgbHex(x.map((v, i) => v + (y[i] - v) * t)); };
   const lum = h => { const [r, g, b] = hexRgb(h); return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255; };
-  function themeVars(id, accent, bg) {
+  function themeVars(id, accent, bg, hiC) {
     let t = THEMES.find(x => x[0] === id);
     if (!t || id === "custom") {
       const a = /^#[0-9a-f]{6}$/i.test(accent || "") ? accent : "#7c5cff";
@@ -4566,7 +4624,9 @@
       t = [id, "Custom", a, mix(a, "#ffffff", 0.3), [mix(a, "#ffffff", 0.15), a, mix(a, "#000000", 0.25)], b];
     }
     const [, , a, a2, g, b] = t;
+    const hi = id === "custom" && /^#[0-9a-f]{6}$/i.test(hiC || "") ? hiC : "#ffd23f";
     return {
+      "--hi": hi, "--hi-rgb": hexRgb(hi).join(","),
       "--accent": a, "--accent2": a2, "--accent-rgb": hexRgb(a).join(","),
       "--grad": `linear-gradient(135deg,${g[0]} 0%,${g[1]} 55%,${g[2]} 100%)`,
       "--bg": b, "--rail": mix(b, "#000000", 0.22), "--panel": mix(b, "#ffffff", 0.05), "--panel2": mix(b, "#ffffff", 0.085),
@@ -4574,7 +4634,7 @@
     };
   }
   function applyTheme() {
-    const vars = themeVars(cfg.theme || "", cfg.theme_accent, cfg.theme_bg);
+    const vars = themeVars(cfg.theme || "", cfg.theme_accent, cfg.theme_bg, cfg.theme_hi);
     for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
     try { localStorage.setItem("echo_theme", JSON.stringify({ vars, grad: vars["--grad"] })); } catch (e) {}
   }
@@ -4582,7 +4642,7 @@
     const box = $("themegrid"); if (!box) return;
     const cur = cfg.theme || "";
     box.innerHTML = THEMES.map(([id, name]) => {
-      const v = themeVars(id, cfg.theme_accent, cfg.theme_bg);
+      const v = themeVars(id, cfg.theme_accent, cfg.theme_bg, cfg.theme_hi);
       return `<button class="thc${id === cur ? " on" : ""}" data-t="${id}"><div class="thp" style="--b:${v["--bg"]};--r:${v["--rail"]};--p:${v["--panel"]};--a:${v["--accent"]}"><i class="s"><em></em><em></em><em></em></i><i class="m"><u></u><span><u></u><b></b></span></i></div><span>${name}</span></button>`;
     }).join("");
     box.querySelectorAll(".thc").forEach(b => b.onclick = () => {
@@ -4593,14 +4653,16 @@
     $("custrow").hidden = cur !== "custom";
     $("th-accent").value = cfg.theme_accent || "#7c5cff";
     $("th-bg").value = cfg.theme_bg || "#0d0d10";
+    $("th-hi").value = cfg.theme_hi || "#ffd23f";
   }
   // live while dragging the colour picker, saved when it closes
-  ["th-accent", "th-bg"].forEach(id => {
+  const TH_KEYS = { "th-accent": "theme_accent", "th-bg": "theme_bg", "th-hi": "theme_hi" };
+  Object.keys(TH_KEYS).forEach(id => {
     const el = $(id); if (!el) return;
-    el.addEventListener("input", () => { cfg[id === "th-accent" ? "theme_accent" : "theme_bg"] = el.value; applyTheme(); renderThemes(); });
+    el.addEventListener("input", () => { cfg[TH_KEYS[id]] = el.value; applyTheme(); renderThemes(); });
     el.addEventListener("change", () => changed(true));
   });
-  function themeReset() { cfg.theme = ""; cfg.theme_accent = ""; cfg.theme_bg = ""; applyTheme(); changed(true); }
+  function themeReset() { cfg.theme = ""; cfg.theme_accent = ""; cfg.theme_bg = ""; cfg.theme_hi = ""; applyTheme(); changed(true); }
 
   function fillCloudTargets() {   // "Upload new clips to": only with 2+ clouds, options = the connected clouds
     const sel = $("ctsel"), accs = (cfg && cfg.cloud_accounts) || []; if (!sel) return;

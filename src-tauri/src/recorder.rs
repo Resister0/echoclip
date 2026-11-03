@@ -1528,7 +1528,8 @@ fn app_supervisor(_: [Group; 3], _: Arc<AtomicBool>, _: u32, _: u16) {}
 #[allow(clippy::too_many_arguments)]
 /// mic gate: hotkey mute + push-to-talk (live, read by the audio thread)
 /// cloud download progress: (rel, bytes so far, total)
-static DL_PROGRESS: Mutex<(String, u64, u64)> = Mutex::new((String::new(), 0, 0));
+/// cloud downloads running now: rel -> (bytes so far, total); also stops the same clip downloading twice at once
+static DL_PROGRESS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, (u64, u64)>>> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 /// editor export progress in 1/1000 (polled by the UI)
 pub static EXPORT_PROGRESS: AtomicU32 = AtomicU32::new(0);
 /// cloud upload in progress, for the UI: rel ("" = none), bytes sent, total, which one (1-based) of how many
@@ -4582,7 +4583,13 @@ impl Recorder {
                 if b.src.is_empty() || !Path::new(&b.src).exists() {
                     continue;
                 }
-                inputs.push(vec!["-loop".into(), "1".into(), "-framerate".into(), "60".into(), "-t".into(), format!("{:.3}", total_len + 1.0), "-i".into(), b.src.clone()]);
+                let t = format!("{:.3}", total_len + 1.0);
+                if b.src.to_lowercase().ends_with(".gif") {
+                    // animated GIF: play it over and over (the picture options -loop / -framerate don't exist for GIFs)
+                    inputs.push(vec!["-stream_loop".into(), "-1".into(), "-t".into(), t, "-i".into(), b.src.clone()]);
+                } else {
+                    inputs.push(vec!["-loop".into(), "1".into(), "-framerate".into(), "60".into(), "-t".into(), t, "-i".into(), b.src.clone()]);
+                }
                 let k = inputs.len();
                 g.push(format!("[{k}:v]scale={bw}:{bh},format=rgba,colorchannelmixer=aa={:.2}[im{i}]", b.opacity.clamp(0.0, 1.0)));
                 g.push(format!("[{last}][im{i}]overlay=x={bx}:y={by}:eof_action=pass:{en}[bx{i}]"));
@@ -6015,8 +6022,7 @@ impl Recorder {
     /// Download a cloud clip into the clips folder (same sub-folder). Returns the local path.
     /// (bytes so far, total bytes) of the cloud download in progress for `rel`
     pub fn cloud_dl_progress(rel: &str) -> (u64, u64) {
-        let p = DL_PROGRESS.lock().unwrap();
-        if p.0 == rel { (p.1, p.2) } else { (0, 0) }
+        DL_PROGRESS.lock().unwrap().get(rel).copied().unwrap_or((0, 0))
     }
 
     pub fn cloud_download(&self, rel: &str) -> Result<String, String> {
@@ -6027,26 +6033,39 @@ impl Recorder {
         let t0 = Instant::now();
         // progress for the UI: watch the (partial) file grow next to the destination
         let total = self.cloud_state().files.iter().find(|f| f.rel == rel).map_or(0, |f| f.size);
-        *DL_PROGRESS.lock().unwrap() = (rel.to_string(), 0, total);
+        // the same clip already downloading (player + a button, or "get clips from my other PCs"): two rclone runs
+        // into one file made the progress jump back to 0 - wait for that one instead
+        let mut waited = false;
+        loop {
+            let mut p = DL_PROGRESS.lock().unwrap();
+            if !p.contains_key(rel) { p.insert(rel.to_string(), (0, total)); break; }
+            drop(p);
+            waited = true;
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        if waited && out.exists() && (total == 0 || fs::metadata(&out).map_or(0, |m| m.len()) == total) {
+            DL_PROGRESS.lock().unwrap().remove(rel);
+            return Ok(out.to_string_lossy().to_string());
+        }
         let done = Arc::new(AtomicBool::new(false));
         {
             let (done, out, rel) = (done.clone(), out.clone(), rel.to_string());
             std::thread::spawn(move || {
                 let name = out.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 while !done.load(Ordering::Relaxed) {
+                    // fs::metadata on the path: on Windows the folder listing's size of a file that's still being
+                    // written is out of date (often 0)
                     let got: u64 = out.parent().and_then(|d| fs::read_dir(d).ok()).into_iter().flatten().flatten()
                         .filter(|e| e.file_name().to_string_lossy().starts_with(&name))
-                        .filter_map(|e| e.metadata().ok()).map(|m| m.len()).max().unwrap_or(0);
-                    let mut p = DL_PROGRESS.lock().unwrap();
-                    if p.0 == rel { p.1 = got; }
-                    drop(p);
+                        .filter_map(|e| fs::metadata(e.path()).ok()).map(|m| m.len()).max().unwrap_or(0);
+                    if let Some(p) = DL_PROGRESS.lock().unwrap().get_mut(&rel) { p.0 = p.0.max(got); }
                     std::thread::sleep(Duration::from_millis(300));
                 }
             });
         }
         let r = rclone_out(&["copyto", &remote(&self.cpath(rel)), &out.to_string_lossy()]);
         done.store(true, Ordering::Relaxed);
-        DL_PROGRESS.lock().unwrap().0.clear();
+        DL_PROGRESS.lock().unwrap().remove(rel);
         r?;
         log_line(&format!("cloud: downloaded {rel} in {:.0}s", t0.elapsed().as_secs_f32()));
         let mut st = self.cloud_state();

@@ -615,6 +615,62 @@ async function deleteAccount(req, user, env) {
   return json({ done: true, deleted: n });
 }
 
+// ----- website counts for the stats page: no cookies, nothing personal kept -----
+// The pages are static files, so site.js pings POST /hit {t:"view",p,r} or {t:"click",k}; downloads are counted
+// in /download. Unique visitors: a scrambled code of day + IP + browser (kept 2 days in uv, only to not count anyone twice).
+const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embed|curl|wget|python|go-http|headless|lighthouse|monitor|scan/i;
+const SITE_PAGES = new Set(["/", "/pricing", "/changelog", "/privacy", "/terms"]);
+const SITE_CLICKS = new Set(["plans", "storage", "features", "discord", "changelog", "github", "download"]);
+const utcDay = (t = now()) => new Date(t * 1000).toISOString().slice(0, 10);
+const isBot = (req) => { const ua = req.headers.get("user-agent") || ""; return !ua || BOT_UA.test(ua); };
+async function bump(env, k, n = 1) {
+  await env.DB.prepare("INSERT INTO stats (day, k, n) VALUES (?, ?, ?) ON CONFLICT(day, k) DO UPDATE SET n = n + excluded.n")
+    .bind(utcDay(), k, n).run();
+}
+async function hit(req, env) {
+  const done = new Response(null, { status: 204 });
+  if (isBot(req) || !(await allow(env, `hit:${ipOf(req)}`, 300, 3600))) return done;
+  const b = await body(req);
+  if (b.t === "view") {
+    let p = String(b.p || "/").split(/[?#]/)[0].replace(/\.html$/, "").replace(/\/+$/, "") || "/";
+    if (p === "/index") p = "/";
+    await bump(env, "view:" + (SITE_PAGES.has(p) ? p : "other"));
+    const h = (await sha256(`${utcDay()}|${ipOf(req)}|${req.headers.get("user-agent")}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, "visitors");
+    let ref = "";
+    try { ref = new URL(String(b.r || "")).hostname.replace(/^www\./, "").slice(0, 60); } catch { /* none */ }
+    if (ref && !/(^|\.)echoclip\.link$/.test(ref)) await bump(env, "ref:" + ref);
+  } else if (b.t === "click" && SITE_CLICKS.has(b.k)) await bump(env, "click:" + b.k);
+  return done;
+}
+async function countDownload(req, env, what) {
+  try {
+    if (!isBot(req) && (await allow(env, `dlc:${ipOf(req)}`, 10, 3600))) await bump(env, "dl:" + what);
+  } catch (e) { console.log("download count error", e && e.message); }
+}
+async function cleanupStats(env) {
+  await env.DB.prepare("DELETE FROM uv WHERE day < ?").bind(utcDay(now() - 2 * 86400)).run();
+}
+async function siteStats(env) {
+  const days = [...Array(30)].map((_, i) => utcDay(now() - (29 - i) * 86400)); // oldest .. today
+  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ?").bind(days[0]).all()).results) || [];
+  const keys = {}; // key -> [today, 7 days, 30 days]
+  const daily = days.map((day) => ({ day, visitors: 0, views: 0, downloads: 0 }));
+  for (const r of rows) {
+    const i = days.indexOf(r.day);
+    if (i < 0) continue;
+    const age = 29 - i, a = keys[r.k] || (keys[r.k] = [0, 0, 0]);
+    if (age < 1) a[0] += r.n;
+    if (age < 7) a[1] += r.n;
+    a[2] += r.n;
+    if (r.k === "visitors") daily[i].visitors += r.n;
+    else if (r.k.startsWith("view:")) daily[i].views += r.n;
+    else if (r.k.startsWith("dl:")) daily[i].downloads += r.n;
+  }
+  return { keys, daily };
+}
+
 /// William's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
 /// Storage numbers are the last counts Echo Cloud made per account (recounted whenever someone uses it).
 async function adminStats(req, env) {
@@ -662,6 +718,7 @@ async function adminStats(req, env) {
     money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
     shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
     logs, backup, top, newest, over,
+    site: await siteStats(env),
   });
 }
 
@@ -692,6 +749,8 @@ async function migrate(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS limits (k TEXT PRIMARY KEY, n INTEGER NOT NULL, reset INTEGER NOT NULL)"),
     // upload links handed out but not finished yet (they count toward the plan until done or expired)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, size INTEGER NOT NULL, expires INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS stats (day TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, k))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
     // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
     env.DB.prepare("UPDATE users SET quota_bytes = ? WHERE plan = 'free' AND quota_bytes = ?").bind(Number(env.FREE_GB || 10) * GB, Number(env.FREE_GB || 10) * 1024 ** 3),
@@ -1223,7 +1282,12 @@ export default {
       // GET / and the other website pages come from site/ (static assets, answered before this code runs)
       if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
       const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
-      if (dm && req.method === "GET") return (await download(env, dm[1], url.searchParams.get("from") === "private" ? "private" : "")) || (await notFound(req, env));
+      if (dm && req.method === "GET") {
+        const r = await download(env, dm[1], url.searchParams.get("from") === "private" ? "private" : "");
+        if (r && r.status === 302) await countDownload(req, env, dm[1]);
+        return r || (await notFound(req, env));
+      }
+      if (route === "POST /hit") return await hit(req, env);
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") return await update(env, um[1], um[3]);
       if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
@@ -1270,6 +1334,7 @@ export default {
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
     ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));
+    ctx.waitUntil(cleanupStats(env).catch((e) => console.log("stats cleanup error", e && e.stack)));
     ctx.waitUntil(enforceQuota(env).catch((e) => console.log("quota error", e && e.stack)));
   },
 };

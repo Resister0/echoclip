@@ -35,6 +35,11 @@
   .login { max-width:420px; margin:80px auto; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px; }
   .login input { width:100%; margin:12px 0; }
   .err { color:var(--bad); margin-top:8px; } .note { color:var(--faint); font-size:12px; margin-top:24px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; } @media (max-width:720px) { .two { grid-template-columns:1fr; } }
+  .chart { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px 8px; margin-top:10px; }
+  .chart svg { width:100%; height:150px; display:block; } .chart .lg { color:var(--muted); font-size:12px; display:flex; gap:14px; margin-bottom:6px; }
+  .chart .lg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .chart .ax { display:flex; justify-content:space-between; color:var(--faint); font-size:11px; margin-top:4px; }
   @media (max-width:520px) { .hero { grid-column:span 1; } }
 </style>
 </head>
@@ -68,6 +73,46 @@ async function load() {
 
 function tile(k, v, s, cls) { return `<div class="tile ${cls || ""}"><div class="k">${k}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`; }
 
+// ----- website (counted without cookies; days are UTC) -----
+const CLICK_NAMES = { "click:plans": "See plans / Pricing", "click:storage": "Storage (menu)", "click:features": "Features (menu)",
+  "click:download": "Download (jump to buttons)", "click:discord": "Discord", "click:changelog": "Changelog", "click:github": "GitHub",
+  "dl:windows": "Download: Windows installer", "dl:windows-portable": "Download: Echo.exe (no install)", "dl:linux": "Download: Linux AppImage", "dl:linux-tar": "Download: Linux tar.gz" };
+function website(s) {
+  if (!s) return "";
+  const k = s.keys || {}, g = (n) => k[n] || [0, 0, 0];
+  const sum = (pre) => Object.keys(k).filter((x) => x.startsWith(pre)).reduce((a, x) => a.map((v, i) => v + k[x][i]), [0, 0, 0]);
+  const vis = g("visitors"), views = sum("view:"), dls = sum("dl:");
+  const list = (pre, names) => Object.keys(k).filter((x) => x.startsWith(pre)).sort((a, b) => k[b][2] - k[a][2])
+    .map((x) => `<tr><td>${esc(names ? names(x) : x.slice(pre.length))}</td><td class="n">${k[x][0]}</td><td class="n">${k[x][1]}</td><td class="n">${k[x][2]}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="sub">Nothing yet</td></tr>`;
+  const head = (n) => `<tr><th>${n}</th><th class="n">Today</th><th class="n">7 days</th><th class="n">30 days</th></tr>`;
+  const clicks = Object.keys(CLICK_NAMES).map((x) => `<tr><td>${CLICK_NAMES[x]}</td><td class="n">${g(x)[0]}</td><td class="n">${g(x)[1]}</td><td class="n">${g(x)[2]}</td></tr>`).join("");
+  // 30 days: visitors (bars) with downloads drawn inside them
+  const d = s.daily || [], max = Math.max(1, ...d.map((x) => Math.max(x.visitors, x.downloads))), W = 600, H = 150, bw = W / Math.max(1, d.length);
+  const bars = d.map((x, i) => { const hv = x.visitors / max * (H - 4), hd = x.downloads / max * (H - 4);
+    return `<g><title>${x.day}: ${x.visitors} visitors, ${x.views} page views, ${x.downloads} downloads</title><rect x="${i * bw}" y="0" width="${bw}" height="${H}" fill="transparent"/>
+      <rect x="${i * bw + 2}" y="${H - hv}" width="${bw - 4}" height="${hv}" rx="2" fill="var(--accent)" opacity=".35"/>
+      <rect x="${i * bw + 2}" y="${H - hd}" width="${bw - 4}" height="${hd}" rx="2" fill="var(--accent)"/></g>`; }).join("");
+  const short = (x) => x ? new Date(x + "T12:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "";
+  return `
+    <h2>Website</h2>
+    <div class="grid">
+      ${tile("Visitors today", vis[0], `${vis[1]} this week · ${vis[2]} in 30 days`)}
+      ${tile("Page views today", views[0], `${views[1]} this week · ${views[2]} in 30 days`)}
+      ${tile("Downloads today", dls[0], `${dls[1]} this week · ${dls[2]} in 30 days` + (vis[2] ? ` · ${Math.round(dls[2] / vis[2] * 100)}% of visitors` : ""))}
+      ${tile("Clicked “See plans”", g("click:plans")[2], `in 30 days · ${g("click:plans")[0]} today`)}
+      ${tile("Clicked “Storage”", g("click:storage")[2], `in 30 days · ${g("click:storage")[0]} today`)}
+    </div>
+    <div class="chart"><div class="lg"><span><i style="background:var(--accent);opacity:.35"></i>Visitors</span><span><i style="background:var(--accent)"></i>Downloads</span><span style="margin-left:auto">last 30 days · hover a day</span></div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg><div class="ax"><span>${short(d[0] && d[0].day)}</span><span>max ${max} a day</span><span>today</span></div></div>
+    <h2>Clicks and downloads</h2>
+    <div class="wrap"><table>${head("Button")}${clicks}</table></div>
+    <div class="two" style="margin-top:10px">
+      <div class="wrap"><table>${head("Page")}${list("view:", (x) => x.slice(5) === "other" ? "other / unknown" : x.slice(5))}</table></div>
+      <div class="wrap"><table>${head("Came from")}${list("ref:")}</table></div>
+    </div>`;
+}
+
 function draw(j) {
   const m = j.money, cur = m.currency;
   // costs are in USD (Cloudflare bills USD); shown next to EUR income, close enough for a glance
@@ -100,6 +145,8 @@ function draw(j) {
       ${tile("Logs sent (14 days)", j.logs, j.backup ? "last backup " + esc(j.backup.replace("backups/db-", "").replace(".json.gz", "")) : "no backup yet")}
     </div>
 
+    ${website(j.site)}
+
     <h2>Plans</h2>
     <div class="wrap"><table><tr><th>Plan</th><th class="n">Accounts</th><th class="n">Stored</th></tr>
       ${rows(j.plans, (p) => `<tr><td>${esc(p.plan)}</td><td class="n">${p.n}</td><td class="n">${gb(p.used)}</td></tr>`)}</table></div>
@@ -119,7 +166,9 @@ function draw(j) {
 
     <div class="note">Only Echo Cloud accounts are counted (people who only record or use their own cloud aren't visible here).
       Storage is the last count per account. Income is what each subscription pays per month after discounts (yearly plans divided by 12), before Polar's fee and VAT;
-      Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.</div>`;
+      Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.
+      Website: counted without cookies or stored IP addresses (bots and scripts skipped); "visitors" are unique per day, days are UTC.
+      "Came from" only lists other websites (Discord, Reddit, Google…); direct visits aren't listed.</div>`;
   $("#re").onclick = load;
   $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
 }

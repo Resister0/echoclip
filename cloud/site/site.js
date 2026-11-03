@@ -1,4 +1,22 @@
 // echoclip.link: download buttons for the visitor's system, changelog page, theme picker + drifting particles in the hero
+// anonymous counts for Echo's stats page: page views and a few button clicks (no cookies, nothing stored in the browser)
+(() => {
+  if (!/^https?:$/.test(location.protocol) || /^(localhost|127\.)/.test(location.hostname)) return;
+  const send = (o) => { try {
+    const b = JSON.stringify(o);
+    if (!(navigator.sendBeacon && navigator.sendBeacon("/hit", new Blob([b], { type: "text/plain" })))) fetch("/hit", { method: "POST", body: b, keepalive: true }).catch(() => {});
+  } catch { /* never mind */ } };
+  send({ t: "view", p: location.pathname, r: document.referrer });
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
+    const h = a.getAttribute("href");
+    const k = /discord\.(gg|com)/.test(h) ? "discord" : /github\.com/.test(h) ? "github" : /^\/pricing/.test(h) ? "plans"
+      : /#storage$/.test(h) ? "storage" : /#features$/.test(h) ? "features" : /^\/changelog/.test(h) ? "changelog" : /#download$/.test(h) ? "download" : "";
+    if (k) send({ t: "click", k });
+  }, true);
+})();
+
 (() => {
   // Linux visitors see the Linux download first (and highlighted)
   const ua = navigator.userAgent || "", linux = /Linux|X11/.test(ua) && !/Android/.test(ua);
