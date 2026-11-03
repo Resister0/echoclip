@@ -12,7 +12,7 @@
     if (!a) return;
     const h = a.getAttribute("href");
     const k = /discord\.(gg|com)/.test(h) ? "discord" : /github\.com/.test(h) ? "github" : /^\/pricing/.test(h) ? "plans"
-      : /#storage$/.test(h) ? "storage" : /#features$/.test(h) ? "features" : /^\/changelog/.test(h) ? "changelog" : /#download$/.test(h) ? "download" : "";
+      : /#storage$/.test(h) ? "storage" : /#features$/.test(h) ? "features" : /^\/changelog/.test(h) ? "changelog" : /#download$|^\/download\/?$/.test(h) ? "download" : "";
     if (k) send({ t: "click", k });
   }, true);
 })();
@@ -22,6 +22,13 @@
   const ua = navigator.userAgent || "", linux = /Linux|X11/.test(ua) && !/Android/.test(ua);
   const dl = document.querySelector(".dl"), win = dl && dl.querySelector('[data-os="windows"]'), lin = dl && dl.querySelector('[data-os="linux"]');
   if (linux && win && lin) { dl.insertBefore(lin, win); lin.classList.add("primary"); win.classList.remove("primary"); }
+  // /download: the latest version under the buttons
+  const dv = document.getElementById("dlver");
+  if (dv) fetch("/changes").then((r) => r.json()).then((j) => {
+    const x = (j.releases || [])[0]; if (!x) return;
+    const d = new Date(x.at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    dv.innerHTML = `Echo ${String(x.version).replace(/[^0-9.]/g, "")} · ${d} · Windows 10/11 and Linux · <a href="/changelog">What's new</a>`;
+  }).catch(() => {});
   // /changelog: every published version (from the server's list of releases)
   const box = document.getElementById("changes");
   if (box) fetch("/changes").then((r) => r.json()).then((j) => {

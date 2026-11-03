@@ -269,3 +269,13 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .chg time { color:var(--dim); font-size:13px; white-space:nowrap; }
 .chg .new { font-size:11px; font-weight:600; color:var(--accent); border:1px solid rgba(var(--accent-rgb),.5); border-radius:99px; padding:1px 7px; margin-left:4px; vertical-align:2px; }
 @media (max-width:640px) { .chg { grid-template-columns:1fr auto; } .chg p { grid-column:1 / -1; } }
+
+/* /download page */
+.dlpage { padding:72px 0 40px; }
+.dlgrid { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); }
+.dlgrid .card { display:flex; flex-direction:column; }
+.dlgrid .card p { flex:1; margin-bottom:16px; }
+.dlgrid .card .btn { align-self:flex-start; }
+.dlpage + section { padding-top:24px; }
+.dlpage ~ section { padding:32px 0; }
+.dl-note .noads { color:var(--muted); font-weight:600; }

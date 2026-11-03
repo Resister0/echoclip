@@ -619,7 +619,7 @@ async function deleteAccount(req, user, env) {
 // The pages are static files, so site.js pings POST /hit {t:"view",p,r} or {t:"click",k}; downloads are counted
 // in /download. Unique visitors: a scrambled code of day + IP + browser (kept 2 days in uv, only to not count anyone twice).
 const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embed|curl|wget|python|go-http|headless|lighthouse|monitor|scan/i;
-const SITE_PAGES = new Set(["/", "/pricing", "/changelog", "/privacy", "/terms"]);
+const SITE_PAGES = new Set(["/", "/download", "/pricing", "/changelog", "/privacy", "/terms"]);
 const SITE_CLICKS = new Set(["plans", "storage", "features", "discord", "changelog", "github", "download"]);
 const utcDay = (t = now()) => new Date(t * 1000).toISOString().slice(0, 10);
 const isBot = (req) => { const ua = req.headers.get("user-agent") || ""; return !ua || BOT_UA.test(ua); };

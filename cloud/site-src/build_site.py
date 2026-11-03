@@ -34,7 +34,7 @@ HEAD = """<!doctype html>
     <a href="/#storage">Storage</a>
     <a href="https://discord.gg/JPVewEfUQs" class="hide-s">Discord</a>
     <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
-    <a href="/#download" class="btn primary small">Download</a>
+    <a href="/download" class="btn primary small">Download</a>
   </nav>
   <div class="themes" id="themes" hidden><p>Theme</p></div>
 </div></header>
