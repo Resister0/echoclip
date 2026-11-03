@@ -1227,10 +1227,12 @@
   }, 40000);
   setInterval(updCheck, 2 * 3600 * 1000);
   // friends kept Echo in the tray for days and had to press "Check for updates": also check when the window
-  // is opened / clicked again (at most every 15 min; one tiny request to echoclip.link)
-  const updSoon = () => { if (!document.hidden && updLast && Date.now() - updLast > 15 * 60 * 1000) updCheck(); };
+  // is opened / clicked again (at most every 5 min; one tiny request to echoclip.link). Coming back from the tray
+  // Rust sends "window-shown" (WebView2 doesn't always fire focus / visibilitychange for a hidden window)
+  const updSoon = force => { if ((force === true || !document.hidden) && updLast && Date.now() - updLast > 5 * 60 * 1000) updCheck(); };
   window.addEventListener("focus", updSoon);
   document.addEventListener("visibilitychange", updSoon);
+  listen("window-shown", () => updSoon(true));
 
   // bottom messages: several at once stack; the same text again just stays up longer
   const noteOut = el => { el._out = true; el.classList.remove("on"); setTimeout(() => el.remove(), 220); };

@@ -4,6 +4,19 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Coming back from the tray now really checks for updates (at most every 5 minutes)
+- Fixed: the frame strip in the player's seek bar went black near the end of some (mostly short) clips
+
+## 1.0.30 - Stacking notifications and GIF stickers
+- Custom theme: pick your own highlight colour (the yellow in progress bars, trim handles, favourites and the editor)
+- Editor: GIF stickers move in exports too (they were stuck on one frame); drop pictures or GIFs onto the editor to add them as stickers
+- A "Join the Discord" button at the bottom of the settings menu
+- Messages and progress bars at the bottom (uploading, downloading, shrinking, exporting) now stack above each other instead of covering one another
+- Fixed: the "Downloading from the cloud" progress jumped back and forth to 0%, and the same clip could download twice at once
+- Cloud clips play smoother: the seek bar previews no longer load the whole clip in the background or compete with the player
+- echoclip.link counts visits and downloads anonymously (no cookies, no IP addresses stored) - explained on the Privacy page
+
+## 1.0.26 - 1.0.29 - Seek bar previews and log links
 - The update card (bottom left) shows what's new - before you update ("+ 2 more updates included") and after ("View earlier updates you missed")
 - Settings → App: Join the Echo Discord, Changelog
 - Hover over (or drag) the player's seek bar to see a preview of that moment, like YouTube - for clips on this PC and in the cloud
@@ -11,13 +24,6 @@ internal builds). Release builds since the open-source switch come from this rep
 - "Send log" uploads the log and copies a private link to paste into Discord (email addresses removed, deleted after 14 days); without internet the file is copied like before
 - Echo looks for updates when you open or click its window (at most every 15 minutes) and every 2 hours, so you don't have to press "Check for updates"
 - Echo Cloud over your plan (e.g. after a paid plan ends): a red note in Settings → Cloud and a daily reminder show the date the oldest clips above the plan will be removed
-- echoclip.link counts visits and downloads anonymously (no cookies, no IP addresses stored) - explained on the Privacy page
-- Custom theme: pick your own highlight colour (the yellow in progress bars, trim handles, favourites and the editor)
-- Editor: GIF stickers move in exports too (they were stuck on one frame); drop pictures or GIFs onto the editor to add them as stickers
-- A "Join the Discord" button at the bottom of the settings menu
-- Messages and progress bars at the bottom (uploading, downloading, shrinking, exporting) now stack above each other instead of covering one another
-- Fixed: the "Downloading from the cloud" progress jumped back and forth to 0%, and the same clip could download twice at once
-- Cloud clips play smoother: the seek bar previews no longer load the whole clip in the background or compete with the player
 - Fixed: the recorder kept restarting (and losing the replay buffer) on busy PCs while a heavy game ran - short slowdowns are now caught up instead
 
 ## 1.0.25 - Surround headsets and VR games

@@ -2732,7 +2732,7 @@ impl Recorder {
                 fs::rename(&p, &to).map_err(err)?;
                 let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 if new_stem != stem {
-                    for x in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+                    for x in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
                         let _ = fs::rename(self.thumbs_dir().join(format!("{stem}.{x}")), self.thumbs_dir().join(format!("{new_stem}.{x}")));
                     }
                     let mut meta = self.meta_all();
@@ -3186,6 +3186,7 @@ impl Recorder {
             let _ = self.set_favorite(&stem, false);
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.dur")));
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip2.jpg")));
             for t in 0..6 {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.a{t}.m4a")));
             }
@@ -3233,7 +3234,7 @@ impl Recorder {
                 meta.insert(name.clone(), m);
                 let _ = self.write_meta(&meta);
             }
-            for ext in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
                 let _ = fs::rename(self.thumbs_dir().join(format!("{old}.{ext}")), self.thumbs_dir().join(format!("{name}.{ext}")));
             }
         }
@@ -3797,7 +3798,7 @@ impl Recorder {
                 let _ = fs::remove_file(&tmp);
                 return Err("original is in use - close it and try again".into());
             }
-            for ext in ["jpg", "dur", "strip.jpg", "a1.m4a", "a2.m4a"] {
+            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a"] {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{ext}")));
             }
         }
@@ -3925,7 +3926,7 @@ impl Recorder {
         }
         if let Some(stem) = src.file_stem() {
             let stem = stem.to_string_lossy();
-            for x in ["strip.jpg", "levels.json", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
+            for x in ["strip.jpg", "strip2.jpg", "levels.json", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{x}")));
             }
         }
@@ -3947,14 +3948,19 @@ impl Recorder {
         const N: u32 = 40;
         let t = self.thumb(clip)?;
         let stem = PathBuf::from(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
-        let img = self.thumbs_dir().join(format!("{stem}.strip.jpg"));
+        // ".strip2": older strips of short clips ended in black (see below) - made again once
+        let img = self.thumbs_dir().join(format!("{stem}.strip2.jpg"));
         if !img.exists() {
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
             let fps = N as f64 / t.duration.max(1.0);
-            // decode keyframes only (one every ~2 s) - 10+ minute clips took ages otherwise
+            // decode keyframes only (one every ~2 s) - 10+ minute clips took ages otherwise.
+            // tpad repeats the last keyframe to the end: without it the tiles after the last keyframe stayed
+            // black (a 6 s clip lost its last third)
             let ok = ffmpeg()
                 .args(["-hide_banner", "-loglevel", "error", "-y", "-skip_frame", "nokey", "-i"])
                 .arg(clip)
-                .args(["-vf", &format!("fps={fps:.5},scale=-2:72,tile={N}x1"), "-frames:v", "1", "-q:v", "5"])
+                .args(["-vf", &format!("tpad=stop_mode=clone:stop_duration={:.2},fps={fps:.5},scale=-2:72,tile={N}x1", t.duration.max(1.0) + 1.0),
+                    "-frames:v", "1", "-q:v", "5"])
                 .arg(&img)
                 .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
             if !ok {
@@ -4813,6 +4819,7 @@ impl Recorder {
             if let Some(stem) = p.file_stem() {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.jpg", stem.to_string_lossy())));
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip.jpg", stem.to_string_lossy())));
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip2.jpg", stem.to_string_lossy())));
             }
             log_line(&format!("colorfix: {} ({:.1}% pixels outside TV range)", c.name, out_of_range * 100.0));
             fixed += 1;

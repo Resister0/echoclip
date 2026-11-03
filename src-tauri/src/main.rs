@@ -1242,6 +1242,9 @@ fn show_main(app: &AppHandle) {
         }
     }
     let _ = w.set_focus();
+    // the page doesn't reliably get a focus / visibility event when the window comes back from the tray:
+    // tell it, so it can look for an update
+    let _ = app.emit("window-shown", ());
 }
 
 /// When Echo started (for the "startup: …" log line).
