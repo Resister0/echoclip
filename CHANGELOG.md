@@ -6,6 +6,12 @@ internal builds). Release builds since the open-source switch come from this rep
 ## Next release
 - Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
 - The player's Share button makes the same kind of link as "Copy share link"
+- Clips (and the self-test) no longer fail to save when one audio track had no sound data yet - that track is saved as silence
+- Fixed: with mic noise reduction on, the mix and mic tracks could stop recording (the noise filter put out invalid values); this also made clips and the self-test fail to save
+- A broken sound source can no longer stop the whole recording (invalid audio values are muted)
+- The recorder restarts itself when it breaks while still running: screen capture failed mid-game (clips would have no picture), a headset or mic disappeared (no sound), or ffmpeg got stuck / one of its encoders stopped
+- Sound follows your devices: when a headset comes back (or you change the default speakers / mic in Windows), Echo switches to it within about 10 seconds
+- "Save log" shows the real Echo version
 
 ## Same share link every time, safer stored logins
 - "Copy share link" hands out the same link again instead of making a new one (changing the lifetime keeps the link)

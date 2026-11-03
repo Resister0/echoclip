@@ -1318,7 +1318,14 @@ fn linux_desktop_audio(buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     let _ = child.wait();
 }
 
+/// Device each capture is using right now: [desktop, mic] ("" = none / not started). health() compares them
+/// with Windows' current defaults (headset switched off and on again, default speakers changed).
+static CAP_DEV: Mutex<[String; 2]> = Mutex::new([String::new(), String::new()]);
+/// unix time of the last default-device check (every 10 s)
+static DEV_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    CAP_DEV.lock().unwrap()[mic as usize] = String::new();
     #[cfg(target_os = "linux")]
     if !mic {
         std::thread::spawn(move || linux_desktop_audio(buf, stop, rate, ch));
@@ -1343,6 +1350,7 @@ fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, r
                 None => host.default_output_device(),
             }
             .ok_or("no device")?;
+            CAP_DEV.lock().unwrap()[mic as usize] = dev.name().unwrap_or_default();
             let cfg = if mic { dev.default_input_config() } else { dev.default_output_config() }.map_err(err)?;
             log_line(&format!("audio: {what} '{}' {:?} {}Hz {}ch",
                 dev.name().unwrap_or_default(), cfg.sample_format(), cfg.sample_rate().0, cfg.channels()));
@@ -1350,7 +1358,14 @@ fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, r
             if in_rate != rate {
                 log_line(&format!("audio: {what} resampling {in_rate} -> {rate} Hz"));
             }
-            let errf = move |e: cpal::StreamError| log_line(&format!("audio: {what} stream error: {e}"));
+            let errf = move |e: cpal::StreamError| {
+                log_line(&format!("audio: {what} stream error: {e}"));
+                // headset unplugged / wireless dongle off: this source stays silent until a restart picks the
+                // (new) default device
+                if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                    ask_restart(&format!("audio: {what} device disappeared"));
+                }
+            };
             let b = buf.clone();
             let mut rs = Resampler::new(in_rate, rate, cin, cout);
             let mut tmp: Vec<f32> = Vec::new();
@@ -1515,6 +1530,21 @@ pub static MIC_MUTED: AtomicBool = AtomicBool::new(false);
 /// set when the audio clock and the wall clock (video timestamps) split apart - sleep / hibernate, a big
 /// clock change, or a long stall. Clips would come out hours long with broken sound; the watch loop restarts the recorder.
 pub static RESTART_REC: AtomicBool = AtomicBool::new(false);
+/// where ffmpeg's part of the log starts for the running recorder (health(): new error lines after it)
+static REC_LOG_POS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// unix time of the last restart asked for by a capture thread (at most one per minute: no restart loops)
+static LAST_SELF_RESTART: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// A capture part broke while ffmpeg keeps running (GPU capture ended, audio device gone): restart once a minute at most.
+fn ask_restart(why: &str) {
+    let now = now_unix();
+    if now.saturating_sub(LAST_SELF_RESTART.load(Ordering::Relaxed)) < 60 {
+        log_line(&format!("{why} - not restarting again within a minute"));
+        return;
+    }
+    LAST_SELF_RESTART.store(now, Ordering::Relaxed);
+    log_line(&format!("{why} - restarting the recorder"));
+    RESTART_REC.store(true, Ordering::Relaxed);
+}
 /// live mixer settings: per-app volume (f32 bits) and "mix only these apps"
 static APP_VOL: [AtomicU32; 3] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000), AtomicU32::new(0x3f80_0000)];
 static MIX_APPS: AtomicBool = AtomicBool::new(false);
@@ -1651,7 +1681,9 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
         }
         let tracks = 3 + g.len();
         let mut chunk = Vec::with_capacity(n * tracks * 4);
-        let put = |chunk: &mut Vec<u8>, x: f32| chunk.extend_from_slice(&x.clamp(-1.0, 1.0).to_le_bytes());
+        // NaN/Inf from a capture source must never reach ffmpeg: its AAC encoder stops for good on them
+        // ("Input contains (near) NaN/+-Inf", the whole recording dies). clamp() lets NaN through.
+        let put = |chunk: &mut Vec<u8>, x: f32| chunk.extend_from_slice(&(if x.is_finite() { x.clamp(-1.0, 1.0) } else { 0.0 }).to_le_bytes());
         let mix_apps = MIX_APPS.load(Ordering::Relaxed);
         let no_mic = MIX_NO_MIC.load(Ordering::Relaxed);
         let inc = [MIX_INC[0].load(Ordering::Relaxed), MIX_INC[1].load(Ordering::Relaxed), MIX_INC[2].load(Ordering::Relaxed)];
@@ -1707,7 +1739,15 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) ->
         smart_quality: cfg.smart_quality,
     };
     let fps = cfg.fps;
-    std::thread::spawn(move || crate::gpucap::run(pipe, s, opts, log_line));
+    std::thread::spawn(move || {
+        let began = Instant::now();
+        crate::gpucap::run(pipe, s.clone(), opts, log_line);
+        // ended without being stopped (encoder error, capture failed): ffmpeg would go on with audio only.
+        // Only after it ran a while: a failure during start() is handled there (next mode / CPU fallback).
+        if !s.load(Ordering::Relaxed) && began.elapsed() > Duration::from_secs(10) {
+            ask_restart("gpu: capture ended unexpectedly");
+        }
+    });
     let args = vec![
         "-thread_queue_size".into(), "1024".into(),
         "-use_wallclock_as_timestamps".into(), "1".into(),
@@ -1884,8 +1924,15 @@ impl Recorder {
         self.stop_inner();
         let cfg = self.settings();
         fs::create_dir_all(&cfg.clips_dir).map_err(err)?;
-        // keep the previous session's log for troubleshooting
-        let _ = fs::rename(log_path(), log_path().with_extension("prev.log"));
+        // keep the previous session's log for troubleshooting - only on the first start of this Echo run:
+        // recorder restarts (device changed, unhealthy, settings) keep writing to the same log, so the reason
+        // for a restart isn't pushed out of it
+        static ROTATED: AtomicBool = AtomicBool::new(false);
+        // (or when it grew past 5 MB, Echo running for weeks)
+        if !ROTATED.swap(true, Ordering::Relaxed) || fs::metadata(log_path()).map_or(false, |m| m.len() > 5_000_000) {
+            let _ = fs::rename(log_path(), log_path().with_extension("prev.log"));
+            REC_LOG_POS.store(0, Ordering::Relaxed);
+        }
         log_line(&format!("start: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
         ensure_ffmpeg();
         kill_leftovers();
@@ -1969,6 +2016,13 @@ impl Recorder {
                     None => "afftdn=nf=-25".into(),
                 })
             } else { None };
+            // The noise filter can output NaN (ffmpeg 8/9 arnndn: on silence and at the end; tested chat 18).
+            // One NaN stops that track's AAC encoder for good -> mix + mic tracks empty/dead, clips can't save.
+            // aeval turns NaN/Inf into 0 (cheap: 4 s of audio in 0.13 s).
+            let nr = nr.map(|f| {
+                let e = (0..if ch == 1 { 1 } else { 2 }).map(|i| format!("if(isnan(val({i}))+isinf(val({i})),0,val({i}))")).collect::<Vec<_>>().join("|");
+                format!("{f},aeval=exprs='{e}'")
+            });
             MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
             let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
             if let Some(stdin) = child.stdin.take() {
@@ -1982,6 +2036,7 @@ impl Recorder {
                 *self.audio_stop.lock().unwrap() = stop;
                 *self.mode.lock().unwrap() = mode.into();
                 let _ = fs::write(&mode_file, i.to_string());
+                REC_LOG_POS.store(fs::metadata(log_path()).map(|m| m.len()).unwrap_or(0), Ordering::Relaxed);
                 log_line(&format!("recording: {} ({} Hz, {} ch)",
                     if mode == "gpu" { "ZERO-COPY gpu pipeline" } else { "cpu copy fallback" }, rate, ch));
                 return Ok(());
@@ -2142,14 +2197,22 @@ impl Recorder {
         let fin = out.clone();
         let out = out.with_extension("saving.tmp");
         // Try with the newest (still-being-written) segment; if that breaks the join, drop it.
+        // Still failing: drop the oldest segments one by one (up to 3 = 6 s) - a broken oldest segment
+        // (e.g. half overwritten by the buffer wrap) shouldn't lose the whole clip. (An audio track without
+        // any data is handled inside join() with a silent track.)
         let mut ok = false;
-        for end in [segs.len(), segs.len().saturating_sub(1)] {
-            if end <= start {
-                break;
-            }
-            if self.join(&segs[start..end], &out)? {
-                ok = true;
-                break;
+        'tries: for skip in 0..=3usize {
+            for end in [segs.len(), segs.len().saturating_sub(1)] {
+                if end <= start + skip {
+                    break 'tries;
+                }
+                if self.join(&segs[start + skip..end], &out)? {
+                    if skip > 0 {
+                        log_line(&format!("save: worked without the oldest {skip} segment(s)"));
+                    }
+                    ok = true;
+                    break 'tries;
+                }
             }
         }
         if !ok {
@@ -2194,8 +2257,124 @@ impl Recorder {
         if !msg.trim().is_empty() {
             log_line(&format!("save: ffmpeg: {}", msg.trim().lines().take(5).collect::<Vec<_>>().join(" | ")));
         }
+        let mut ok = status.status.success();
+        // An audio track with NO packets in these segments has no sample rate, and the mp4 can't be written
+        // at all ("sample rate not set"; friend's self-test, 2 Nov). Put a silent track in its place so the
+        // clip still saves with all its tracks, and log which track was empty.
+        if !ok && msg.contains("sample rate not set") {
+            ok = self.join_with_silence(&list, segs.len(), out).unwrap_or(false);
+        }
         let _ = fs::remove_file(&list);
-        Ok(status.status.success())
+        Ok(ok)
+    }
+
+    fn join_with_silence(&self, list: &PathBuf, n_segs: usize, out: &PathBuf) -> Result<bool, String> {
+        let probe = hidden("ffprobe")
+            .args(["-v", "error", "-f", "concat", "-safe", "0", "-i"]).arg(list)
+            .args(["-select_streams", "a", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
+            .output().map_err(err)?;
+        let counts: Vec<u64> = String::from_utf8_lossy(&probe.stdout).lines()
+            .map(|l| l.trim().parse().unwrap_or(0)).collect();
+        if counts.is_empty() || !counts.iter().any(|&c| c == 0) {
+            return Ok(false);
+        }
+        let names = ["mix", "desktop", "mic", "game", "Discord", "browsers"];
+        let empty: Vec<String> = counts.iter().enumerate().filter(|(_, c)| **c == 0)
+            .map(|(i, _)| names.get(i).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}"))).collect();
+        log_line(&format!("save: audio track(s) {} had no sound data at all - saved with silence there", empty.join(", ")));
+        let secs = (n_segs as u32 * SEG + 4).to_string();
+        let mut cmd = ffmpeg();
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(list)
+            .args(["-f", "lavfi", "-t", &secs, "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v"]);
+        for (i, &c) in counts.iter().enumerate() {
+            if c == 0 { cmd.args(["-map", "1:a"]); } else { cmd.args(["-map".to_string(), format!("0:a:{i}")]); }
+        }
+        cmd.args(["-c", "copy"]);
+        for (i, &c) in counts.iter().enumerate() {
+            if c == 0 { cmd.args([format!("-c:a:{i}"), "aac".into(), format!("-b:a:{i}"), "32k".into()]); }
+        }
+        cmd.args(["-bsf:a", "aac_adtstoasc", "-shortest", "-movflags", "+faststart"])
+            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+            .args(["-f", "mp4"]).arg(out)
+            .stdout(Stdio::null()).stderr(Stdio::piped());
+        let o = cmd.output().map_err(err)?;
+        let m = String::from_utf8_lossy(&o.stderr);
+        if !m.trim().is_empty() {
+            log_line(&format!("save: ffmpeg (with silence): {}", m.trim().lines().take(3).collect::<Vec<_>>().join(" | ")));
+        }
+        Ok(o.status.success())
+    }
+
+    /// Recorder runs but is broken: no new buffer segment for 20 s (ffmpeg stuck), or an encoder inside ffmpeg
+    /// stopped (e.g. "Input contains NaN" -> "Terminating thread"; ffmpeg itself keeps running, so the
+    /// "stopped unexpectedly" watchdog never sees it). Called by main's 3 s loop.
+    pub fn health(&self) -> Option<String> {
+        if !self.is_recording() {
+            return None;
+        }
+        if let Some(age) = self.buffer_age() {
+            if age > 20.0 {
+                return Some(format!("no new recording data for {age:.0} s"));
+            }
+        }
+        #[cfg(windows)]
+        if let Some(why) = self.device_changed() {
+            return Some(why);
+        }
+        use std::io::{Read, Seek, SeekFrom};
+        let pos = REC_LOG_POS.load(Ordering::Relaxed);
+        let mut f = fs::File::open(log_path()).ok()?;
+        let len = f.metadata().ok()?.len();
+        if len < pos {
+            REC_LOG_POS.store(len, Ordering::Relaxed); // log was rotated
+            return None;
+        }
+        let mut new = Vec::new();
+        f.seek(SeekFrom::Start(pos.max(len.saturating_sub(256 * 1024)))).ok()?;
+        f.take(256 * 1024).read_to_end(&mut new).ok()?;
+        REC_LOG_POS.store(len, Ordering::Relaxed);
+        let t = String::from_utf8_lossy(&new);
+        if t.contains("Terminating thread with return code") || t.contains("Error submitting audio frame") || t.contains("Error submitting video frame") {
+            return Some("an encoder inside ffmpeg stopped".into());
+        }
+        None
+    }
+
+    /// Every 10 s: is Echo still capturing the devices Windows uses now? Desktop sound follows the default
+    /// output (headset back on -> Windows switches to it, Echo was still on the speakers = silent clips);
+    /// the mic follows the default input, or the chosen mic once it's plugged in again.
+    #[cfg(windows)]
+    fn device_changed(&self) -> Option<String> {
+        let now = now_unix();
+        if now.saturating_sub(DEV_CHECKED.load(Ordering::Relaxed)) < 10 {
+            return None;
+        }
+        DEV_CHECKED.store(now, Ordering::Relaxed);
+        let cfg = self.settings();
+        let cur = CAP_DEV.lock().unwrap().clone();
+        let host = cpal::default_host();
+        if cfg.desktop_audio {
+            if let Some(n) = host.default_output_device().and_then(|d| d.name().ok()) {
+                if n != cur[0] {
+                    return Some(format!("default speakers are now '{n}' (was '{}')", cur[0]));
+                }
+            }
+        }
+        if cfg.mic && !MIC_MUTED.load(Ordering::Relaxed) {
+            let want = if cfg.mic_device.is_empty() {
+                host.default_input_device().and_then(|d| d.name().ok())
+            } else if cur[1] != cfg.mic_device {
+                // the chosen mic was missing at start: is it back?
+                host.input_devices().ok().and_then(|mut it| it.find(|d| d.name().map_or(false, |n| n == cfg.mic_device)))
+                    .map(|_| cfg.mic_device.clone())
+            } else { None };
+            if let Some(n) = want {
+                if n != cur[1] {
+                    return Some(format!("microphone is now '{n}' (was '{}')", cur[1]));
+                }
+            }
+        }
+        None
     }
 
     /// Seconds since ffmpeg last wrote to the replay buffer (None = no buffer yet).
@@ -3968,7 +4147,8 @@ impl Recorder {
 
     /// Writes "Echo log <time>.txt" (log + previous log + settings without passwords/keys) for sending to a friend.
     pub fn support_file(&self) -> Result<String, String> {
-        let mut out = format!("Echo {} - {}\n", env!("CARGO_PKG_VERSION"), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        // ECHO_VERSION is set by the GitHub build (1.0.<n>); own builds say 0.1.0
+        let mut out = format!("Echo {} - {}\n", option_env!("ECHO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
         let mut cfg = serde_json::to_value(self.settings()).unwrap_or_default();
         if let Some(m) = cfg.as_object_mut() {
             for (k, v) in m.iter_mut() {

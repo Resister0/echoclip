@@ -27,6 +27,7 @@ jobs:
         run: |
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
           sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
+          echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
           grep '"version"' src-tauri/tauri.conf.json
       - name: Build
         working-directory: src-tauri
@@ -88,6 +89,7 @@ jobs:
         run: |
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
           sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
+          echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
           grep '"version"' src-tauri/tauri.conf.json
       - name: Build
         working-directory: src-tauri

@@ -1513,6 +1513,18 @@ fn main() {
                             down = 0;
                             continue;
                         }
+                        // recorder runs but is broken (stuck, or an encoder inside ffmpeg died): restart, once a minute at most
+                        if cur.is_empty() && !rec.busy() && rec.session_secs().is_none() && last_fix.elapsed().as_secs() > 60 {
+                            if let Some(why) = rec.health() {
+                                last_fix = std::time::Instant::now();
+                                recorder::log_line(&format!("recorder unhealthy ({why}) - restarting it"));
+                                if let Err(e) = rec.start() {
+                                    recorder::log_line(&e);
+                                }
+                                down = 0;
+                                continue;
+                            }
+                        }
                         let started_once = !rec.mode.lock().unwrap().is_empty();
                         if cur.is_empty() && started_once && !rec.busy() && !rec.is_recording() {
                             down += 1;
@@ -1616,6 +1628,18 @@ fn main() {
                             }
                             down = 0;
                             continue;
+                        }
+                        // recorder runs but is broken (stuck, or an encoder inside ffmpeg died): restart, once a minute at most
+                        if cur.is_empty() && !rec.busy() && rec.session_secs().is_none() && !FPS_TESTING.load(std::sync::atomic::Ordering::Relaxed) && last_fix.elapsed().as_secs() > 60 {
+                            if let Some(why) = rec.health() {
+                                last_fix = std::time::Instant::now();
+                                recorder::log_line(&format!("recorder unhealthy ({why}) - restarting it"));
+                                if let Err(e) = rec.start() {
+                                    recorder::log_line(&e);
+                                }
+                                down = 0;
+                                continue;
+                            }
                         }
                         // watchdog: should be recording but isn't
                         let started_once = !rec.mode.lock().unwrap().is_empty();
