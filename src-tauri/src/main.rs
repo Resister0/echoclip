@@ -296,6 +296,14 @@ async fn echocloud_manage(rec: State<'_, Recorder>) -> Result<(), String> {
     rec.echocloud_manage()
 }
 #[tauri::command]
+async fn ec_profile(rec: State<'_, Recorder>, method: String, path: String, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    rec.ec_profile(&method, &path, body)
+}
+#[tauri::command]
+async fn profile_avatar(rec: State<'_, Recorder>, path: String) -> Result<serde_json::Value, String> {
+    rec.profile_avatar(&path)
+}
+#[tauri::command]
 async fn echocloud_me(rec: State<'_, Recorder>) -> Result<serde_json::Value, String> {
     rec.echocloud_me()
 }
@@ -816,6 +824,13 @@ async fn release_notes(rec: State<'_, Recorder>, since: String) -> Result<serde_
 /// Opens one of Echo's own links in the browser (only these, never a link from outside).
 #[tauri::command]
 fn open_echo_link(what: String) -> Result<(), String> {
+    // a profile page: "u/<name>"
+    if let Some(h) = what.strip_prefix("u/") {
+        if (3..=20).contains(&h.len()) && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return recorder::open_web(&format!("https://echoclip.link/u/{h}"));
+        }
+        return Err("unknown link".into());
+    }
     recorder::open_web(match what.as_str() {
         "discord" => "https://discord.gg/JPVewEfUQs",
         "changelog" => "https://echoclip.link/changelog",
@@ -1218,8 +1233,22 @@ fn set_autostart(on: bool) {
 /// The window was shown once already: from then on it comes back exactly as it was left.
 static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Tell WebView2 whether the page is on screen. Hiding the window alone (tray) left the page running as if it were
+/// visible: timers kept polling and it kept its drawing resources. Hidden, the page slows its timers right down.
+fn webview_visible(w: &tauri::WebviewWindow, on: bool) {
+    #[cfg(windows)]
+    {
+        let _ = w.with_webview(move |wv| unsafe {
+            let _ = wv.controller().SetIsVisible(on);
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (w, on);
+}
+
 fn show_main(app: &AppHandle) {
     let Some(w) = app.get_webview_window("main") else { return };
+    webview_visible(&w, true);
     if !SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed) {
         // first time: Echo opens full size
         let _ = w.show();
@@ -1724,6 +1753,8 @@ fn main() {
             let autostarted = std::env::args().any(|a| a == "--autostart");
             if !(autostarted && (cfg.start_minimized || cfg.close_to_tray)) {
                 show_main(&handle);
+            } else if let Some(w) = handle.get_webview_window("main") {
+                webview_visible(&w, false);   // started into the tray: the page sleeps until it's opened
             }
 
             // start recording in the background so the window opens instantly
@@ -1742,6 +1773,10 @@ fn main() {
                     // and the tray icon brings it back up the same way (same size, no maximize flash)
                     let _ = w.minimize();
                     let _ = w.hide();
+                    if let Some(m) = w.app_handle().get_webview_window("main") {
+                        webview_visible(&m, false);
+                    }
+                    let _ = w.app_handle().emit("window-hidden", ());
                 }
             }
         })
@@ -1800,7 +1835,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

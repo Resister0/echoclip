@@ -5787,6 +5787,38 @@ impl Recorder {
     }
 
     /// Plan + usage of the signed-in Echo Cloud account.
+    /// Echo profile (echoclip.link/u/<name>): only these Echo Cloud calls are allowed from the window
+    pub fn ec_profile(&self, method: &str, path: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+        const OK: [(&str, &str); 6] = [("GET", "/profile/me"), ("POST", "/profile"), ("POST", "/profile/pin"), ("POST", "/profile/delete"),
+            ("POST", "/follow"), ("POST", "/profile/avatar")];
+        if !OK.contains(&(method, path)) {
+            return Err("not allowed".into());
+        }
+        let cfg = self.settings();
+        if cfg.ec_token.is_empty() {
+            return Err("Sign in to Echo Cloud first (Settings → Cloud)".into());
+        }
+        ec_call(&ec_api(&cfg), method, path, &cfg.ec_token, body)
+    }
+
+    /// Profile picture: any picture (first frame of a GIF) -> 256x256 JPEG, centre crop -> Echo Cloud
+    pub fn profile_avatar(&self, path: &str) -> Result<serde_json::Value, String> {
+        let tmp = std::env::temp_dir().join(format!("echo-avatar-{}.jpg", std::process::id()));
+        let ok = ffmpeg()
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(path)
+            .args(["-vf", "scale=256:256:force_original_aspect_ratio=increase,crop=256:256", "-frames:v", "1", "-q:v", "4"])
+            .arg(&tmp)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+        let bytes = fs::read(&tmp);
+        let _ = fs::remove_file(&tmp);
+        let bytes = match (ok, bytes) {
+            (true, Ok(b)) if !b.is_empty() => b,
+            _ => return Err("Couldn't read that picture - try a PNG or JPG".into()),
+        };
+        self.ec_profile("POST", "/profile/avatar", Some(serde_json::json!({ "img": base64(&bytes) })))
+    }
+
     pub fn echocloud_me(&self) -> Result<serde_json::Value, String> {
         let cfg = self.settings();
         if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }

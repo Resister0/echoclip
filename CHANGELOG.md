@@ -6,6 +6,10 @@ internal builds). Release builds since the open-source switch come from this rep
 ## Next release
 - Coming back from the tray now really checks for updates (at most every 5 minutes)
 - Fixed: the frame strip in the player's seek bar went black near the end of some (mostly short) clips
+- Profiles (optional, Settings → Profile): your own page at echoclip.link/u/yourname with a name, picture, bio, colour and up to 6 pinned clips; your share links show who clipped them; follow friends to keep their pages one click away (no feeds)
+- Cleaner player toolbar: Copy, Share, Trim and Edit keep their names, the other buttons are grouped icons (hover for the name); keyboard hints show while the mouse is on the video
+- Lighter in the tray: while Echo is hidden the window really sleeps, and the upload check slows down when nothing is uploading
+- Quieter "Join the Discord" button in Settings
 
 ## 1.0.30 - Stacking notifications and GIF stickers
 - Custom theme: pick your own highlight colour (the yellow in progress bars, trim handles, favourites and the editor)

@@ -338,6 +338,40 @@
   .pnav:hover { background:#26262e; } .pnav:disabled { opacity:.25; cursor:default; }
   .pnav svg { width:22px; height:22px; } #pprev { left:18px; } #pnext { right:18px; }
   .phint { color:var(--dim); font-size:12px; } .phint kbd { font-size:11px; }
+  /* Settings → Profile */
+  .pfhead { display:flex; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid #ffffff0d; }
+  .pfav { width:68px; height:68px; border-radius:50%; object-fit:cover; flex:none; display:grid; place-items:center; font-size:26px; font-weight:700; color:#fff; cursor:pointer; position:relative; overflow:hidden; border:2px solid var(--line); }
+  .pfav:hover::after { content:"Change"; position:absolute; inset:0; display:grid; place-items:center; background:#000a; font-size:11.5px; font-weight:600; }
+  .pfwho { flex:1; min-width:0; } .pfwho b { font-size:17px; display:block; } .pfwho small { color:var(--muted); }
+  .pfgrid { display:grid; grid-template-columns:110px 1fr; gap:10px 14px; align-items:center; padding:14px 0; }
+  .pfgrid label { color:var(--muted); font-size:13px; }
+  .pfgrid .din { max-width:420px; }
+  .pfat { display:flex; align-items:center; max-width:420px; } .pfat span { color:var(--dim); padding:0 4px 0 10px; } .pfat .din { border-left:0; }
+  .pfsw { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .pfsw button { width:24px; height:24px; border-radius:50%; border:2px solid transparent; cursor:pointer; }
+  .pfsw button.on { border-color:var(--text); }
+  .pfsw input[type=color] { width:28px; height:26px; border:0; background:none; padding:0; cursor:pointer; }
+  .pfclips { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; padding:12px 0 14px; }
+  .pfclip { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--panel2); cursor:pointer; position:relative; transition:border-color .15s; }
+  .pfclip:hover { border-color:var(--muted); } .pfclip.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .pfclip .t { aspect-ratio:16/9; background:linear-gradient(135deg,rgba(var(--accent-rgb),.25),var(--panel)) center/cover; }
+  .pfclip .n { padding:6px 8px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pfclip .pin { position:absolute; top:6px; right:6px; font-size:11px; font-weight:600; padding:2px 7px; border-radius:99px; background:#000b; color:var(--muted); }
+  .pfclip.on .pin { background:var(--accent); color:#fff; }
+  .pfrow { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #ffffff0d; }
+  .pfrow:last-child { border-bottom:0; }
+  .pfrow .pfav { width:34px; height:34px; font-size:14px; border-width:1px; cursor:default; } .pfrow .pfav:hover::after { content:none; }
+  /* player toolbar: groups (share · edit · file), main actions labelled, the rest icons with a tooltip */
+  #player .bar .pg { display:inline-flex; gap:6px; align-items:center; }
+  #player .bar .pg + .pg { margin-left:10px; padding-left:12px; border-left:1px solid var(--line); }
+  #player .bar .pg + .btn { margin-left:10px; }
+  .btn.ic { padding:0; width:36px; justify-content:center; }
+  .btn.ic svg { margin:0; }
+  .btn.ic.danger { color:#fb5c7cbb; }
+  .btn.ic.danger:hover { color:var(--bad); border-color:var(--bad); background:rgba(251,92,124,.1); }
+  /* keyboard hints only while the mouse is on the video / controls */
+  #player .phint { opacity:0; transition:opacity .2s; }
+  #player:has(.pwrap:hover) .phint, #player .phint:hover { opacity:1; }
   .seek .tsel { position:absolute; top:5px; bottom:5px; border:2px solid var(--hi); border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px #0000; }
   .seek .h { position:absolute; top:3px; bottom:3px; width:12px; margin-left:-6px; border-radius:4px; background:var(--hi); cursor:ew-resize; z-index:2; }
   .seek .h::after { content:""; position:absolute; left:5px; top:8px; bottom:8px; width:2px; border-radius:2px; background:#0008; }
@@ -758,6 +792,7 @@
         <a data-sec="storage">Clips & Storage</a>
         <a data-sec="cloud">Cloud</a>
         <h4>APP</h4>
+        <a data-sec="profile">Profile</a>
         <a data-sec="app">App Settings</a>
         <button class="dccard" onclick="invoke('open_echo_link',{what:'discord'}).catch(()=>{})" title="discord.gg/JPVewEfUQs">
           <span class="dci"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M19 9h1a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v3l-4-3h-3"/></svg></span>
@@ -932,6 +967,11 @@
           </div>
         </div>
 
+        <div class="sec" id="sec-profile">
+          <h2>Profile</h2>
+          <p>Your own little page at echoclip.link/u/yourname: a name, picture, a few words and up to 6 clips you're proud of. Share links show who clipped them. Follow friends to keep their pages one click away. Optional, and no feeds.</p>
+          <div id="profbody"><div class="box"><div class="row"><div class="lbl"><small>Loading…</small></div></div></div></div>
+        </div>
         <div class="sec" id="sec-app">
           <h2>App Settings</h2>
           <p>How Echo behaves on your PC.</p>
@@ -998,16 +1038,9 @@
 
 <div id="player">
   <div class="bar"><span id="pname"></span>
-    <span style="display:inline-flex"><button class="btn" id="pcopy" title="Copy (Ctrl+click: choose size)"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button><button class="btn cpm" id="pcopym" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span>
-    <button class="btn" id="pshare" title="Upload and copy a link that plays in Discord"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9"/><path d="M12 12v9M9 15l3-3 3 3"/></svg>Share</button>
-    <button class="btn" id="pcloud" title="Cloud: upload, free up space, download, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button>
-    <button class="btn" id="pshow"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Show in folder</button>
-    <button class="btn" id="pframe" title="Save this frame as PNG + copy (P)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg>Frame</button>
-        <button class="btn" id="pthumb" title="Use the current frame as this clip's thumbnail"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg>Thumbnail</button>
-    <button class="btn" id="pmp3" title="Save the sound as MP3 or WAV + copy"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Sound</button>
-    <button class="btn" id="ptrim" title="Trim (T)"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Trim</button>
-    <button class="btn" id="pedit" title="Open in editor (E)"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>Edit</button>
-    <button class="btn danger" id="pdel"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete</button>
+    <span class="pg"><span style="display:inline-flex"><button class="btn" id="pcopy" title="Copy (Ctrl+click: choose size)"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button><button class="btn cpm" id="pcopym" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="btn" id="pshare" title="Upload and copy a link that plays in Discord"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9"/><path d="M12 12v9M9 15l3-3 3 3"/></svg>Share</button><button class="btn ic" id="pcloud" title="Cloud: upload, free up space, download, delete" aria-label="Cloud: upload, free up space, download, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button></span>
+    <span class="pg"><button class="btn" id="ptrim" title="Trim (T)"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Trim</button><button class="btn" id="pedit" title="Open in editor (E)"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>Edit</button><button class="btn ic" id="pframe" title="Save this frame as a picture + copy it (P)" aria-label="Save this frame as a picture + copy it (P)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg></button><button class="btn ic" id="pthumb" title="Use this frame as the clip's thumbnail" aria-label="Use this frame as the clip's thumbnail"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></button><button class="btn ic" id="pmp3" title="Save the sound as MP3 or WAV + copy it" aria-label="Save the sound as MP3 or WAV + copy it"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></button></span>
+    <span class="pg"><button class="btn ic" id="pshow" title="Show in folder" aria-label="Show in folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button><button class="btn ic danger" id="pdel" title="Delete (Del)" aria-label="Delete (Del)"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></span>
     <button class="btn" onclick="closePlayer()">Close</button>
   </div>
   <div id="pside">
@@ -1117,6 +1150,11 @@
   const convertFileSrc = p => (mediaBase && /\.(mp4|m4v|mov|mkv|webm|m4a|mp3|wav|ogg|opus|flac|aac)$/i.test(p)) ? mediaBase + encodeURIComponent(p) : _assetSrc(p);
   const { listen } = window.__TAURI__.event;
   const $ = id => document.getElementById(id);
+  // hidden in the tray: Rust says so (the page isn't always told by the system), and the timers below skip their work
+  let away = false;
+  const isAway = () => away || document.hidden;
+  listen("window-hidden", () => { away = true; });
+  listen("window-shown", () => { away = false; });
   let status = {}, cfg = null, clips = [], listKey = "";
 
   /* ---------- helpers ---------- */
@@ -1226,10 +1264,10 @@
   // friends kept Echo in the tray for days and had to press "Check for updates": also check when the window
   // is opened / clicked again (at most every 5 min; one tiny request to echoclip.link). Coming back from the tray
   // Rust sends "window-shown" (WebView2 doesn't always fire focus / visibilitychange for a hidden window)
-  const updSoon = force => { if ((force === true || !document.hidden) && updLast && Date.now() - updLast > 5 * 60 * 1000) updCheck(); };
+  const updSoon = force => { if ((force === true || !isAway()) && updLast && Date.now() - updLast > 5 * 60 * 1000) updCheck(); };
   window.addEventListener("focus", updSoon);
   document.addEventListener("visibilitychange", updSoon);
-  listen("window-shown", () => updSoon(true));
+  listen("window-shown", () => { updSoon(true); refresh().catch(() => {}); });
 
   // bottom messages: several at once stack; the same text again just stays up longer
   const noteOut = el => { el._out = true; el.classList.remove("on"); setTimeout(() => el.remove(), 220); };
@@ -1315,7 +1353,7 @@
   // text from files / the cloud (names, audio track titles) must never become HTML
   function escH(t) { return String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
   async function refresh(why) {
-    if (document.hidden && refresh.done) return;
+    if (isAway() && refresh.done) return;
     status = await invoke("get_status");
     const on = status.recording;
     $("dot").classList.toggle("on", on); $("raildot").classList.toggle("on", on);
@@ -1368,7 +1406,7 @@
     b.classList.toggle("on", sessAt != null);
     $("longtxt").textContent = sessAt == null ? "Record" : "Stop · " + fmtDur(Date.now() / 1000 - sessAt);
   }
-  setInterval(() => { if (!document.hidden) drawLong(); }, 1000);
+  setInterval(() => { if (!isAway()) drawLong(); }, 1000);
   $("longbtn").onclick = async () => {
     const b = $("longbtn"); if (b.disabled) return; b.disabled = true;
     if (sessAt != null) toast("Saving recording…");
@@ -1422,7 +1460,7 @@
     return basePending;
   }
   // while a cloud clip is open in the player, keep the streaming server alive
-  setInterval(() => { if (!document.hidden && trim.clip && trim.clip.cloud && $("player").classList.contains("open")) ensureBase().catch(() => {}); }, 120000);
+  setInterval(() => { if (!isAway() && trim.clip && trim.clip.cloud && $("player").classList.contains("open")) ensureBase().catch(() => {}); }, 120000);
   // cloud-only clip -> download it first (edit, copy, trim…); returns the local clip
   // one download per clip at a time: a second click / the player waits for the one already running
   const dlJobs = new Map();
@@ -4496,9 +4534,13 @@
   });
   // ----- cloud upload progress (favourites / auto uploads / Upload button): card bar, bottom bar, player bar -----
   var upState = { rel: "" }, upBox = null, upT0 = 0, upLastRel = "";
+  let upIdleAt = 0;
   setInterval(async () => {
-    if (!cfg || !cfg.cloud || document.hidden) return;   // window in the tray: nothing to draw
+    if (!cfg || !cfg.cloud || isAway()) return;   // window in the tray: nothing to draw
+    // nothing uploading: ask every 2 s instead of twice a second
+    if (!upLastRel && Date.now() - upIdleAt < 2000) return;
     let p; try { p = await invoke("cloud_up_progress"); } catch { return; }
+    if (!p.rel) upIdleAt = Date.now();
     if (p.rel !== upLastRel) {   // a clip finished (or the next one started): refresh so it gets its cloud badge
       if (upLastRel) { listKey = ""; refresh(); }
       upLastRel = p.rel; upT0 = Date.now();
@@ -4836,6 +4878,82 @@
     if (d && d % 20 === 0) { listKey = ""; refresh(); }
   });
   { const a = document.querySelector('.snav a[data-sec="storage"]'); if (a) a.addEventListener("click", () => renderImport()); }
+  // ----- Settings → Profile (echoclip.link/u/<name>; uses the Echo Cloud account) -----
+  const PF_COLORS = ["#7c5cff", "#2fa8e0", "#2fbf86", "#f07a1a", "#e0609e", "#d0505a", "#ffd23f", "#8a96a8"];
+  let pf = null;
+  const pfAv = (p, cls) => p && p.avatar ? `<img class="${cls}" src="${escH(p.avatar)}" alt="">` : `<span class="${cls}" style="background:${escH((p && p.color) || "#7c5cff")}">${escH(((p && (p.name || p.handle)) || "?")[0].toUpperCase())}</span>`;
+  const pfCall = (method, path, body) => invoke("ec_profile", { method, path, body: body || null });
+  async function renderProfile() {
+    const box = $("profbody"); if (!box) return;
+    if (!(cfg && (cfg.cloud_accounts || []).some(a => a.provider === "echocloud"))) {
+      box.innerHTML = `<div class="box"><div class="row"><div class="lbl"><b>Profiles use your free Echo Cloud account</b><small>Sign in with your email under Cloud (10 GB free, no card). Then come back here.</small></div><button class="btn primary" id="pfcloud">Set up Echo Cloud</button></div></div>`;
+      $("pfcloud").onclick = () => openSettings("cloud"); return;
+    }
+    try { pf = await pfCall("GET", "/profile/me"); }
+    catch (e) { box.innerHTML = `<div class="box"><div class="row"><div class="lbl"><b>Couldn't load your profile</b><small>${escH(String(e))}</small></div><button class="btn" id="pfre">Try again</button></div></div>`; $("pfre").onclick = renderProfile; return; }
+    if (!pf.profile) {
+      box.innerHTML = `<div class="box"><h3>Make your profile</h3>
+        <div class="pfgrid"><label>@name</label><div class="pfat"><span>@</span><input class="din" id="pfh" maxlength="20" placeholder="yourname" spellcheck="false"></div>
+        <label>Name</label><input class="din" id="pfn" maxlength="32" placeholder="How your name shows"></div>
+        <div class="row"><div class="lbl"><small>3-20 letters, numbers or _. You can change it later.</small></div><button class="btn primary" id="pfmake">Create profile</button></div></div>`;
+      $("pfh").oninput = e => { e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""); };
+      $("pfmake").onclick = async () => {
+        try { await pfCall("POST", "/profile", { handle: $("pfh").value, name: $("pfn").value, bio: "", color: (cfg && cfg.theme_accent) || "#7c5cff" }); toast("Profile made - add a picture and pin some clips"); renderProfile(); }
+        catch (e) { toast(String(e)); }
+      };
+      return;
+    }
+    const p = pf.profile, pinned = pf.shares.filter(s => s.pinned).length;
+    box.innerHTML = `<div class="box"><h3>Your profile</h3>
+      <div class="pfhead"><span id="pfavw" title="Change picture">${pfAv(p, "pfav")}</span><div class="pfwho"><b>${escH(p.name)}</b><small>@${escH(p.handle)} · ${pf.followers} follower${pf.followers === 1 ? "" : "s"}</small></div>
+        <button class="btn" id="pfview">View my page</button></div>
+      <div class="pfgrid">
+        <label>Name</label><input class="din" id="pfn" maxlength="32" value="${escH(p.name)}">
+        <label>@name</label><div class="pfat"><span>@</span><input class="din" id="pfh" maxlength="20" value="${escH(p.handle)}" spellcheck="false"></div>
+        <label>Bio</label><textarea class="din" id="pfb" rows="2" maxlength="160" placeholder="A few words - your server, your role, your main game…">${escH(p.bio)}</textarea>
+        <label>Colour</label><div class="pfsw" id="pfsw">${PF_COLORS.map(c => `<button data-c="${c}" style="background:${c}" class="${c === p.color ? "on" : ""}" title="${c}"></button>`).join("")}<input type="color" id="pfc" value="${escH(p.color)}" title="Any colour"></div>
+      </div>
+      <div class="row"><div class="lbl"><small id="pfmsg">Changes show on your page right away.</small></div>${p.avatar ? `<button class="btn" id="pfavx">Remove picture</button>` : ""}<button class="btn primary" id="pfsave">Save</button></div></div>
+      <div class="box"><h3>Pinned clips<span class="spacer"></span><small style="text-transform:none;letter-spacing:0;font-weight:500">${pinned} of ${pf.pin_max}</small></h3>
+      ${pf.shares.length ? `<div class="pfclips">${pf.shares.map(s => `<div class="pfclip${s.pinned ? " on" : ""}" data-id="${escH(s.id)}" title="${s.pinned ? "Unpin" : "Pin to your profile"}"><div class="t" style="${s.thumb ? `background-image:url('${escH(s.thumb)}')` : ""}"></div><div class="n">${escH(s.title)}</div><span class="pin">${s.pinned ? "Pinned" : "Pin"}</span></div>`).join("")}</div>`
+        : `<div class="row"><div class="lbl"><small>Clips you share with Echo Cloud ("Copy share link") show up here - pick up to ${pf.pin_max} for your page.</small></div></div>`}</div>
+      <div class="box"><h3>Following</h3>
+      <div class="row"><input class="din" id="pff" placeholder="@name or their echoclip.link/u/ link" spellcheck="false" style="max-width:340px"><button class="btn primary" id="pffollow">Follow</button></div>
+      ${pf.following.map(f => `<div class="pfrow">${pfAv(f, "pfav")}<div class="pfwho"><b style="font-size:14px">${escH(f.name)}</b><small>@${escH(f.handle)}</small></div><button class="btn" data-open="${escH(f.handle)}">Open page</button><button class="btn" data-unf="${escH(f.handle)}">Unfollow</button></div>`).join("")
+        || `<div class="row"><div class="lbl"><small>Nobody yet. Friends' pages are at echoclip.link/u/theirname - their "Follow" button copies the name for you.</small></div></div>`}
+      </div>
+      <div class="box"><div class="row"><div class="lbl"><b>Delete profile</b><small>Removes your page, picture, pins and follows. Your clips and share links stay.</small></div><button class="btn danger" id="pfdel">Delete profile</button></div></div>`;
+    let color = p.color;
+    $("pfsw").onclick = e => { const b = e.target.closest("button[data-c]"); if (!b) return; color = b.dataset.c; $("pfc").value = color; $("pfsw").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); };
+    $("pfc").oninput = e => { color = e.target.value; $("pfsw").querySelectorAll("button").forEach(x => x.classList.remove("on")); };
+    $("pfh").oninput = e => { e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""); };
+    $("pfview").onclick = () => invoke("open_echo_link", { what: "u/" + p.handle }).catch(e => toast(String(e)));
+    $("pfsave").onclick = async () => {
+      try { await pfCall("POST", "/profile", { handle: $("pfh").value, name: $("pfn").value, bio: $("pfb").value, color }); toast("Profile saved"); renderProfile(); }
+      catch (e) { toast(String(e)); }
+    };
+    $("pfavw").onclick = async () => {
+      try { const path = await invoke("pick_image"); if (!path) return; toast("Uploading your picture…"); await invoke("profile_avatar", { path }); toast("Picture updated"); renderProfile(); }
+      catch (e) { toast(String(e)); }
+    };
+    if ($("pfavx")) $("pfavx").onclick = async () => { try { await pfCall("POST", "/profile/avatar", { remove: true }); renderProfile(); } catch (e) { toast(String(e)); } };
+    box.querySelectorAll(".pfclip").forEach(c => c.onclick = async () => {
+      const on = !c.classList.contains("on");
+      try { await pfCall("POST", "/profile/pin", { id: c.dataset.id, on }); renderProfile(); } catch (e) { toast(String(e)); }
+    });
+    const follow = async () => {
+      const h = $("pff").value.trim(); if (!h) return;
+      try { const r = await pfCall("POST", "/follow", { handle: h, on: true }); toast(`Following ${r.profile.name}`); renderProfile(); } catch (e) { toast(String(e)); }
+    };
+    $("pffollow").onclick = follow; $("pff").onkeydown = e => { if (e.key === "Enter") follow(); };
+    box.querySelectorAll("[data-open]").forEach(b => b.onclick = () => invoke("open_echo_link", { what: "u/" + b.dataset.open }).catch(e => toast(String(e))));
+    box.querySelectorAll("[data-unf]").forEach(b => b.onclick = async () => { try { await pfCall("POST", "/follow", { handle: b.dataset.unf, on: false }); renderProfile(); } catch (e) { toast(String(e)); } });
+    $("pfdel").onclick = async () => {
+      if (!(await confirmBox("Delete your profile?", "Your page, picture, pins and follows are removed. Clips and share links stay.", "Delete profile"))) return;
+      try { await pfCall("POST", "/profile/delete", {}); toast("Profile deleted"); renderProfile(); } catch (e) { toast(String(e)); }
+    };
+  }
+  { const a = document.querySelector('.snav a[data-sec="profile"]'); if (a) a.addEventListener("click", () => renderProfile()); }
   function openSettings(sec) {
     document.querySelector('[data-page=settings]').click();
     const a = document.querySelector(`.snav a[data-sec="${sec}"]`); if (a) a.click();

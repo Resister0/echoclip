@@ -279,3 +279,29 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .dlpage + section { padding-top:24px; }
 .dlpage ~ section { padding:32px 0; }
 .dl-note .noads { color:var(--muted); font-weight:600; }
+
+/* homepage app preview: try the buttons (nothing really happens - a note points to the download) */
+.app .mcopy i, .app .mstar, .app .mx, .app .abtn, .app .mmenu button { cursor:pointer; }
+.mact i:hover, .mcopy i:hover { background:var(--panel2); color:var(--text); }
+.mact .mx { max-width:0; opacity:0; overflow:hidden; transition:max-width .2s, opacity .2s; }
+.mclip:hover .mact .mx, .mclip.menu .mact .mx { max-width:22px; opacity:1; }
+.mclip:hover .mmeta strong { text-overflow:clip; }
+.mx.del:hover { color:#fb5c7c; }
+.abtn:hover { border-color:var(--muted); } .abtn.pri:hover { filter:brightness(1.1); }
+.mmenu { position:absolute; z-index:5; width:260px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:5px; box-shadow:0 14px 40px #000b; font-size:12px; }
+.mmenu[hidden] { display:none; }
+.mmenu button { display:flex; align-items:center; gap:8px; width:100%; padding:6px 8px; border:0; background:none; color:var(--text); font:inherit; border-radius:7px; text-align:left; }
+.mmenu button:hover { background:var(--panel2); }
+.mmenu button small { margin-left:auto; color:var(--dim); font-size:10.5px; }
+.mmenu button.main { font-weight:600; }
+.mmenu .chips { display:flex; gap:4px; padding:0 8px 6px; margin:0; justify-content:flex-start; }
+.mmenu .chips button { width:auto; padding:2px 8px; border:1px solid var(--line); border-radius:99px; font-size:10.5px; color:var(--muted); }
+.mmenu .chips button.on { border-color:rgba(var(--accent-rgb),.6); color:var(--accent2); }
+.mmenu hr { border:0; border-top:1px solid var(--line); margin:5px 2px; }
+.mmenu p { color:var(--dim); font-size:10px; letter-spacing:.08em; text-transform:uppercase; margin:4px 8px 2px; }
+.atoasts { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); display:flex; flex-direction:column; gap:6px; align-items:center; z-index:6; pointer-events:none; width:max-content; max-width:92%; }
+.atoast { pointer-events:auto; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:9px 12px; box-shadow:0 10px 30px #000a; font-size:12.5px; color:var(--muted); display:flex; gap:10px; align-items:center; opacity:0; transform:translateY(10px); transition:opacity .2s, transform .2s; }
+.atoast.on { opacity:1; transform:none; }
+.atoast b { color:var(--text); font-weight:600; }
+.atoast a { white-space:nowrap; font-weight:600; color:var(--accent2); text-decoration:none; }
+.app .amain { position:relative; }

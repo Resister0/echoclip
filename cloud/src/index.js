@@ -610,6 +610,9 @@ async function deleteAccount(req, user, env) {
     env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(user.email),
     env.DB.prepare("DELETE FROM uploads WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM pins WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM follows WHERE follower = ? OR followee = ?").bind(user.id, user.id),
+    env.DB.prepare("DELETE FROM profiles WHERE user_id = ?").bind(user.id),
   ]);
   console.log("account deleted", user.id);
   return json({ done: true, deleted: n });
@@ -651,6 +654,8 @@ async function countDownload(req, env, what) {
 }
 async function cleanupStats(env) {
   await env.DB.prepare("DELETE FROM uv WHERE day < ?").bind(utcDay(now() - 2 * 86400)).run();
+  // pins of share links that were removed or expired
+  await env.DB.prepare("DELETE FROM pins WHERE share_id NOT IN (SELECT id FROM shares WHERE expires = 0 OR expires > ?)").bind(now()).run();
 }
 async function siteStats(env) {
   const days = [...Array(30)].map((_, i) => utcDay(now() - (29 - i) * 86400)); // oldest .. today
@@ -669,6 +674,198 @@ async function siteStats(env) {
     else if (r.k.startsWith("dl:")) daily[i].downloads += r.n;
   }
   return { keys, daily };
+}
+
+// ----- light profiles: echoclip.link/u/<handle> (name, picture, bio, colour, pinned clips, followers) -----
+// Uses the Echo Cloud account. Who follows whom stays private: pages only show counts. No feeds.
+const HANDLE_RE = /^[a-z0-9_]{3,20}$/;
+const RESERVED = new Set(["admin", "administrator", "echo", "echoclip", "echocloud", "support", "help", "api", "www", "staff", "mod",
+  "moderator", "official", "team", "root", "system", "discord", "download", "downloads", "pricing", "privacy", "terms", "changelog",
+  "settings", "profile", "profiles", "login", "signin", "signup", "account", "billing", "null", "undefined", "me", "you", "kimbo"]);
+const PIN_MAX = 6;
+const cleanText = (t, max) => String(t || "").replace(/[\u0000-\u0008\u000b-\u001f\u007f‪-‮⁦-⁩]/g, "").replace(/\s+\n/g, "\n").trim().slice(0, max);
+const cleanColor = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || "")) ? String(c).toLowerCase() : "#7c5cff");
+const avatarUrl = (origin, p) => (p && p.avatar ? `${origin}/u/${p.handle}/avatar.jpg?v=${p.avatar}` : "");
+async function profileOf(env, userId) {
+  return env.DB.prepare("SELECT * FROM profiles WHERE user_id = ?").bind(userId).first();
+}
+function publicProfile(origin, p, extra = {}) {
+  return { handle: p.handle, name: p.name || p.handle, bio: p.bio || "", color: p.color || "#7c5cff", avatar: avatarUrl(origin, p),
+    url: `${origin}/u/${p.handle}`, ...extra };
+}
+async function profileMe(user, env, origin) {
+  const p = await profileOf(env, user.id);
+  const t = now();
+  const shares = ((await env.DB.prepare(`SELECT s.id, s.title, s.key, s.created, s.expires, s.thumb, s.dur, p.pos FROM shares s
+      LEFT JOIN pins p ON p.share_id = s.id AND p.user_id = s.user_id
+      WHERE s.user_id = ? AND (s.expires = 0 OR s.expires > ?) ORDER BY s.created DESC LIMIT 200`).bind(user.id, t).all()).results) || [];
+  const following = ((await env.DB.prepare(`SELECT p.* FROM follows f JOIN profiles p ON p.user_id = f.followee
+      WHERE f.follower = ? ORDER BY f.created DESC LIMIT 500`).bind(user.id).all()).results) || [];
+  const fc = await env.DB.prepare("SELECT COUNT(*) AS n FROM follows WHERE followee = ?").bind(user.id).first();
+  return json({
+    profile: p ? publicProfile(origin, p) : null,
+    followers: (fc && fc.n) || 0,
+    following: following.map((f) => publicProfile(origin, f)),
+    shares: shares.map((x) => ({ id: x.id, title: x.title || x.key.split("/").pop().replace(/\.mp4$/i, ""), created: x.created, expires: x.expires,
+      thumb: x.thumb ? `${origin}/s/${x.id}.jpg` : "", dur: x.dur || 0, pinned: x.pos != null, url: `${origin}/s/${x.id}` })),
+    pin_max: PIN_MAX,
+  });
+}
+async function profileSave(req, user, env, origin) {
+  if (!(await allow(env, `prof:${user.id}`, 40, 3600))) return fail("Slow down a little - try again in a while", 429);
+  const b = await body(req);
+  const handle = String(b.handle || "").trim().toLowerCase().replace(/^@/, "");
+  if (!HANDLE_RE.test(handle)) return fail("Your @name needs 3-20 letters, numbers or _");
+  if (RESERVED.has(handle) || (await env.DB.prepare("SELECT 1 AS x FROM banned_handles WHERE handle = ?").bind(handle).first()))
+    return fail("That @name is reserved - pick another");
+  const taken = await env.DB.prepare("SELECT user_id FROM profiles WHERE handle = ?").bind(handle).first();
+  if (taken && taken.user_id !== user.id) return fail("That @name is taken - pick another", 409);
+  const name = cleanText(b.name, 32) || handle, bio = cleanText(b.bio, 160), color = cleanColor(b.color), t = now();
+  const old = await profileOf(env, user.id);
+  if (old) await env.DB.prepare("UPDATE profiles SET handle = ?, name = ?, bio = ?, color = ?, updated = ? WHERE user_id = ?").bind(handle, name, bio, color, t, user.id).run();
+  else await env.DB.prepare("INSERT INTO profiles (user_id, handle, name, bio, color, avatar, created, updated) VALUES (?, ?, ?, ?, ?, 0, ?, ?)").bind(user.id, handle, name, bio, color, t, t).run();
+  return json({ ok: true, profile: publicProfile(origin, await profileOf(env, user.id)) });
+}
+async function profileAvatar(req, user, env, origin) {
+  const p = await profileOf(env, user.id);
+  if (!p) return fail("Make your profile first");
+  if (!(await allow(env, `avatar:${user.id}`, 20, 3600))) return fail("Slow down a little - try again in a while", 429);
+  const b = await body(req);
+  if (b.remove) {
+    await env.BUCKET.delete(`avatars/${user.id}.jpg`);
+    await env.DB.prepare("UPDATE profiles SET avatar = 0 WHERE user_id = ?").bind(user.id).run();
+    return json({ ok: true, avatar: "" });
+  }
+  let bytes;
+  try { bytes = Uint8Array.from(atob(String(b.img || "")), (c) => c.charCodeAt(0)); } catch { return fail("That picture didn't come through"); }
+  if (bytes.length < 100 || bytes.length > 300000 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return fail("That picture didn't come through");
+  await env.BUCKET.put(`avatars/${user.id}.jpg`, bytes, { httpMetadata: { contentType: "image/jpeg" } });
+  const v = (p.avatar || 0) + 1;
+  await env.DB.prepare("UPDATE profiles SET avatar = ?, updated = ? WHERE user_id = ?").bind(v, now(), user.id).run();
+  return json({ ok: true, avatar: avatarUrl(origin, { ...p, avatar: v }) });
+}
+async function profilePin(req, user, env) {
+  const b = await body(req), id = String(b.id || "");
+  const s = await env.DB.prepare("SELECT id FROM shares WHERE id = ? AND user_id = ?").bind(id, user.id).first();
+  if (!s) return fail("That share link isn't yours or is gone", 404);
+  if (!b.on) { await env.DB.prepare("DELETE FROM pins WHERE user_id = ? AND share_id = ?").bind(user.id, id).run(); return json({ ok: true }); }
+  const c = await env.DB.prepare(`SELECT COUNT(*) AS n, MAX(p.pos) AS m FROM pins p JOIN shares s ON s.id = p.share_id
+      WHERE p.user_id = ? AND (s.expires = 0 OR s.expires > ?)`).bind(user.id, now()).first();
+  if ((c.n || 0) >= PIN_MAX) return fail(`You can pin up to ${PIN_MAX} clips - unpin one first`);
+  await env.DB.prepare("INSERT OR IGNORE INTO pins (user_id, share_id, pos) VALUES (?, ?, ?)").bind(user.id, id, (c.m || 0) + 1).run();
+  return json({ ok: true });
+}
+async function followSet(req, user, env, origin) {
+  if (!(await allow(env, `follow:${user.id}`, 120, 3600))) return fail("Slow down a little - try again in a while", 429);
+  const b = await body(req), handle = String(b.handle || "").trim().toLowerCase().replace(/^@/, "").replace(/^.*\/u\//, "").replace(/\/.*$/, "");
+  const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
+  if (!p) return fail(`Nobody is called @${handle || "?"} on Echo`, 404);
+  if (p.user_id === user.id) return fail("That's you!");
+  if (b.on === false) await env.DB.prepare("DELETE FROM follows WHERE follower = ? AND followee = ?").bind(user.id, p.user_id).run();
+  else await env.DB.prepare("INSERT OR IGNORE INTO follows (follower, followee, created) VALUES (?, ?, ?)").bind(user.id, p.user_id, now()).run();
+  return json({ ok: true, profile: publicProfile(origin, p) });
+}
+async function profileDelete(user, env) {
+  await env.BUCKET.delete(`avatars/${user.id}.jpg`);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM pins WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM follows WHERE follower = ? OR followee = ?").bind(user.id, user.id),
+    env.DB.prepare("DELETE FROM profiles WHERE user_id = ?").bind(user.id),
+  ]);
+  return json({ ok: true });
+}
+async function avatarFile(env, handle) {
+  const p = await env.DB.prepare("SELECT user_id, avatar FROM profiles WHERE handle = ?").bind(handle).first();
+  const o = p && p.avatar ? await env.BUCKET.get(`avatars/${p.user_id}.jpg`) : null;
+  if (!o) return new Response("no picture", { status: 404 });
+  return new Response(o.body, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" } });
+}
+
+/// echoclip.link/u/<handle>: the public profile page
+async function profilePage(req, env, handle) {
+  const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
+  if (!p) return notFound(req, env);
+  const origin = new URL(req.url).origin, t = now();
+  const fc = await env.DB.prepare("SELECT COUNT(*) AS n FROM follows WHERE followee = ?").bind(p.user_id).first();
+  const pins = ((await env.DB.prepare(`SELECT s.* FROM pins x JOIN shares s ON s.id = x.share_id
+      WHERE x.user_id = ? AND s.user_id = x.user_id AND (s.expires = 0 OR s.expires > ?) ORDER BY x.pos LIMIT ?`).bind(p.user_id, t, PIN_MAX).all()).results) || [];
+  const color = cleanColor(p.color), name = p.name || p.handle, followers = (fc && fc.n) || 0;
+  const av = p.avatar ? `/u/${p.handle}/avatar.jpg?v=${p.avatar}` : "";
+  const avatar = av ? `<img class="av" src="${av}" alt="">` : `<span class="av">${esc(name[0].toUpperCase())}</span>`;
+  const len = (d) => (d ? `${Math.floor(d / 60)}:${String(Math.round(d % 60)).padStart(2, "0")}` : "");
+  const cards = pins.map((s) => {
+    const title = (s.title || s.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Clip", game = shareGame(s);
+    return `<a class="clip" href="/s/${s.id}"><span class="th">${s.thumb ? `<img src="/s/${s.id}.jpg" alt="" loading="lazy">` : ""}<span class="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>${s.dur ? `<b>${len(s.dur)}</b>` : ""}</span>
+<span class="ct"><strong>${esc(title)}</strong>${game ? `<small>${esc(game)}</small>` : ""}</span></a>`;
+  }).join("");
+  const desc = p.bio || `${name} clips with Echo, the lightweight, ad-free game clipper.`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(name)} (@${esc(p.handle)}) - Echo</title>
+<meta name="description" content="${esc(desc)}">
+<meta name="theme-color" content="${color}">
+<meta property="og:site_name" content="Echo">
+<meta property="og:title" content="${esc(name)} (@${esc(p.handle)})">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:type" content="profile">
+<meta property="og:url" content="${origin}/u/${p.handle}">
+<meta property="og:image" content="${av ? origin + av : origin + "/og.png"}">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+*{box-sizing:border-box;margin:0}
+body{min-height:100vh;background:#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+header{max-width:960px;margin:0 auto;padding:18px 20px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px}
+.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);display:grid;place-items:center}
+.top{margin-left:auto;font-size:14px;color:#a0a0ab}.top:hover{color:#f5f5f7}
+main{max-width:960px;margin:0 auto;padding:0 20px 40px}
+.banner{height:150px;border-radius:18px;background:radial-gradient(500px 200px at 20% 0%,${color}cc,transparent 70%),radial-gradient(600px 220px at 90% 120%,${color}66,transparent 70%),#16161a;border:1px solid #26262c}
+.head{display:flex;align-items:flex-end;gap:18px;padding:0 24px;margin-top:-52px;flex-wrap:wrap}
+.av{width:112px;height:112px;border-radius:50%;object-fit:cover;border:5px solid #0d0d10;background:${color};display:grid;place-items:center;font-size:44px;font-weight:700;color:#fff;flex:none}
+.who{padding-bottom:8px;min-width:0}
+h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:28px;line-height:1.15;word-break:break-word}
+.handle{color:#a0a0ab;font-size:15px}
+.meta{margin-left:auto;padding-bottom:12px;display:flex;gap:10px;align-items:center}
+.count{color:#a0a0ab;font-size:14px}.count b{color:#f5f5f7}
+.fbtn{height:38px;padding:0 18px;border-radius:11px;border:0;font:inherit;font-weight:600;color:#fff;background:${color};cursor:pointer}
+.fbtn:hover{filter:brightness(1.1)}
+.bio{margin:16px 24px 0;color:#c9c9d1;white-space:pre-wrap;max-width:640px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#6b6b76;margin:34px 0 12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
+.clip{background:#16161a;border:1px solid #26262c;border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s}
+.clip:hover{transform:translateY(-3px);border-color:${color}99}
+.th{position:relative;display:block;aspect-ratio:16/9;background:linear-gradient(135deg,${color}33,#1e1e23)}
+.th img{width:100%;height:100%;object-fit:cover;display:block}
+.th b{position:absolute;right:8px;bottom:8px;font-size:12px;background:#000c;padding:1px 6px;border-radius:6px}
+.play{position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;background:#0009;display:grid;place-items:center;opacity:0;transition:opacity .15s}
+.clip:hover .play{opacity:1}.play svg{width:22px;height:22px;fill:#fff;margin-left:2px}
+.ct{display:block;padding:10px 12px}.ct strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ct small{color:#6b6b76;font-size:12.5px}
+.empty{color:#6b6b76}
+.note{position:fixed;left:50%;bottom:24px;width:min(560px,calc(100vw - 32px));transform:translateX(-50%) translateY(20px);opacity:0;transition:.2s;background:#1e1e23;border:1px solid #26262c;border-radius:12px;padding:12px 16px;font-size:14px;color:#a0a0ab;max-width:92vw;box-shadow:0 10px 30px #000a}
+.note.on{opacity:1;transform:translateX(-50%)}.note b{color:#f5f5f7}.note a{color:${color};font-weight:600}
+footer{max-width:960px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-size:13px}footer a{color:#a0a0ab}
+@media(max-width:640px){.head{padding:0 8px}.meta{margin-left:0;width:100%}.bio{margin:14px 8px 0}.top{display:none}}
+</style></head><body>
+<header><a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a><a class="top" href="/download">Get Echo - free, no ads</a></header>
+<main>
+<div class="banner"></div>
+<div class="head">${avatar}<div class="who"><h1>${esc(name)}</h1><div class="handle">@${esc(p.handle)}</div></div>
+<div class="meta"><span class="count"><b>${followers}</b> follower${followers === 1 ? "" : "s"}</span><button class="fbtn" id="fbtn" data-h="${esc(p.handle)}">Follow</button></div></div>
+${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ""}
+<h2>Pinned clips</h2>
+${cards ? `<div class="grid">${cards}</div>` : `<p class="empty">No pinned clips yet.</p>`}
+</main>
+<div class="note" id="note"><b>@${esc(p.handle)} copied.</b> To follow, open Echo → Settings → Profile and paste it under Following · <a href="/download">Get Echo</a></div>
+<footer>Echo profile · <a href="/terms">Terms</a> · Report this profile: <a href="mailto:support@echoclip.link?subject=Report%20profile%20${esc(p.handle)}">support@echoclip.link</a></footer>
+<script src="/profile.js" defer></script>
+</body></html>`;
+  return new Response(req.method === "HEAD" ? null : html, { headers: {
+    "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60",
+    "content-security-policy": "default-src 'none'; script-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin",
+  } });
 }
 
 /// William's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
@@ -691,6 +888,8 @@ async function adminStats(req, env) {
   const newest = await all("SELECT email, plan, created FROM users ORDER BY created DESC LIMIT 10");
   const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 ORDER BY over_since LIMIT 20");
   const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
+  const profs = await one("SELECT COUNT(*) AS n, SUM(created > ?) AS d7 FROM profiles", t - 7 * d);
+  const fl = await one("SELECT COUNT(*) AS n FROM follows");
   // income: what each subscription really pays per month after discounts (stored by the Polar webhook);
   // subscriptions from before that (sub_cents -1) are counted as "unknown", not guessed
   const paidRows = await all("SELECT sub_cents, sub_currency FROM users WHERE polar_sub IS NOT NULL");
@@ -718,8 +917,26 @@ async function adminStats(req, env) {
     money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
     shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
     logs, backup, top, newest, over,
+    profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0 },
     site: await siteStats(env),
   });
+}
+
+/// William removes a reported profile: POST /admin/profile-takedown {handle, block?} with header x-admin-key.
+/// Removes the page, picture, pins and follows (clips and share links stay); block = the @name can't be used again.
+async function profileTakedown(req, env) {
+  const key = req.headers.get("x-admin-key") || "";
+  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
+  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const b = await body(req);
+  const handle = String(b.handle || "").trim().toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/\/.*$/, "");
+  const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
+  if (b.block && HANDLE_RE.test(handle)) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(handle, now()).run();
+  if (!p) return b.block ? json({ ok: true, handle, removed: false, blocked: true }) : fail("No profile with that @name", 404);
+  const owner = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(p.user_id).first();
+  await profileDelete({ id: p.user_id }, env);
+  console.log("profile takedown", handle, b.block ? "(blocked)" : "");
+  return json({ ok: true, handle, removed: true, blocked: !!b.block, owner: owner ? owner.email : null });
 }
 
 /// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
@@ -750,6 +967,13 @@ async function migrate(env) {
     // upload links handed out but not finished yet (they count toward the plan until done or expired)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, size INTEGER NOT NULL, expires INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS stats (day TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, k))"),
+    // light profiles (chat 19): a name, picture, bio and colour, up to 6 pinned share links, and who you follow
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS profiles (user_id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT, bio TEXT, color TEXT, avatar INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS pins (user_id TEXT NOT NULL, share_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (user_id, share_id))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS follows (follower TEXT NOT NULL, followee TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (follower, followee))"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS follows_followee ON follows (followee)"),
+    // @names William removed and blocked (can't be taken again)
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS banned_handles (handle TEXT PRIMARY KEY, at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
     // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
@@ -816,15 +1040,34 @@ const BOTS = /discordbot|twitterbot|facebookexternalhit|slackbot|telegrambot|wha
 
 /// /s/<id> in a browser or a chat app's link preview: a small player page with Open Graph tags
 /// (Discord plays og:video inline, like Medal links). Video players and downloads use /s/<id>.mp4.
-function sharePage(req, row, id) {
+/// the game of a shared clip: its folder in Echo (Echo/<year>/<month>/<day>/<game>/<clip>.mp4), if it isn't a date
+function shareGame(row) {
+  const parts = row.key.split("/"), folder = parts.length > 2 ? parts[parts.length - 2] : "";
+  return folder && !folder.startsWith(".") && !/^\d|^(january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(folder) && folder !== "Echo" ? folder : "";
+}
+/// oEmbed for a share link: Discord shows provider_name as the small line on top and author_name under it
+/// (like Medal's "Medal - Record what just happened…" / "player · game")
+async function shareOembed(req, env, id) {
+  const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
+  if (!row || (row.expires && row.expires < now())) return json({ error: "gone" }, 404);
+  const origin = new URL(req.url).origin, prof = await profileOf(env, row.user_id);
+  const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
+  return new Response(JSON.stringify({
+    version: "1.0", type: "link", title: name,
+    // one line on top (William: two lines was too much); clicking it opens the download page
+    // with a profile the same line credits the clipper and links to their page
+    provider_name: prof ? `${prof.name || prof.handle} (@${prof.handle}) on Echo · lightweight, ad-free clipping` : "Echo · lightweight, ad-free game clipping",
+    provider_url: prof ? `${origin}/u/${prof.handle}` : `${origin}/download`,
+  }), { headers: { "content-type": "application/json", "cache-control": "public, max-age=3600", "access-control-allow-origin": "*" } });
+}
+
+function sharePage(req, row, id, prof) {
   const u = new URL(req.url), base = `${u.origin}/s/${id}`;
   const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
   const w = row.w || 1920, h = row.h || 1080;
   const mins = row.dur ? `${Math.floor(row.dur / 60)}:${String(Math.round(row.dur % 60)).padStart(2, "0")}` : "";
   const img = row.thumb ? `${base}.jpg` : `${u.origin}/og.png`;
-  // the game: the clip's folder in Echo (Echo/<year>/<month>/<day>/<game>/<clip>.mp4), if it isn't a date
-  const parts = row.key.split("/"), folder = parts.length > 2 ? parts[parts.length - 2] : "";
-  const game = folder && !folder.startsWith(".") && !/^\d|^(january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(folder) && folder !== "Echo" ? folder : "";
+  const game = shareGame(row);
   const desc = [mins, game, "Clipped with Echo, the lightweight clipping app"].filter(Boolean).join(" · ");
   const logo = `<svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -851,6 +1094,7 @@ function sharePage(req, row, id) {
 <meta name="twitter:player:width" content="${w}">
 <meta name="twitter:player:height" content="${h}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate" type="application/json+oembed" href="${u.origin}/oembed/${id}" title="${esc(name)}">
 <style>
 *{box-sizing:border-box;margin:0}
 body{min-height:100vh;background:radial-gradient(1000px 420px at 50% -160px,#6a4cf540,transparent 70%),#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
@@ -913,17 +1157,19 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 .ep.touch .epvol input{display:none}.ep.touch .eptip{display:none}
 .ep:-webkit-full-screen{border-radius:0;border:0;width:100%;height:100%}
 .ep:-webkit-full-screen video{max-height:none;height:100vh}
+.by{display:inline-flex;align-items:center;gap:8px;margin-top:8px;color:#f5f5f7;font-weight:600;font-size:14px}.by:hover{text-decoration:none}.by:hover span{text-decoration:underline}
+.by img,.by i{width:26px;height:26px;border-radius:50%;object-fit:cover;flex:none}.by i{display:grid;place-items:center;font-style:normal;font-size:12px;color:#fff}.by small{color:#a0a0ab;font-weight:500}
 @media(max-width:640px){h1{font-size:21px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}.promo .btn{margin-left:0;width:100%;justify-content:center}.top{display:none}}
 </style></head><body>
 <header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
 <main>
 <div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
-<div class="info"><div><h1>${esc(name)}</h1><div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
+<div class="info"><div><h1>${esc(name)}</h1>${prof ? `<a class="by" href="/u/${prof.handle}">${prof.avatar ? `<img src="/u/${prof.handle}/avatar.jpg?v=${prof.avatar}" alt="">` : `<i style="background:${cleanColor(prof.color)}">${esc((prof.name || prof.handle)[0].toUpperCase())}</i>`}<span>${esc(prof.name || prof.handle)} <small>@${esc(prof.handle)}</small></span></a>` : ""}<div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
 <div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
 <div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>
 <div><b>Clip your own moments with Echo</b><p>Free and light enough for low-end PCs. Press one key to save what just happened.</p>
-<div class="pts"><span>No account needed</span><span>Copy straight into Discord</span><span>Windows &amp; Linux</span></div></div>
-<a class="btn p" href="https://echoclip.link/">Get Echo, it's free</a></div>
+<div class="pts"><span>No ads</span><span>No account needed</span><span>Copy straight into Discord</span><span>Windows &amp; Linux</span></div></div>
+<a class="btn p" href="https://echoclip.link/download">Get Echo, it's free</a></div>
 </main>
 <footer>Shared with <a href="https://echoclip.link/">Echo</a> · <a href="https://echoclip.link/terms">Terms</a> · Report this clip: <a href="mailto:support@echoclip.link?subject=Report%20${id}">support@echoclip.link</a></footer>
 <script src="/player.js" defer></script>
@@ -1227,7 +1473,7 @@ async function serveShare(req, env, id, ext) {
   // the bare link: a page for browsers and link previews (Discord, …); video players get the file as before
   if (!ext) {
     const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";
-    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id);
+    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id, await profileOf(env, row.user_id));
   }
   const name = row.key.split("/").pop();
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
@@ -1268,7 +1514,7 @@ async function serveShare(req, env, id, ext) {
   return new Response(o.body, { headers: h });
 }
 
-const AUTHED = new Set(["GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout",
+const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout",
   "POST /upload", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
@@ -1288,6 +1534,10 @@ export default {
         return r || (await notFound(req, env));
       }
       if (route === "POST /hit") return await hit(req, env);
+      const pm = url.pathname.match(/^\/u\/([a-z0-9_]{3,20})(\/avatar\.jpg)?\/?$/);
+      if (pm && (req.method === "GET" || req.method === "HEAD")) return pm[2] ? await avatarFile(env, pm[1]) : await profilePage(req, env, pm[1]);
+      const om = url.pathname.match(/^\/oembed\/([a-z0-9]{6,20})\/?$/);
+      if (om && req.method === "GET") return await shareOembed(req, env, om[1]);
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") return await update(env, um[1], um[3]);
       if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
@@ -1300,6 +1550,7 @@ export default {
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
+      if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);
       if (route === "GET /admin/stats") return await adminStats(req, env);
       if (route === "POST /log") return await logUpload(req, env, url.origin);
       const lm = url.pathname.match(/^\/log\/([a-z2-9]{14})\/?$/);
@@ -1316,6 +1567,12 @@ export default {
       if (route === "POST /delete") return await del(req, user, env);
       if (route === "POST /move") return await move(req, user, env);
       if (route === "POST /account/delete") return await deleteAccount(req, user, env);
+      if (route === "GET /profile/me") return await profileMe(user, env, url.origin);
+      if (route === "POST /profile") return await profileSave(req, user, env, url.origin);
+      if (route === "POST /profile/avatar") return await profileAvatar(req, user, env, url.origin);
+      if (route === "POST /profile/pin") return await profilePin(req, user, env);
+      if (route === "POST /profile/delete") return await profileDelete(user, env);
+      if (route === "POST /follow") return await followSet(req, user, env, url.origin);
       if (route === "POST /checkout") return await checkout(req, user, env, url.origin);
       if (route === "POST /portal") return await portal(user, env);
       if (route === "POST /auth/logout") {

@@ -94,3 +94,77 @@
   }
   requestAnimationFrame(tick);
 })();
+
+// homepage app preview: hover shows a clip's buttons like in Echo, Copy ▾ opens the real menu (share link, Discord sizes);
+// pressing anything explains what it does in Echo and points to the download - nothing actually happens
+(() => {
+  const app = document.querySelector(".app"); if (!app) return;
+  const svg = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
+  const ICON = {
+    edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
+    link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
+    folder: svg('<path d="M3 7h6l2 2h10v10H3z"/>'),
+    del: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
+  };
+  const SAY = {
+    copy: "copies the clip - paste it straight into Discord or anywhere",
+    full: "copies the full-quality clip",
+    free: "shrinks the clip to fit Discord's free upload limit, then copies it",
+    basic: "shrinks the clip to fit Nitro Basic, then copies it",
+    nitro: "copies the clip sized for Nitro",
+    link: "uploads the clip and copies a link that plays right inside Discord",
+    edit: "opens the editor: trim, captions, zoom, stickers and more",
+    folder: "shows the clip in its folder",
+    del: "moves the clip to the Recycle Bin",
+    save: "saves the last minutes you played as a clip",
+    rec: "starts recording by hand, like a normal recorder",
+  };
+  const box = document.createElement("div"); box.className = "atoasts"; (app.querySelector(".amain") || app).appendChild(box);
+  const toast = (k) => {
+    const old = [...box.children].find((t) => t.dataset.k === k);
+    if (old) { clearTimeout(old._h); old._h = setTimeout(() => out(old), 4500); return; }
+    const t = document.createElement("div"); t.className = "atoast"; t.dataset.k = k;
+    t.innerHTML = `<span><b>Just a preview.</b> In Echo, this ${SAY[k]}.</span><a href="/download">Get Echo →</a>`;
+    box.appendChild(t); requestAnimationFrame(() => t.classList.add("on"));
+    while (box.children.length > 2) out(box.firstChild);
+    t._h = setTimeout(() => out(t), 4500);
+  };
+  const out = (t) => { if (!t || t._gone) return; t._gone = true; t.classList.remove("on"); setTimeout(() => t.remove(), 220); };
+  const menu = document.createElement("div"); menu.className = "mmenu"; menu.hidden = true;
+  menu.innerHTML = '<button class="main" data-k="link">' + ICON.link + 'Copy share link</button>' +
+    '<div class="chips"><button data-k="link">Never</button><button data-k="link">1 day</button><button data-k="link" class="on">7 days</button><button data-k="link">30 days</button></div><hr>' +
+    '<p>Copy the video</p><button data-k="full">Full size</button><button data-k="free">Discord Free<small>shrinks to fit</small></button>' +
+    '<button data-k="basic">Nitro Basic<small>shrinks to fit</small></button><button data-k="nitro">Nitro</button>';
+  app.appendChild(menu);
+  let owner = null;
+  const closeMenu = () => { menu.hidden = true; if (owner) owner.classList.remove("menu"); owner = null; };
+  app.querySelectorAll(".mclip").forEach((c) => {
+    const act = c.querySelector(".mact"); if (!act) return;
+    const star = act.querySelector(".mstar");
+    for (const k of ["edit", "link", "folder", "del"]) {
+      const i = document.createElement("i"); i.className = "mx" + (k === "del" ? " del" : ""); i.dataset.k = k; i.title = k === "link" ? "Share link" : k[0].toUpperCase() + k.slice(1);
+      i.innerHTML = ICON[k]; act.insertBefore(i, star);
+    }
+  });
+  app.addEventListener("click", (e) => {
+    const t = e.target;
+    const ch = t.closest(".mch");
+    if (ch) {
+      const c = ch.closest(".mclip"); if (owner === c) return closeMenu();
+      closeMenu(); owner = c; c.classList.add("menu");
+      const r = ch.getBoundingClientRect(), a = app.getBoundingClientRect();
+      menu.hidden = false;
+      const left = Math.min(r.left - a.left, a.width - menu.offsetWidth - 8);
+      let top = r.bottom - a.top + 4; if (top + menu.offsetHeight > a.height - 6) top = r.top - a.top - menu.offsetHeight - 4;
+      menu.style.left = Math.max(8, left) + "px"; menu.style.top = top + "px";
+      return;
+    }
+    const star = t.closest(".mstar"); if (star) { star.classList.toggle("on"); return; }
+    const k = t.closest("[data-k]");
+    if (k && SAY[k.dataset.k]) { closeMenu(); return toast(k.dataset.k); }
+    if (t.closest(".mcopy")) { closeMenu(); return toast("copy"); }
+    const b = t.closest(".abtn"); if (b) { closeMenu(); return toast(b.classList.contains("pri") ? "save" : "rec"); }
+    if (!t.closest(".mmenu")) closeMenu();
+  });
+  document.addEventListener("click", (e) => { if (!app.contains(e.target)) closeMenu(); });
+})();

@@ -142,6 +142,7 @@ function draw(j) {
       ${tile("Paying", m.paying, u.total ? `${(m.paying / u.total * 100).toFixed(1)}% of accounts` + (u.paid > m.paying ? ` · ${u.paid} with a plan` : "") : "")}
       ${tile("Over their plan", u.over, u.over ? "clips get removed after 30 days" : "nobody")}
       ${tile("Share links", j.shares.live, `+${j.shares.new_7d} this week · ${j.shares.total} made`)}
+      ${tile("Profiles", j.profiles ? j.profiles.total : 0, j.profiles ? `+${j.profiles.new_7d} this week · ${j.profiles.follows} follows` : "")}
       ${tile("Logs sent (14 days)", j.logs, j.backup ? "last backup " + esc(j.backup.replace("backups/db-", "").replace(".json.gz", "")) : "no backup yet")}
     </div>
 
@@ -164,12 +165,35 @@ function draw(j) {
     <div class="wrap"><table><tr><th>Email</th><th>Plan</th><th>Joined</th></tr>
       ${rows(j.newest, (n) => `<tr><td>${esc(n.email)}</td><td>${esc(n.plan)}</td><td>${ago(n.created)}</td></tr>`)}</table></div>
 
+    <h2>Remove something</h2>
+    <div class="two">
+      <div class="tile"><div class="k">Reported share link</div>
+        <input id="rmshare" placeholder="https://echoclip.link/s/…" style="width:100%;margin:8px 0">
+        <label class="sub"><input type="checkbox" id="rmclip"> also delete the clip itself</label>
+        <div style="margin-top:10px"><button id="rmsharego">Remove link</button> <span class="sub" id="rmsharemsg"></span></div></div>
+      <div class="tile"><div class="k">Reported profile</div>
+        <input id="rmprof" placeholder="@name or https://echoclip.link/u/…" style="width:100%;margin:8px 0">
+        <label class="sub"><input type="checkbox" id="rmblock" checked> block the @name so nobody can take it again</label>
+        <div style="margin-top:10px"><button id="rmprofgo">Remove profile</button> <span class="sub" id="rmprofmsg"></span></div></div>
+    </div>
+
     <div class="note">Only Echo Cloud accounts are counted (people who only record or use their own cloud aren't visible here).
       Storage is the last count per account. Income is what each subscription pays per month after discounts (yearly plans divided by 12), before Polar's fee and VAT;
       Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.
       Website: counted without cookies or stored IP addresses (bots and scripts skipped); "visitors" are unique per day, days are UTC.
       "Came from" only lists other websites (Discord, Reddit, Google…); direct visits aren't listed.</div>`;
   $("#re").onclick = load;
+  // takedowns: the owner's email comes back so you can write to them if needed
+  const post = async (path, b, out) => {
+    out.textContent = "…";
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify(b) });
+      const x = await r.json().catch(() => ({}));
+      out.textContent = r.ok ? `Done${x.owner ? " · owner " + x.owner : ""}${x.blocked ? " · @name blocked" : ""}` : (x.error || "Error " + r.status);
+    } catch { out.textContent = "Couldn't reach echoclip.link"; }
+  };
+  $("#rmsharego").onclick = () => { const v = $("#rmshare").value.trim(); if (v && confirm("Remove this share link?")) post("/admin/takedown", { id: v, delete_clip: $("#rmclip").checked }, $("#rmsharemsg")); };
+  $("#rmprofgo").onclick = () => { const v = $("#rmprof").value.trim(); if (v && confirm("Remove this profile?")) post("/admin/profile-takedown", { handle: v, block: $("#rmblock").checked }, $("#rmprofmsg")); };
   $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
 }
 load();
