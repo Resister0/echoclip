@@ -561,6 +561,8 @@
   .eruler .tlab { height:26px; font-variant-numeric:tabular-nums; color:var(--text); font-weight:600; }
   .eruler { position:relative; height:26px; border-bottom:1px solid var(--line); cursor:pointer; }
   .erng { position:absolute; top:0; bottom:0; background:rgba(var(--hi-rgb),0.13); border-left:2px solid var(--hi); border-right:2px solid var(--hi); pointer-events:none; z-index:5; }
+  .erngx { position:absolute; top:3px; right:4px; width:20px; height:20px; border-radius:6px; border:0; background:var(--hi); color:#000; font-size:11px; font-weight:700; line-height:20px; padding:0; cursor:pointer; pointer-events:auto; opacity:.85; }
+  .erngx:hover { opacity:1; }
   .eruler span { position:absolute; top:5px; font-size:11px; color:var(--dim); transform:translateX(-50%); }
   .eruler b.emk, .seek .pmk { position:absolute; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:9px solid var(--hi); transform:translateX(-50%); pointer-events:none; filter:drop-shadow(0 0 2px #000); }
   .eruler b.emk { bottom:0; } .seek .pmk { top:-6px; z-index:3; }
@@ -3138,7 +3140,10 @@
     for (let t = 0, n = 0; t <= Math.max(T, ed.dur) + 0.001; t = ++n * step) r += `<i style="left:${t * ed.pps}px"></i><span style="left:${t * ed.pps}px">${step < 1 ? fmtT(t) : fmtDur(t)}</span>`;
     for (const m of ed.marks || []) { const o = srcToOut(m); if (o !== null) r += `<b class="emk" style="left:${o * ed.pps}px" title="Bookmark"></b>`; }
     $("eruler").innerHTML = r; trackLabel($("eruler"), fmtT(ed.T), "");
-    { let b = $("erngband"); if (!b) { b = document.createElement("div"); b.id = "erngband"; b.className = "erng"; } $("etlin").appendChild(b);
+    { let b = $("erngband"); if (!b) { b = document.createElement("div"); b.id = "erngband"; b.className = "erng";
+        const x = document.createElement("button"); x.className = "erngx"; x.title = "Clear highlight (Esc)"; x.textContent = "✕";
+        x.addEventListener("pointerdown", ev => { ev.stopPropagation(); ev.preventDefault(); setRng(null); });
+        b.appendChild(x); } $("etlin").appendChild(b);
       const R = ed.rng; b.style.display = R ? "block" : "none"; $("erngbar").style.display = R ? "inline-flex" : "none";
       if (R) { Object.assign(b.style, { left: LP + R.a * ed.pps + "px", width: (R.b - R.a) * ed.pps + "px" }); $("erngt").textContent = `${fmtT(R.a)} – ${fmtT(R.b)} (${(R.b - R.a).toFixed(1)}s)`; } }
     // pieces
@@ -3337,7 +3342,21 @@
   // scrub on ruler / empty track space
   $("etlin").addEventListener("pointerdown", e => {
     if (e.target.closest(".eseg,.etb,.eab,.eov")) return;
-    if (!e.target.closest(".eruler")) {        // empty space: drag a box to select several things
+    if (!e.target.closest(".eruler") && !e.ctrlKey) {   // empty space: drag sideways to highlight that part (yellow)
+      const lin = $("etlin"), at = ev => (ev.clientX - lin.getBoundingClientRect().left - LP) / ed.pps;
+      const x0 = e.clientX, a = at(e); let dragged = false;
+      const mv = ev => { if (!dragged && Math.abs(ev.clientX - x0) <= 4) return; dragged = true; setRng(a, at(ev)); };
+      const up = ev => {
+        removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
+        if (dragged) { select(null); rngHint(); return; }
+        const t = at(ev);
+        if (ed.rng && (t < ed.rng.a || t > ed.rng.b)) setRng(null);   // clicking outside the highlight clears it
+        select(null); seekOut(t); drawTexts();
+      };
+      addEventListener("pointermove", mv); addEventListener("pointerup", up);
+      return;
+    }
+    if (!e.target.closest(".eruler")) {        // Ctrl + drag on empty space: a box to select several things
       const x0 = e.clientX, y0 = e.clientY, box = document.createElement("div"); box.className = "emarq";
       const lin = $("etlin"); lin.appendChild(box); let dragged = false;
       const mv = ev => {
@@ -3348,7 +3367,11 @@
       const up = ev => {
         removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
         const R = box.getBoundingClientRect(); box.remove();
-        if (!dragged) { select(null); seekOut((ev.clientX - lin.getBoundingClientRect().left - LP) / ed.pps); drawTexts(); return; }
+        if (!dragged) {
+          const t = (ev.clientX - lin.getBoundingClientRect().left - LP) / ed.pps;
+          if (ed.rng && (t < ed.rng.a || t > ed.rng.b)) setRng(null);   // clicking outside the highlight clears it
+          select(null); seekOut(t); drawTexts(); return;
+        }
         const hit = [...lin.querySelectorAll("[data-k]")].filter(el => { const b = el.getBoundingClientRect(); return b.right > R.left && b.left < R.right && b.bottom > R.top && b.top < R.bottom; });
         ed.sel = null; ed.msel = new Set(hit.map(el => el.dataset.k + ":" + el.dataset.i));
         if (ed.msel.size === 1) { const [k, i] = [...ed.msel][0].split(":"); return select({ k, i: +i }); }
@@ -3617,7 +3640,7 @@
     } else {
       el.innerHTML = `<h3>Clip</h3><label>Volume <span id="evolv">${Math.round(ed.volume * 100)}%</span></label><input type="range" id="evol" min="0" max="2" step="0.05" value="${ed.volume}">
         <div class="row" style="border:0;padding:12px 0"><div class="lbl">Mute audio</div><label class="switch"><input type="checkbox" id="emute" ${ed.mute ? "checked" : ""}><span></span></label></div>
-        <div class="tips"><b style="color:var(--text)">Shortcuts</b><br><kbd>Space</kbd> play / pause<br><kbd>S</kbd> split at playhead<br><kbd>Del</kbd> delete (leaves a gap) · <kbd>Shift</kbd>+<kbd>Del</kbd> ripple delete<br>Right-click the timeline for more (close gaps, speed…)<br><kbd>T</kbd> add text<br><kbd>B</kbd> blur / colour box (hide names, chat…)<br><kbd>Z</kbd> zoom in on a spot<br><kbd>U</kbd> separate audio of a piece<br><kbd>F</kbd> freeze frame<br>Click a piece for colour, transitions and reverse<br><kbd>C</kbd> auto captions from your mic<br><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo<br>Drag piece edges to trim them.<br>Drag a piece anywhere — gaps play as black.<br>Drag a piece <b>up</b> to put it on a layer (overlay / PiP).<br><kbd>Ctrl</kbd>+scroll to zoom the timeline.<br>Drag on empty timeline space to box-select; <kbd>Ctrl</kbd>+click adds; <kbd>Ctrl</kbd>+<kbd>A</kbd> all.</div>`;
+        <div class="tips"><b style="color:var(--text)">Shortcuts</b><br><kbd>Space</kbd> play / pause<br><kbd>S</kbd> split at playhead<br><kbd>Del</kbd> delete (leaves a gap) · <kbd>Shift</kbd>+<kbd>Del</kbd> ripple delete<br>Right-click the timeline for more (close gaps, speed…)<br><kbd>T</kbd> add text<br><kbd>B</kbd> blur / colour box (hide names, chat…)<br><kbd>Z</kbd> zoom in on a spot<br><kbd>U</kbd> separate audio of a piece<br><kbd>F</kbd> freeze frame<br>Click a piece for colour, transitions and reverse<br><kbd>C</kbd> auto captions from your mic<br><kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo<br>Drag piece edges to trim them.<br>Drag a piece anywhere — gaps play as black.<br>Drag a piece <b>up</b> to put it on a layer (overlay / PiP).<br><kbd>Ctrl</kbd>+scroll to zoom the timeline.<br>Drag on empty timeline space to highlight a part (yellow): <kbd>X</kbd> cuts it, <kbd>I</kbd> or <kbd>Esc</kbd> clears it.<br><kbd>Ctrl</kbd>+drag to box-select; <kbd>Ctrl</kbd>+click adds; <kbd>Ctrl</kbd>+<kbd>A</kbd> all.</div>`;
       $("evol").onpointerdown = () => pushHist();
       $("evol").oninput = e => { ed.volume = +e.target.value; $("evolv").textContent = Math.round(ed.volume * 100) + "%"; drawHead(); };
       $("emute").onchange = e => { pushHist(); ed.mute = e.target.checked; drawHead(); };
@@ -3899,6 +3922,9 @@
     select({ k: "txt", i: ed.texts.length - 1 }); const ta = $("eitext"); if (ta) { ta.focus(); ta.select(); }
   }
   /* ----- highlighted range (Vegas-style): I / O keys or Shift+drag on the ruler ----- */
+  // first time in a session: say how to get rid of it (people pressed I by accident and were stuck with it)
+  let rngHinted = false;
+  const rngHint = () => { if (rngHinted || !ed.rng) return; rngHinted = true; toast("Part highlighted - X cuts it · I, Esc, ✕ or a click outside it clears it"); };
   function setRng(a, b) {
     if (a == null) ed.rng = null;
     else { const T = total(); a = Math.max(0, Math.min(a, T)); b = Math.max(0, Math.min(b, T)); if (b < a) [a, b] = [b, a]; ed.rng = b - a >= 0.1 ? { a, b } : null; }
@@ -4117,8 +4143,10 @@
     if (e.target.matches("textarea,input:not([type]),input[type=text]")) { if (e.key === "Escape") e.target.blur(); return; }
     if (e.code === "Space") { e.preventDefault(); ed.playing ? edPause() : edPlay(); }
     else if (e.code === "KeyS") split();
-    else if (e.code === "KeyI") setRng(ed.T, ed.rng ? Math.max(ed.rng.b, ed.T + 0.1) : total());
-    else if (e.code === "KeyO") setRng(ed.rng ? Math.min(ed.rng.a, ed.T - 0.1) : 0, ed.T);
+    // I / O again at the same spot takes the highlight away
+    // I: highlight from the playhead to the end - or, when something is highlighted, take it away
+    else if (e.code === "KeyI") { if (ed.rng) setRng(null); else { setRng(ed.T, total()); rngHint(); } }
+    else if (e.code === "KeyO") { if (ed.rng && Math.abs(ed.rng.b - ed.T) < 0.05) setRng(null); else { setRng(ed.rng ? Math.min(ed.rng.a, ed.T - 0.1) : 0, ed.T); rngHint(); } }
     else if (e.code === "KeyX" && !e.ctrlKey) cutRange();
     else if (e.code === "KeyT") addText();
     else if (e.ctrlKey && e.code === "KeyD") { e.preventDefault(); duplicateSel(); }

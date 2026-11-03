@@ -5,6 +5,7 @@ internal builds). Release builds since the open-source switch come from this rep
 
 ## Next release
 - Coming back from the tray now really checks for updates (at most every 5 minutes)
+- Editor: drag on empty timeline space to highlight a part in yellow (X cuts it); I, Esc, its ✕ button or a click outside it takes the highlight away. Box-select is now Ctrl+drag
 - Music apps (Spotify, Apple Music, TIDAL, Deezer, VLC…) get their own audio track, like the game, Discord and browsers - cut the music out of a clip or keep only it (editor: U)
 - Fixed: since 1.0.30 some small texts in Settings were invisible - the FPS test's progress and result, the buffer size note, a few hints and notes on clip cards
 - Fixed: the frame strip in the player's seek bar went black near the end of some (mostly short) clips
