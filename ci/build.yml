@@ -40,8 +40,9 @@ jobs:
         run: |
           UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
           # ffmpeg + ffprobe + rclone go inside the installer (tools/ next to Echo.exe)
+          # ffmpeg 9.0.2, NOT 8.0: with 8.0 every audio track came out empty on a friend's PC (chat 18)
           mkdir -p tools dl
-          curl -sSL --retry 3 -o dl/ff.zip https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip
+          curl -sSL --retry 3 -o dl/ff.zip https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip
           curl -sSL --retry 3 -o dl/rc.zip https://downloads.rclone.org/rclone-current-windows-amd64.zip
           (cd dl && unzip -q ff.zip && unzip -q rc.zip)
           cp dl/*/bin/ffmpeg.exe dl/*/bin/ffprobe.exe tools/

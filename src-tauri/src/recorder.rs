@@ -828,7 +828,7 @@ pub fn ensure_ffmpeg() {
     let zip = dir.join("ffmpeg.zip");
     let mut res = Err(String::new());
     for u in ["https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-              "https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip"] {
+              "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip"] {
         res = download(u, &zip);
         if res.is_ok() {
             break;
@@ -1531,6 +1531,13 @@ pub static MIC_MUTED: AtomicBool = AtomicBool::new(false);
 /// clock change, or a long stall. Clips would come out hours long with broken sound; the watch loop restarts the recorder.
 pub static RESTART_REC: AtomicBool = AtomicBool::new(false);
 /// where ffmpeg's part of the log starts for the running recorder (health(): new error lines after it)
+/// unix ms of the audio thread's last finished write to ffmpeg (0 = not running). A write that never
+/// returns = ffmpeg stopped reading our audio (then every clip is silent / unsaveable).
+static AUDIO_WROTE_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+static REC_STARTED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static REC_LOG_POS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// unix time of the last restart asked for by a capture thread (at most one per minute: no restart loops)
 static LAST_SELF_RESTART: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1710,6 +1717,7 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
         if out.write_all(&chunk).is_err() {
             break; // ffmpeg exited
         }
+        AUDIO_WROTE_AT.store(now_ms(), Ordering::Relaxed);
         written = target;
     }
 }
@@ -1927,6 +1935,7 @@ impl Recorder {
         // keep the previous session's log for troubleshooting - only on the first start of this Echo run:
         // recorder restarts (device changed, unhealthy, settings) keep writing to the same log, so the reason
         // for a restart isn't pushed out of it
+        AUDIO_WROTE_AT.store(0, Ordering::Relaxed);
         static ROTATED: AtomicBool = AtomicBool::new(false);
         // (or when it grew past 5 MB, Echo running for weeks)
         if !ROTATED.swap(true, Ordering::Relaxed) || fs::metadata(log_path()).map_or(false, |m| m.len() > 5_000_000) {
@@ -2037,6 +2046,7 @@ impl Recorder {
                 *self.mode.lock().unwrap() = mode.into();
                 let _ = fs::write(&mode_file, i.to_string());
                 REC_LOG_POS.store(fs::metadata(log_path()).map(|m| m.len()).unwrap_or(0), Ordering::Relaxed);
+                REC_STARTED_MS.store(now_ms(), Ordering::Relaxed);
                 log_line(&format!("recording: {} ({} Hz, {} ch)",
                     if mode == "gpu" { "ZERO-COPY gpu pipeline" } else { "cpu copy fallback" }, rate, ch));
                 return Ok(());
@@ -2317,6 +2327,10 @@ impl Recorder {
                 return Some(format!("no new recording data for {age:.0} s"));
             }
         }
+        let wrote = AUDIO_WROTE_AT.load(Ordering::Relaxed);
+        if wrote > 0 && now_ms().saturating_sub(wrote) > 15_000 {
+            return Some(format!("ffmpeg stopped taking audio {} s ago", now_ms().saturating_sub(wrote) / 1000));
+        }
         #[cfg(windows)]
         if let Some(why) = self.device_changed() {
             return Some(why);
@@ -2456,6 +2470,30 @@ impl Recorder {
                 }
             } else { format!("Sound (peak {max:.0} dB)") };
             r.push((format!("Audio: {name}"), !(silent && expect), detail));
+        }
+        // silent desktop/mic: write what the recorder is really doing to the log (friend's PC, chat 18:
+        // all 6 tracks empty, not reproducible elsewhere)
+        if r.iter().any(|(a, ok, _)| !ok && a.starts_with("Audio")) {
+            let wrote = AUDIO_WROTE_AT.load(Ordering::Relaxed);
+            log_line(&format!("selftest: audio writer last wrote {} ms ago, recorder running {} s",
+                if wrote > 0 { now_ms().saturating_sub(wrote) as i64 } else { -1 },
+                now_ms().saturating_sub(REC_STARTED_MS.load(Ordering::Relaxed)) / 1000));
+            let mut segs: Vec<(SystemTime, PathBuf)> = fs::read_dir(&self.buf_dir).into_iter().flatten()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map_or(false, |x| x == "ts"))
+                .filter_map(|p| modified(&p).map(|t| (t, p))).collect();
+            segs.sort();
+            let v = ffmpeg().arg("-version").output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string()).unwrap_or_default();
+            log_line(&format!("selftest: {v}"));
+            // the newest finished segment (the very newest is still being written)
+            if let Some((_, seg)) = segs.iter().rev().nth(1) {
+                let o = hidden("ffprobe").args(["-v", "error", "-count_packets", "-show_entries",
+                    "stream=index,codec_type,sample_rate,start_time,nb_read_packets", "-of", "csv=p=0"]).arg(seg)
+                    .output().map(|o| format!("{} {}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+                    .unwrap_or_default();
+                log_line(&format!("selftest: {} -> {}", seg.file_name().unwrap_or_default().to_string_lossy(),
+                    o.split_whitespace().collect::<Vec<_>>().join(" ")));
+            }
         }
         let _ = fs::remove_file(&out);
         log_line(&format!("selftest: {}", r.iter().map(|(a, ok, b)| format!("{a}={}{}", if *ok { "ok" } else { "FAIL " }, if *ok { String::new() } else { b.clone() })).collect::<Vec<_>>().join(", ")));

@@ -4,6 +4,7 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- **Fixed: installed Echo (Echo-Setup.exe) recorded clips without any sound** - the installer now includes ffmpeg 9.0.2 instead of 8.0
 - Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
 - The player's Share button makes the same kind of link as "Copy share link"
 - Clips (and the self-test) no longer fail to save when one audio track had no sound data yet - that track is saved as silence
