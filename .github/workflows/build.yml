@@ -160,3 +160,13 @@ jobs:
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
           gh release create latest $files --title "Echo $V" --notes "$notes"
+      - name: Announce on Discord
+        # #announcements webhook = secret DISCORD_WEBHOOK in this repo; not set -> skipped
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          [ -n "$DISCORD_WEBHOOK" ] || { echo "DISCORD_WEBHOOK not set - skipping"; exit 0; }
+          V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); msg=$(git log -1 --pretty=%s)
+          jq -n --arg v "$V" --arg m "$msg" '{username: "Echo", embeds: [{title: ("Echo " + $v + " is out"), url: "https://echoclip.link/changelog", color: 9133302,
+            description: ($m + "\n\nEcho updates itself (or press Check for updates in Settings). New here? https://echoclip.link")}]}' > discord.json
+          curl -sS -f -X POST -H "Content-Type: application/json" --data @discord.json "$DISCORD_WEBHOOK" || echo "::warning::Discord post failed"

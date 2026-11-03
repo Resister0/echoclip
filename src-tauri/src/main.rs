@@ -807,6 +807,23 @@ async fn import_clips(rec: State<'_, Recorder>, paths: Vec<String>) -> Result<(V
 /// the watchdog leaves the recorder alone while the FPS test pauses it
 static FPS_TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Updates since an older version (What's new card: "View earlier updates").
+#[tauri::command]
+async fn release_notes(rec: State<'_, Recorder>, since: String) -> Result<serde_json::Value, String> {
+    rec.release_notes(&since)
+}
+
+/// Opens one of Echo's own links in the browser (only these, never a link from outside).
+#[tauri::command]
+fn open_echo_link(what: String) -> Result<(), String> {
+    recorder::open_web(match what.as_str() {
+        "discord" => "https://discord.gg/JPVewEfUQs",
+        "changelog" => "https://echoclip.link/changelog",
+        "site" => "https://echoclip.link",
+        _ => return Err("unknown link".into()),
+    })
+}
+
 /// "Send log": uploads log + settings to echoclip.link and copies the link (paste it into Discord / to William).
 /// Upload failed: the .txt file goes on the clipboard instead, like before. Returns the link ("" = file copied).
 #[tauri::command]
@@ -1780,7 +1797,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

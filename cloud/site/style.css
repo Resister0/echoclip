@@ -260,3 +260,12 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .t5 { background:radial-gradient(circle at 35% 45%,#9b7be055,transparent 45%),linear-gradient(160deg,#2a2440,#141320 70%); }
 .t6 { background:radial-gradient(circle at 65% 55%,#ff465544,transparent 40%),linear-gradient(160deg,#3a2a40,#1a1622 70%); }
 @media (max-width:820px) { .mact { display:none; } }
+
+/* changelog page */
+.changes { max-width:780px; margin:28px auto 0; text-align:left; }
+.chg { display:grid; grid-template-columns:120px 1fr auto; gap:6px 18px; align-items:baseline; padding:16px 4px; border-bottom:1px solid var(--line); }
+.chg b { color:var(--text); font-size:16px; white-space:nowrap; }
+.chg p { margin:0; color:var(--muted); }
+.chg time { color:var(--dim); font-size:13px; white-space:nowrap; }
+.chg .new { font-size:11px; font-weight:600; color:var(--accent); border:1px solid rgba(var(--accent-rgb),.5); border-radius:99px; padding:1px 7px; margin-left:4px; vertical-align:2px; }
+@media (max-width:640px) { .chg { grid-template-columns:1fr auto; } .chg p { grid-column:1 / -1; } }

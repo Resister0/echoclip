@@ -1,4 +1,20 @@
-// echoclip.link: theme picker + drifting particles in the hero
+// echoclip.link: download buttons for the visitor's system, changelog page, theme picker + drifting particles in the hero
+(() => {
+  // Linux visitors see the Linux download first (and highlighted)
+  const ua = navigator.userAgent || "", linux = /Linux|X11/.test(ua) && !/Android/.test(ua);
+  const dl = document.querySelector(".dl"), win = dl && dl.querySelector('[data-os="windows"]'), lin = dl && dl.querySelector('[data-os="linux"]');
+  if (linux && win && lin) { dl.insertBefore(lin, win); lin.classList.add("primary"); win.classList.remove("primary"); }
+  // /changelog: every published version (from the server's list of releases)
+  const box = document.getElementById("changes");
+  if (box) fetch("/changes").then((r) => r.json()).then((j) => {
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+    const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    const list = j.releases || [];
+    box.innerHTML = list.length ? list.map((x, i) => `<div class="chg"><b>${esc(x.version)}${i === 0 ? ' <span class="new">Latest</span>' : ""}</b><p>${esc(x.notes)}</p><time>${day(x.at)}</time></div>`).join("")
+      : '<p class="sub">No versions listed yet.</p>';
+  }).catch(() => { box.innerHTML = '<p class="sub">Couldn\'t load the changelog - try again in a moment.</p>'; });
+})();
+
 (() => {
   const THEMES = [
     ["", "Violet", "#7c5cff"], ["ocean", "Ocean", "#2fa8e0"], ["ember", "Ember", "#f07a1a"], ["emerald", "Emerald", "#2fbf86"],

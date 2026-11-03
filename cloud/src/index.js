@@ -1103,6 +1103,47 @@ async function update(env, target, current) {
   return json({ version, notes, pub_date: rel.published_at || rel.created_at, url, signature });
 }
 
+// ----- changelog: every published version + its "What changed?" text -----
+// Each publish is one commit in the public repo that changes ci/version.txt; its message is William's
+// "What changed?" text. Read from GitHub (no extra keys), kept in D1 table releases. Used by Echo's "What's new"
+// card (earlier updates you skipped) and echoclip.link/changelog.
+let changesSynced = 0;
+async function syncReleases(env) {
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, notes TEXT NOT NULL, at INTEGER NOT NULL, sha TEXT)").run();
+  const repo = publicRepo(env);
+  const url = `https://api.github.com/repos/${repo}/commits?path=ci/version.txt&per_page=25`;
+  let r = await ghFetch(env, url, "application/vnd.github+json");
+  if (!r.ok && env.GITHUB_TOKEN) r = await ghFetch(env, url, "application/vnd.github+json", false);
+  if (!r.ok) { console.log("changes: commit list failed", r.status); return; }
+  const commits = await r.json();
+  const known = new Set((((await env.DB.prepare("SELECT sha FROM releases").all()).results) || []).map((x) => x.sha));
+  for (const c of commits) {
+    if (!c || !c.sha || known.has(c.sha)) continue;
+    const raw = await fetch(`https://raw.githubusercontent.com/${repo}/${c.sha}/ci/version.txt`);
+    const v = raw.ok ? (await raw.text()).trim() : "";
+    if (!/^\d+\.\d+\.\d+$/.test(v)) continue;
+    const notes = String((c.commit && c.commit.message) || "").split("\n")[0].trim().slice(0, 600);
+    const at = Math.floor(Date.parse((c.commit && c.commit.committer && c.commit.committer.date) || "") / 1000) || now();
+    await env.DB.prepare("INSERT OR REPLACE INTO releases (version, notes, at, sha) VALUES (?, ?, ?, ?)").bind(v, notes, at, c.sha).run();
+  }
+}
+async function changes(env, since) {
+  if (now() - changesSynced > 120) {
+    changesSynced = now();
+    try { await syncReleases(env); } catch (e) { console.log("changes: sync failed", e && e.message); }
+  }
+  let rows = [];
+  try { rows = ((await env.DB.prepare("SELECT version, notes, at FROM releases ORDER BY at DESC LIMIT 200").all()).results) || []; } catch { /* table not there yet */ }
+  // only versions that really came out (a build can fail after its commit)
+  const latest = relVersion(await releaseOf(env, publicRepo(env), true).catch(() => null));
+  let list = rows.filter((x) => !latest || !newer(x.version, latest));
+  list.sort((a, b) => (newer(a.version, b.version) ? -1 : newer(b.version, a.version) ? 1 : 0));
+  if (since) list = list.filter((x) => newer(x.version, since));
+  return new Response(JSON.stringify({ latest: latest || null, releases: list.slice(0, 60) }), {
+    headers: { "content-type": "application/json", "cache-control": "public, max-age=60" },
+  });
+}
+
 async function notFound(req, env) {
   // browsers get the site's 404 page, Echo gets JSON
   if (req.method === "GET" && env.ASSETS && (req.headers.get("accept") || "").includes("text/html")) {
@@ -1186,6 +1227,10 @@ export default {
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") return await update(env, um[1], um[3]);
       if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
+      if (route === "GET /changes") {
+        const since = (url.searchParams.get("since") || "").match(/^\d+\.\d+\.\d+$/);
+        return await changes(env, since ? since[0] : "");
+      }
       if (route === "GET /plans") return json({ plans: await plans(env) });
       if (route === "POST /polar/webhook") return await polarWebhook(req, env);
       if (route === "POST /auth/start") return await authStart(req, env);
@@ -1223,6 +1268,7 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanupExpired(env).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
+    ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));
     ctx.waitUntil(enforceQuota(env).catch((e) => console.log("quota error", e && e.stack)));
   },

@@ -4236,6 +4236,14 @@ impl Recorder {
         Ok(file.to_string_lossy().to_string())
     }
 
+    /// Versions newer than `since` with their "What changed?" text (echoclip.link/changes) - the What's new card
+    /// lists the updates someone skipped.
+    pub fn release_notes(&self, since: &str) -> Result<serde_json::Value, String> {
+        let cfg = self.settings();
+        let since: String = since.chars().filter(|c| c.is_ascii_digit() || *c == '.').take(20).collect();
+        ec_call(&ec_api(&cfg), "GET", &format!("/changes?since={since}"), "", None)
+    }
+
     /// "Send log": uploads the log file to echoclip.link (email addresses removed) and returns the link
     /// (William pastes it to Claude, who reads it directly). Kept 14 days by the server.
     pub fn upload_log(&self, file: &str) -> Result<String, String> {

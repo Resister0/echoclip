@@ -50,6 +50,11 @@
   .updcard { background:linear-gradient(135deg,rgba(var(--accent-rgb),0.15),rgba(var(--accent-rgb),0.06)); border:1px solid rgba(var(--accent-rgb),0.4); border-radius:12px; padding:12px 13px; display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
   .updcard[hidden] { display:none; }
   .updcard b { font-size:13px; }
+  #updmore { max-height:190px; overflow:auto; display:flex; flex-direction:column; gap:5px; }
+  #updmore:empty { display:none; }
+  .updlink { background:none; border:0; padding:0; color:var(--accent); font-size:12px; cursor:pointer; text-align:left; }
+  .updlink:hover { text-decoration:underline; }
+  .updold { font-size:12px; color:var(--muted); line-height:1.4; } .updold b { color:var(--text); font-size:12px; margin-right:4px; }
   .updcard small { color:var(--muted); font-size:12px; }
   .updcard .btn { height:32px; justify-content:center; margin-top:4px; }
   .statcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 13px; display:flex; flex-direction:column; gap:9px; }
@@ -678,7 +683,7 @@
   <div id="tagnav"></div>
   <div class="grow"></div>
   <div class="updcard" id="updcard" hidden>
-    <b>Update ready</b><small id="updtext"></small>
+    <b>Update ready</b><small id="updtext"></small><div id="updmore"></div>
     <button class="btn primary" id="updbtn">Restart Echo</button>
   </div>
   <div class="statcard">
@@ -919,6 +924,8 @@
               <button class="btn" id="updnow" onclick="updManual()">Check for updates</button></div>
             <div class="row"><div class="lbl"><b>Something wrong, or an idea?</b><small>Goes straight to the person who makes Echo. You can attach Echo's log so problems are easier to find.</small></div>
               <button class="btn" onclick="sendFeedback()">Send feedback</button></div>
+            <div class="row"><div class="lbl"><b>Echo community</b><small>Help, clips, ideas and news about new versions - on Discord. Or read every change since the first version.</small></div>
+              <div style="display:flex;gap:6px"><button class="btn" onclick="invoke('open_echo_link',{what:'changelog'}).catch(()=>{})">Changelog</button><button class="btn primary" onclick="invoke('open_echo_link',{what:'discord'}).catch(()=>{})">Join the Discord</button></div></div>
           </div>
           <div class="box">
             <h3>Appearance</h3>
@@ -1109,18 +1116,48 @@
   // ----- updates: check 30 s after start, then every 6 hours; never interrupts, the user clicks when ready -----
   let updInfo = null;
   let appVer = "";
-  invoke("app_version").then(v => { appVer = v; $("appver").textContent = v === "0.1.0" ? "Echo (built on this PC)" : `Echo ${v}`; whatsNew(); }).catch(() => {});
-  // first start after an update: a small card saying what changed (once)
-  function whatsNew() {
+  invoke("app_version").then(v => {
+    appVer = v; $("appver").textContent = v === "0.1.0" ? "Echo (built on this PC)" : `Echo ${v}`;
+    let prev = ""; try { prev = localStorage.getItem("echo_lastver") || ""; localStorage.setItem("echo_lastver", v); } catch {}
+    whatsNew(prev);
+  }).catch(() => {});
+  const verGt = (a, b) => { const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+  // the changes between two versions in the sidebar card: newest notes in the text, the versions in between
+  // behind "View N earlier updates" (before an update: what you'll get; after: what you skipped)
+  async function showChanges(from, to, after) {
+    let list = [];
+    try { list = ((await invoke("release_notes", { since: from })).releases || []).filter(x => !verGt(x.version, to)); } catch { return; }
+    const more = $("updmore"), top = list.find(x => x.version === to) || list[0];
+    if (!top) return;
+    if (top.notes) $("updtext").textContent = after ? "What's new: " + top.notes : `Echo ${to} is here (you have ${from}). What's new: ${top.notes}`;
+    const earlier = list.filter(x => x !== top);
+    more.innerHTML = "";
+    if (!earlier.length) return;
+    const a = document.createElement("button"); a.className = "updlink";
+    a.textContent = after ? `View ${earlier.length} earlier update${earlier.length > 1 ? "s" : ""} you missed` : `+ ${earlier.length} more update${earlier.length > 1 ? "s" : ""} included`;
+    a.onclick = () => {
+      a.remove();
+      more.insertAdjacentHTML("beforeend", earlier.slice(0, 10).map(x => `<div class="updold"><b>${esc(x.version)}</b>${esc(x.notes)}</div>`).join("")
+        + `<button class="updlink" id="updall">All changes on echoclip.link</button>`);
+      $("updall").onclick = () => invoke("open_echo_link", { what: "changelog" }).catch(() => {});
+    };
+    more.appendChild(a);
+  }
+  // first start after an update: a small card saying what changed (once), plus the updates skipped in between
+  // (people often jump several versions) from echoclip.link/changes
+  async function whatsNew(prev) {
     let w = null;
     try { w = JSON.parse(localStorage.getItem("echo_whatsnew") || "null"); } catch {}
-    if (!w || w.v !== appVer) return;
+    const stored = w && w.v === appVer ? w.notes || "" : "";
+    if (appVer === "0.1.0" || prev === appVer || (!prev && !w)) return;   // own build, same version, or first start ever
     try { localStorage.removeItem("echo_whatsnew"); } catch {}
-    const c = $("updcard");
-    c.querySelector("b").textContent = `Updated to Echo ${w.v}`;
-    $("updtext").textContent = w.notes ? "What's new: " + w.notes : "You're on the newest version.";
+    const c = $("updcard"), more = $("updmore");
+    c.querySelector("b").textContent = `Updated to Echo ${appVer}`;
+    $("updtext").textContent = stored ? "What's new: " + stored : "You're on the newest version.";
+    more.innerHTML = "";
+    if (prev) showChanges(prev, appVer, true);
     const b = $("updbtn"); b.textContent = "Got it"; b.classList.remove("primary");
-    b.onclick = () => { c.hidden = true; c.querySelector("b").textContent = "Update ready"; b.classList.add("primary"); b.onclick = updInstall; };
+    b.onclick = () => { c.hidden = true; more.innerHTML = ""; c.querySelector("b").textContent = "Update ready"; b.classList.add("primary"); b.onclick = updInstall; };
     c.hidden = false;
   }
   async function updManual() {
@@ -1144,7 +1181,8 @@
     try { localStorage.setItem("echo_whatsnew", JSON.stringify({ v: updInfo.version, notes: updInfo.notes || "" })); } catch {}
     $("updcard").querySelector("b").textContent = "Update ready";
     $("updbtn").classList.add("primary"); $("updbtn").onclick = updInstall;
-    $("updtext").textContent = `Echo ${updInfo.version} is here (you have ${updInfo.current}).`;
+    $("updtext").textContent = `Echo ${updInfo.version} is here (you have ${updInfo.current}).`; $("updmore").innerHTML = "";
+    showChanges(updInfo.current, updInfo.version, false);
     $("updbtn").textContent = updInfo.can_install ? "Restart Echo" : "Download";
     $("updcard").hidden = false;
   }
