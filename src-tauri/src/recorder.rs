@@ -2060,9 +2060,6 @@ impl Recorder {
             });
             MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
             let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
-            // a heavy game must not starve the recorder (seconds-long stalls on a busy PC, chat 18); OBS does the same
-            #[cfg(windows)]
-            crate::winutil::above_normal(child.id());
             if let Some(stdin) = child.stdin.take() {
                 let (s, v) = (stop.clone(), self.volumes.clone());
                 let (d, m, mn, apps) = (cfg.desktop_audio, cfg.mic, cfg.mic_device.clone(), cfg.app_tracks);

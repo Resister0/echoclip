@@ -5,7 +5,6 @@ internal builds). Release builds since the open-source switch come from this rep
 
 ## Next release
 - Fixed: the recorder kept restarting (and losing the replay buffer) on busy PCs while a heavy game ran - short slowdowns are now caught up instead
-- The recorder runs at higher priority, so a heavy game can't starve it
 
 ## 1.0.25 - Surround headsets and VR games
 - **Fixed: Echo couldn't record at all with surround / virtual 7.1 headsets** (e.g. Logitech G733); surround sound is now mixed down to stereo, voices from the centre speaker included
