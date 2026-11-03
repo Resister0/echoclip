@@ -75,6 +75,8 @@ function draw(j) {
   const left = m.net_month - costs;
   const verdict = left >= 0 ? `<span class="pill good">▲ pays for itself</span>` : `<span class="pill bad">▼ costs you money</span>`;
   const u = j.users, a = j.active;
+  // subscriptions that pay nothing (100% codes) or from before amounts were tracked aren't income
+  const extra = (m.discounted_free ? ` · ${m.discounted_free} free via code` : "") + (m.unknown ? ` · ${m.unknown} older, not counted` : "");
   const rows = (list, f) => list.length ? list.map(f).join("") : `<tr><td colspan="9" class="sub">None</td></tr>`;
   $("#app").innerHTML = `
     <div class="top"><h1>Echo stats</h1><span class="sub">updated ${new Date(j.at * 1000).toLocaleTimeString()}</span><span class="sp"></span>
@@ -83,7 +85,7 @@ function draw(j) {
     <h2>Money per month</h2>
     <div class="grid">
       ${tile("Left over" + verdict, money(left, cur), "income after fees + VAT, minus costs", "hero")}
-      ${tile("Income (est.)", money(m.gross_month, cur), `${u.paid} paying · ${money(m.net_month, cur)} after Polar + VAT`)}
+      ${tile("Income", money(m.gross_month, cur), `${m.paying} paying · ${money(m.net_month, cur)} after Polar + VAT${extra}`)}
       ${tile("Storage cost (R2)", "$" + m.r2_usd_month.toFixed(2), `${gb(j.storage.used_bytes)} stored · first 10 GB free`)}
       ${tile("Domain", "$" + m.domain_usd_month.toFixed(2), "echoclip.link, $7.20 a year")}
     </div>
@@ -92,7 +94,7 @@ function draw(j) {
     <div class="grid">
       ${tile("Echo Cloud accounts", u.total, `+${u.new_1d} today · +${u.new_7d} this week · +${u.new_30d} in 30 days`)}
       ${tile("Active today", a.d1, `${a.d7} this week · ${a.d30} in 30 days`)}
-      ${tile("Paying", u.paid, u.total ? `${(u.paid / u.total * 100).toFixed(1)}% of accounts` : "")}
+      ${tile("Paying", m.paying, u.total ? `${(m.paying / u.total * 100).toFixed(1)}% of accounts` + (u.paid > m.paying ? ` · ${u.paid} with a plan` : "") : "")}
       ${tile("Over their plan", u.over, u.over ? "clips get removed after 30 days" : "nobody")}
       ${tile("Share links", j.shares.live, `+${j.shares.new_7d} this week · ${j.shares.total} made`)}
       ${tile("Logs sent (14 days)", j.logs, j.backup ? "last backup " + esc(j.backup.replace("backups/db-", "").replace(".json.gz", "")) : "no backup yet")}
@@ -116,7 +118,7 @@ function draw(j) {
       ${rows(j.newest, (n) => `<tr><td>${esc(n.email)}</td><td>${esc(n.plan)}</td><td>${ago(n.created)}</td></tr>`)}</table></div>
 
     <div class="note">Only Echo Cloud accounts are counted (people who only record or use their own cloud aren't visible here).
-      Storage is the last count per account. Income is estimated from monthly prices (yearly buyers pay ~17% less);
+      Storage is the last count per account. Income is what each subscription pays per month after discounts (yearly plans divided by 12), before Polar's fee and VAT;
       Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.</div>`;
   $("#re").onclick = load;
   $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };

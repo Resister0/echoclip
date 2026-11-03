@@ -320,6 +320,14 @@
   .pstrip .seek .h::after { top:14px; bottom:14px; }
   .pstrip .seek .knob { top:0; bottom:0; width:3px; height:auto; margin-left:-1.5px; border-radius:2px; background:#fff; box-shadow:0 0 6px #000; transform:none; z-index:3; pointer-events:none; }
   .pstrip .seek .pmk { top:0; }
+  /* cloud clips: frame strip drawn by the app (no ffmpeg file), dimmed like the background-image strip */
+  .pstrip .seek canvas.pcs { position:absolute; inset:0; width:100%; height:100%; filter:brightness(.56); pointer-events:none; }
+  .pstrip .seek:hover canvas.pcs, .pstrip .seek.drag canvas.pcs { filter:brightness(.77); }
+  /* hover / drag preview above the seek bar (YouTube-style) */
+  #ptip { position:fixed; z-index:60; pointer-events:none; display:none; background:#000; border:2px solid #ffffffd9; border-radius:9px; overflow:hidden; box-shadow:0 8px 24px #000c; }
+  #ptip.on { display:block; }
+  #ptip canvas { display:block; width:224px; }
+  #ptip span { position:absolute; left:0; right:0; bottom:5px; text-align:center; font:600 12.5px system-ui,Segoe UI,sans-serif; color:#fff; text-shadow:0 1px 3px #000, 0 0 8px #000; }
   .pnav { position:fixed; top:50%; width:46px; height:46px; margin-top:-23px; border-radius:50%; border:1px solid var(--line); background:#17171ccc; color:#fff; display:grid; place-items:center; z-index:2; }
   .pnav:hover { background:#26262e; } .pnav:disabled { opacity:.25; cursor:default; }
   .pnav svg { width:22px; height:22px; } #pprev { left:18px; } #pnext { right:18px; }
@@ -2196,7 +2204,8 @@
       });
     }
     $("pseek").style.backgroundImage = "";
-    if (!c.cloud) invoke("filmstrip", { path: c.path }).then(p => { if (trim.clip === c) $("pseek").style.backgroundImage = `url("${convertFileSrc(p)}?${c.size}")`; }).catch(() => {});
+    pPrev.open(c);
+    if (!c.cloud) invoke("filmstrip", { path: c.path }).then(p => { if (trim.clip === c) { const u = `${convertFileSrc(p)}?${c.size}`; $("pseek").style.backgroundImage = `url("${u}")`; pPrev.strip(u); } }).catch(() => {});
     const nav = viewList.findIndex(x => x.path === c.path);
     $("pprev").disabled = nav <= 0; $("pnext").disabled = nav < 0 || nav >= viewList.length - 1;
     $("pprev").onclick = () => { if (nav > 0) openPlayer(viewList[nav - 1]); };
@@ -2283,6 +2292,92 @@
   $("snote").onblur = sideSaveMeta;
   $("sname").onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); if (e.key === "Escape") $("sname").value = sideClip ? sideClip.name : ""; e.target.blur(); } };
   $("sname").onblur = sideRename;
+  // ----- seek bar previews: YouTube-style frame under the mouse (hover + drag) and a frame strip for cloud clips -----
+  // A second muted <video> on the same source seeks to the time under the mouse; its frame is drawn into a small
+  // canvas above the bar. Clips on this PC show their ffmpeg filmstrip at once as a blurry stand-in. Cloud clips
+  // (streamed, no local file for ffmpeg) get a 24-frame strip drawn the same way after playback starts.
+  const pPrev = (() => {
+    const v = $("pvideo"), seek = $("pseek"), wrap = document.querySelector(".pwrap");
+    const tip = document.createElement("div"); tip.id = "ptip"; tip.innerHTML = "<canvas width='224' height='126'></canvas><span></span>";
+    wrap.appendChild(tip);   // inside the fullscreen element, so it shows in fullscreen too
+    const tc = tip.querySelector("canvas"), tx = tc.getContext("2d"), tt = tip.querySelector("span");
+    // helper videos must be in the page: detached <video>s don't decode new frames after a seek (Chromium)
+    const hidden = vid => { vid.muted = true; vid.preload = "auto"; vid.playsInline = true; vid.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none"; document.body.appendChild(vid); return vid; };
+    const pv = hidden(document.createElement("video"));
+    let clip = null, stripImg = null, want = null, busy = false, hovering = false;
+    const strips = new Map();   // cloud clip -> finished strip canvas (this session)
+    // "seeked" can fire before the new frame is decoded (drawing then shows the old one): wait for the frame itself
+    const onFrame = (vid, cb) => {
+      let done = false; const go = () => { if (!done) { done = true; cb(); } };
+      if (vid.requestVideoFrameCallback) vid.requestVideoFrameCallback(go);
+      setTimeout(go, vid.requestVideoFrameCallback ? 300 : 60);
+    };
+    const fit = () => { if (pv.videoWidth) { const h = Math.round(224 * pv.videoHeight / pv.videoWidth); if (tc.height !== h) tc.height = h; } };
+    const pull = () => {
+      if (want === null || busy) return;
+      if (!pv.getAttribute("src")) { const s = v.currentSrc || v.src; if (!s) return; pv.src = s; }
+      if (pv.readyState < 1) { pv.addEventListener("loadedmetadata", () => { fit(); pull(); }, { once: true }); return; }
+      busy = true; const t = want; want = null;
+      try { pv.currentTime = Math.min(t, (pv.duration || t) - 0.05); } catch { busy = false; }
+    };
+    pv.addEventListener("seeked", () => onFrame(pv, () => { busy = false; if (tip.classList.contains("on") && pv.videoWidth) { fit(); tx.drawImage(pv, 0, 0, tc.width, tc.height); } pull(); }));
+    pv.addEventListener("error", () => { busy = false; });
+    const show = x => {
+      const d = v.duration; if (!d || !clip) return;
+      const r = seek.getBoundingClientRect(), f = Math.min(1, Math.max(0, (x - r.left) / r.width)), t = f * d;
+      tt.textContent = fmtDur(t);
+      if (stripImg && stripImg.complete && stripImg.naturalWidth) {   // instant blurry frame from the filmstrip (40 tiles)
+        const n = 40, sw = stripImg.naturalWidth / n, i = Math.min(n - 1, Math.floor(f * n));
+        tx.drawImage(stripImg, i * sw, 0, sw, stripImg.naturalHeight, 0, 0, tc.width, tc.height);
+      }
+      tip.classList.add("on");
+      const w = tip.offsetWidth, h = tip.offsetHeight;
+      tip.style.left = Math.min(r.right - w, Math.max(r.left, x - w / 2)) + "px";
+      tip.style.top = (r.top - h - 10) + "px";
+      want = t; pull();
+    };
+    const hide = () => { if (!seek.classList.contains("drag") && !hovering) tip.classList.remove("on"); };
+    seek.addEventListener("pointerenter", () => { hovering = true; });
+    seek.addEventListener("pointermove", e => show(e.clientX));   // also fires while dragging (pointer capture)
+    seek.addEventListener("pointerleave", () => { hovering = false; hide(); });
+    seek.addEventListener("pointerup", () => setTimeout(hide));
+    // cloud clip: 24 frames into a canvas strip in the seek bar, one seek at a time, after playback started
+    function cloudStrip(c) {
+      const old = seek.querySelector("canvas.pcs"); if (old) old.remove();
+      const done = strips.get(c.path);
+      if (done) { seek.prepend(done); return; }
+      const run = () => {
+        if (clip !== c || !v.duration) return;
+        const N = 24, cv = document.createElement("canvas"); cv.className = "pcs";
+        const sv = hidden(document.createElement("video")); sv.src = v.currentSrc || v.src;
+        const drop = () => { sv.removeAttribute("src"); sv.load(); sv.remove(); };
+        let i = 0, ctx;
+        const next = () => {
+          if (clip !== c) return drop();
+          if (i >= N) { strips.set(c.path, cv); if (strips.size > 30) strips.delete(strips.keys().next().value); return drop(); }
+          sv.currentTime = Math.min(sv.duration - 0.1, (i + 0.5) / N * sv.duration);
+        };
+        sv.addEventListener("loadedmetadata", () => {
+          const th = 72, tw = Math.round(th * (sv.videoWidth || 16) / (sv.videoHeight || 9));
+          cv.width = tw * N; cv.height = th; ctx = cv.getContext("2d");
+          seek.prepend(cv); next();
+        }, { once: true });
+        sv.addEventListener("seeked", () => onFrame(sv, () => { ctx.drawImage(sv, i * cv.width / N, 0, cv.width / N, cv.height); i++; setTimeout(next, 30); }));
+        sv.addEventListener("error", drop);
+      };
+      v.addEventListener("playing", () => setTimeout(run, 1500), { once: true });   // don't fight the player for bandwidth
+    }
+    return {
+      open(c) {
+        clip = c; stripImg = null; want = null; busy = false; tip.classList.remove("on");
+        pv.removeAttribute("src"); pv.load();
+        const old = seek.querySelector("canvas.pcs"); if (old) old.remove();
+        if (c.cloud) cloudStrip(c);
+      },
+      strip(url) { const im = new Image(); im.src = url; stripImg = im; },
+      close() { clip = null; tip.classList.remove("on"); pv.removeAttribute("src"); pv.load(); const old = seek.querySelector("canvas.pcs"); if (old) old.remove(); },
+    };
+  })();
   const P_ICONS = { play: '<svg viewBox="0 0 24 24"><path d="M7 4v16l13-8z"/></svg>', pause: '<svg viewBox="0 0 24 24"><path d="M7 4h4v16H7zM14 4h4v16h-4z"/></svg>',
     vol: '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>', mute: '<svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>' };
   (() => {
@@ -3972,7 +4067,7 @@
     trim.busy = false; ["tsave", "treplace"].forEach(id => $(id).disabled = false);
   }
 
-  function closePlayer() { if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur(); sideClip = null; const v = $("pvideo"); v.pause(); v.removeAttribute("src"); v.load(); $("player").classList.remove("open"); $("pload").classList.remove("on", "ind"); }
+  function closePlayer() { if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur(); sideClip = null; pPrev.close(); const v = $("pvideo"); v.pause(); v.removeAttribute("src"); v.load(); $("player").classList.remove("open"); $("pload").classList.remove("on", "ind"); }
   // close on a click on the dark backdrop only - not when a text selection / drag started inside and ended outside
   let pDownOnBackdrop = false;
   $("player").addEventListener("pointerdown", e => { pDownOnBackdrop = e.target.id === "player"; });

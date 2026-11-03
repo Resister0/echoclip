@@ -635,18 +635,17 @@ async function adminStats(req, env) {
   const newest = await all("SELECT email, plan, created FROM users ORDER BY created DESC LIMIT 10");
   const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 ORDER BY over_since LIMIT 20");
   const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
-  // income estimate: paid accounts x the monthly price of their plan size (yearly buyers pay ~17% less)
-  let plist = [];
-  try { plist = await plans(env); } catch { /* Polar unreachable: no prices */ }
-  const monthly = new Map(plist.filter((p) => p.interval === "month").map((p) => [p.gb, p]));
-  const paidRows = await all("SELECT quota_bytes FROM users WHERE polar_sub IS NOT NULL");
-  let gross = 0, cur = "EUR";
+  // income: what each subscription really pays per month after discounts (stored by the Polar webhook);
+  // subscriptions from before that (sub_cents -1) are counted as "unknown", not guessed
+  const paidRows = await all("SELECT sub_cents, sub_currency FROM users WHERE polar_sub IS NOT NULL");
+  let gross = 0, cur = "EUR", paying = 0, free = 0, unknown = 0;
   for (const u of paidRows) {
-    const p = monthly.get(Math.round(u.quota_bytes / GB));
-    if (p) { gross += p.price; cur = (p.currency || cur).toUpperCase(); }
+    if (u.sub_cents < 0) { unknown++; continue; }
+    if (u.sub_cents === 0) { free++; continue; }
+    gross += u.sub_cents / 100; paying++; cur = (u.sub_currency || cur).toUpperCase();
   }
   // Polar keeps 5% + 0.50 per payment; prices include VAT, which Polar pays to the tax office (~20% in the EU)
-  const net = Math.max(0, paidRows.length ? gross / 1.2 * 0.95 - 0.5 * paidRows.length : 0);
+  const net = Math.max(0, gross / 1.2 * 0.95 - 0.5 * paying);
   const usedGB = (users.used || 0) / GB;
   const r2 = Math.max(0, usedGB - 10) * 0.015;   // R2: first 10 GB free, then $0.015 per GB-month
   const domain = 7.2 / 12;
@@ -660,7 +659,7 @@ async function adminStats(req, env) {
     active: { d1: active.d1 || 0, d7: active.d7 || 0, d30: active.d30 || 0 },
     plans: byPlan,
     storage: { used_bytes: users.used || 0 },
-    money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
+    money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
     shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
     logs, backup, top, newest, over,
   });
@@ -701,7 +700,9 @@ async function migrate(env) {
   const cols = new Set(((await env.DB.prepare("PRAGMA table_info(users)").all()).results || []).map((c) => c.name));
   for (const [c, type] of [["polar_sub", "TEXT"], ["plan_until", "INTEGER NOT NULL DEFAULT 0"], ["polar_at", "INTEGER NOT NULL DEFAULT 0"],
     // over the plan: since when (0 = not), which email went out (1 = warning, 2 = reminder, 3 = removing), files removed so far
-    ["over_since", "INTEGER NOT NULL DEFAULT 0"], ["over_stage", "INTEGER NOT NULL DEFAULT 0"], ["over_removed", "INTEGER NOT NULL DEFAULT 0"]]) {
+    ["over_since", "INTEGER NOT NULL DEFAULT 0"], ["over_stage", "INTEGER NOT NULL DEFAULT 0"], ["over_removed", "INTEGER NOT NULL DEFAULT 0"],
+    // what the subscription really pays per month after discounts, in cents (-1 = not known yet: older subscription)
+    ["sub_cents", "INTEGER NOT NULL DEFAULT -1"], ["sub_currency", "TEXT"]]) {
     if (!cols.has(c)) await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${c} ${type}`).run();
   }
   // share pages (Discord / browser embeds): clip title, size, length and whether a thumbnail was uploaded
@@ -969,11 +970,21 @@ async function polarWebhook(req, env) {
   const live = type !== "subscription.revoked" && ["active", "trialing", "past_due"].includes(s.status);
   if (live && gb) {
     const until = s.current_period_end ? Math.floor(Date.parse(s.current_period_end) / 1000) || 0 : 0;
-    await env.DB.prepare("UPDATE users SET plan = ?, quota_bytes = ?, polar_sub = ?, plan_until = ?, over_since = 0, over_stage = 0, over_removed = 0 WHERE id = ?")
-      .bind(planName(gb), gb * GB, s.id, until, uid).run();
+    // real monthly amount after discounts (stats page): a 100% code like FREETEST = 0; "once" discounts only
+    // lower the first payment, so they count at full price
+    const cur = String(s.currency || "eur").toLowerCase();
+    let cents = Number(s.amount) || 0;
+    const dc = s.discount;
+    if (dc && dc.duration !== "once") {
+      if (dc.type === "percentage") cents = Math.round(cents * (1 - (Number(dc.basis_points) || 0) / 10000));
+      else if (dc.type === "fixed") cents = Math.max(0, cents - (Number((dc.amounts && dc.amounts[cur]) ?? dc.amount) || 0));
+    }
+    if (s.recurring_interval === "year") cents = Math.round(cents / 12);
+    await env.DB.prepare("UPDATE users SET plan = ?, quota_bytes = ?, polar_sub = ?, plan_until = ?, over_since = 0, over_stage = 0, over_removed = 0, sub_cents = ?, sub_currency = ? WHERE id = ?")
+      .bind(planName(gb), gb * GB, s.id, until, cents, cur.toUpperCase(), uid).run();
     console.log("polar:", type, uid, "->", planName(gb));
   } else if (!live && (!user.polar_sub || user.polar_sub === s.id)) {
-    await env.DB.prepare("UPDATE users SET plan = 'free', quota_bytes = ?, polar_sub = NULL, plan_until = 0 WHERE id = ?")
+    await env.DB.prepare("UPDATE users SET plan = 'free', quota_bytes = ?, polar_sub = NULL, plan_until = 0, sub_cents = -1, sub_currency = NULL WHERE id = ?")
       .bind(Number(env.FREE_GB || 10) * GB, uid).run();
     console.log("polar:", type, uid, "-> free");
   }
