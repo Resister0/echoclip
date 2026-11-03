@@ -1633,7 +1633,11 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
         let behind = target.saturating_sub(written);
         let wall = SystemTime::now().duration_since(wall0).map(|d| d.as_secs_f64()).unwrap_or(-1e9);
         let drift = wall - mono0.elapsed().as_secs_f64();
-        if drift.abs() > 3.0 || behind > rate as u64 * 5 {
+        // A real clock jump / PC sleep: wall clock and monotonic clock disagree, or we're absurdly far behind
+        // (sleep). ffmpeg only being busy for a few seconds (heavy game on a mid-range PC: 2-9 s stalls,
+        // 1660 Super friend, chat 18) is NOT one: restarting threw the replay buffer away every minute. Then
+        // the catch-up below writes the missed time (silence) so audio stays in sync with the video.
+        if drift.abs() > 3.0 || behind > rate as u64 * 30 {
             log_line(&format!("audio: clock jump (PC sleep / clock change?): wall clock {drift:+.1} s, audio {:.1} s behind - restarting the recorder",
                 behind as f64 / rate as f64));
             RESTART_REC.store(true, Ordering::Relaxed);
@@ -2056,6 +2060,9 @@ impl Recorder {
             });
             MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
             let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
+            // a heavy game must not starve the recorder (seconds-long stalls on a busy PC, chat 18); OBS does the same
+            #[cfg(windows)]
+            crate::winutil::above_normal(child.id());
             if let Some(stdin) = child.stdin.take() {
                 let (s, v) = (stop.clone(), self.volumes.clone());
                 let (d, m, mn, apps) = (cfg.desktop_audio, cfg.mic, cfg.mic_device.clone(), cfg.app_tracks);

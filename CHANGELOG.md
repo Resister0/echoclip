@@ -4,17 +4,28 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
-- VR games (Quest Link / Air Link, SteamVR, Virtual Desktop): Echo records the game's own window instead of the desktop, automatically
+- Fixed: the recorder kept restarting (and losing the replay buffer) on busy PCs while a heavy game ran - short slowdowns are now caught up instead
+- The recorder runs at higher priority, so a heavy game can't starve it
+
+## 1.0.25 - Surround headsets and VR games
 - **Fixed: Echo couldn't record at all with surround / virtual 7.1 headsets** (e.g. Logitech G733); surround sound is now mixed down to stereo, voices from the centre speaker included
+- VR games (Quest Link / Air Link, SteamVR, Virtual Desktop): Echo records the game's own window instead of the desktop, automatically (not tested on a headset yet)
+
+## 1.0.24 - Sound in installed Echo
 - **Fixed: installed Echo (Echo-Setup.exe) recorded clips without any sound** - the installer now includes ffmpeg 9.0.2 instead of 8.0
-- Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
-- The player's Share button makes the same kind of link as "Copy share link"
-- Clips (and the self-test) no longer fail to save when one audio track had no sound data yet - that track is saved as silence
+- More details in the log when the self-test finds silent tracks
+
+## 1.0.23 - Recorder that repairs itself
 - Fixed: with mic noise reduction on, the mix and mic tracks could stop recording (the noise filter put out invalid values); this also made clips and the self-test fail to save
+- Clips (and the self-test) no longer fail to save when an audio track had no sound data - that track is saved as silence
 - A broken sound source can no longer stop the whole recording (invalid audio values are muted)
 - The recorder restarts itself when it breaks while still running: screen capture failed mid-game (clips would have no picture), a headset or mic disappeared (no sound), or ffmpeg got stuck / one of its encoders stopped
 - Sound follows your devices: when a headset comes back (or you change the default speakers / mic in Windows), Echo switches to it within about 10 seconds
-- "Save log" shows the real Echo version
+- "Save log" shows the real Echo version; the log keeps one file per Echo start
+
+## 1.0.22 - Simpler sharing
+- Removed the old "own Cloudflare R2 bucket" sharing (Settings → Sharing). Share links now always go through your cloud, with Echo Cloud first so they play in Discord (the free plan included). Links made with the old option keep working.
+- The player's Share button makes the same kind of link as "Copy share link"
 
 ## Same share link every time, safer stored logins
 - "Copy share link" hands out the same link again instead of making a new one (changing the lifetime keeps the link)

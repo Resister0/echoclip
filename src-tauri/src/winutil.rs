@@ -257,6 +257,17 @@ fn uses_vr(pid: u32) -> bool {
     }
 }
 
+/// Raise a child process (ffmpeg recorder) to "above normal" priority.
+pub fn above_normal(pid: u32) {
+    use windows::Win32::System::Threading::{SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, PROCESS_SET_INFORMATION};
+    unsafe {
+        if let Ok(h) = OpenProcess(PROCESS_SET_INFORMATION, false, pid) {
+            let _ = SetPriorityClass(h, ABOVE_NORMAL_PRIORITY_CLASS);
+            let _ = CloseHandle(h);
+        }
+    }
+}
+
 /// Per-app audio (process loopback, Windows 10 2004+): pushes the sound of `pid` and its child
 /// processes into `push` as f32 interleaved at `rate`/`ch` until `stop` is set.
 pub fn app_loopback(pid: u32, rate: u32, ch: u16, stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
