@@ -1,0 +1,60 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0}
+body{width:1200px;height:630px;overflow:hidden;font-family:Inter,sans-serif;color:#f2f2f6;
+ background:radial-gradient(900px 500px at 85% -10%,rgba(124,92,255,.35),transparent 60%),radial-gradient(700px 400px at -10% 110%,rgba(79,123,255,.18),transparent 60%),#0c0c10}
+.l{position:absolute;left:72px;top:64px;width:600px}
+.brand{display:flex;align-items:center;gap:22px}
+.brand svg{width:92px;height:92px;filter:drop-shadow(0 8px 30px rgba(124,92,255,.55))}
+.brand b{font-size:84px;font-weight:800;letter-spacing:-2px}
+h2{font-size:40px;font-weight:700;line-height:1.15;margin-top:34px;letter-spacing:-.5px}
+h2 span{background:linear-gradient(90deg,#a48bff,#6f9bff);-webkit-background-clip:text;color:transparent}
+ul{list-style:none;padding:0;margin-top:30px;display:grid;gap:14px}
+li{font-size:27px;color:#c9c9d4;display:flex;align-items:center;gap:14px}
+li i{width:30px;height:30px;border-radius:9px;background:rgba(124,92,255,.22);display:grid;place-items:center;flex:none}
+li i:after{content:"";width:12px;height:7px;border-left:3px solid #a48bff;border-bottom:3px solid #a48bff;transform:translateY(-2px) rotate(-45deg)}
+.url{position:absolute;left:72px;bottom:48px;font-size:26px;font-weight:600;color:#a48bff}
+.pills{position:absolute;left:72px;bottom:96px;display:flex;gap:10px}
+/* right: mock */
+.win{position:absolute;right:56px;top:78px;width:430px;border-radius:20px;background:#16161b;border:1px solid #2a2a33;box-shadow:0 30px 80px rgba(0,0,0,.6);overflow:hidden}
+.thumb{height:216px;position:relative;background:linear-gradient(160deg,#3a2a6e 0%,#1d2f5c 45%,#0f1a2c 100%)}
+.thumb:before{content:"";position:absolute;inset:0;background:radial-gradient(160px 90px at 70% 65%,rgba(255,170,80,.55),transparent 70%),radial-gradient(220px 70px at 30% 92%,rgba(80,200,255,.25),transparent 70%)}
+.road{position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.55))}
+.dur{position:absolute;right:14px;bottom:12px;background:rgba(0,0,0,.65);font-size:18px;font-weight:600;padding:3px 9px;border-radius:7px}
+.play{position:absolute;left:50%;top:50%;width:70px;height:70px;margin:-35px;border-radius:50%;background:rgba(255,255,255,.16);backdrop-filter:blur(6px);display:grid;place-items:center}
+.play:after{content:"";border-left:24px solid #fff;border-top:15px solid transparent;border-bottom:15px solid transparent;margin-left:6px}
+.meta{padding:16px 18px 18px}
+.meta b{font-size:22px;display:block}
+.meta small{font-size:17px;color:#8d8d9a}
+.row{display:flex;gap:10px;margin-top:14px}
+.btn{font-size:18px;font-weight:600;padding:9px 16px;border-radius:10px;background:#24242b;color:#e5e5ec}
+.btn.p{background:linear-gradient(135deg,#8b6cff,#5f7cff);color:#fff}
+.menu{position:absolute;left:733px;top:430px;width:300px;background:#1d1d23;border:1px solid #33333d;border-radius:14px;padding:10px;box-shadow:0 20px 50px rgba(0,0,0,.6)}
+.menu p{font-size:15px;color:#8d8d9a;padding:4px 10px 6px;text-transform:uppercase;letter-spacing:1px}
+.mi{font-size:19px;padding:8px 10px;border-radius:8px;display:flex;justify-content:space-between}
+.mi.on{background:rgba(124,92,255,.22)}
+.mi span{color:#8d8d9a}
+.toast{position:absolute;right:290px;top:40px;background:#1d1d23;border:1px solid #33333d;border-radius:12px;padding:10px 16px;font-size:18px;font-weight:600;box-shadow:0 12px 30px rgba(0,0,0,.5);display:flex;gap:10px;align-items:center}
+.toast i{width:10px;height:10px;border-radius:50%;background:#3ddc84;box-shadow:0 0 10px #3ddc84}
+.lead{font-size:28px;line-height:1.45;color:#b9b9c6;margin-top:26px}
+.chips{display:flex;gap:12px;margin-top:30px}
+.chips span{font-size:22px;font-weight:600;color:#d8d0ff;padding:8px 18px;border-radius:999px;background:rgba(124,92,255,.16);border:1px solid rgba(164,139,255,.35)}
+</style></head><body>
+<div class="l">
+ <div class="brand"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b6cff"/><stop offset=".55" stop-color="#6a4cf5"/><stop offset="1" stop-color="#4f7bff"/></linearGradient></defs><rect width="256" height="256" rx="64" fill="url(#g)"/><g><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></g></svg><b>Echo</b></div>
+ <h2>Lightweight game clipping<br><span>for any PC.</span></h2>
+ <p class="lead">One key saves the last moments.<br>Copy it straight into Discord.</p>
+ <div class="chips"><span>Free</span><span>No ads</span><span>No account</span></div>
+</div>
+<div class="url">echoclip.link &nbsp;·&nbsp; <span style="color:#8d8d9a;font-weight:500">Windows &amp; Linux</span></div>
+<div class="win">
+ <div class="thumb"><div class="road"></div><div class="play"></div><div class="dur">0:30</div></div>
+ <div class="meta"><b>Clutch 1v3</b><small>GTA V · just now</small>
+  <div class="row"><span class="btn p">Copy ▾</span><span class="btn">Share link</span><span class="btn">Trim</span></div></div>
+</div>
+<div class="menu"><p>Copy the video</p>
+ <div class="mi">Full size<span>84 MB</span></div>
+ <div class="mi on">Discord Free<span>shrunk to fit</span></div>
+ <div class="mi">Nitro Basic<span>shrunk to fit</span></div>
+</div>
+<div class="toast"><i></i>Clip saved · last 30 s</div>
+</body></html>

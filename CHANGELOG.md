@@ -4,6 +4,10 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Uploads say where they're going ("Uploading X to Google Drive") and have a Cancel button; while the cloud is still getting ready (Google Drive can take a while to find the folder) the box says so instead of sitting at 0%. A cancelled clip isn't uploaded again by itself until Echo restarts
+- Faster share links when Echo Cloud and another cloud (e.g. Google Drive) are both connected: the link no longer waits for the whole clip to upload to the other cloud first (it sat at 0% for most of a minute); "Making link" shows real upload progress
+
+## 1.0.38 - Update button fix
 - Fixed: clicking "Restart Echo" on the update card could say "Echo is already up to date" - Echo now installs the update it just found instead of asking the server again
 - Copies of Echo made by hand (not installed from echoclip.link) now say they never update themselves, with a "Get Echo" button, instead of "You have the newest version"
 - The log notes each Echo run's update check (version, installed or not) to help with update problems

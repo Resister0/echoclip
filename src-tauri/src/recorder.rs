@@ -1544,12 +1544,28 @@ pub static EXPORT_PROGRESS: AtomicU32 = AtomicU32::new(0);
 #[derive(Serialize, Clone, Default)]
 pub struct UpProgress {
     pub rel: String,
+    /// where it's going ("Google Drive", "Echo Cloud"…), shown in the progress box
+    pub dest: String,
     pub got: u64,
     pub total: u64,
     pub idx: u32,
     pub count: u32,
 }
-pub static UP_PROGRESS: Mutex<UpProgress> = Mutex::new(UpProgress { rel: String::new(), got: 0, total: 0, idx: 0, count: 0 });
+pub static UP_PROGRESS: Mutex<UpProgress> = Mutex::new(UpProgress { rel: String::new(), dest: String::new(), got: 0, total: 0, idx: 0, count: 0 });
+/// "Cancel" on the upload box: stops the running upload (rclone is stopped, an Echo Cloud upload is aborted)
+pub static UP_CANCEL: AtomicBool = AtomicBool::new(false);
+/// clips whose upload was cancelled: the background sync leaves them alone until Echo restarts
+/// (uploading one by hand takes it off the list)
+pub static UP_SKIPPED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// a cloud's name for people ("Google Drive", "Echo Cloud"…)
+pub fn cloud_name(provider: &str) -> &'static str {
+    match provider {
+        "echocloud" => "Echo Cloud", "gdrive" => "Google Drive", "pcloud" => "pCloud", "mega" => "MEGA", "filen" => "Filen",
+        "webdav" => "your WebDAV server", "sftp" => "your SFTP server", "s3" => "your S3 storage", "folder" => "your folder / NAS",
+        "onedrive" => "OneDrive", "dropbox" => "Dropbox",
+        _ => "the cloud",
+    }
+}
 pub static MIC_MUTED: AtomicBool = AtomicBool::new(false);
 /// set when the audio clock and the wall clock (video timestamps) split apart - sleep / hibernate, a big
 /// clock change, or a long stall. Clips would come out hours long with broken sound; the watch loop restarts the recorder.
@@ -5327,7 +5343,18 @@ fn rclone_progress(args: &[&str], on_bytes: impl Fn(u64, u64)) -> Result<(), Str
     let mut ch = rclone_cmd()?.args(args).args(["--use-json-log", "--stats", "500ms", "-v"])
         .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(err)?;
     let mut last_err = String::new();
-    if let Some(e) = ch.stderr.take() {
+    let stderr = ch.stderr.take();
+    // "Cancel" on the upload box: stop rclone (its unfinished upload is thrown away by the cloud)
+    let ch = std::sync::Arc::new(Mutex::new(ch));
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let watch = { let (ch, done) = (ch.clone(), done.clone()); std::thread::spawn(move || {
+        while !done.load(Ordering::Relaxed) {
+            if UP_CANCEL.load(Ordering::Relaxed) { let _ = ch.lock().unwrap().kill(); return true; }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
+    }) };
+    if let Some(e) = stderr {
         for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
             if let (Some(b), Some(t)) = (v["stats"]["bytes"].as_u64(), v["stats"]["totalBytes"].as_u64()) {
@@ -5338,7 +5365,10 @@ fn rclone_progress(args: &[&str], on_bytes: impl Fn(u64, u64)) -> Result<(), Str
             }
         }
     }
-    let st = ch.wait().map_err(err)?;
+    let st = ch.lock().unwrap().wait();
+    done.store(true, Ordering::Relaxed);
+    if watch.join().unwrap_or(false) { return Err("Upload cancelled".into()); }
+    let st = st.map_err(err)?;
     if !st.success() {
         let e = if last_err.is_empty() { "rclone failed".to_string() } else { last_err };
         log_line(&format!("cloud: rclone {} failed: {e}", args.first().unwrap_or(&"")));
@@ -5968,7 +5998,25 @@ impl Recorder {
         }
         // a share copy (watermark / AV1) is all the link needs: the whole clip doesn't have to go up first
         if !(has_ec && is_av1(path)) && !self.cloud_state().files.iter().any(|f| f.rel == rel) {
-            self.upload_inner(path, true)?;
+            let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let to_ec = upload_target(&cfg, fsize, true).map_or(cfg.cloud_accounts.len() == 1, |a| a.provider == "echocloud");
+            if has_ec && !to_ec {
+                // the clip would go to the other cloud (Google Drive took 47 s for 69 MB at "0%", chat 20) and the link
+                // then needs a copy in Echo Cloud anyway: only that copy goes up (cloud_link -> link_via_copy)
+                log_line(&format!("cloud: link for {rel} without uploading the whole clip first"));
+            } else {
+                // the upload's progress shows on the card as "Making link N%" (it used to sit at 0% until the link)
+                let r = std::thread::scope(|sc| {
+                    let h = sc.spawn(|| self.upload_inner(path, true));
+                    while !h.is_finished() {
+                        let f = { let p = UP_PROGRESS.lock().unwrap(); (p.rel == rel && p.total > 0).then(|| p.got as f64 / p.total as f64) };
+                        if let Some(f) = f { progress(f.min(1.0) * 0.95); }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    h.join().unwrap_or_else(|_| Err("upload crashed".into()))
+                });
+                r?;
+            }
         }
         self.cloud_link(&rel, days, progress)
     }
@@ -6001,14 +6049,28 @@ impl Recorder {
         let cp = known.unwrap_or_else(|| format!("{}/{rel}", date_folder(Path::new(path))));
         // live progress for the UI (card bar, bottom bar, player)
         let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        {
-            let mut p = UP_PROGRESS.lock().unwrap();
-            if p.count == 0 { p.idx = 1; p.count = 1; }
-            p.rel = rel.clone(); p.got = 0; p.total = fsize;
-        }
         // several clouds: the one picked in Settings → Cloud ("Upload new clips to"), else the union decides
         let cfg = self.settings();
         let target = upload_target(&cfg, fsize, for_link);
+        // where it's going, for the progress box. The union puts new files on the writable cloud with the most
+        // free space (Echo Cloud is read-only there): with one other cloud that's always it
+        let dest = match &target {
+            Some(a) => cloud_name(&a.provider).to_string(),
+            None => {
+                let w: Vec<_> = cfg.cloud_accounts.iter().filter(|a| a.provider != "echocloud").collect();
+                match (cfg.cloud_accounts.len(), w.len()) {
+                    (1, _) => cloud_name(&cfg.cloud_accounts[0].provider).to_string(),
+                    (_, 1) => cloud_name(&w[0].provider).to_string(),
+                    _ => "the cloud with the most free space".to_string(),
+                }
+            }
+        };
+        UP_CANCEL.store(false, Ordering::Relaxed);
+        {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.count == 0 { p.idx = 1; p.count = 1; }
+            p.rel = rel.clone(); p.got = 0; p.total = fsize; p.dest = dest.clone();
+        }
         // Echo Cloud: one size-checked upload link per file from the server (keys can't upload past the plan)
         let to_ec = match &target {
             Some(a) => a.provider == "echocloud",
@@ -6026,7 +6088,10 @@ impl Recorder {
                     r = crate::net::put_file(&url, Path::new(path), move |b, t| {
                         let mut p = UP_PROGRESS.lock().unwrap();
                         if p.rel == rel2 { p.got = b; p.total = t; }
-                    }).map_err(|e| { log_line(&format!("echo cloud: upload of {rel} failed: {e}")); format!("Upload to Echo Cloud failed: {e}") });
+                    }, || UP_CANCEL.load(Ordering::Relaxed)).map_err(|e| {
+                        if UP_CANCEL.load(Ordering::Relaxed) { return "Upload cancelled".to_string(); }
+                        log_line(&format!("echo cloud: upload of {rel} failed: {e}")); format!("Upload to Echo Cloud failed: {e}")
+                    });
                 }
                 // older server without /upload: the keys still work
                 Err(e) if e.contains("not found") => log_line("echo cloud: server has no /upload yet - uploading with keys"),
@@ -6046,9 +6111,15 @@ impl Recorder {
             let mut p = UP_PROGRESS.lock().unwrap();
             if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
         }
+        if UP_CANCEL.swap(false, Ordering::Relaxed) && r.is_err() {
+            log_line(&format!("cloud: upload of {rel} to {dest} cancelled"));
+            let mut sk = UP_SKIPPED.lock().unwrap();
+            if !sk.contains(&rel) { sk.push(rel.clone()); }
+            return Err("Upload cancelled".into());
+        }
         r?;
         ec_add_used(fsize);
-        log_line(&format!("cloud: uploaded {rel} in {:.0}s ({})", t0.elapsed().as_secs_f32(),
+        log_line(&format!("cloud: uploaded {rel} to {dest} in {:.0}s ({})", t0.elapsed().as_secs_f32(),
             if via_server { "Echo Cloud, size-checked upload link" } else if to_ec { "Echo Cloud, keys" } else { "rclone" }));
         let mut st = self.cloud_state();
         st.keep_remote.remove(&rel);
@@ -6424,7 +6495,7 @@ impl Recorder {
                 // the upload runs on its own thread; this one passes its progress on
                 let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
                 let (s2, url, f2) = (sent.clone(), j["url"].as_str().unwrap_or("").to_string(), file.to_path_buf());
-                let h = std::thread::spawn(move || crate::net::put_file(&url, &f2, move |b, _| s2.store(b, Ordering::Relaxed)));
+                let h = std::thread::spawn(move || crate::net::put_file(&url, &f2, move |b, _| s2.store(b, Ordering::Relaxed), || false));
                 while !h.is_finished() {
                     progress(sent.load(Ordering::Relaxed) as f64 / size.max(1) as f64);
                     std::thread::sleep(Duration::from_millis(250));
@@ -6709,6 +6780,7 @@ impl Recorder {
             let todo: Vec<ClipInfo> = self.list_clips().into_iter().filter(|c| {
                 let rel = if c.folder.is_empty() { format!("{}.mp4", c.name) } else { format!("{}/{}.mp4", c.folder, c.name) };
                 !in_cloud.contains(&rel) && (favs.contains(&c.name) || (every && c.modified >= cfg.cloud_since))
+                    && !UP_SKIPPED.lock().unwrap().contains(&rel) // cancelled by hand: not again on its own
                     && now_unix().saturating_sub(c.modified) > 20 // not still being written
             }).collect();
             for (i, c) in todo.iter().enumerate() {

@@ -367,7 +367,16 @@ fn cloud_sync_now() {
 }
 #[tauri::command]
 async fn cloud_upload(rec: State<'_, Recorder>, path: String) -> Result<(), String> {
+    // uploading by hand: a clip cancelled before may go up again (also with the background sync)
+    if let Some(rel) = rec.rel_of(&path) { recorder::UP_SKIPPED.lock().unwrap().retain(|r| r != &rel); }
     rec.cloud_upload(&path)
+}
+/// "Cancel" on the upload box
+#[tauri::command]
+fn cloud_upload_cancel() {
+    if !recorder::UP_PROGRESS.lock().unwrap().rel.is_empty() {
+        recorder::UP_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 #[tauri::command]
 async fn cloud_download(rec: State<'_, Recorder>, rel: String) -> Result<String, String> {
@@ -1846,6 +1855,7 @@ fn main() {
             cloud_files,
             cloud_sync_now,
             cloud_upload,
+            cloud_upload_cancel,
             cloud_download,
             cloud_remove_local,
             cloud_delete,

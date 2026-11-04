@@ -656,7 +656,11 @@
   #notes .note.prog { width:400px; max-width:92vw; padding:12px 16px; border-radius:12px; font-size:13px; }
   #notes .note.prog .bar { height:6px; border-radius:99px; background:var(--panel); margin-top:8px; overflow:hidden; }
   #notes .note.prog .bar i { display:block; height:100%; width:0; background:var(--hi); transition:width .2s; }
-  #notes .note.prog .row2 { display:flex; justify-content:space-between; gap:10px; color:var(--muted); }
+  #notes .note.prog .row2 { display:flex; justify-content:space-between; align-items:center; gap:10px; color:var(--muted); }
+  #notes .note.prog .sub { display:block; margin-top:6px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #notes .note.prog .pbx { flex:none; margin-left:auto; background:none; border:1px solid var(--line); color:var(--muted); border-radius:7px; padding:2px 9px; font:inherit; font-size:12px; cursor:pointer; }
+  #notes .note.prog .pbx:hover:not(:disabled) { color:var(--text); border-color:var(--muted); }
+  #notes .note.prog .pbx:disabled { opacity:.6; cursor:default; }
   #notes .note.prog .row2 b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .note.prog .row2 span { white-space:nowrap; }
   ::-webkit-scrollbar { width:10px; } ::-webkit-scrollbar-thumb { background:#333; border-radius:9px; border:2px solid var(--bg); }
   /* Linux (WebKitGTK) paints native selects in the light GTK theme: draw them ourselves */
@@ -1300,6 +1304,15 @@
     let gone = false;
     return {
       title(t) { b.textContent = t; return this; }, text(t) { sp.textContent = t; return this; },
+      // a small button on the right (e.g. "Cancel"); once per box
+      btn(label, fn) {
+        if (el.querySelector(".pbx")) return this;
+        const x = document.createElement("button"); x.className = "pbx"; x.textContent = label;
+        x.onclick = () => { x.disabled = true; fn(x); };
+        el.querySelector(".row2").appendChild(x);
+        // with a button the text moves under the bar, so the title (e.g. where an upload goes) stays readable
+        sp.classList.add("sub"); el.appendChild(sp); return this;
+      },
       pct(p) { i.style.width = Math.max(0, Math.min(100, p)).toFixed(1) + "%"; return this; },
       done(ms = 0) { if (gone) return; gone = true; setTimeout(() => noteOut(el), ms); },
     };
@@ -1578,6 +1591,13 @@
       ["Free up space on this PC", once(run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); }))],
       ["Delete from the cloud", once(run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))), "", false, "warn"]);
     else items.push(["Upload to the cloud", run("Uploading…", async () => {
+      // Echo Cloud connected but new clips go to another cloud (e.g. Google Drive): the link only needs a copy in
+      // Echo Cloud, so make it first (seconds) instead of after the whole upload (47 s at "0%" for 69 MB, chat 20)
+      const accs = cfg.cloud_accounts || [];
+      if (cfg.auto_copy_link && cfg.cloud !== "filen" && accs.length > 1 && accs.some(a => a.provider === "echocloud") && cfg.cloud_target !== "echocloud") {
+        try { await withLinkProgress(c, invoke("cloud_link", { rel: relOf(c), path: c.path })); toast("Link copied - uploading the clip…"); } catch { }
+        await invoke("cloud_upload", { path: c.path }); toast("Uploaded"); return;
+      }
       await invoke("cloud_upload", { path: c.path });
       if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
     })]);
@@ -4592,18 +4612,20 @@
     const f = p.total ? Math.min(1, p.got / p.total) : 0, pc = Math.round(f * 100), secs = (Date.now() - upT0) / 1000;
     const left = f > 0.03 ? Math.round(secs * (1 - f) / f) : null;
     const name = p.rel.split("/").pop().replace(/\.mp4$/i, "");
-    const txt = (p.count > 1 ? `${p.idx} of ${p.count} · ` : "") + `${fmtSize(p.got)} of ${fmtSize(p.total)} · ${pc}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "");
+    // nothing sent yet: rclone is still finding / making the folder (Google Drive can take a while) - say so instead of "0%"
+    const txt = (p.count > 1 ? `${p.idx} of ${p.count} · ` : "") + (p.got > 0 ? `${fmtSize(p.got)} of ${fmtSize(p.total)} · ${pc}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "")
+      : `Getting ready${secs > 8 ? ` (${Math.round(secs)} s)` : ""}… · ${fmtSize(p.total)}`);
     // the clip's card
     const card = [...document.querySelectorAll(".card")].find(e => e.dataset.rel === p.rel);
     if (card) {
       const th = card.querySelector(".thumb");
       let b = th.querySelector(".upbar"); if (!b) { b = document.createElement("div"); b.className = "upbar"; b.innerHTML = "<i></i>"; th.appendChild(b); }
       let l = th.querySelector(".uplbl"); if (!l) { l = document.createElement("span"); l.className = "uplbl"; th.appendChild(l); }
-      b.firstChild.style.width = pc + "%"; l.textContent = `☁ Uploading ${pc}%`;
+      b.firstChild.style.width = pc + "%"; l.textContent = p.got > 0 ? `☁ Uploading ${pc}%` : "☁ Getting ready…";
     }
     // its own box at the bottom (stacks with downloads, exports, messages)
-    if (!upBox) upBox = progBox("");
-    upBox.title(`Uploading ${name}`).text(txt).pct(pc);
+    if (!upBox) upBox = progBox("").btn("Cancel", x => { x.textContent = "Cancelling…"; invoke("cloud_upload_cancel").then(() => toast("Upload cancelled - the clip stays on this PC (upload it any time from its cloud menu)")).catch(() => {}); });
+    upBox.title(`Uploading ${name}` + (p.dest ? ` to ${p.dest}` : "")).text(txt).pct(pc);
     // the player, when that clip is open
     const open = $("player").classList.contains("open") && trim.clip && relOf(trim.clip) === p.rel;
     ppl.classList.toggle("on", !!open); plbl.classList.toggle("on", !!open);

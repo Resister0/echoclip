@@ -20,7 +20,7 @@ HEAD = """<!doctype html>
 <meta property="og:description" content="{desc}">
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://echoclip.link/og.png">
+<meta property="og:image" content="https://echoclip.link/og.png?v=2">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">

@@ -647,9 +647,18 @@ async function hit(req, env) {
   } else if (b.t === "click" && SITE_CLICKS.has(b.k)) await bump(env, "click:" + b.k);
   return done;
 }
+// Only real clicks count, once per person per file per day (chat 20: the same 5 hits on all four files in a day =
+// link scanners / antivirus / prefetch, not people). Browsers mark a click on a link with Sec-Fetch-Mode "navigate";
+// scanners and prefetchers don't (or send "no-cors"/"prefetch"). Anything without the header (old browser, script)
+// isn't counted - better too low than made-up numbers.
 async function countDownload(req, env, what) {
   try {
-    if (!isBot(req) && (await allow(env, `dlc:${ipOf(req)}`, 10, 3600))) await bump(env, "dl:" + what);
+    if (isBot(req) || req.headers.get("sec-fetch-mode") !== "navigate") return;
+    const pf = (req.headers.get("sec-purpose") || req.headers.get("purpose") || "").toLowerCase();
+    if (pf.includes("prefetch") || pf.includes("prerender")) return;
+    const h = (await sha256(`${utcDay()}|${ipOf(req)}|${req.headers.get("user-agent")}|dl:${what}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, "dl:" + what);
   } catch (e) { console.log("download count error", e && e.message); }
 }
 async function cleanupStats(env) {
