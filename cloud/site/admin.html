@@ -165,6 +165,17 @@ function draw(j) {
     <div class="wrap"><table><tr><th>Email</th><th>Plan</th><th>Joined</th></tr>
       ${rows(j.newest, (n) => `<tr><td>${esc(n.email)}</td><td>${esc(n.plan)}</td><td>${ago(n.created)}</td></tr>`)}</table></div>
 
+    <h2>Profiles</h2>
+    <div class="tile" style="margin-bottom:12px"><div class="k">Change an @name</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+        <input id="hwho" placeholder="their @name, /u/ link or email" style="flex:1;min-width:200px">
+        <input id="hto" placeholder="new @name (empty = random user_123456)" style="flex:1;min-width:200px"></div>
+      <label class="sub"><input type="checkbox" id="hblock"> block the old @name so nobody can take it again (inappropriate names)</label>
+      <div class="sub" style="margin-top:6px">Reserved names (echo, support…) are allowed here. Empty = a random @name, and their display name is reset too; it stays until they pick a new one in Echo.</div>
+      <div style="margin-top:10px"><button id="hgo">Change @name</button> <span class="sub" id="hmsg"></span></div></div>
+    <div class="wrap"><table><tr><th>@name</th><th>Name</th><th>Email</th><th class="n">Followers</th><th class="n">Pinned</th><th>Made</th><th></th></tr>
+      ${rows((j.profiles && j.profiles.list) || [], (q) => `<tr><td><a href="/u/${esc(q.handle)}" target="_blank" rel="noopener">@${esc(q.handle)}</a></td><td>${esc(q.name || "")}</td><td>${esc(q.email || "")}</td><td class="n">${q.followers}</td><td class="n">${q.pins}</td><td>${ago(q.created)}</td><td><button class="hpick" data-h="${esc(q.handle)}">Change</button></td></tr>`)}</table></div>
+
     <h2>Remove something</h2>
     <div class="two">
       <div class="tile"><div class="k">Reported share link</div>
@@ -194,6 +205,17 @@ function draw(j) {
   };
   $("#rmsharego").onclick = () => { const v = $("#rmshare").value.trim(); if (v && confirm("Remove this share link?")) post("/admin/takedown", { id: v, delete_clip: $("#rmclip").checked }, $("#rmsharemsg")); };
   $("#rmprofgo").onclick = () => { const v = $("#rmprof").value.trim(); if (v && confirm("Remove this profile?")) post("/admin/profile-takedown", { handle: v, block: $("#rmblock").checked }, $("#rmprofmsg")); };
+  document.querySelectorAll(".hpick").forEach((b) => b.onclick = () => { $("#hwho").value = "@" + b.dataset.h; $("#hto").focus(); $("#hwho").scrollIntoView({ block: "center" }); });
+  $("#hgo").onclick = async () => {
+    const who = $("#hwho").value.trim(), to = $("#hto").value.trim(), out = $("#hmsg");
+    if (!who || !confirm(to ? `Change ${who} to @${to.replace(/^@/, "")}?` : `Give ${who} a random @name?`)) return;
+    out.textContent = "…";
+    try {
+      const r = await fetch("/admin/profile-handle", { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify({ who, to, block_old: $("#hblock").checked }) });
+      const x = await r.json().catch(() => ({}));
+      out.textContent = r.ok ? `Done: ${x.from ? "@" + x.from + " → " : ""}@${x.to}${x.blocked ? " · old @name blocked" : ""}${x.owner ? " · " + x.owner : ""}` : (x.error || "Error " + r.status);
+    } catch { out.textContent = "Couldn't reach echoclip.link"; }
+  };
   $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
 }
 load();

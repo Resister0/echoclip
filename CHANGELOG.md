@@ -4,6 +4,7 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Settings → Profile: clearer which clips are public - "On your page" (with Remove) and "Your share links" (only you see them, "+ Add to page")
 - New clips are saved as e.g. "FiveM 2026-11-04 15-50-51 (Echo).mp4", so people see where a clip came from when it's pasted into Discord; the library and share pages show the name without it
 
 ## 1.0.41 - Faster seek bar previews

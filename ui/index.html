@@ -355,12 +355,14 @@
   .pfsw button.on { border-color:var(--text); }
   .pfsw input[type=color] { width:28px; height:26px; border:0; background:none; padding:0; cursor:pointer; }
   .pfclips { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; padding:12px 0 14px; }
-  .pfclip { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--panel2); cursor:pointer; position:relative; transition:border-color .15s; }
-  .pfclip:hover { border-color:var(--muted); } .pfclip.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .pfclip { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--panel2); position:relative; transition:border-color .15s; }
+  .pfclip:hover { border-color:var(--muted); } .pfclip.on { border-color:rgba(var(--accent-rgb),.6); }
   .pfclip .t { aspect-ratio:16/9; background:linear-gradient(135deg,rgba(var(--accent-rgb),.25),var(--panel)) center/cover; }
   .pfclip .n { padding:6px 8px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .pfclip .pin { position:absolute; top:6px; right:6px; font-size:11px; font-weight:600; padding:2px 7px; border-radius:99px; background:#000b; color:var(--muted); }
-  .pfclip.on .pin { background:var(--accent); color:#fff; }
+  .pfclip .pin { position:absolute; top:6px; right:6px; font:inherit; font-size:11px; font-weight:600; padding:3px 9px; border-radius:99px; border:0; background:#000c; color:#ddd; cursor:pointer; }
+  .pfclip .pin:hover:not(:disabled) { background:#000; color:#fff; }
+  .pfclip .pin.add { background:var(--accent); color:#fff; } .pfclip .pin.add:hover:not(:disabled) { filter:brightness(1.1); background:var(--accent); }
+  .pfclip .pin:disabled { opacity:.45; cursor:default; }
   .pfrow { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #ffffff0d; }
   .pfrow:last-child { border-bottom:0; }
   .pfrow .pfav { width:34px; height:34px; font-size:14px; border-width:1px; cursor:default; } .pfrow .pfav:hover::after { content:none; }
@@ -4997,9 +4999,19 @@
         <label>Colour</label><div class="pfsw" id="pfsw">${PF_COLORS.map(c => `<button data-c="${c}" style="background:${c}" class="${c === p.color ? "on" : ""}" title="${c}"></button>`).join("")}<input type="color" id="pfc" value="${escH(p.color)}" title="Any colour"></div>
       </div>
       <div class="row"><div class="lbl"><small id="pfmsg">Changes show on your page right away.</small></div>${p.avatar ? `<button class="btn" id="pfavx">Remove picture</button>` : ""}<button class="btn primary" id="pfsave">Save</button></div></div>
-      <div class="box"><h3>Pinned clips<span class="spacer"></span><small style="text-transform:none;letter-spacing:0;font-weight:500">${pinned} of ${pf.pin_max}</small></h3>
-      ${pf.shares.length ? `<div class="pfclips">${pf.shares.map(s => `<div class="pfclip${s.pinned ? " on" : ""}" data-id="${escH(s.id)}" title="${s.pinned ? "Unpin" : "Pin to your profile"}"><div class="t" style="${s.thumb ? `background-image:url('${escH(s.thumb)}')` : ""}"></div><div class="n">${escH(s.title)}</div><span class="pin">${s.pinned ? "Pinned" : "Pin"}</span></div>`).join("")}</div>`
-        : `<div class="row"><div class="lbl"><small>Clips you share with Echo Cloud ("Copy share link") show up here - pick up to ${pf.pin_max} for your page.</small></div></div>`}</div>
+      ${(() => {
+        // two lists, so it's obvious what's public: "On your page" (pinned) and the share links you could add
+        const on = pf.shares.filter(s => s.pinned), off = pf.shares.filter(s => !s.pinned), full = on.length >= pf.pin_max;
+        const card = (s, pinned) => `<div class="pfclip${pinned ? " on" : ""}" data-id="${escH(s.id)}"><div class="t" style="${s.thumb ? `background-image:url('${escH(s.thumb)}')` : ""}"></div><div class="n">${escH(s.title)}</div>`
+          + `<button class="pin${pinned ? "" : " add"}"${!pinned && full ? " disabled" : ""}>${pinned ? "Remove" : "+ Add to page"}</button></div>`;
+        return `<div class="box"><h3>On your page<span class="spacer"></span><small style="text-transform:none;letter-spacing:0;font-weight:500">${on.length} of ${pf.pin_max}</small></h3>
+          ${on.length ? `<div class="pfclips">${on.map(s => card(s, true)).join("")}</div>`
+            : `<div class="row"><div class="lbl"><small>Nothing on your page yet. Only clips you add here show on echoclip.link/u/${escH(p.handle)}.</small></div></div>`}</div>
+        <div class="box"><h3>Your share links</h3>
+          <div class="row"><div class="lbl"><small>${off.length ? `Clips you've made a share link for. <span style="font-weight:600;color:var(--text)">Only you see this list</span> - none of these are on your page unless you add them${full ? ` (your page is full - remove one first)` : ""}.`
+            : pf.shares.length ? "All your share links are on your page." : `Clips you share with Echo Cloud ("Copy share link") show up here. Nothing is on your page unless you add it.`}</small></div></div>
+          ${off.length ? `<div class="pfclips">${off.map(s => card(s, false)).join("")}</div>` : ""}</div>`;
+      })()}
       <div class="box"><h3>Following</h3>
       <div class="row"><input class="din" id="pff" placeholder="@name or their echoclip.link/u/ link" spellcheck="false" style="max-width:340px"><button class="btn primary" id="pffollow">Follow</button></div>
       ${pf.following.map(f => `<div class="pfrow">${pfAv(f, "pfav")}<div class="pfwho"><b style="font-size:14px">${escH(f.name)}</b><small>@${escH(f.handle)}</small></div><button class="btn" data-open="${escH(f.handle)}">Open page</button><button class="btn" data-unf="${escH(f.handle)}">Unfollow</button></div>`).join("")
@@ -5020,8 +5032,8 @@
       catch (e) { toast(String(e)); }
     };
     if ($("pfavx")) $("pfavx").onclick = async () => { try { await pfCall("POST", "/profile/avatar", { remove: true }); renderProfile(); } catch (e) { toast(String(e)); } };
-    box.querySelectorAll(".pfclip").forEach(c => c.onclick = async () => {
-      const on = !c.classList.contains("on");
+    box.querySelectorAll(".pfclip .pin").forEach(b => b.onclick = async () => {
+      const c = b.closest(".pfclip"), on = !c.classList.contains("on"); b.disabled = true;
       try { await pfCall("POST", "/profile/pin", { id: c.dataset.id, on }); renderProfile(); } catch (e) { toast(String(e)); }
     });
     const follow = async () => {

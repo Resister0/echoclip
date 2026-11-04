@@ -725,12 +725,14 @@ async function profileSave(req, user, env, origin) {
   const b = await body(req);
   const handle = String(b.handle || "").trim().toLowerCase().replace(/^@/, "");
   if (!HANDLE_RE.test(handle)) return fail("Your @name needs 3-20 letters, numbers or _");
-  if (RESERVED.has(handle) || (await env.DB.prepare("SELECT 1 AS x FROM banned_handles WHERE handle = ?").bind(handle).first()))
+  const old = await profileOf(env, user.id);
+  // a reserved @name given by William (admin) can be kept when saving other changes
+  const mine = old && old.handle === handle;
+  if (!mine && (RESERVED.has(handle) || (await env.DB.prepare("SELECT 1 AS x FROM banned_handles WHERE handle = ?").bind(handle).first())))
     return fail("That @name is reserved - pick another");
   const taken = await env.DB.prepare("SELECT user_id FROM profiles WHERE handle = ?").bind(handle).first();
   if (taken && taken.user_id !== user.id) return fail("That @name is taken - pick another", 409);
   const name = cleanText(b.name, 32) || handle, bio = cleanText(b.bio, 160), color = cleanColor(b.color), t = now();
-  const old = await profileOf(env, user.id);
   if (old) await env.DB.prepare("UPDATE profiles SET handle = ?, name = ?, bio = ?, color = ?, updated = ? WHERE user_id = ?").bind(handle, name, bio, color, t, user.id).run();
   else await env.DB.prepare("INSERT INTO profiles (user_id, handle, name, bio, color, avatar, created, updated) VALUES (?, ?, ?, ?, ?, 0, ?, ?)").bind(user.id, handle, name, bio, color, t, t).run();
   return json({ ok: true, profile: publicProfile(origin, await profileOf(env, user.id)) });
@@ -899,6 +901,8 @@ async function adminStats(req, env) {
   const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
   const profs = await one("SELECT COUNT(*) AS n, SUM(created > ?) AS d7 FROM profiles", t - 7 * d);
   const fl = await one("SELECT COUNT(*) AS n FROM follows");
+  const profList = await all(`SELECT p.handle, p.name, p.created, u.email, (SELECT COUNT(*) FROM follows f WHERE f.followee = p.user_id) AS followers,
+      (SELECT COUNT(*) FROM pins x WHERE x.user_id = p.user_id) AS pins FROM profiles p LEFT JOIN users u ON u.id = p.user_id ORDER BY p.created DESC LIMIT 100`);
   // income: what each subscription really pays per month after discounts (stored by the Polar webhook);
   // subscriptions from before that (sub_cents -1) are counted as "unknown", not guessed
   const paidRows = await all("SELECT sub_cents, sub_currency FROM users WHERE polar_sub IS NOT NULL");
@@ -926,7 +930,7 @@ async function adminStats(req, env) {
     money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
     shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
     logs, backup, top, newest, over,
-    profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0 },
+    profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0, list: profList },
     site: await siteStats(env),
   });
 }
@@ -946,6 +950,51 @@ async function profileTakedown(req, env) {
   await profileDelete({ id: p.user_id }, env);
   console.log("profile takedown", handle, b.block ? "(blocked)" : "");
   return json({ ok: true, handle, removed: true, blocked: !!b.block, owner: owner ? owner.email : null });
+}
+
+/// William changes someone's @name: POST /admin/profile-handle {who, to, block_old?} with header x-admin-key.
+/// who = their @name, /u/ link or account email; to = the new @name (reserved names allowed, e.g. "echo" for
+/// William himself) or "" = a random one (user_123456) they can change later. An account without a profile gets
+/// one when `to` is given. block_old = nobody can take the old @name again (inappropriate names).
+async function profileHandle(req, env) {
+  const key = req.headers.get("x-admin-key") || "";
+  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
+  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const b = await body(req);
+  const who = String(b.who || "").trim();
+  let p = null, userId = null;
+  if (who.includes("@") && who.indexOf("@") > 0) {
+    const u = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(who.toLowerCase()).first();
+    if (!u) return fail("No account with that email", 404);
+    userId = u.id; p = await profileOf(env, u.id);
+  } else {
+    const h = who.toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/\/.*$/, "");
+    p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(h).first();
+    if (!p) return fail("No profile with that @name", 404);
+    userId = p.user_id;
+  }
+  let to = String(b.to || "").trim().toLowerCase().replace(/^@/, "");
+  if (to) {
+    if (!HANDLE_RE.test(to)) return fail("The new @name needs 3-20 letters, numbers or _");
+    const taken = await env.DB.prepare("SELECT user_id FROM profiles WHERE handle = ?").bind(to).first();
+    if (taken && taken.user_id !== userId) return fail(`@${to} belongs to someone else - change theirs first`, 409);
+  } else {
+    if (!p) return fail("That account has no profile - give a new @name to make one");
+    for (let i = 0; i < 20 && !to; i++) {
+      const c = "user_" + String(100000 + Math.floor(Math.random() * 900000));
+      if (!(await env.DB.prepare("SELECT 1 AS x FROM profiles WHERE handle = ?").bind(c).first())) to = c;
+    }
+    if (!to) return fail("Couldn't find a free random @name - try again", 500);
+  }
+  const t = now(), from = p ? p.handle : null;
+  // random name (usually an inappropriate one): the display name goes too; otherwise it only follows when it was the @name
+  const resetName = !String(b.to || "").trim() ? 1 : 0;
+  if (p) await env.DB.prepare("UPDATE profiles SET handle = ?, name = CASE WHEN name = handle OR ? = 1 THEN ? ELSE name END, updated = ? WHERE user_id = ?").bind(to, resetName, to, t, userId).run();
+  else await env.DB.prepare("INSERT INTO profiles (user_id, handle, name, bio, color, avatar, created, updated) VALUES (?, ?, ?, '', '#7c5cff', 0, ?, ?)").bind(userId, to, to, t, t).run();
+  if (b.block_old && from && from !== to) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(from, t).run();
+  const owner = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first();
+  console.log("profile handle", from, "->", to, b.block_old ? "(old blocked)" : "");
+  return json({ ok: true, from, to, blocked: !!(b.block_old && from), owner: owner ? owner.email : null });
 }
 
 /// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
@@ -1589,6 +1638,7 @@ export default {
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
       if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);
+      if (route === "POST /admin/profile-handle") return await profileHandle(req, env);
       if (route === "GET /admin/stats") return await adminStats(req, env);
       if (route === "POST /log") return await logUpload(req, env, url.origin);
       const lm = url.pathname.match(/^\/log\/([a-z2-9]{14})\/?$/);
