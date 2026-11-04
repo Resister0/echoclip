@@ -8,6 +8,7 @@
 //   RESEND_KEY             Resend API key for the sign-in emails (without it the code is only logged: wrangler tail)
 //   POLAR_TOKEN            Polar organization access token (products:read, checkouts:write, customer_sessions:write)
 //   POLAR_WEBHOOK_SECRET   secret of the Polar webhook pointing at https://echoclip.link/polar/webhook
+//   RELEASE_KEY            (optional) long random string; the public build sends it with POST /release/push
 //   ADMIN_KEY              (optional) long random string for /admin/takedown (removing reported share links)
 // Var UPLOAD_KEYS: "rw" (default) = /creds hands out read-write keys like before; "ro" = read-only keys, and Echo
 // uploads / deletes / moves through /upload, /delete, /move (per-file, size-checked). Switch to "ro" once every
@@ -1415,6 +1416,9 @@ const publicRepo = (env) => env.PUBLIC_REPO || "Resister0/echoclip";
 const privateRepo = (env) => env.GITHUB_REPO || "Resister0/echo";
 /// the GitHub release "latest" of one repo (cached 2 min), or null
 async function releaseOf(env, repo, isPublic) {
+  // the public build tells us about each release itself (POST /release/push) - no GitHub lookup needed
+  // (chat 22: some Cloudflare locations couldn't read GitHub and kept offering 1.0.37)
+  if (isPublic) { const p = await pushedRelease(env); if (p) return p; }
   const c = releaseCache.get(repo);
   // 2 min: right after a release, Cloudflare locations kept saying "newest version" for up to 5 min (chat 18)
   if (c && now() - c.at < (c.rel ? 120 : 15)) return c.rel;
@@ -1492,6 +1496,48 @@ async function releaseFromWeb(repo) {
   return { name, body, published_at: updated, created_at: updated, public: true, assets };
 }
 const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
+/// the release the public build pushed last (D1 table pushedrel, cached 30 s per Worker copy), or null.
+/// While a new build is replacing "latest" its files are briefly gone - the push only arrives once they're up.
+let pushedCache = { at: 0, rel: null };
+async function pushedRelease(env) {
+  if (now() - pushedCache.at < 30) return pushedCache.rel;
+  let rel = null;
+  try {
+    const row = await env.DB.prepare("SELECT rel FROM pushedrel WHERE id = 1").first();
+    if (row) rel = JSON.parse(row.rel);
+  } catch { /* table not there yet = never pushed */ }
+  pushedCache = { at: now(), rel };
+  return rel;
+}
+/// POST /release/push from the public repo's release job, header x-release-key = secret RELEASE_KEY
+/// (also a GitHub secret in Resister0/echoclip). Body {version, notes, files: [names], sigs: {name: text}}.
+async function releasePush(req, env) {
+  const key = req.headers.get("x-release-key") || "", want = env.RELEASE_KEY || "";
+  if (!(await allow(env, `relpush:${ipOf(req)}`, 30, 3600))) return fail("slow down", 429);
+  let diff = want.length < 20 || key.length !== want.length ? 1 : 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
+  if (diff) return fail("Wrong release key", 403);
+  const b = await req.json().catch(() => null);
+  const v = b && String(b.version || "");
+  if (!/^\d+\.\d+\.\d+$/.test(v) || !Array.isArray(b.files)) return fail("bad release", 400);
+  const repo = publicRepo(env), sigs = b.sigs || {};
+  const notes = String(b.notes || "").split("\n")[0].trim().slice(0, 600);
+  const assets = b.files.map(String).filter((n) => /^[A-Za-z0-9._-]{1,80}$/.test(n)).map((n) => ({
+    id: `push:${v}:${n}`, name: n, sig_text: typeof sigs[n] === "string" ? sigs[n].trim().slice(0, 4000) : undefined,
+    browser_download_url: `https://github.com/${repo}/releases/download/latest/${encodeURIComponent(n)}` }));
+  const at = now();
+  const rel = { name: `Echo ${v}`, body: `Built from: ${notes}`, published_at: new Date(at * 1000).toISOString(),
+    created_at: new Date(at * 1000).toISOString(), public: true, pushed: true, assets };
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS pushedrel (id INTEGER PRIMARY KEY, rel TEXT NOT NULL, at INTEGER NOT NULL)").run();
+  await env.DB.prepare("INSERT OR REPLACE INTO pushedrel (id, rel, at) VALUES (1, ?, ?)").bind(JSON.stringify(rel), at).run();
+  try {
+    await env.DB.prepare("CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, notes TEXT NOT NULL, at INTEGER NOT NULL, sha TEXT)").run();
+    if (notes) await env.DB.prepare("INSERT OR IGNORE INTO releases (version, notes, at, sha) VALUES (?, ?, ?, NULL)").bind(v, notes, at).run();
+  } catch {}
+  pushedCache = { at: now(), rel };
+  console.log("release: pushed", v, assets.length, "files");
+  return json({ ok: true, version: v, files: assets.length });
+}
 /// newest release that has `file` (and its .sig when `withSig`); "private" = only the private repo
 async function release(env, file, withSig, only) {
   const rels = [];
@@ -1547,7 +1593,7 @@ async function update(env, target, current) {
   const version = relVersion(rel);
   if (!version || !newer(version, current)) return none();
   const sig = rel.assets.find((a) => a.name === `${file}.sig`);
-  let signature = sigCache.get(sig.id);
+  let signature = sig.sig_text || sigCache.get(sig.id);
   if (!signature) {
     const to = await assetLink(env, rel, sig);
     const r = to && (await fetch(to));
@@ -1714,6 +1760,7 @@ export default {
       if (route === "POST /polar/webhook") return await polarWebhook(req, env);
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
+      if (route === "POST /release/push") return await releasePush(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
       if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);
       if (route === "POST /admin/profile-handle") return await profileHandle(req, env);

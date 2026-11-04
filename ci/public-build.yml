@@ -164,6 +164,18 @@ jobs:
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
           gh release create latest $files --title "Echo $V" --notes "$notes"
+      - name: Tell echoclip.link about the release
+        # secret RELEASE_KEY (same value as the Worker secret); not set -> skipped (the server then asks GitHub)
+        env:
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+        run: |
+          [ -n "$RELEASE_KEY" ] || { echo "RELEASE_KEY not set - skipping"; exit 0; }
+          V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); msg=$(git log -1 --pretty=%s)
+          sigs='{}'
+          for f in $(find out -type f -name '*.sig'); do sigs=$(jq --arg n "$(basename "$f")" --rawfile s "$f" '. + {($n): $s}' <<<"$sigs"); done
+          names=$(find out -type f \( -name 'Echo.exe' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' \) -printf '%f\n' | jq -R . | jq -s .)
+          jq -n --arg v "$V" --arg m "$msg" --argjson sigs "$sigs" --argjson files "$names" '{version: $v, notes: $m, sigs: $sigs, files: $files}' > rel.json
+          curl -sS -f -X POST -H "Content-Type: application/json" -H "x-release-key: $RELEASE_KEY" --data @rel.json https://echoclip.link/release/push || echo "::warning::Telling echoclip.link failed - it falls back to asking GitHub"
       - name: Announce on Discord
         # #announcements webhook = secret DISCORD_WEBHOOK in this repo; not set -> skipped
         env:
