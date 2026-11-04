@@ -167,6 +167,8 @@ pub struct Settings {
     pub shrink_av1: bool,
     /// record with constant quality capped at bitrate_mbps instead of a constant bitrate (smaller clips, same sharpness in action)
     pub smart_bitrate: bool,
+    /// show the mouse pointer in recordings (games that hide it stay without; menus, phones, inventories show it)
+    pub capture_cursor: bool,
     /// share links play a copy with the watermark (slower to make); off = the clip itself, fast
     pub share_watermark: bool,
     /// quality level for smart bitrate (0-100, higher = sharper and bigger): 72 balanced, 82 high, 90 very high
@@ -254,6 +256,7 @@ impl Default for Settings {
             shrink_days: 30,
             shrink_av1: true,
             smart_bitrate: true,
+            capture_cursor: true,
             share_watermark: true,
             smart_quality: 72,
             smart_v: 1,
@@ -390,6 +393,7 @@ impl Settings {
             || self.fps != new.fps
             || self.bitrate_mbps != new.bitrate_mbps
             || self.smart_bitrate != new.smart_bitrate
+            || self.capture_cursor != new.capture_cursor
             || self.smart_quality != new.smart_quality
             || self.desktop_audio != new.desktop_audio
             || self.mic != new.mic

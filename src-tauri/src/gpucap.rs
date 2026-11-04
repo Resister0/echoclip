@@ -77,6 +77,8 @@ pub struct Opts {
     pub smart_quality: u32,
     /// window to record (HWND as isize); 0 = whole monitor
     pub window: isize,
+    /// draw the mouse pointer into the video (Desktop Duplication leaves it out; games that hide it stay clean)
+    pub cursor: bool,
 }
 
 /// A monitor for the settings list.
@@ -337,6 +339,224 @@ impl HdrConv {
     }
 }
 
+const CURSOR_HLSL: &str = r#"
+Texture2D t : register(t0); SamplerState s : register(s0);
+struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };
+V vs(uint id : SV_VertexID) { V o; o.uv = float2((id << 1) & 2, id & 2); o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }
+float4 ps(V i) : SV_Target { return t.Sample(s, i.uv); }
+"#;
+
+/// The mouse pointer on top of whole-monitor recordings. Desktop Duplication hands it over separately
+/// (position + shape); it is drawn onto a copy of the frame right before the NV12 conversion, so the
+/// captured frame itself stays clean when only the mouse moves. Invert-style pointers (text I-beam)
+/// are drawn as a real colour inversion with a second blend pass.
+struct CursorDraw {
+    comp: ID3D11Texture2D,
+    rtv: ID3D11RenderTargetView,
+    view: ID3D11VideoProcessorInputView,
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
+    samp: ID3D11SamplerState,
+    blend: ID3D11BlendState,
+    blend_inv: ID3D11BlendState,
+    opaque: ID3D11BlendState,
+    /// normal pixels (straight alpha) and "invert the screen here" pixels
+    norm: Option<ID3D11ShaderResourceView>,
+    inv: Option<ID3D11ShaderResourceView>,
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    visible: bool,
+    buf: Vec<u8>,
+}
+
+impl CursorDraw {
+    fn new(device: &ID3D11Device, vdev: &ID3D11VideoDevice, venum: &ID3D11VideoProcessorEnumerator, w: u32, h: u32) -> Result<Self, String> {
+        unsafe {
+            let comp = bgra_tex(device, w, h)?;
+            let mut rtv = None;
+            device.CreateRenderTargetView(&comp, None, Some(&mut rtv)).map_err(e("cursor RTV"))?;
+            let view = in_view(vdev, venum, &comp)?;
+            let vsb = compile(CURSOR_HLSL, "vs", "vs_4_0")?;
+            let psb = compile(CURSOR_HLSL, "ps", "ps_4_0")?;
+            let mut vs = None;
+            device.CreateVertexShader(blob(&vsb), None, Some(&mut vs)).map_err(e("cursor VS"))?;
+            let mut ps = None;
+            device.CreatePixelShader(blob(&psb), None, Some(&mut ps)).map_err(e("cursor PS"))?;
+            let sd = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            let mut samp = None;
+            device.CreateSamplerState(&sd, Some(&mut samp)).map_err(e("cursor sampler"))?;
+            let mk = |on: bool, src: D3D11_BLEND, dst: D3D11_BLEND| -> Result<ID3D11BlendState, String> {
+                let rt = D3D11_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable: on.into(),
+                    SrcBlend: src,
+                    DestBlend: dst,
+                    BlendOp: D3D11_BLEND_OP_ADD,
+                    SrcBlendAlpha: D3D11_BLEND_ZERO,
+                    DestBlendAlpha: D3D11_BLEND_ONE,
+                    BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                    RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+                };
+                let bd = D3D11_BLEND_DESC { AlphaToCoverageEnable: FALSE, IndependentBlendEnable: FALSE, RenderTarget: [rt; 8] };
+                let mut b = None;
+                device.CreateBlendState(&bd, Some(&mut b)).map_err(e("blend state"))?;
+                b.ok_or_else(|| "no blend state".to_string())
+            };
+            Ok(CursorDraw {
+                comp,
+                rtv: rtv.ok_or("no cursor rtv")?,
+                view,
+                vs: vs.ok_or("no cursor vs")?,
+                ps: ps.ok_or("no cursor ps")?,
+                samp: samp.ok_or("no cursor sampler")?,
+                // out = src * srcA + dst * (1 - srcA)
+                blend: mk(true, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA)?,
+                // out = src * (1 - dst) + dst * (1 - srcA): white opaque pixel = inverted screen, clear pixel = unchanged
+                blend_inv: mk(true, D3D11_BLEND_INV_DEST_COLOR, D3D11_BLEND_INV_SRC_ALPHA)?,
+                opaque: mk(false, D3D11_BLEND_ONE, D3D11_BLEND_ZERO)?,
+                norm: None,
+                inv: None,
+                w: 0,
+                h: 0,
+                x: 0,
+                y: 0,
+                visible: false,
+                buf: Vec::new(),
+            })
+        }
+    }
+
+    fn showing(&self) -> bool {
+        self.visible && self.w > 0 && (self.norm.is_some() || self.inv.is_some())
+    }
+
+    /// New position / shape from this frame's info (call before ReleaseFrame).
+    unsafe fn update(&mut self, device: &ID3D11Device, dup: &IDXGIOutputDuplication, info: &DXGI_OUTDUPL_FRAME_INFO) {
+        if info.LastMouseUpdateTime != 0 {
+            self.visible = info.PointerPosition.Visible.as_bool();
+            self.x = info.PointerPosition.Position.x;
+            self.y = info.PointerPosition.Position.y;
+        }
+        if info.PointerShapeBufferSize == 0 {
+            return;
+        }
+        self.buf.resize(info.PointerShapeBufferSize as usize, 0);
+        let mut need = 0u32;
+        let mut si = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+        if dup.GetFramePointerShape(self.buf.len() as u32, self.buf.as_mut_ptr() as *mut _, &mut need, &mut si).is_err() {
+            return;
+        }
+        let _ = self.set_shape(device, &si);
+    }
+
+    /// Pointer bitmap -> two BGRA textures (normal pixels, inverting pixels).
+    unsafe fn set_shape(&mut self, device: &ID3D11Device, si: &DXGI_OUTDUPL_POINTER_SHAPE_INFO) -> Result<(), String> {
+        let mono = si.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 as u32;
+        let (w, h, pitch) = (si.Width as usize, if mono { si.Height as usize / 2 } else { si.Height as usize }, si.Pitch as usize);
+        if w == 0 || h == 0 || w > 256 || h > 256 {
+            self.norm = None; self.inv = None; self.w = 0;
+            return Ok(());
+        }
+        let b = &self.buf;
+        let mut norm = vec![0u8; w * h * 4];
+        let mut inv = vec![0u8; w * h * 4];
+        let (mut any_n, mut any_i) = (false, false);
+        let px = |v: &mut Vec<u8>, i: usize, bgra: [u8; 4]| v[i * 4..i * 4 + 4].copy_from_slice(&bgra);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if mono {
+                    let bit = 0x80u8 >> (x % 8);
+                    let (ai, xi) = (y * pitch + x / 8, (y + h) * pitch + x / 8);
+                    if xi >= b.len() { continue; }
+                    let and = b[ai] & bit != 0;
+                    let xor = b[xi] & bit != 0;
+                    match (and, xor) {
+                        (false, false) => { px(&mut norm, i, [0, 0, 0, 255]); any_n = true; }
+                        (false, true) => { px(&mut norm, i, [255, 255, 255, 255]); any_n = true; }
+                        (true, true) => { px(&mut inv, i, [255, 255, 255, 255]); any_i = true; }
+                        (true, false) => {}
+                    }
+                } else {
+                    let o = y * pitch + x * 4;
+                    if o + 4 > b.len() { continue; }
+                    let (c, a) = ([b[o], b[o + 1], b[o + 2]], b[o + 3]);
+                    if si.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 as u32 {
+                        // mask 0: the colour as is; mask 0xFF: XOR with the screen (black = no change)
+                        if a == 0 { px(&mut norm, i, [c[0], c[1], c[2], 255]); any_n = true; }
+                        else if c != [0, 0, 0] { px(&mut inv, i, [255, 255, 255, 255]); any_i = true; }
+                    } else if a > 0 {
+                        px(&mut norm, i, [c[0], c[1], c[2], a]);
+                        any_n = true;
+                    }
+                }
+            }
+        }
+        let tex = |data: &[u8]| -> Result<ID3D11ShaderResourceView, String> {
+            let td = D3D11_TEXTURE2D_DESC {
+                Width: w as u32,
+                Height: h as u32,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let init = D3D11_SUBRESOURCE_DATA { pSysMem: data.as_ptr() as *const _, SysMemPitch: (w * 4) as u32, SysMemSlicePitch: 0 };
+            let mut t = None;
+            device.CreateTexture2D(&td, Some(&init), Some(&mut t)).map_err(e("cursor texture"))?;
+            let t = t.ok_or("no cursor texture")?;
+            let mut v = None;
+            device.CreateShaderResourceView(&t, None, Some(&mut v)).map_err(e("cursor SRV"))?;
+            v.ok_or_else(|| "no cursor srv".to_string())
+        };
+        self.norm = if any_n { Some(tex(&norm)?) } else { None };
+        self.inv = if any_i { Some(tex(&inv)?) } else { None };
+        self.w = w as u32;
+        self.h = h as u32;
+        Ok(())
+    }
+
+    /// Frame -> comp, pointer on top.
+    fn draw(&self, ctx: &ID3D11DeviceContext, frame: &ID3D11Texture2D) {
+        unsafe {
+            ctx.CopyResource(&self.comp, frame);
+            ctx.OMSetRenderTargets(Some(&[Some(self.rtv.clone())]), None);
+            let vp = D3D11_VIEWPORT { TopLeftX: self.x as f32, TopLeftY: self.y as f32, Width: self.w as f32, Height: self.h as f32, MinDepth: 0.0, MaxDepth: 1.0 };
+            ctx.RSSetViewports(Some(&[vp]));
+            ctx.IASetInputLayout(None);
+            ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.VSSetShader(&self.vs, None);
+            ctx.PSSetShader(&self.ps, None);
+            ctx.PSSetSamplers(0, Some(&[Some(self.samp.clone())]));
+            if let Some(n) = &self.norm {
+                ctx.OMSetBlendState(&self.blend, None, 0xffff_ffff);
+                ctx.PSSetShaderResources(0, Some(&[Some(n.clone())]));
+                ctx.Draw(3, 0);
+            }
+            if let Some(i) = &self.inv {
+                ctx.OMSetBlendState(&self.blend_inv, None, 0xffff_ffff);
+                ctx.PSSetShaderResources(0, Some(&[Some(i.clone())]));
+                ctx.Draw(3, 0);
+            }
+            ctx.OMSetBlendState(&self.opaque, None, 0xffff_ffff);
+            ctx.PSSetShaderResources(0, Some(&[None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+    }
+}
+
 /// Where frames come from: the whole monitor (Desktop Duplication) or one window (Windows.Graphics.Capture).
 enum Source {
     Dup { output: IDXGIOutput1, dup: Option<IDXGIOutputDuplication> },
@@ -371,6 +591,8 @@ struct Capture {
     vproc: ID3D11VideoProcessor,
     in_view: ID3D11VideoProcessorInputView,
     nv12: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
+    /// mouse pointer drawn on top (whole-monitor capture only; window capture lets Windows draw it)
+    cursor: Option<CursorDraw>,
 }
 
 unsafe fn bgra_tex(device: &ID3D11Device, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
@@ -403,7 +625,7 @@ unsafe fn in_view(vdev: &ID3D11VideoDevice, venum: &ID3D11VideoProcessorEnumerat
 }
 
 /// Start capturing one window with Windows.Graphics.Capture.
-unsafe fn window_source(device: &ID3D11Device, hwnd: isize, hdr: bool) -> Result<(Source, u32, u32), String> {
+unsafe fn window_source(device: &ID3D11Device, hwnd: isize, hdr: bool, cursor: bool) -> Result<(Source, u32, u32), String> {
     use windows::Graphics::Capture::*;
     use windows::Graphics::DirectX::DirectXPixelFormat;
     use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -420,7 +642,7 @@ unsafe fn window_source(device: &ID3D11Device, hwnd: isize, hdr: bool) -> Result
     let fmt = if hdr { DirectXPixelFormat::R16G16B16A16Float } else { DirectXPixelFormat::B8G8R8A8UIntNormalized };
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&d3d, fmt, 2, size).map_err(e("frame pool"))?;
     let session = pool.CreateCaptureSession(&item).map_err(e("capture session"))?;
-    let _ = session.SetIsCursorCaptureEnabled(false);
+    let _ = session.SetIsCursorCaptureEnabled(cursor);
     let _ = session.SetIsBorderRequired(false); // Windows 11 only - ignored elsewhere
     session.StartCapture().map_err(e("StartCapture"))?;
     let (w, h) = ((size.Width.max(2) as u32) & !1, (size.Height.max(2) as u32) & !1);
@@ -457,7 +679,7 @@ impl Capture {
             let mut src = None;
             let (mut width, mut height) = (sel.width, sel.height);
             if o.window != 0 {
-                match window_source(&device, o.window, sel.hdr) {
+                match window_source(&device, o.window, sel.hdr, o.cursor) {
                     Ok((s, w, h)) => {
                         log(&format!("gpu: recording the game window only ({w}x{h})"));
                         src = Some(s);
@@ -552,9 +774,15 @@ impl Capture {
                 nv12.push((t, v.ok_or("no output view")?));
             }
 
+            let cursor = if o.cursor && matches!(src, Source::Dup { .. }) {
+                match CursorDraw::new(&device, &vdev, &venum, width, height) {
+                    Ok(c) => Some(c),
+                    Err(err) => { log(&format!("gpu: mouse pointer can't be drawn ({err}) - recording without it")); None }
+                }
+            } else { None };
             let mut c = Capture {
                 device, ctx, src, luid: adesc.AdapterLuid, vendor: adesc.VendorId, hdr, width, height, out_w, out_h, bgra,
-                vdev, vctx, venum, vproc, in_view: in_v, nv12,
+                vdev, vctx, venum, vproc, in_view: in_v, nv12, cursor,
             };
             if let Source::Dup { .. } = c.src {
                 c.reduplicate();
@@ -631,6 +859,10 @@ impl Capture {
                             if let Some(tex) = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                                 self.put(&tex, hdr);
                             }
+                        }
+                        // the pointer moved / changed shape (only valid until ReleaseFrame)
+                        if let Some(cur) = self.cursor.as_mut() {
+                            cur.update(&self.device, &d, &info);
                         }
                         let _ = d.ReleaseFrame();
                     }
@@ -717,7 +949,11 @@ impl Capture {
                 PastFrames: 0,
                 FutureFrames: 0,
                 ppPastSurfaces: std::ptr::null_mut(),
-                pInputSurface: ManuallyDrop::new(Some(self.in_view.clone())),
+                pInputSurface: ManuallyDrop::new(Some(match self.cursor.as_ref().filter(|c| c.showing()) {
+                    // pointer on screen: frame copy + pointer on top (the clean frame stays for the next tick)
+                    Some(c) => { c.draw(&self.ctx, &self.bgra); c.view.clone() }
+                    None => self.in_view.clone(),
+                })),
                 ppFutureSurfaces: std::ptr::null_mut(),
                 ppPastSurfacesRight: std::ptr::null_mut(),
                 pInputSurfaceRight: ManuallyDrop::new(None),

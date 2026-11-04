@@ -1789,6 +1789,7 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) ->
         window: if cfg.capture == "game" { window } else { 0 },
         smart_bitrate: cfg.smart_bitrate,
         smart_quality: cfg.smart_quality,
+        cursor: cfg.capture_cursor,
     };
     let fps = cfg.fps;
     std::thread::spawn(move || {
@@ -1828,7 +1829,7 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
     let mut a: Vec<String> = vec![
         "-w".into(), "screen".into(), "-f".into(), cfg.fps.to_string(), "-k".into(), codec.into(),
         "-c".into(), "mpegts".into(), "-bm".into(), "cbr".into(), "-q".into(), (cfg.bitrate_mbps * 1000).to_string(),
-        "-keyint".into(), SEG.to_string(), "-cursor".into(), "no".into(), "-fm".into(), "cfr".into(),
+        "-keyint".into(), SEG.to_string(), "-cursor".into(), if cfg.capture_cursor { "yes" } else { "no" }.into(), "-fm".into(), "cfr".into(),
     ];
     if let Ok(h) = cfg.resolution.parse::<u32>() {
         a.extend(["-s".into(), format!("{}x{h}", h * 16 / 9)]);
@@ -2001,7 +2002,7 @@ impl Recorder {
         let out_idx = crate::gpucap::output_index(&cfg.monitor);
         #[cfg(not(windows))]
         let out_idx = 0;
-        let grab = format!("ddagrab=output_idx={out_idx}:framerate={}:draw_mouse=0", cfg.fps);
+        let grab = format!("ddagrab=output_idx={out_idx}:framerate={}:draw_mouse={}", cfg.fps, cfg.capture_cursor as u8);
         let scale = match cfg.resolution.parse::<u32>() {
             Ok(h) => format!(",scale=-2:{h}"),
             Err(_) => String::new(),

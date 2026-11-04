@@ -847,6 +847,8 @@
               <select data-k="monitor" id="monsel" style="max-width:340px"><option value="">Main monitor</option></select></div>
             <div class="row col"><div class="lbl"><b>Record</b><small id="caphint"></small></div>
               <select data-k="capture" class="segsrc"><option value="screen" data-hint="Records everything on the monitor, including Discord or anything else on top.">Whole monitor</option><option value="game" data-hint="Switches to just the game window while a game is open, so overlays on top stay out of the clip. Switching takes a few seconds and starts a fresh buffer.">Game window when open</option></select></div>
+            <div class="row"><div class="lbl"><b>Mouse pointer</b><small>Show the pointer in clips, e.g. in menus, phones and inventories. Games that hide it while you play stay clean.</small></div>
+              <label class="switch"><input type="checkbox" data-k="capture_cursor"><span></span></label></div>
             <div class="row col"><div class="lbl"><b>Video format</b><small id="codechint"></small></div>
               <select data-k="codec" class="segsrc"><option value="h264" data-hint="Plays everywhere: Discord, phones, browsers.">H.264</option><option value="hevc" data-hint="About 30-40% smaller at the same quality, but may not play in Discord.">HEVC</option><option value="av1" data-hint="The smallest. Needs a Radeon RX 7000 / GeForce RTX 40 or newer.">AV1</option></select></div>
             <div class="note" style="padding:4px 0 14px">Edited and shrunk copies are always H.264.</div>
