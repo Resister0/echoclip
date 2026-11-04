@@ -662,6 +662,7 @@ fn do_save(app: &AppHandle, seconds: Option<u32>) -> Result<String, String> {
             }
             let name = std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             toast(app, "Clip saved", &name, true);
+            strip_soon(app, p);
             SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Err(e) => {
@@ -768,6 +769,7 @@ fn do_session(app: &AppHandle) -> Result<Option<String>, String> {
         match &r {
             Ok(Some(p)) => {
                 let _ = rec.thumb(p);   // preview + length ready before the library shows the new card
+                strip_soon(app, p);
                 toast(app, "Recording saved", &std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), true)
             }
             Err(e) => toast(app, "Recording failed", e, false),
@@ -1043,6 +1045,19 @@ async fn make_gif(rec: State<'_, Recorder>, path: String, start: f64, end: f64) 
 #[tauri::command]
 async fn filmstrip(rec: State<'_, Recorder>, path: String) -> Result<String, String> {
     rec.filmstrip(&path)
+}
+#[tauri::command]
+fn cached_strip(rec: State<'_, Recorder>, rel: String) -> Option<String> {
+    rec.cached_strip(&rel)
+}
+#[tauri::command]
+async fn clip_is_av1(path: String) -> bool {
+    recorder::is_av1(&path)
+}
+/// Make the seek-bar strip in the background right after a save, so opening the clip shows it at once
+fn strip_soon(app: &AppHandle, path: &str) {
+    let (app, path) = (app.clone(), path.to_string());
+    std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(2)); let _ = app.state::<Recorder>().filmstrip(&path); });
 }
 
 #[tauri::command]
@@ -1873,7 +1888,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, clip_is_av1, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

@@ -75,7 +75,10 @@
   .thumb .gico { position:absolute; left:9px; top:9px; width:22px; height:22px; border-radius:6px; z-index:2; transition:left .15s; filter:drop-shadow(0 1px 3px #000c); }
   /* the select circle appears where the game icon sits: slide the icon to the right of it */
   .card:hover .thumb .gico, .card.picked .thumb .gico, body.picking .thumb .gico { left:42px; }
-  .thumb .shr { position:absolute; right:9px; top:9px; background:#0009; border-radius:6px; padding:2px 6px; font-size:11px; z-index:2; }
+  /* top-right badges side by side ("Shared" + cloud used to sit on top of each other) */
+  .thumb .tbadges { position:absolute; right:9px; top:9px; display:flex; gap:5px; z-index:2; pointer-events:auto; }
+  .thumb .tbadges:empty { display:none; }
+  .thumb .shr { background:#0009; border-radius:6px; padding:2px 6px; font-size:11px; }
   .flt .gi img { width:18px; height:18px; border-radius:4px; }
   .grow { display:flex; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
   .grow:first-child { border-top:0; } .grow img, .grow .gl { width:26px; height:26px; border-radius:6px; flex:none; }
@@ -181,7 +184,7 @@
   #stres .str { display:flex; gap:10px; align-items:baseline; padding:6px 2px; border-top:1px solid var(--line); font-size:13px; }
   #stres .str b { min-width:190px; font-weight:600; } #stres .str span { color:var(--muted); }
   #stres .str i { font-style:normal; width:18px; flex:none; text-align:center; font-weight:700; }
-  .thumb .cld { position:absolute; right:9px; top:9px; background:#000c; border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; z-index:2; }
+  .thumb .cld { background:#000c; border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; }
   .thumb .cld.only { background:#4cc2ffd9; color:#001018; }
   .spin { width:26px; height:26px; margin:0 auto 8px; border:3px solid #ffffff22; border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -1916,6 +1919,8 @@
 
   // ----- clip jobs (convert to AV1 / make smaller), one at a time, progress shown on each clip's preview -----
   const jobs = new Map();   // path -> { label, pct, state: "wait" | "run" }
+  const av1Of = new Map();        // clip path -> already AV1? (right-click menu)
+  const stripAsked = new Set();   // clips whose seek-bar strip was already asked for on hover
   let jobRunning = false;
   function drawJob(path) {
     const card = document.querySelector(`.card[data-path="${CSS.escape(path)}"]`); if (!card) return;
@@ -2154,7 +2159,7 @@
   function makeCard(c) {
     const el = document.createElement("div"); el.className = "card"; el.dataset.rel = relOf(c); el.dataset.path = c.path;
     const gi = gameIcons[gameOf(c)];
-    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}${shared.has(c.name) ? '<span class="shr" title="Shared - link copied before">☁ Shared</span>' : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there">☁ Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud">☁</span>' : ""}</div>
+    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}<span class="tbadges">${shared.has(c.name) ? '<span class="shr" title="Shared - link copied before">Shared</span>' : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there">☁ Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud">☁</span>' : ""}</span></div>
       <div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
         <div class="ovl"><span class="more"><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></span><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button></div></div>`;
     const nm = el.querySelector(".name"); nm.textContent = c.name; nm.title = "Click to rename";
@@ -2186,21 +2191,29 @@
     el.addEventListener("click", e => { if ((e.ctrlKey || e.shiftKey) && !e.target.closest(".ib")) { e.preventDefault(); e.stopPropagation(); togglePick(); } }, true);
     th.onclick = () => { if (cardDragged) { cardDragged = false; return; } picked.size ? togglePick() : openPlayer(c); };
     th.addEventListener("pointerdown", e => cardDrag(e, c));
-    el.addEventListener("contextmenu", e => {
+    el.addEventListener("contextmenu", async e => {
       if (c.cloud) return;
+      e.preventDefault();   // before the await: the browser's own menu must not open
+      // AV1 already: nothing to convert or shrink (asked once per clip, ffprobe is quick)
+      if (!av1Of.has(c.path)) av1Of.set(c.path, await invoke("clip_is_av1", { path: c.path }).catch(() => false));
+      const isAv1 = av1Of.get(c.path);
       const shrink = (f, av1) => async () => {
         if (!(await confirmBox(av1 ? "Convert this clip to AV1?" : "Make this clip smaller?", av1
           ? `"${c.name}" is re-encoded with your graphics card's AV1 encoder and replaced: about half the size, same quality, all audio tracks kept. When you copy or share it, Echo sends an H.264 version so it plays everywhere.`
           : `"${c.name}" is re-encoded at ${Math.round(f * 100)}% of its quality budget and replaced. Same length, all audio tracks kept.`, av1 ? "Convert" : "Make smaller"))) return;
         queueJobs([c], f, av1);
       };
-      ctxMenu(e, [...(av1Enc ? [["Convert to AV1 (about half the size, same quality)", shrink(0.5, true)]] : []),
+      ctxMenu(e, isAv1 ? [["Already AV1 - as small as it gets", () => {}], "-", ["Show in folder", () => action("folder", c)]]
+        : [...(av1Enc ? [["Convert to AV1 (about half the size, same quality)", shrink(0.5, true)]] : []),
         ["Make smaller (about half the size)", shrink(0.5)], ["Make much smaller (about a third)", shrink(0.33)], "-", ["Show in folder", () => action("folder", c)]]);
     });
     el.querySelectorAll(".ib").forEach(b => b.onclick = e => (b.dataset.a === "copymenu" || (b.dataset.a === "copy" && e.ctrlKey)) ? copyMenu(b, c) : action(b.dataset.a, c, b));
     // hover preview: muted video after a short delay
     let hv = null, vid = null;
-    th.onmouseenter = () => { if (c.cloud) ensureBase().catch(() => {}); hv = setTimeout(() => {
+    th.onmouseenter = () => { if (c.cloud) ensureBase().catch(() => {});
+      // likely to be opened: make its seek-bar strip now (cached on disk, nothing happens if it exists)
+      else if (!stripAsked.has(c.path)) { stripAsked.add(c.path); setTimeout(() => invoke("filmstrip", { path: c.path }).catch(() => {}), 300); }
+      hv = setTimeout(() => {
       vid = document.createElement("video"); vid.muted = true; vid.loop = true;
       const v0 = vid; v0.oncanplay = () => v0.classList.add("on"); th.prepend(v0);
       const go = () => { if (vid !== v0) return; v0.src = c.cloud ? streamUrl(c) : convertFileSrc(c.path); v0.play().catch(() => {}); };
@@ -2504,6 +2517,12 @@
       const old = seek.querySelector("canvas.pcs"); if (old) old.remove();
       const done = strips.get(c.path);
       if (done) { seek.prepend(done); return; }
+      // made on this PC before (the clip was moved to the cloud only): use that at once
+      invoke("cached_strip", { rel: c.rel }).then(p => {
+        if (!p || clip !== c) return;
+        const u = convertFileSrc(p); seek.style.backgroundImage = `url("${u}")`; pPrev.strip(u); c._strip = true;
+        const cv = seek.querySelector("canvas.pcs"); if (cv) cv.remove();
+      }).catch(() => {});
       const run = () => {
         if (clip !== c || !v.duration) return;
         const N = 24, cv = document.createElement("canvas"); cv.className = "pcs";
@@ -2511,7 +2530,7 @@
         const drop = () => { sv.removeAttribute("src"); sv.load(); sv.remove(); };
         let i = 0, ctx;
         const next = () => {
-          if (clip !== c) return drop();
+          if (clip !== c || c._strip) return drop();
           if (i >= N) { strips.set(c.path, cv); if (strips.size > 30) strips.delete(strips.keys().next().value); return drop(); }
           sv.currentTime = Math.min(sv.duration - 0.1, (i + 0.5) / N * sv.duration);
         };
@@ -2521,15 +2540,15 @@
           seek.prepend(cv); next();
         }, { once: true });
         const later = () => { if (clip !== c) return drop(); if (v.readyState < 3 && !v.paused) setTimeout(later, 500); else next(); };
-        sv.addEventListener("seeked", () => onFrame(sv, () => { ctx.drawImage(sv, i * cv.width / N, 0, cv.width / N, cv.height); i++; setTimeout(later, 120); }));
+        sv.addEventListener("seeked", () => onFrame(sv, () => { ctx.drawImage(sv, i * cv.width / N, 0, cv.width / N, cv.height); i++; setTimeout(later, 40); }));
         sv.addEventListener("error", drop);
       };
-      // don't fight the player for bandwidth: start once it has buffered well ahead (or after 20 s), and
-      // pause between frames while the player is waiting for data
-      const ahead = () => { const b = v.buffered; return v.duration && b.length && (b.end(b.length - 1) >= v.duration - 0.5 || b.end(b.length - 1) - v.currentTime > 20); };
+      // don't fight the player for bandwidth: start once it has a few seconds buffered ahead (or after 6 s), and
+      // pause between frames while the player is waiting for data (was 20 s ahead / 20 s: the bar stayed grey long)
+      const ahead = () => { const b = v.buffered; return v.duration && b.length && (b.end(b.length - 1) >= v.duration - 0.5 || b.end(b.length - 1) - v.currentTime > 6); };
       const t0 = Date.now();
-      const wait = () => { if (clip !== c) return; if (ahead() || Date.now() - t0 > 20000) run(); else setTimeout(wait, 1000); };
-      v.addEventListener("playing", () => setTimeout(wait, 1500), { once: true });
+      const wait = () => { if (clip !== c || c._strip) return; if (ahead() || Date.now() - t0 > 6000) run(); else setTimeout(wait, 500); };
+      v.addEventListener("playing", () => setTimeout(wait, 500), { once: true });
     }
     return {
       open(c) {

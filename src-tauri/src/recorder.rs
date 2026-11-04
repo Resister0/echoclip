@@ -3892,6 +3892,10 @@ impl Recorder {
         if !self.is_clip(&src) {
             return Err("not a Clipper clip".into());
         }
+        // AV1 already: converting again gains nothing, and H.264 at half its bitrate would look much worse
+        if is_av1(path) {
+            return Err("This clip is already AV1 - it's as small as it gets".into());
+        }
         let before = fs::metadata(&src).map_err(err)?.len();
         let mtime = fs::metadata(&src).and_then(|m| m.modified()).ok();
         let dur = self.thumb(path)?.duration.max(1.0);
@@ -3975,13 +3979,24 @@ impl Recorder {
         let stem = PathBuf::from(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
         // ".strip2": older strips of short clips ended in black (see below) - made again once
         let img = self.thumbs_dir().join(format!("{stem}.strip2.jpg"));
+        // one at a time: hover, open and the after-save build can ask for the same strip at once
+        static STRIP_LOCK: Mutex<()> = Mutex::new(());
+        let _one = STRIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if !img.exists() {
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
             let fps = N as f64 / t.duration.max(1.0);
+            let t0 = Instant::now();
             // decode keyframes only (one every ~2 s) - 10+ minute clips took ages otherwise.
             // tpad repeats the last keyframe to the end: without it the tiles after the last keyframe stayed
-            // black (a 6 s clip lost its last third)
-            let ok = ffmpeg()
+            // black (a 6 s clip lost its last third). Below-normal priority: often made in the background
+            // right after a save, while a game runs
+            let mut cmd = ffmpeg();
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000 | 0x0000_4000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+            }
+            let ok = cmd
                 .args(["-hide_banner", "-loglevel", "error", "-y", "-skip_frame", "nokey", "-i"])
                 .arg(clip)
                 .args(["-vf", &format!("tpad=stop_mode=clone:stop_duration={:.2},fps={fps:.5},scale=-2:72,tile={N}x1", t.duration.max(1.0) + 1.0),
@@ -3991,8 +4006,17 @@ impl Recorder {
             if !ok {
                 return Err("could not build filmstrip".into());
             }
+            log_line(&format!("filmstrip: {stem} ({:.0} s clip) in {} ms", t.duration, t0.elapsed().as_millis()));
         }
         Ok(img.to_string_lossy().into())
+    }
+
+    /// A seek-bar strip made earlier for this clip (e.g. before it was moved to the cloud only), without
+    /// making one - cloud clips have no local file for ffmpeg.
+    pub fn cached_strip(&self, rel: &str) -> Option<String> {
+        let stem = Path::new(rel).file_stem()?.to_string_lossy().to_string();
+        let img = self.thumbs_dir().join(format!("{stem}.strip2.jpg"));
+        img.exists().then(|| img.to_string_lossy().into())
     }
 
     fn probe(&self, clip: &Path) -> (u32, u32, bool) {
