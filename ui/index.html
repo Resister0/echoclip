@@ -1211,7 +1211,7 @@
     try { localStorage.removeItem("echo_whatsnew"); } catch {}
     const c = $("updcard"), more = $("updmore");
     c.querySelector("b").textContent = `Updated to Echo ${appVer}`;
-    $("updtext").textContent = stored ? "What's new: " + stored : "You're on the newest version.";
+    $("updtext").textContent = stored ? "What's new: " + stored : `Echo ${appVer} is installed.`;
     more.innerHTML = "";
     if (prev) showChanges(prev, appVer, true);
     const b = $("updbtn"); b.textContent = "Got it"; b.classList.remove("primary");
@@ -1220,7 +1220,13 @@
   }
   async function updManual() {
     const b = $("updnow"), st = $("updstate");
-    if (appVer === "0.1.0") { st.textContent = "Updates are off for builds made on this PC (build.cmd). The installed Echo updates itself."; return; }
+    // 0.1.0 = made by hand with build.cmd (William's own copy, or an Echo.exe he sent a tester): never updates.
+    // Testers kept running such a copy and thought updates were broken -> say it plainly + one click to the installer
+    if (appVer === "0.1.0") {
+      st.textContent = "This copy of Echo was built by hand and never updates itself. Install Echo from echoclip.link to get updates.";
+      b.textContent = "Get Echo"; b.onclick = () => invoke("open_echo_link", { what: "download" }).catch(() => {});
+      return;
+    }
     b.disabled = true; st.textContent = "Checking…";
     try {
       const u = await invoke("update_check");

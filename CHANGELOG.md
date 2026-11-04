@@ -4,17 +4,26 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
-- Coming back from the tray now really checks for updates (at most every 5 minutes)
+- Fixed: clicking "Restart Echo" on the update card could say "Echo is already up to date" - Echo now installs the update it just found instead of asking the server again
+- Copies of Echo made by hand (not installed from echoclip.link) now say they never update themselves, with a "Get Echo" button, instead of "You have the newest version"
+- The log notes each Echo run's update check (version, installed or not) to help with update problems
+
+## 1.0.37 - Highlight with a drag
 - Editor: drag on empty timeline space to highlight a part in yellow (X cuts it); I, Esc, its ✕ button or a click outside it takes the highlight away. Box-select is now Ctrl+drag
-- Music apps (Spotify, Apple Music, TIDAL, Deezer, VLC…) get their own audio track, like the game, Discord and browsers - cut the music out of a clip or keep only it (editor: U)
-- Fixed: since 1.0.30 some small texts in Settings were invisible - the FPS test's progress and result, the buffer size note, a few hints and notes on clip cards
-- Fixed: the frame strip in the player's seek bar went black near the end of some (mostly short) clips
+
+## 1.0.34 - 1.0.36 - Profiles and a Music track
 - Profiles (optional, Settings → Profile): your own page at echoclip.link/u/yourname with a name, picture, bio, colour and up to 6 pinned clips; your share links show who clipped them; follow friends to keep their pages one click away (no feeds)
+- Music apps (Spotify, Apple Music, TIDAL, Deezer, VLC…) get their own audio track, like the game, Discord and browsers - cut the music out of a clip or keep only it (editor: U)
 - Cleaner player toolbar: Copy, Share, Trim and Edit keep their names, the other buttons are grouped icons (hover for the name); keyboard hints show while the mouse is on the video
 - Lighter in the tray: while Echo is hidden the window really sleeps, and the upload check slows down when nothing is uploading
 - Quieter "Join the Discord" button in Settings
+- Fixed: since 1.0.31 some small texts in Settings were invisible - the FPS test's progress and result, the buffer size note, a few hints and notes on clip cards
 
-## 1.0.30 - Stacking notifications and GIF stickers
+## 1.0.32 - 1.0.33 - Tray update checks
+- Coming back from the tray now really checks for updates (at most every 5 minutes)
+- Fixed: the frame strip in the player's seek bar went black near the end of some (mostly short) clips
+
+## 1.0.31 - Stacking notifications and GIF stickers
 - Custom theme: pick your own highlight colour (the yellow in progress bars, trim handles, favourites and the editor)
 - Editor: GIF stickers move in exports too (they were stuck on one frame); drop pictures or GIFs onto the editor to add them as stickers
 - A "Join the Discord" button at the bottom of the settings menu
@@ -23,7 +32,7 @@ internal builds). Release builds since the open-source switch come from this rep
 - Cloud clips play smoother: the seek bar previews no longer load the whole clip in the background or compete with the player
 - echoclip.link counts visits and downloads anonymously (no cookies, no IP addresses stored) - explained on the Privacy page
 
-## 1.0.26 - 1.0.29 - Seek bar previews and log links
+## 1.0.26 - 1.0.30 - Seek bar previews and log links
 - The update card (bottom left) shows what's new - before you update ("+ 2 more updates included") and after ("View earlier updates you missed")
 - Settings → App: Join the Echo Discord, Changelog
 - Hover over (or drag) the player's seek bar to see a preview of that moment, like YouTube - for clips on this PC and in the cloud

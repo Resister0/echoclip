@@ -1315,6 +1315,7 @@ const DOWNLOADS = {
 // (needs GITHUB_TOKEN). Both publish a release "latest" titled "Echo 1.0.<n>" with the same number;
 // for each file the newest release that has it wins, the public one on a tie.
 const releaseCache = new Map();   // repo -> { at, rel }
+const relSaved = new Map();       // repo -> when this Worker copy last saved the release to D1 (table lastrel)
 const ghFetch = (env, url, accept, auth = true) => fetch(url, {
   headers: { ...(auth && env.GITHUB_TOKEN ? { authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}), accept, "user-agent": "echo-cloud", "x-github-api-version": "2022-11-28" },
   redirect: "manual",
@@ -1325,16 +1326,44 @@ const privateRepo = (env) => env.GITHUB_REPO || "Resister0/echo";
 async function releaseOf(env, repo, isPublic) {
   const c = releaseCache.get(repo);
   // 2 min: right after a release, Cloudflare locations kept saying "newest version" for up to 5 min (chat 18)
-  if (c && now() - c.at < 120) return c.rel;
+  if (c && now() - c.at < (c.rel ? 120 : 15)) return c.rel;
   const url = `https://api.github.com/repos/${repo}/releases/tags/latest`;
-  let r = isPublic || env.GITHUB_TOKEN ? await ghFetch(env, url, "application/vnd.github+json") : null;
-  // the token may only be allowed for the private repo: public releases can be read without it
-  if (r && !r.ok && isPublic && env.GITHUB_TOKEN) r = await ghFetch(env, url, "application/vnd.github+json", false);
+  let r = null;
+  try {
+    r = isPublic || env.GITHUB_TOKEN ? await ghFetch(env, url, "application/vnd.github+json") : null;
+    // the token may only be allowed for the private repo: public releases can be read without it
+    if (r && !r.ok && isPublic && env.GITHUB_TOKEN) r = await ghFetch(env, url, "application/vnd.github+json", false);
+  } catch (e) { console.log("github: release lookup error", repo, e && e.message); r = { ok: false, status: 0, text: async () => "" }; }
+  // last good answer, shared by all Worker copies in this Cloudflare location (survives a GitHub hiccup /
+  // rate limit, which used to make /update say "up to date" now and then - chat 20)
+  const ck = new Request(`https://echoclip.link/_cache/release/${repo}`);
   let rel = null;
   if (r && r.ok) {
     rel = await r.json();
     rel.public = isPublic;
-  } else if (r && r.status !== 404) console.log("github: release lookup failed", repo, r.status, (await r.text()).slice(0, 200));
+    try { await caches.default.put(ck, new Response(JSON.stringify(rel), { headers: { "content-type": "application/json", "cache-control": "max-age=604800" } })); } catch {}
+    // and in D1 (one copy for every Cloudflare location), at most every 10 min per Worker copy
+    if (now() - (relSaved.get(repo) || 0) > 600 && env.DB) {
+      relSaved.set(repo, now());
+      try {
+        await env.DB.prepare("CREATE TABLE IF NOT EXISTS lastrel (repo TEXT PRIMARY KEY, rel TEXT NOT NULL, at INTEGER NOT NULL)").run();
+        const slim = { name: rel.name, body: rel.body, published_at: rel.published_at, created_at: rel.created_at, public: rel.public,
+          assets: (rel.assets || []).map((a) => ({ id: a.id, name: a.name, url: a.url, browser_download_url: a.browser_download_url })) };
+        await env.DB.prepare("INSERT OR REPLACE INTO lastrel (repo, rel, at) VALUES (?, ?, ?)").bind(repo, JSON.stringify(slim), now()).run();
+      } catch (e) { console.log("github: saving last release failed", e && e.message); }
+    }
+  } else {
+    if (r && r.status !== 404) console.log("github: release lookup failed", repo, r.status, (await r.text()).slice(0, 200));
+    // 404 = the release is being rebuilt right now (its files are gone too): nothing to offer, like before.
+    // Any other failure (rate limit, GitHub down): the last good release
+    if (r && r.status !== 404) rel = (c && c.rel) || null;
+    if (r && r.status !== 404 && !rel) try { const hit = await caches.default.match(ck); if (hit) rel = await hit.json(); } catch {}
+    if (r && r.status !== 404 && !rel && env.DB) try {
+      const row = await env.DB.prepare("SELECT rel FROM lastrel WHERE repo = ?").bind(repo).first();
+      if (row) rel = JSON.parse(row.rel);
+    } catch {}
+    if (rel) console.log("github: using the last known release of", repo, relVersion(rel));
+  }
   releaseCache.set(repo, { at: now(), rel });
   return rel;
 }

@@ -106,24 +106,51 @@ fn app_version(app: AppHandle) -> String {
 async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     use tauri_plugin_updater::UpdaterExt;
     let current = app.package_info().version.to_string();
+    // one log line per Echo run (checks repeat every few minutes), so a tester's log shows what Echo saw
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let first = !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed);
     if current == "0.1.0" {
+        if first { recorder::log_line("update: this is a hand-made build (0.1.0, build.cmd) - it never updates itself"); }
         return Ok(None); // own build (build.cmd / build.sh): never offer updates
     }
     let u = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| {
         recorder::log_line(&format!("update: check failed: {e}"));
         "Couldn't check for updates".to_string()
     })?;
+    if first || u.is_some() {
+        let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+        match &u {
+            Some(n) => recorder::log_line(&format!("update: {} available (this is {current}, installed copy: {}, {exe})", n.version, can_self_update())),
+            None => recorder::log_line(&format!("update: up to date ({current}, installed copy: {}, {exe})", can_self_update())),
+        }
+    }
+    // kept for "Restart Echo": installing used to ask the server AGAIN, and when that second answer came back
+    // empty (flaky GitHub lookup on one Cloudflare server) Echo said "already up to date" under an "Update ready"
+    // card (Holmes, chat 20)
+    if u.is_some() { *PENDING_UPDATE.lock().unwrap() = u.clone(); }
     Ok(u.map(|u| UpdateInfo { version: u.version.clone(), current, notes: u.body.clone().unwrap_or_default(), can_install: can_self_update() }))
 }
+
+static PENDING_UPDATE: std::sync::Mutex<Option<tauri_plugin_updater::Update>> = std::sync::Mutex::new(None);
 
 #[tauri::command]
 async fn update_install(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     if !can_self_update() {
-        return recorder::open_web("https://echoclip.link/#download");
+        return recorder::open_web("https://echoclip.link/download");
     }
-    let u = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?
-        .ok_or("Echo is already up to date")?;
+    // the update the card is showing; only ask again when there is none (e.g. the card came from an old check)
+    let known = PENDING_UPDATE.lock().unwrap().clone();
+    let u = match known {
+        Some(u) => u,
+        None => app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| {
+            recorder::log_line(&format!("update: check before install failed: {e}"));
+            "Couldn't reach the update server - try again in a minute".to_string()
+        })?.ok_or_else(|| {
+            recorder::log_line("update: install clicked but the server says up to date");
+            "Echo is already up to date".to_string()
+        })?,
+    };
     recorder::log_line(&format!("update: downloading {}", u.version));
     let bytes = u.download(|_, _| {}, || {}).await.map_err(|e| {
         recorder::log_line(&format!("update: download failed: {e}"));
@@ -835,6 +862,7 @@ fn open_echo_link(what: String) -> Result<(), String> {
         "discord" => "https://discord.gg/JPVewEfUQs",
         "changelog" => "https://echoclip.link/changelog",
         "site" => "https://echoclip.link",
+        "download" => "https://echoclip.link/download",
         _ => return Err("unknown link".into()),
     })
 }
