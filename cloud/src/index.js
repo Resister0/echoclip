@@ -622,7 +622,7 @@ async function deleteAccount(req, user, env) {
 // The pages are static files, so site.js pings POST /hit {t:"view",p,r} or {t:"click",k}; downloads are counted
 // in /download. Unique visitors: a scrambled code of day + IP + browser (kept 2 days in uv, only to not count anyone twice).
 const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embed|curl|wget|python|go-http|headless|lighthouse|monitor|scan/i;
-const SITE_PAGES = new Set(["/", "/download", "/pricing", "/changelog", "/privacy", "/terms"]);
+const SITE_PAGES = new Set(["/", "/download", "/pricing", "/changelog", "/privacy", "/terms", "/code-signing"]);
 const SITE_CLICKS = new Set(["plans", "storage", "features", "discord", "changelog", "github", "download"]);
 const utcDay = (t = now()) => new Date(t * 1000).toISOString().slice(0, 10);
 const isBot = (req) => { const ua = req.headers.get("user-agent") || ""; return !ua || BOT_UA.test(ua); };
@@ -1093,8 +1093,8 @@ async function share(req, user, env, origin) {
       }
     } catch { /* bad base64: no thumbnail */ }
   }
-  // Echo watermark the page lays over the video ("kimbo" / "echo"; none = no logo). The clip itself stays as uploaded.
-  const wm = b.wm === "kimbo" || b.wm === "echo" ? b.wm : null;
+  // Echo watermark the page lays over the video ("kimbo" / "link" / "echo"; none = no logo). The clip itself stays as uploaded.
+  const wm = b.wm === "kimbo" || b.wm === "echo" || b.wm === "link" ? b.wm : null;
   await env.DB.prepare("UPDATE shares SET title = ?, w = ?, h = ?, dur = ?, thumb = MAX(thumb, ?), wm = ? WHERE id = ?")
     .bind(title || null, w, h, dur, thumb, wm, id).run();
   return json({ url: `${origin}/s/${id}`, expires });
@@ -1254,7 +1254,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 </style></head><body>
 <header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
 <main>
-<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
+<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" || row.wm === "link" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
 <div class="info"><div><h1>${esc(name)}</h1>${prof ? `<a class="by" href="/u/${prof.handle}">${prof.avatar ? `<img src="/u/${prof.handle}/avatar.jpg?v=${prof.avatar}" alt="">` : `<i style="background:${cleanColor(prof.color)}">${esc((prof.name || prof.handle)[0].toUpperCase())}</i>`}<span>${esc(prof.name || prof.handle)} <small>@${esc(prof.handle)}</small></span></a>` : ""}<div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}${row.views > 0 ? `<span class="chip">${row.views} view${row.views === 1 ? "" : "s"}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
 <div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
 <div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>

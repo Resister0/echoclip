@@ -1,0 +1,19 @@
+Echo - lightweight game clipping
+https://echoclip.link
+
+PRIVACY
+Echo keeps your clips, screenshots and settings on this PC. The only thing it does by itself is check echoclip.link every few hours for a newer version; that check contains only Echo's version number and your system type (Windows or Linux).
+
+Nothing else leaves your PC unless you choose it: connecting a cloud (Echo Cloud, Google Drive or your own storage), making a share link, sending feedback or sending a log.
+
+Full privacy policy: https://echoclip.link/privacy
+Code signing policy: https://echoclip.link/code-signing
+
+LICENCE
+Echo is free, open-source software under the GNU General Public License, version 3 or later (GPL-3.0-or-later). You may use, share and change it under that licence. It comes with NO WARRANTY.
+Source code: https://github.com/Resister0/echoclip
+Full licence text: https://www.gnu.org/licenses/gpl-3.0.html
+
+Echo comes with FFmpeg (LGPL/GPL, ffmpeg.org) and rclone (MIT, rclone.org), unchanged.
+
+You can remove Echo at any time from Windows Settings > Apps.

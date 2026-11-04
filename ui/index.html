@@ -37,6 +37,15 @@
   .flt .n { margin-left:auto; font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
   .flt.on { color:var(--text); background:var(--panel); }
   .flt.on .n { color:var(--accent2); }
+  /* the selected clip filter / folder gets the same look as the old Library button: accent tint, border, glow on
+     hover, accent bar, accent icon (William: keep those effects) */
+  .flt.on { background:rgba(var(--accent-rgb),.10); border-color:rgba(var(--accent-rgb),.22); box-shadow:none; color:var(--text); }
+  .flt.on:hover { box-shadow:0 0 16px rgba(var(--accent-rgb),.28); }
+  .flt.on::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:2px; border-radius:0 3px 3px 0; background:var(--accent); opacity:.9; }
+  .flt.on > svg { color:var(--accent2); }
+  body.insettings .flt.on { color:var(--muted); background:none; border-color:transparent; } body.insettings .flt.on .n { color:inherit; }
+  body.insettings .flt.on::before { display:none; } body.insettings .flt.on > svg { color:inherit; }
+  .navset { margin-bottom:8px; flex:none; }
   /* sidebar glow (same feel as bcso.xyz): accent border + soft glow on hover, accent bar on the open page */
   .nav, .flt { border:1px solid transparent; position:relative; transition:background .2s, color .2s, border-color .2s, box-shadow .2s; }
   .nav:hover, .flt:hover { border-color:rgba(var(--accent-rgb),.32); background:rgba(var(--accent-rgb),.06); box-shadow:0 0 14px rgba(var(--accent-rgb),.2); }
@@ -51,7 +60,10 @@
   .updcard { background:linear-gradient(135deg,rgba(var(--accent-rgb),0.15),rgba(var(--accent-rgb),0.06)); border:1px solid rgba(var(--accent-rgb),0.4); border-radius:12px; padding:12px 13px; display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
   .updcard[hidden] { display:none; }
   .updcard b { font-size:13px; }
-  #updmore { max-height:190px; overflow:auto; display:flex; flex-direction:column; gap:5px; }
+  /* many skipped updates: the list scrolls inside the card and never pushes "Restart Echo" off a short window */
+  #updmore { max-height:clamp(54px, calc(100vh - 600px), 190px); overflow:auto; display:flex; flex-direction:column; gap:5px; }
+  #updtext { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  .updcard { flex:none; }
   #updmore:empty { display:none; }
   .updlink { background:none; border:0; padding:0; color:var(--accent); font-size:12px; cursor:pointer; text-align:left; }
   .updlink:hover { text-decoration:underline; }
@@ -744,8 +756,9 @@
 <body>
 <aside class="rail">
   <div class="brandrow"><div class="logo"><svg viewBox="0 0 256 256" style="width:22px;height:22px;margin-left:0"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></div><span class="brand">Echo</span></div>
-  <button class="nav on" data-page="library" title="Library"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>Library</button>
-  <button class="nav" data-page="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+  <!-- (chat 21) "Library" row gone from view: All clips / any filter or folder opens the clips; the button stays
+       hidden because code switches pages with it -->
+  <button class="nav on" data-page="library" title="Library" style="display:none"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>Library</button>
   <div class="navlbl">CLIPS</div>
   <button class="flt on" data-f="all"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>All clips<span class="n" id="n-all"></span></button>
   <button class="flt" data-f="today"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Today<span class="n" id="n-today"></span></button>
@@ -761,6 +774,7 @@
     <b>Update ready</b><small id="updtext"></small><div id="updmore"></div>
     <button class="btn primary" id="updbtn">Restart Echo</button>
   </div>
+  <button class="nav navset" data-page="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
   <div class="statcard">
     <div class="st"><div class="dot" id="raildot"></div><span id="railstate">Starting…</span></div>
     <small id="railmode"></small>
@@ -985,7 +999,7 @@
             <div class="row"><div class="lbl"><b>Sort older clips into game folders</b><small>Moves clips with a game in their name ("FiveM 2026-…", "fivem_chase.mp4", "GTA V - Moments") from the main folder and "Exported Clips" into that game's folder. Imports do this by themselves.</small></div><button class="btn" id="sortfold" onclick="sortFolders()">Sort clips</button></div>
             <div class="row"><div class="lbl"><b>Copy button copies</b><small>Clips bigger than the size are shrunk (cached copy, the original is kept). The small arrow next to Copy, or Ctrl+click, lets you pick each time.</small></div>
               <select data-k="copy_default"><option value="full">Full size</option><option value="free">Discord Free</option><option value="basic">Nitro Basic</option><option value="nitro">Nitro</option><option value="custom">Custom</option></select></div>
-            <div class="row"><div class="lbl"><b>Watermark</b><small>An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs, and on share link pages. Your recorded clips and full-size copies stay clean.</small></div><select data-k="watermark_style"><option value="kimbo">Echo · By Kimbo</option><option value="echo">Echo</option><option value="off">Off</option></select></div>
+            <div class="row"><div class="lbl"><b>Watermark</b><small>An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs, and on share link pages. Your recorded clips and full-size copies stay clean.</small></div><select data-k="watermark_style"><option value="kimbo">Echo · By Kimbo</option><option value="link">Echo · echoclip.link</option><option value="echo">Echo</option><option value="off">Off</option></select></div>
             <div class="row"><div class="lbl"><b>Discord limits (MB)</b><small>Free / Nitro Basic / Nitro / Custom - change them if Discord does</small></div>
               <span style="display:flex;gap:6px"><input type="number" min="1" data-k="discord_free_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_basic_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_nitro_mb" data-num data-lazy style="width:70px"><input type="number" min="1" data-k="discord_custom_mb" data-num data-lazy style="width:70px"></span></div>
             <div class="row"><div class="lbl"><b>Currently used</b></div><span class="val" style="width:auto" id="used"></span></div>
@@ -1223,6 +1237,7 @@
     try { list = ((await invoke("release_notes", { since: from })).releases || []).filter(x => !verGt(x.version, to)); } catch { return; }
     const more = $("updmore"), top = list.find(x => x.version === to) || list[0];
     if (!top) return;
+    if (top.notes) $("updtext").title = top.notes;
     if (top.notes) $("updtext").textContent = after ? "What's new: " + top.notes : `Echo ${to} is here (you have ${from}). What's new: ${top.notes}`;
     const earlier = list.filter(x => x !== top);
     more.innerHTML = "";
@@ -1231,8 +1246,11 @@
     a.textContent = after ? `View ${earlier.length} earlier update${earlier.length > 1 ? "s" : ""} you missed` : `+ ${earlier.length} more update${earlier.length > 1 ? "s" : ""} included`;
     a.onclick = () => {
       a.remove();
-      more.insertAdjacentHTML("beforeend", earlier.slice(0, 10).map(x => `<div class="updold"><b>${esc(x.version)}</b>${esc(x.notes)}</div>`).join("")
-        + `<button class="updlink" id="updall">All changes on echoclip.link</button>`);
+      // up to 8 shown; more than that (someone who skipped a lot) -> the newest 6 + a link to the full list
+      const show = earlier.length > 8 ? earlier.slice(0, 6) : earlier;
+      const rest = earlier.length - show.length;
+      more.insertAdjacentHTML("beforeend", show.map(x => `<div class="updold"><b>${esc(x.version)}</b>${esc(x.notes)}</div>`).join("")
+        + `<button class="updlink" id="updall">${rest ? `+ ${rest} older update${rest > 1 ? "s" : ""} on echoclip.link` : "All changes on echoclip.link"}</button>`);
       $("updall").onclick = () => invoke("open_echo_link", { what: "changelog" }).catch(() => {});
     };
     more.appendChild(a);
@@ -1317,8 +1335,13 @@
 
   // bottom messages: several at once stack; the same text again just stays up longer
   const noteOut = el => { el._out = true; el.classList.remove("on"); setTimeout(() => el.remove(), 220); };
+  // hover previews keep the video file open: Windows then refuses rename / move / delete (os error 32)
+  const stopPreviews = () => document.querySelectorAll(".card .thumb video").forEach(v => { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); });
+  let lastAct = "";   // the last clip action (for the log line below)
   function toast(msg) {
     msg = plat(String(msg)); const box = $("notes");
+    // errors go into Echo's log too (William's "os error 32" toast left no trace in the log)
+    if (/os error|error|couldn't|could not|can't|failed|is open in/i.test(msg)) invoke("ui_log", { msg: (lastAct ? `[${lastAct}] ` : "") + msg }).catch(() => {});
     let t = [...box.querySelectorAll(".note.msg")].find(e => e.textContent === msg && !e._out);
     if (!t) {
       t = document.createElement("div"); t.className = "note msg"; t.textContent = msg; box.appendChild(t);
@@ -1379,6 +1402,7 @@
   /* ---------- navigation ---------- */
   document.querySelectorAll(".nav").forEach(b => b.onclick = () => {
     document.querySelectorAll(".nav").forEach(x => x.classList.toggle("on", x === b));
+    document.body.classList.toggle("insettings", b.dataset.page === "settings");   // the clip filter isn't "selected" then
     document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === "page-" + b.dataset.page));
     $("ptitle-h").textContent = b.title;
   });
@@ -2139,6 +2163,7 @@
   };
   async function moveClips(sel, folder) {
     let n = 0, last = "";
+    stopPreviews(); await new Promise(r => setTimeout(r, 100));
     for (const c of sel) { try { await invoke("move_clip", { path: c.path, folder }); n++; } catch (e) { last = String(e); } }
     picked.clear(); renderPickBar(); listKey = ""; await refresh();
     toast(n ? `Moved ${n} clip${n === 1 ? "" : "s"} to ${folder || "the main folder"}` + (last ? ` - ${last}` : "") : last || "Nothing moved");
@@ -2213,14 +2238,26 @@
   });
   // ----- power-user keys (chat 21): hold Ctrl = every card shows its buttons + a key hint; keys act on the
   // clip under the mouse -----
-  let hoverCard = null, ctrlT = 0;
+  let hoverCard = null, ctrlT = 0, mouseXY = [0, 0];
+  addEventListener("mousemove", e => { mouseXY = [e.clientX, e.clientY]; }, { passive: true });
+  // the clip under the mouse right now. The library is redrawn now and then (a thumbnail or seek strip appears),
+  // and a redrawn card under a still mouse never gets "mouseenter" - so look at the point itself (Ctrl+C did nothing)
+  const clipUnderMouse = () => {
+    const el = document.elementFromPoint(mouseXY[0], mouseXY[1]), card = el && el.closest("#grid .card");
+    if (!card) return null;
+    const c = clips.find(x => x.path === card.dataset.path);
+    return c ? { c, el: card } : null;
+  };
   const libKeysOk = e => $("page-library").classList.contains("on") && !$("editor").classList.contains("open") && !$("player").classList.contains("open")
     && !$("confirm").classList.contains("open") && !e.target.matches("input,textarea,select,[contenteditable=true]");
   const ctrlOff = () => { clearTimeout(ctrlT); document.body.classList.remove("ctrlheld"); };
   document.addEventListener("keydown", e => {
-    if (e.key === "Control" && !e.repeat && libKeysOk(e)) { clearTimeout(ctrlT); ctrlT = setTimeout(() => document.body.classList.add("ctrlheld"), 250); return; }
+    // not while clips are selected: then Ctrl+click is for selecting and the hint would sit on the selection bar
+    if (e.key === "Control" && !e.repeat && libKeysOk(e) && !picked.size) { clearTimeout(ctrlT); ctrlT = setTimeout(() => { if (!picked.size) document.body.classList.add("ctrlheld"); }, 250); return; }
     if (e.key !== "Control" && !e.ctrlKey) ctrlOff();
-    if (!libKeysOk(e) || !hoverCard || !hoverCard.el.isConnected) return;
+    if (!libKeysOk(e)) return;
+    hoverCard = clipUnderMouse();
+    if (!hoverCard) return;
     const c = hoverCard.c, k = e.code;
     if (e.ctrlKey && k === "KeyC") { e.preventDefault(); ctrlOff(); action("copy", c); }
     else if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -2249,7 +2286,7 @@
         ghost.textContent = sel.length > 1 ? `${sel.length} clips` : shownName(c);
         document.body.appendChild(ghost); document.body.classList.add("cdrag");
         // the hover preview keeps the file open - Windows then refuses the move (os error 32)
-        document.querySelectorAll(".card .thumb video").forEach(v => { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); });
+        stopPreviews();
       }
       ghost.style.left = ev.clientX + 14 + "px"; ghost.style.top = ev.clientY + 10 + "px";
       const t = targetAt(ev);
@@ -2284,7 +2321,7 @@
         nm.contentEditable = "false"; nm.onblur = nm.onkeydown = null;
         const v = nm.textContent.trim();
         if (!ok || !v || v === c.name || v === shownName(c)) { nm.textContent = shownName(c); return; }
-        try { await invoke("rename_clip", { path: c.path, name: v }); toast("Renamed"); listKey = ""; refresh(); }
+        try { stopPreviews(); await invoke("rename_clip", { path: c.path, name: v }); toast("Renamed"); listKey = ""; refresh(); }
         catch (e) { nm.textContent = shownName(c); toast(String(e)); }
       };
       nm.onblur = () => finish(true);
@@ -2293,7 +2330,7 @@
     const th = el.querySelector(".thumb");
     th.insertAdjacentHTML("beforeend", `<button class="pick" title="Select (Ctrl+click)"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>`);
     if (picked.has(c.path)) el.classList.add("picked");
-    const togglePick = () => { picked.has(c.path) ? picked.delete(c.path) : picked.add(c.path); el.classList.toggle("picked", picked.has(c.path)); renderPickBar(); };
+    const togglePick = () => { picked.has(c.path) ? picked.delete(c.path) : picked.add(c.path); el.classList.toggle("picked", picked.has(c.path)); renderPickBar(); if (picked.size) ctrlOff(); };
     th.querySelector(".pick").onclick = e => { e.stopPropagation(); togglePick(); };
     el.addEventListener("click", e => { if ((e.ctrlKey || e.shiftKey) && !e.target.closest(".ib")) { e.preventDefault(); e.stopPropagation(); togglePick(); } }, true);
     th.onclick = () => { if (cardDragged) { cardDragged = false; return; } picked.size ? togglePick() : openPlayer(c); };
@@ -2401,6 +2438,7 @@
   }
 
   async function action(a, c, btn) {
+    lastAct = a + " " + (c && c.name || "");
     try {
       if (a === "cloud") return cloudMenu(btn || document.body, c);
       if (c.cloud && a === "del") {
@@ -2421,7 +2459,7 @@
             [["Cancel", null], ["Only from this PC", "pc"], ["Everywhere", "all", "delb"]])
           : ((await confirmDel(c)) ? "pc" : null);
         if (!how) return;
-        closePlayer();
+        closePlayer(); stopPreviews();
         await new Promise(r => setTimeout(r, 150));           // let the player release the file
         await invoke("delete_clip", { path: c.path });
         clips = clips.filter(x => x.path !== c.path);

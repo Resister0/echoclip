@@ -121,12 +121,15 @@
   };
   const box = document.createElement("div"); box.className = "atoasts"; (app.querySelector(".amain") || app).appendChild(box);
   const toast = (k) => {
-    const old = [...box.children].find((t) => t.dataset.k === k);
+    const old = [...box.children].find((t) => t.dataset.k === k && !t._gone);
     if (old) { clearTimeout(old._h); old._h = setTimeout(() => out(old), 4500); return; }
     const t = document.createElement("div"); t.className = "atoast"; t.dataset.k = k;
     t.innerHTML = `<span><b>Just a preview.</b> In Echo, this ${SAY[k]}.</span><a href="/download">Get Echo →</a>`;
     box.appendChild(t); requestAnimationFrame(() => t.classList.add("on"));
-    while (box.children.length > 2) out(box.firstChild);
+    // max 2 at once. Count only notes that aren't already fading out: the old loop counted fading ones too, never
+    // got below 3 and froze the page when the buttons were clicked quickly (chat 21)
+    const live = [...box.children].filter((x) => !x._gone);
+    live.slice(0, Math.max(0, live.length - 2)).forEach(out);
     t._h = setTimeout(() => out(t), 4500);
   };
   const out = (t) => { if (!t || t._gone) return; t._gone = true; t.classList.remove("on"); setTimeout(() => t.remove(), 220); };
@@ -213,7 +216,8 @@
     const key = (e) => { if (e.key === "Escape") end(); else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); } };
     ov.querySelector(".wtskip").onclick = end;
     ov.querySelector(".wtnext").onclick = () => { if (i === STEPS.length - 1) { end(); location.hash = "#download"; scrollTo({ top: 0, behavior: "smooth" }); } else next(); };
-    ov.addEventListener("click", (e) => { if (e.target === ov) end(); });
+    // the page stays usable during the tour (step 2 says "click around" - a click used to close the tour);
+    // Skip / Esc / the last step end it
     addEventListener("scroll", place, { passive: true }); addEventListener("resize", place); addEventListener("keydown", key);
     next();
   };

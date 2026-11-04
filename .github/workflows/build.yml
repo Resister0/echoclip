@@ -56,7 +56,7 @@ jobs:
           cp dl/rclone-*/rclone.exe tools/
           ls -la tools
           npx --yes @tauri-apps/cli@2 build --bundles nsis \
-            --config '{"bundle":{"active":true'"$UPD"',"resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
+            --config '{"bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
           cp target/release/bundle/nsis/*-setup.exe ../Echo-Setup.exe
           cp target/release/bundle/nsis/*-setup.exe.sig ../Echo-Setup.exe.sig || echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
       - uses: actions/upload-artifact@v4

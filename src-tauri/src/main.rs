@@ -1344,6 +1344,12 @@ fn show_main(app: &AppHandle) {
 /// When Echo started (for the "startup: …" log line).
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// An error the window showed (toast): into the log, so "Send log" shows what failed and on which action
+#[tauri::command]
+fn ui_log(msg: String) {
+    recorder::log_line(&format!("ui: {}", msg.chars().take(400).collect::<String>()));
+}
+
 /// The window drew its first library: log how long startup took (to spot slow starts in users' logs).
 #[tauri::command]
 fn ui_ready(clips: u32) {
@@ -1898,7 +1904,7 @@ fn main() {
             pick_image,
             clip_meta,
             library_stamp,
-            ui_ready,
+            ui_ready, ui_log,
             set_meta,
             set_thumb,
             cleanup_now,

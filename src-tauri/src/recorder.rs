@@ -1211,7 +1211,7 @@ pub fn av1_ready() -> bool {
 /// Watermark shown on share links: the share page lays it over the video and it's on the preview image
 /// (the clip itself is uploaded as it is - re-encoding for a burned-in logo was too slow, chat 16). "off" = none.
 fn share_wm(cfg: &crate::settings::Settings) -> &str {
-    if cfg.share_watermark && cfg.watermark_style != "off" { if cfg.watermark_style == "echo" { "echo" } else { "kimbo" } } else { "off" }
+    if cfg.share_watermark && cfg.watermark_style != "off" { match cfg.watermark_style.as_str() { "echo" => "echo", "link" => "link", _ => "kimbo" } } else { "off" }
 }
 
 pub fn is_av1(path: &str) -> bool {
@@ -1240,6 +1240,27 @@ fn stop_strip_for(p: &Path) {
 
 /// fs::rename that waits a moment when Windows says the file is in use (a preview, a strip being made,
 /// antivirus): stops our own strip build for it, then retries for up to ~4 s.
+/// fs::write for Echo's small json files (favourites, titles/tags, links…): if Windows says the file is in use
+/// (a sync app / antivirus reading it), wait a moment and try again instead of showing "os error 32"
+fn write_patient(p: &Path, data: &str) -> Result<(), String> {
+    let mut tries = 0;
+    loop {
+        match fs::write(p, data) {
+            Ok(()) => return Ok(()),
+            Err(e) if tries < 12 && matches!(e.raw_os_error(), Some(32) | Some(33) | Some(5)) => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            Err(e) => {
+                log_line(&format!("write {}: {e}", p.display()));
+                return Err(if e.raw_os_error() == Some(32) {
+                    format!("{} is open in another program (a sync app?) - try again in a moment", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+                } else { e.to_string() });
+            }
+        }
+    }
+}
+
 fn rename_patient(from: &Path, to: &Path) -> Result<(), String> {
     let mut tries = 0;
     loop {
@@ -2951,14 +2972,16 @@ impl Recorder {
     /// The Echo watermark ("Echo / By Kimbo", bottom-right) as filtergraph text: video [inl] of height `h` -> [outl]. None = off.
     /// Every re-encode ends in plain BT.709 TV-range yuv420p. Without it ffmpeg 8 sometimes wrote the
     /// watermarked Discord copies as full-range "gbr" video, which Discord / browsers show far too dark.
-    /// The watermark APNG for a style ("kimbo" / "echo"), written next to the settings once; None for "off".
+    /// The watermark APNG for a style ("kimbo" / "link" = "echoclip.link" under the name / "echo"), written next to the settings once; None for "off".
     fn watermark_file(style: &str) -> Option<PathBuf> {
         // animated (APNG, 1 s): the logo animates in, then the last frame stays for the rest of the video
         const KIMBO: &[u8] = include_bytes!("watermark.apng");
         const ECHO: &[u8] = include_bytes!("watermark_echo.apng");
+        const LINK: &[u8] = include_bytes!("watermark_link.apng");
         let (png, file) = match style {
             "off" => return None,
             "echo" => (ECHO, "watermark_echo.apng"),
+            "link" => (LINK, "watermark_link.apng"),
             _ => (KIMBO, "watermark.apng"),
         };
         let p = app_dir().join(file);
@@ -4288,7 +4311,7 @@ impl Recorder {
     }
     fn write_meta(&self, m: &std::collections::BTreeMap<String, ClipMeta>) -> Result<(), String> {
         fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
-        fs::write(self.meta_path(), serde_json::to_string(m).map_err(err)?).map_err(err)
+        write_patient(&self.meta_path(), &serde_json::to_string(m).map_err(err)?)
     }
     /// Tags + notes per clip, plus what was said (from captions) for search.
     pub fn clip_meta(&self) -> std::collections::BTreeMap<String, ClipMeta> {
@@ -4454,7 +4477,7 @@ impl Recorder {
             f.push(name.to_string());
         }
         fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
-        fs::write(self.favs_path(), serde_json::to_string(&f).map_err(err)?).map_err(err)
+        write_patient(&self.favs_path(), &serde_json::to_string(&f).map_err(err)?)
     }
 
     /// Number of audio tracks in a clip (3 = mix, desktop, mic; 6 adds game, Discord, browsers; 7 also music apps).
@@ -5771,7 +5794,7 @@ impl Recorder {
     }
     fn save_cloud_state(&self, st: &CloudState) {
         let _ = fs::create_dir_all(self.thumbs_dir());
-        let _ = fs::write(self.thumbs_dir().join("cloud.json"), serde_json::to_string(st).unwrap_or_default());
+        let _ = write_patient(&self.thumbs_dir().join("cloud.json"), &serde_json::to_string(st).unwrap_or_default());
     }
     /// Where a clip lives in the cloud (with its date folder), from the last listing; rel itself if unknown.
     fn cpath(&self, rel: &str) -> String {
@@ -6809,7 +6832,7 @@ impl Recorder {
     }
     fn save_links(&self, m: &std::collections::BTreeMap<String, LinkEntry>) {
         let _ = fs::create_dir_all(self.thumbs_dir());
-        let _ = fs::write(self.thumbs_dir().join("links.json"), serde_json::to_string(m).unwrap_or_default());
+        let _ = write_patient(&self.thumbs_dir().join("links.json"), &serde_json::to_string(m).unwrap_or_default());
     }
     /// The clip's link must not be handed out again (stopped sharing, deleted, moved, signed out…).
     pub fn forget_link(&self, rel: &str) {

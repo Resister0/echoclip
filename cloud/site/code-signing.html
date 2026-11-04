@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Code signing policy - Echo</title>
+<meta name="description" content="How Echo's Windows downloads are built and signed, who approves releases, and what data Echo sends.">
+<meta name="theme-color" content="#7c5cff">
+<meta property="og:title" content="Code signing policy - Echo">
+<meta property="og:description" content="How Echo's Windows downloads are built and signed, who approves releases, and what data Echo sends.">
+<meta property="og:site_name" content="Echo">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://echoclip.link/og.png?v=2">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+  <nav>
+    <a href="/#features" class="hide-s">Features</a>
+    <a href="/#storage">Storage</a>
+    <a href="https://discord.gg/JPVewEfUQs" class="hide-s">Discord</a>
+    <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
+    <a href="/download" class="btn primary small">Download</a>
+  </nav>
+  <div class="themes" id="themes" hidden><p>Theme</p></div>
+</div></header>
+<main>
+<article class="doc">
+  <h1>Code signing policy</h1>
+  <p class="updated">Last updated: 4 November 2026</p>
+
+  <p>Echo's Windows downloads (Echo-Setup.exe and Echo.exe) are built from the public source code by GitHub Actions and are meant
+    to be signed through the <a href="https://signpath.org/">SignPath Foundation</a>'s free code signing for open-source projects
+    (application in progress). Until that's in place, Windows may show a SmartScreen warning when you start the installer.</p>
+  <p>Once approved: <b>Free code signing provided by <a href="https://about.signpath.io/">SignPath.io</a>, certificate by
+    <a href="https://signpath.org/">SignPath Foundation</a>.</b></p>
+
+  <h2>What gets signed</h2>
+  <ul>
+    <li>Only files built from the public repository <a href="https://github.com/Resister0/echoclip">github.com/Resister0/echoclip</a>
+      by its GitHub Actions workflow. Every release on GitHub shows the exact commit it was built from.</li>
+    <li>Echo's own program files (the installer and Echo.exe). Third-party tools that come with Echo - FFmpeg, rclone - are the
+      unchanged official builds from their own projects and keep their authors' signatures, if they have any.</li>
+    <li>Nothing is signed by hand on a personal computer.</li>
+  </ul>
+
+  <h2>Team and roles</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Role</th><th>Who</th></tr>
+    <tr><td>Committers and reviewers</td><td>Kimbo (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+    <tr><td>Approvers (every signed release is approved by hand)</td><td>Kimbo (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+  </table></div>
+  <p>Everyone with access uses two-factor authentication on GitHub and SignPath. Outside contributions are reviewed before
+    they are merged.</p>
+
+  <h2>Privacy</h2>
+  <p>Echo does not send any data to other computers unless you ask it to, with one exception: an installed Echo checks
+    echoclip.link every few hours for a newer version. That check contains only Echo's version number and your system type
+    (Windows or Linux).</p>
+  <p>Everything else happens only when you choose it: connecting a cloud (Echo Cloud, Google Drive or your own storage),
+    making a share link, sending feedback or sending a log. The full details are in the <a href="/privacy">privacy policy</a>,
+    which the Windows installer also links to.</p>
+
+  <h2>Reporting a problem</h2>
+  <p>If you think a signed Echo file was tampered with or behaves maliciously, email
+    <a href="mailto:support@echoclip.link">support@echoclip.link</a>. Signing certificates can be revoked by SignPath if
+    this policy is broken.</p>
+</article>
+</main>
+<footer><div class="wrap">
+  <span>© 2026 Echo · Made in Denmark · <a href="https://github.com/Resister0/echoclip">Open source (GPL-3.0)</a></span>
+  <nav>
+    <a href="/pricing">Pricing</a>
+    <a href="/changelog">Changelog</a>
+    <a href="https://discord.gg/JPVewEfUQs">Discord</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="/code-signing">Code signing</a>
+    <a href="mailto:support@echoclip.link">support@echoclip.link</a>
+  </nav>
+</div></footer>
+<script src="/site.js"></script>
+</body>
+</html>

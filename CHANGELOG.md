@@ -4,6 +4,14 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Simpler sidebar: no separate "Library" row - All clips, filters and folders open your clips; Settings sits at the bottom
+- New watermark style "Echo · echoclip.link" (Settings → Clips & Storage → Watermark)
+- Fewer "file is being used by another process" errors: Echo stops its hover preview before renaming, moving or deleting, and retries saving favourites / titles when another program briefly holds the file; errors are now written to Echo's log
+- Fixed: Ctrl+C on the clip under the mouse sometimes did nothing; the Ctrl key hint no longer covers the selection bar
+- The update card stays compact after skipping many versions ("Restart Echo" never goes off screen)
+- The Windows installer shows a short privacy and licence note (with links to the privacy policy and the new code signing policy)
+
+## 1.0.45 - Game icons, new themes, On this day
 - The in-game "Clip saved" popup shows the game's icon and the clip's length
 - 4 new colour themes: Frost, Lime, Gold and Midnight
 - "On this day": a clip from the same date a year ago shows above your library (✕ hides it for today or for good; also a switch in Settings → App)
