@@ -347,6 +347,19 @@ pub fn disk_free(dir: &str) -> u64 {
     free
 }
 
+/// Size of a window in pixels (0,0 if it's gone).
+pub fn window_size(hwnd: isize) -> (i32, i32) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let mut r = RECT::default();
+        if hwnd == 0 || GetWindowRect(HWND(hwnd as *mut core::ffi::c_void), &mut r).is_err() {
+            return (0, 0);
+        }
+        (r.right - r.left, r.bottom - r.top)
+    }
+}
+
 /// Does the foreground window cover its whole monitor (fullscreen / borderless game)?
 pub fn foreground_fullscreen() -> bool {
     use windows::Win32::Foundation::RECT;

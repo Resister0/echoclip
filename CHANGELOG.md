@@ -4,6 +4,8 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- "Game window only" recording no longer restarts (and loses the replay) for small launcher / loading windows while a game starts, e.g. FiveM
+- Linux (plain tar.gz build): the update card copies a one-line terminal command that updates and restarts Echo
 - Simpler sidebar: no separate "Library" row - All clips, filters and folders open your clips; Settings sits at the bottom
 - New watermark style "Echo · echoclip.link" (Settings → Clips & Storage → Watermark)
 - Fewer "file is being used by another process" errors: Echo stops its hover preview before renaming, moving or deleting, and retries saving favourites / titles when another program briefly holds the file; errors are now written to Echo's log

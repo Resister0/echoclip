@@ -94,6 +94,28 @@ struct UpdateInfo {
     current: String,
     notes: String,
     can_install: bool,
+    /// Linux plain build (tar.gz, not the AppImage): a terminal command that updates it in place (chat 21)
+    update_cmd: Option<String>,
+}
+
+/// The one-liner for the Linux tar.gz build: downloads the newest tar.gz, swaps the Echo program next to this one
+/// (replacing a running program is fine on Linux), then restarts Echo. None on Windows and for the AppImage.
+fn linux_update_cmd() -> Option<String> {
+    #[cfg(windows)]
+    { None }
+    #[cfg(not(windows))]
+    {
+        if can_self_update() {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?.to_string_lossy().to_string();
+        let name = exe.file_name()?.to_string_lossy().to_string();
+        let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        Some(format!(
+            "d={}; t=$(mktemp -d) && curl -fsSL https://echoclip.link/download/linux-tar | tar -xz -C \"$t\" && cp \"$t/Echo-linux/Echo\" \"$d/.echo-new\" && chmod +x \"$d/.echo-new\" && mv -f \"$d/.echo-new\" \"$d/\"{} && rm -rf \"$t\" && {{ pkill -x {}; sleep 1; (nohup \"$d/\"{} >/dev/null 2>&1 &); echo 'Echo updated and restarted'; }}",
+            q(&dir), q(&name), q(&name.chars().take(15).collect::<String>()), q(&name)))
+    }
 }
 
 /// The version shown in Settings → App Settings (1.0.N from GitHub; 0.1.0 = built on this PC with build.cmd).
@@ -128,16 +150,23 @@ async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     // empty (flaky GitHub lookup on one Cloudflare server) Echo said "already up to date" under an "Update ready"
     // card (Holmes, chat 20)
     if u.is_some() { *PENDING_UPDATE.lock().unwrap() = u.clone(); }
-    Ok(u.map(|u| UpdateInfo { version: u.version.clone(), current, notes: u.body.clone().unwrap_or_default(), can_install: can_self_update() }))
+    Ok(u.map(|u| UpdateInfo { version: u.version.clone(), current, notes: u.body.clone().unwrap_or_default(), can_install: can_self_update(), update_cmd: linux_update_cmd() }))
 }
 
 static PENDING_UPDATE: std::sync::Mutex<Option<tauri_plugin_updater::Update>> = std::sync::Mutex::new(None);
 
 #[tauri::command]
-async fn update_install(app: AppHandle) -> Result<(), String> {
+async fn update_install(app: AppHandle) -> Result<String, String> {
     use tauri_plugin_updater::UpdaterExt;
     if !can_self_update() {
-        return recorder::open_web("https://echoclip.link/download");
+        // Linux plain build: copy the update command (paste it in a terminal); Windows portable: the download page
+        if let Some(cmd) = linux_update_cmd() {
+            recorder::copy_text(&cmd)?;
+            recorder::log_line("update: copied the terminal update command (tar.gz build)");
+            return Ok("copied".into());
+        }
+        recorder::open_web("https://echoclip.link/download")?;
+        return Ok(String::new());
     }
     // the update the card is showing; only ask again when there is none (e.g. the card came from an old check)
     let known = PENDING_UPDATE.lock().unwrap().clone();
@@ -1687,6 +1716,8 @@ fn main() {
                     let mut game: Option<(String, u32)> = None;
                     let mut game_hwnd: isize = 0;
                     let mut vr_hwnd: isize = 0;
+                    // capture target asked for in the last loop + how many loops in a row (switch only when steady)
+                    let mut want_seen: (isize, u32) = (0, 0);
                     let mut down = 0u32;
                     let mut last_fix = std::time::Instant::now() - std::time::Duration::from_secs(120);
                     loop {
@@ -1773,8 +1804,18 @@ fn main() {
                         }
                         // "Game window only": record just the game's window while it runs (restart when it changes)
                         // ("Whole screen" too while a VR game runs: its window is the only place the game is visible)
-                        let want = if cfg.capture == "game" { game_hwnd } else if vr_hwnd != 0 && !winutil::window_alive(vr_hwnd) { 0 } else { vr_hwnd };
-                        if cur.is_empty() && want != rec.window.load(std::sync::atomic::Ordering::Relaxed) && rec.session_secs().is_none() && !rec.busy() && !FPS_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
+                        let mut want = if cfg.capture == "game" { game_hwnd } else if vr_hwnd != 0 && !winutil::window_alive(vr_hwnd) { 0 } else { vr_hwnd };
+                        // a launcher / splash / crash-dump window (FiveM's 524x524 launcher, its 352x170 "dumpserver")
+                        // isn't the game: keep recording the whole screen. Each switch restarts the recorder and
+                        // empties the replay buffer - William's FiveM start caused 4 restarts in a minute (chat 21)
+                        if want != 0 && want != vr_hwnd {
+                            let (ww, wh) = winutil::window_size(want);
+                            if ww < 800 || wh < 450 { want = 0; }
+                        }
+                        // and only switch once the same target was asked for twice in a row (~6 s): games swap
+                        // windows while starting up
+                        want_seen = if want_seen.0 == want { (want, want_seen.1 + 1) } else { (want, 1) };
+                        if cur.is_empty() && want != rec.window.load(std::sync::atomic::Ordering::Relaxed) && want_seen.1 >= 2 && rec.session_secs().is_none() && !rec.busy() && !FPS_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
                             rec.window.store(want, std::sync::atomic::Ordering::Relaxed);
                             recorder::log_line(if want != 0 { "capture: switching to the game window" } else { "capture: back to the whole monitor" });
                             if let Err(e) = rec.start() {

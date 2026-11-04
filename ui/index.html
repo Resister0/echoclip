@@ -1284,7 +1284,7 @@
     b.disabled = true; st.textContent = "Checking…";
     try {
       const u = await invoke("update_check");
-      if (u) { await updCheck(u); st.textContent = `Echo ${u.version} is ready - click "${u.can_install ? "Restart Echo" : "Download"}" on the left.`; }
+      if (u) { await updCheck(u); st.textContent = `Echo ${u.version} is ready - click "${u.can_install ? "Restart Echo" : u.update_cmd ? "Copy update command" : "Download"}" on the left.`; }
       else st.textContent = "You have the newest version.";
     } catch (e) { st.textContent = "Couldn't check: " + e; }
     b.disabled = false;
@@ -1301,13 +1301,16 @@
     $("updbtn").classList.add("primary"); $("updbtn").onclick = updInstall;
     $("updtext").textContent = `Echo ${updInfo.version} is here (you have ${updInfo.current}).`; $("updmore").innerHTML = "";
     showChanges(updInfo.current, updInfo.version, false);
-    $("updbtn").textContent = updInfo.can_install ? "Restart Echo" : "Download";
+    $("updbtn").textContent = updInfo.can_install ? "Restart Echo" : updInfo.update_cmd ? "Copy update command" : "Download";
     $("updcard").hidden = false;
   }
   async function updInstall() {
     const b = $("updbtn");
     if (updInfo && updInfo.can_install) { b.disabled = true; b.textContent = "Updating…"; }
-    try { await invoke("update_install"); }
+    try {
+      const r = await invoke("update_install");
+      if (r === "copied") toast("Update command copied - paste it in a terminal and press Enter. Echo restarts by itself.");
+    }
     catch (e) { b.disabled = false; b.textContent = "Try again"; toast(String(e)); }
   }
   $("updbtn").onclick = updInstall;
