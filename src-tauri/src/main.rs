@@ -428,6 +428,24 @@ fn hotkey_mode() -> String {
     "hook".into()
 }
 #[tauri::command]
+fn hotkey_ui(keys: String) {
+    #[cfg(windows)]
+    hotkey::ui_press(&keys);
+    #[cfg(not(windows))]
+    let _ = keys;
+}
+/// the editor's captions as a .txt next to the clip ("<clip> captions.txt"); returns its path
+#[tauri::command]
+fn save_captions(clip: String, text: String) -> Result<String, String> {
+    let p = std::path::Path::new(&clip);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Clip".into());
+    let dir = p.parent().map(|d| d.to_path_buf()).filter(|d| d.is_dir()).ok_or("The clip's folder isn't there")?;
+    let out = dir.join(format!("{} captions.txt", stem.trim_end_matches(" (Echo)")));
+    let text = if cfg!(windows) { text.replace('\n', "\r\n") } else { text };
+    std::fs::write(&out, text).map_err(|e| format!("Couldn't save the captions: {e}"))?;
+    Ok(out.to_string_lossy().to_string())
+}
+#[tauri::command]
 fn hotkeys_paused(on: bool) {
     #[cfg(any(windows, target_os = "linux"))]
     hotkey::pause(on);
@@ -1898,7 +1916,7 @@ fn main() {
             app_version,
             update_install,
             hotkey_mode,
-            hotkeys_paused,
+            hotkeys_paused, hotkey_ui, save_captions,
             cloud_remove_account,
             echocloud_start,
             echocloud_ready,

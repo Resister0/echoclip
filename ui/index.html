@@ -1512,7 +1512,15 @@
   }
 
   // no page zoom from Ctrl+scroll / Ctrl+plus/minus (the timeline uses Ctrl+scroll for its own zoom)
-  addEventListener("wheel", e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+  // Ctrl+wheel would zoom the whole window: block that, but keep scrolling (holding Ctrl shows the card buttons)
+  addEventListener("wheel", e => {
+    if (!e.ctrlKey || e.defaultPrevented) return;
+    e.preventDefault();
+    for (let el = e.target; el && el !== document.documentElement; el = el.parentElement) {
+      const oy = getComputedStyle(el).overflowY;
+      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) { el.scrollBy({ top: e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY }); return; }
+    }
+  }, { passive: false });
   addEventListener("keydown", e => { if (e.ctrlKey && ["Equal", "Minus", "NumpadAdd", "NumpadSubtract", "Digit0", "Numpad0"].includes(e.code)) e.preventDefault(); });
   let filter = "all", viewList = [], gameIcons = {}, iconKey = "", gamesKey = "", gameList = [], shared = new Set(), sharedKey = "", sessAt = null, shareViews = {}, viewsKey = "", viewsAt = 0;
   function drawLong() {
@@ -2051,11 +2059,24 @@
       }
     } finally { jobRunning = false; }
   }
-  function renderGrid() {
+  // "Saving clip…" card: stays at the top (through library redraws) until the new clip is in the list
+  let savingPh = null;   // {secs, at, path}
+  function drawSavingPh() {
+    let ph = $("savingcard");
+    if (savingPh && (Date.now() - savingPh.at > 90000 || (savingPh.path && clips.some(c => c.path === savingPh.path)))) savingPh = null;
+    if (!savingPh || filter === "shots") { if (ph) ph.remove(); return; }
+    const g = document.querySelector("#grid .grid"); if (!g) return;
+    if (!ph) { ph = document.createElement("div"); ph.id = "savingcard"; ph.className = "card"; }
+    ph.innerHTML = `<div class="thumb" style="display:grid;place-items:center;color:var(--muted)"><div style="text-align:center"><div class="spin"></div>${savingPh.path ? "Almost ready…" : `Saving the last ${fmtLen(savingPh.secs)}…`}</div></div><div class="info"><div class="txt"><div class="name">${savingPh.path ? "Clip saved" : "Saving clip…"}</div><div class="meta"><span>${savingPh.path ? "Opens in a moment" : "Long clips take a few seconds"}</span></div></div></div>`;
+    if (g.firstElementChild !== ph) g.prepend(ph);
+  }
+  function renderGrid() { renderGrid0(); drawSavingPh(); }
+  function renderGrid0() {
     const q = $("search").value.toLowerCase(), sort = $("sort").value;
     const pass = filter.startsWith("game:") ? (c => inFolder(c, filter.slice(5))) : filter.startsWith("tag:") ? (c => ((meta[c.name] || {}).tags || []).includes(filter.slice(4))) : FILTERS[filter] || (() => true);
     const words = q.split(/\s+/).filter(Boolean);
-    let list = clips.filter(c => pass(c) && fpass(c) && (!words.length || (st => words.every(w => st.includes(w)))(searchText(c))));
+    const half = c => savingPh && !savingPh.path && !c.cloud && c.modified * 1000 >= savingPh.at - 3000;   // still being written
+    let list = clips.filter(c => !half(c) && pass(c) && fpass(c) && (!words.length || (st => words.every(w => st.includes(w)))(searchText(c))));
     drawFbar();
     renderGames(); renderTags();
     if (sort === "old") list = [...list].reverse();
@@ -2401,8 +2422,11 @@
   const copyMb = k => k === "full" || !cfg ? 0 : +cfg[`discord_${k}_mb`] || 0;
   const fmtMb = mb => mb >= 1000 ? (mb / 1000) + " GB" : mb + " MB";
   const shrinkBoxes = new Set();
+  const sizing = new Set();   // clips being shrunk right now (a 2nd start used to fight the 1st one)
   async function copySized(c, k) {
     const mb = copyMb(k);
+    if (sizing.has(c.path)) { toast("This clip is already being copied - one moment"); return; }
+    sizing.add(c.path);
     try {
       c = await ensureLocal(c);
       const big = mb && c.size > mb * 1e6;
@@ -2413,6 +2437,7 @@
       finally { if (box) { shrinkBoxes.delete(box); box.done(); } }
       toast(`Copied${mb ? ` (${fmtSize(size)})` : ""} - paste it into Discord or anywhere`); if (big) wmHint("copy");
     } catch (e) { toast(String(e)); }
+    finally { sizing.delete(c.path); }
   }
   function copyMenu(btn, c) {
     let m = $("copymenu");
@@ -2428,12 +2453,17 @@
       return `<button class="ci" data-k="${k}" title="Right-click: make this the default for the Copy button">${n}${k === def ? ' <span class="df">default</span>' : ""}${right}</button>`;
     }).join("") + `<div class="cf">Right-click a size to make it the Copy default</div>`;
     m.querySelectorAll(".ci").forEach(b => {
-      b.onclick = e => { if (e.target.tagName === "INPUT") return; m.classList.remove("on"); copySized(c, b.dataset.k); };
+      b.onclick = e => {
+        if (e.target.tagName === "INPUT") return;
+        if (b.dataset.k === "custom") { const i = b.querySelector("input"); i.focus(); i.select(); return; }   // type a size, Enter copies
+        m.classList.remove("on"); copySized(c, b.dataset.k);
+      };
       b.oncontextmenu = e => { e.preventDefault(); cfg.copy_default = b.dataset.k; changed(true); m._c = null; copyMenu(btn, c); toast(`Copy button now copies: ${b.textContent.replace("default", "").trim()}`); };
     });
     const inp = m.querySelector("input");
     inp.onchange = () => { const v = Math.max(1, Math.round(+inp.value || 0)); cfg.discord_custom_mb = v; changed(true); };
-    inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { inp.onchange(); m.classList.remove("on"); copySized(c, "custom"); } };
+    inp.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" && !e.repeat) { e.preventDefault(); inp.onchange(); m.classList.remove("on"); copySized(c, "custom"); } };
+    inp.title = "Type a size, then press Enter";
     const r = btn.getBoundingClientRect(); m.classList.add("on");
     const mw = m.offsetWidth, mh = m.offsetHeight;
     m.style.left = Math.max(8, Math.min(innerWidth - mw - 8, r.left)) + "px";
@@ -3896,8 +3926,17 @@
       <div class="row" style="border:0;padding:10px 0 4px"><div class="lbl">Highlight spoken word</div><label class="switch"><input type="checkbox" id="ecaphl" ${ed.capHl !== false ? "checked" : ""}><span></span></label></div>
       <div class="swatch" id="ecaphlc">${["ffd23f", "3ddc97", "4cc2ff", "ff5c7a", "b388ff", "ffffff"].map(c => `<button data-c="${c}" style="background:#${c}" class="${(ed.capHlColor || st.hl) === c ? "on" : ""}"></button>`).join("")}</div>
       <div class="caplist" id="caplist"></div>
-      <div class="seg-btns" style="grid-template-columns:1fr 1fr;margin-top:10px"><button id="ecapadd">+ Add at playhead</button><button id="ecaprm">Remove all</button></div>`;
+      <div class="seg-btns" style="grid-template-columns:1fr 1fr;margin-top:10px"><button id="ecapadd">+ Add at playhead</button><button id="ecaprm">Remove all</button></div>
+      <button class="btn" id="ecaptxt" style="margin-top:8px;width:100%;justify-content:center" title="A .txt file with every caption and its time, next to the clip">Save captions as text (.txt)</button>`;
     el.appendChild(box);
+    box.querySelector("#ecaptxt").onclick = async () => {
+      const caps = ed.texts.filter(t => t.cap).sort((a, b) => a.start - b.start);
+      if (!caps.length) { toast("No captions yet - press Captions first"); return; }
+      const lines = []; let last = "";
+      for (const t of caps) { const s = String(t.raw || t.text || "").trim(); if (!s || s === last) continue; last = s; lines.push(`[${fmtLen(Math.floor(t.start)).padStart(4)}] ${s}`); }
+      try { const p = await invoke("save_captions", { clip: ed.clip.path, text: lines.join("\n") + "\n" }); toast("Captions saved next to the clip"); invoke("open_in_folder", { path: p }).catch(() => {}); }
+      catch (e) { toast(String(e)); }
+    };
     const ICON_PLAY = '<svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M7 4v16l13-8z"/></svg>';
     const lb = box.querySelector("#caplist");
     for (const i of list) {
@@ -4884,7 +4923,9 @@
     const left = f > 0.03 ? Math.round(secs * (1 - f) / f) : null;
     const name = p.rel.split("/").pop().replace(/\.mp4$/i, "");
     // nothing sent yet: rclone is still finding / making the folder (Google Drive can take a while) - say so instead of "0%"
-    const txt = (p.count > 1 ? `${p.idx} of ${p.count} · ` : "") + (p.got > 0 ? `${fmtSize(p.got)} of ${fmtSize(p.total)} · ${pc}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "")
+    const dest = (p.dest || "the cloud").replace(/^the /, "");
+    const txt = (p.count > 1 ? `${p.idx} of ${p.count} · ` : "") + (p.got > 0 && p.got >= p.total ? `All sent - waiting for ${dest} to finish…`
+      : p.got > 0 ? `${fmtSize(p.got)} of ${fmtSize(p.total)} · ${pc}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "")
       : `Getting ready${secs > 8 ? ` (${Math.round(secs)} s)` : ""}… · ${fmtSize(p.total)}`);
     // the clip's card
     const card = [...document.querySelectorAll(".card")].find(e => e.dataset.rel === p.rel);
@@ -4932,14 +4973,10 @@
   listen("clips-changed", () => { listKey = ""; refresh(); });
   listen("cloud-changed", () => { listKey = ""; refresh(); });
   listen("mic-muted", e => { status.mic_muted = e.payload; drawMic(); });
-  listen("clip-saving", e => {
-    const g = document.querySelector("#grid .grid"); if (!g) return;
-    let ph = $("savingcard"); if (!ph) { ph = document.createElement("div"); ph.id = "savingcard"; ph.className = "card"; }
-    ph.innerHTML = `<div class="thumb" style="display:grid;place-items:center;color:var(--muted)"><div style="text-align:center"><div class="spin"></div>Saving the last ${fmtLen(e.payload)}…</div></div><div class="info"><div class="txt"><div class="name">Saving clip…</div><div class="meta"><span>Long clips take a few seconds</span></div></div></div>`;
-    g.prepend(ph);
-  });
+  listen("clip-saving", e => { savingPh = { secs: e.payload, at: Date.now() }; drawSavingPh(); });
   listen("clip-saved", e => {
-    { const ph = $("savingcard"); if (ph) ph.remove(); }
+    if (e.payload.Ok && savingPh) { savingPh.path = e.payload.Ok; listKey = ""; } else savingPh = null;
+    drawSavingPh();
     if (e.payload.Ok) toast("Clip saved"); else toast(e.payload.Err);   // sounds are played by the app itself
     refresh();
   });
@@ -5402,6 +5439,16 @@
   }
   // global hotkeys stay off while a new combo is being picked (else the old save key fires)
   const unpauseKeys = () => setTimeout(() => invoke("hotkeys_paused", { on: false }).catch(() => {}), 300);
+  // save keys pressed while Echo's own window is in front: the keyboard hook may not see them, so tell it
+  // (it ignores a second trigger within 0.4 s, so a key seen by both saves once)
+  document.addEventListener("keydown", e => {
+    if (listening || e.repeat || !cfg || ["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+    const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+    const same = k => { const a = String(k || "").split("+"), b = [...mods, e.code]; return a.length === b.length && a.every(x => b.includes(x === "Ctrl" ? "Control" : x === "Meta" ? "Super" : x)); };
+    const keys = [...cfg.hotkeys.map(h => h.keys), cfg.screenshot_key, cfg.bookmark_key, cfg.session_key, cfg.mic_mute_key].filter(Boolean);
+    const k = keys.find(same);
+    if (k) { e.preventDefault(); invoke("hotkey_ui", { keys: k }).catch(() => {}); }
+  }, true);
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { if (listening) { listening = null; unpauseKeys(); renderSettings(); } else closePlayer(); return; }
     if (!listening) return;

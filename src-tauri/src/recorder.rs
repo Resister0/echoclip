@@ -5530,6 +5530,7 @@ fn rclone_progress(args: &[&str], on_bytes: impl Fn(u64, u64)) -> Result<(), Str
     let mut ch = rclone_cmd()?.args(args).args(["--use-json-log", "--stats", "500ms", "-v"])
         .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(err)?;
     let mut last_err = String::new();
+    let mut logged = 0;
     let stderr = ch.stderr.take();
     // "Cancel" on the upload box: stop rclone (its unfinished upload is thrown away by the cloud)
     let ch = std::sync::Arc::new(Mutex::new(ch));
@@ -5544,11 +5545,20 @@ fn rclone_progress(args: &[&str], on_bytes: impl Fn(u64, u64)) -> Result<(), Str
     if let Some(e) = stderr {
         for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-            if let (Some(b), Some(t)) = (v["stats"]["bytes"].as_u64(), v["stats"]["totalBytes"].as_u64()) {
+            // the file being sent right now (rclone's totals count a retried upload twice: "1.43 GB of 1.43 GB"
+            // for a 716 MB clip, stuck at 100% - chat 22)
+            let cur = &v["stats"]["transferring"][0];
+            if let (Some(b), Some(t)) = (cur["bytes"].as_u64(), cur["size"].as_u64()) {
                 on_bytes(b, t);
+            } else if let (Some(b), Some(t)) = (v["stats"]["bytes"].as_u64(), v["stats"]["totalBytes"].as_u64()) {
+                if b < t { on_bytes(b, t); }
             }
-            if v["level"].as_str().map_or(false, |l| l == "error" || l == "critical") {
-                last_err = v["msg"].as_str().unwrap_or("").trim().to_string();
+            let lvl = v["level"].as_str().unwrap_or("");
+            if lvl == "error" || lvl == "critical" || lvl == "warning" || lvl == "notice" {
+                let m = v["msg"].as_str().unwrap_or("").trim().to_string();
+                // say it now (retries, Google Drive slowness), not only when rclone gives up
+                if logged < 12 && !m.is_empty() { logged += 1; log_line(&format!("cloud: rclone {lvl}: {}", m.chars().take(300).collect::<String>())); }
+                if lvl != "notice" { last_err = m; }
             }
         }
     }
@@ -5730,6 +5740,7 @@ fn ec_full() -> bool {
     EC.lock().map(|g| g.as_ref().map_or(false, |s| s.read_only)).unwrap_or(false)
 }
 
+const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /// "2026/November/November 1st/FiveM/x.mp4" (or older "2026/11/01/…") -> "FiveM/x.mp4"
@@ -5744,19 +5755,19 @@ fn strip_date(p: &str) -> String {
         // "11 November" / "01 November 1st"
         let both = parts[1].len() > 3 && num(&parts[1][..2], 2) && MONTHS.contains(&&parts[1][3..])
             && parts[2].len() > 3 && num(&parts[2][..2], 2) && parts[2][3..].starts_with(&parts[1][3..]);
-        if numeric || words || both {
+        // "11 - November" / "04 - Wednesday" (chat 22)
+        let dashed = |x: &str| x.get(..2).map_or(false, |n| num(n, 2)) && x.get(2..5) == Some(" - ");
+        let dash = dashed(parts[1]) && dashed(parts[2]) && parts[1].get(5..).map_or(false, |w| MONTHS.contains(&w))
+            && parts[2].get(5..).map_or(false, |w| DAYS.contains(&w) || w == "Day");
+        if numeric || words || both || dash {
             return parts[3].to_string();
         }
     }
     p.to_string()
 }
 
-fn ordinal(d: u32) -> String {
-    let suf = match (d % 10, d % 100) { (1, x) if x != 11 => "st", (2, x) if x != 12 => "nd", (3, x) if x != 13 => "rd", _ => "th" };
-    format!("{d}{suf}")
-}
 
-/// Cloud date folder for a clip, e.g. "2026/11 November/01 November 1st": the date in its name
+/// Cloud date folder for a clip, e.g. "2026/11 - November/01 - Sunday": the date in its name
 /// ("… 2026-11-01 08-18-00"), else the file's date.
 fn date_folder(local: &Path) -> String {
     let stem = local.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -5776,8 +5787,11 @@ fn date_folder(local: &Path) -> String {
         (t.year(), t.month(), t.day())
     });
     let month = MONTHS[(m - 1) as usize];
-    // number first so cloud websites sort them in calendar order, words after for reading
-    format!("{y}/{m:02} {month}/{d:02} {month} {}", ordinal(d))
+    // number first so cloud websites sort them in calendar order, words after for reading:
+    // "2026/11 - November/04 - Wednesday" (was "11 November/04 November 4th", read like a date - chat 22)
+    use chrono::Datelike;
+    let wd = chrono::NaiveDate::from_ymd_opt(y, m, d).map(|x| DAYS[x.weekday().num_days_from_monday() as usize]).unwrap_or("Day");
+    format!("{y}/{m:02} - {month}/{d:02} - {wd}")
 }
 
 fn remote(rel: &str) -> String {

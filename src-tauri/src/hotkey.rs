@@ -12,7 +12,42 @@ static DOWN: Mutex<[bool; 256]> = Mutex::new([false; 256]);
 /// last key-down time per key (ms tick), to tell autorepeat from a fresh press even if a key-up was missed
 static LAST: Mutex<[u32; 256]> = Mutex::new([0; 256]);
 /// last time a save fired (ms tick) - guards against double triggers
-static FIRED: Mutex<u32> = Mutex::new(0);
+static FIRED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// true (and remembers it) unless something fired in the last 0.4 s - the hook and Echo's own window can both
+/// see the same key press
+fn first_fire() -> bool {
+    let mut f = FIRED.lock().unwrap_or_else(|e| e.into_inner());
+    if f.map_or(false, |t| t.elapsed() < std::time::Duration::from_millis(400)) { return false; }
+    *f = Some(std::time::Instant::now());
+    true
+}
+/// A save key pressed while Echo's own window is in front (sent by the window, keys as in the settings).
+pub fn ui_press(keys: &str) {
+    if paused() { return; }
+    let want = parse(keys, 0);
+    let secs = COMBOS.lock().ok().and_then(|c| c.iter()
+        .find(|c| c.vk == want.vk && c.ctrl == want.ctrl && c.alt == want.alt && c.shift == want.shift && c.win == want.win)
+        .map(|c| c.seconds));
+    if let Some(secs) = secs {
+        if first_fire() {
+            crate::recorder::log_line(&format!("hotkey: {keys} pressed in Echo's window"));
+            std::thread::spawn(move || if let Some(cb) = CB.get() { cb(secs) });
+        }
+    }
+}
+fn parse(keys: &str, seconds: u32) -> Combo {
+    let mut c = Combo { ctrl: false, alt: false, shift: false, win: false, vk: 0, seconds };
+    for part in keys.split('+') {
+        match part {
+            "Control" | "Ctrl" => c.ctrl = true,
+            "Alt" => c.alt = true,
+            "Shift" => c.shift = true,
+            "Super" | "Meta" => c.win = true,
+            k => c.vk = vk_of(k).unwrap_or(0),
+        }
+    }
+    c
+}
 /// push-to-talk key (virtual-key code, 0 = off)
 static PTT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static CB: OnceLock<Box<dyn Fn(u32) + Send + Sync>> = OnceLock::new();
@@ -49,16 +84,7 @@ pub fn set(list: &[(String, u32)]) -> Vec<String> {
     let mut bad = Vec::new();
     let mut v = Vec::new();
     for (keys, seconds) in list {
-        let mut c = Combo { ctrl: false, alt: false, shift: false, win: false, vk: 0, seconds: *seconds };
-        for part in keys.split('+') {
-            match part {
-                "Control" | "Ctrl" => c.ctrl = true,
-                "Alt" => c.alt = true,
-                "Shift" => c.shift = true,
-                "Super" | "Meta" => c.win = true,
-                k => c.vk = vk_of(k).unwrap_or(0),
-            }
-        }
+        let c = parse(keys, *seconds);
         if c.vk == 0 { bad.push(keys.clone()) } else { v.push(c) }
     }
     *COMBOS.lock().unwrap() = v;
@@ -96,9 +122,7 @@ unsafe extern "system" fn hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                     if let Some(m) = c.iter().find(|c| c.vk == vk && c.ctrl == ctrl && c.alt == alt && c.shift == shift && c.win == win) {
                         let secs = m.seconds;
                         if paused() { return CallNextHookEx(None, code, w, l); }
-                        let mut f = FIRED.lock().unwrap_or_else(|e| e.into_inner());
-                        if now.wrapping_sub(*f) > 400 || *f == 0 {
-                            *f = now;
+                        if first_fire() {
                             std::thread::spawn(move || if let Some(cb) = CB.get() { cb(secs) });
                         }
                     }

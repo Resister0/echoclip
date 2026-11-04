@@ -4,6 +4,13 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Cloud date folders are easier to read: 2026 / 11 - November / 04 - Wednesday (older clips stay where they are)
+- Scrolling works while holding Ctrl in the library
+- A new clip shows as "Saving clip…" at the top right away and becomes clickable once it's ready
+- Save keys also work while Echo's own window is in front
+- Editor: save the captions as a .txt file
+- Copy → Custom size: clicking it lets you type the size first (Enter copies); no more two shrinks fighting each other
+- Uploads: the bar follows the file being sent (a retried Google Drive upload showed double the size and sat at 100%), says when it's waiting for the cloud to finish, and the log shows Google Drive's errors as they happen
 
 ## 1.0.48 - No restarts from game launchers, Linux update command
 - "Game window only" recording no longer restarts (and loses the replay) for small launcher / loading windows while a game starts, e.g. FiveM
