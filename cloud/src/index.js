@@ -879,12 +879,23 @@ ${cards ? `<div class="grid">${cards}</div>` : `<p class="empty">No pinned clips
   } });
 }
 
+/// Every admin route: the x-admin-key header must equal secret ADMIN_KEY (compared in constant time).
+/// Wrong keys are limited to 10 tries per hour per network, so it can't be guessed; nothing is read or
+/// changed before this passes. Returns null when allowed, else the error response.
+async function adminDenied(req, env) {
+  const key = req.headers.get("x-admin-key") || "", want = env.ADMIN_KEY || "";
+  if (!(await allow(env, `admin:${ipOf(req)}`, 120, 3600))) return fail("slow down", 429);
+  let diff = want.length < 20 || key.length !== want.length ? 1 : 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
+  if (!diff) return null;
+  if (!(await allow(env, `adminbad:${ipOf(req)}`, 10, 3600))) return fail("Too many wrong keys - try again in an hour", 429);
+  return fail("Wrong admin key", 403);
+}
+
 /// William's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
 /// Storage numbers are the last counts Echo Cloud made per account (recounted whenever someone uses it).
 async function adminStats(req, env) {
-  const key = req.headers.get("x-admin-key") || "";
-  if (!(await allow(env, `adminstats:${ipOf(req)}`, 120, 3600))) return fail("slow down", 429);
-  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("Wrong admin key", 403);
+  const denied = await adminDenied(req, env); if (denied) return denied;
   const t = now(), d = 86400;
   const one = async (sql, ...v) => (await env.DB.prepare(sql).bind(...v).first()) || {};
   const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
@@ -938,9 +949,7 @@ async function adminStats(req, env) {
 /// William removes a reported profile: POST /admin/profile-takedown {handle, block?} with header x-admin-key.
 /// Removes the page, picture, pins and follows (clips and share links stay); block = the @name can't be used again.
 async function profileTakedown(req, env) {
-  const key = req.headers.get("x-admin-key") || "";
-  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
-  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
   const handle = String(b.handle || "").trim().toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/\/.*$/, "");
   const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
@@ -957,9 +966,7 @@ async function profileTakedown(req, env) {
 /// William himself) or "" = a random one (user_123456) they can change later. An account without a profile gets
 /// one when `to` is given. block_old = nobody can take the old @name again (inappropriate names).
 async function profileHandle(req, env) {
-  const key = req.headers.get("x-admin-key") || "";
-  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
-  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
   const who = String(b.who || "").trim();
   let p = null, userId = null;
@@ -999,9 +1006,7 @@ async function profileHandle(req, env) {
 
 /// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
 async function takedown(req, env) {
-  const key = req.headers.get("x-admin-key") || "";
-  if (!env.ADMIN_KEY || key.length < 20 || key !== env.ADMIN_KEY) return fail("not allowed", 403);
-  if (!(await allow(env, `admin:${ipOf(req)}`, 60, 3600))) return fail("slow down", 429);
+  const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
   const id = String(b.id || "").replace(/^.*\/s\//, "").replace(/\.(mp4|jpg)$/, "").trim();
   const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
@@ -1048,7 +1053,9 @@ async function migrate(env) {
   }
   // share pages (Discord / browser embeds): clip title, size, length and whether a thumbnail was uploaded
   const scols = new Set(((await env.DB.prepare("PRAGMA table_info(shares)").all()).results || []).map((c) => c.name));
-  for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"], ["wm", "TEXT"]]) {
+  for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"], ["wm", "TEXT"],
+    // how often the share page's video was played (once per viewer per day; Discord's inline player can't be counted)
+    ["views", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
   }
   migrated = true;
@@ -1119,6 +1126,32 @@ async function shareOembed(req, env, id) {
   }), { headers: { "content-type": "application/json", "cache-control": "public, max-age=3600", "access-control-allow-origin": "*" } });
 }
 
+/// POST /s/<id>/view from player.js when someone starts the video on the share page: one view per viewer
+/// (IP + browser, scrambled, kept 2 days) per clip per day; bots and link previews don't count
+async function shareView(req, env, id) {
+  const done = new Response(null, { status: 204 });
+  try {
+    if (isBot(req) || !(await allow(env, `view:${ipOf(req)}`, 120, 3600))) return done;
+    const h = (await sha256(`${utcDay()}|${ipOf(req)}|${req.headers.get("user-agent")}|v:${id}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0)
+      await env.DB.prepare("UPDATE shares SET views = views + 1 WHERE id = ? AND (expires = 0 OR expires > ?)").bind(id, now()).run();
+  } catch (e) { console.log("view count error", e && e.message); }
+  return done;
+}
+/// POST /shares/views {ids} -> {views: {id: n}} for the caller's own links (Echo shows them on its clip cards)
+async function shareViews(req, user, env) {
+  const b = await body(req);
+  const ids = (Array.isArray(b.ids) ? b.ids : []).map(String).filter((x) => /^[a-z0-9]{6,20}$/.test(x)).slice(0, 500);
+  const views = {};
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    const rows = ((await env.DB.prepare(`SELECT id, views FROM shares WHERE user_id = ? AND id IN (${part.map(() => "?").join(",")})`)
+      .bind(user.id, ...part).all()).results) || [];
+    for (const r of rows) views[r.id] = r.views || 0;
+  }
+  return json({ views });
+}
 function sharePage(req, row, id, prof) {
   const u = new URL(req.url), base = `${u.origin}/s/${id}`;
   const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
@@ -1222,7 +1255,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 <header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
 <main>
 <div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
-<div class="info"><div><h1>${esc(name)}</h1>${prof ? `<a class="by" href="/u/${prof.handle}">${prof.avatar ? `<img src="/u/${prof.handle}/avatar.jpg?v=${prof.avatar}" alt="">` : `<i style="background:${cleanColor(prof.color)}">${esc((prof.name || prof.handle)[0].toUpperCase())}</i>`}<span>${esc(prof.name || prof.handle)} <small>@${esc(prof.handle)}</small></span></a>` : ""}<div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
+<div class="info"><div><h1>${esc(name)}</h1>${prof ? `<a class="by" href="/u/${prof.handle}">${prof.avatar ? `<img src="/u/${prof.handle}/avatar.jpg?v=${prof.avatar}" alt="">` : `<i style="background:${cleanColor(prof.color)}">${esc((prof.name || prof.handle)[0].toUpperCase())}</i>`}<span>${esc(prof.name || prof.handle)} <small>@${esc(prof.handle)}</small></span></a>` : ""}<div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}${row.views > 0 ? `<span class="chip">${row.views} view${row.views === 1 ? "" : "s"}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
 <div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
 <div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>
 <div><b>Clip your own moments with Echo</b><p>Free and light enough for low-end PCs. Press one key to save what just happened.</p>
@@ -1235,7 +1268,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
   return new Response(req.method === "HEAD" ? null : html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300",
     // only our own player script (/player.js); the video and poster come from this site
-    "content-security-policy": "default-src 'none'; script-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
   } });
 }
@@ -1413,17 +1446,50 @@ async function releaseOf(env, repo, isPublic) {
   } else {
     if (r && r.status !== 404) console.log("github: release lookup failed", repo, r.status, (await r.text()).slice(0, 200));
     // 404 = the release is being rebuilt right now (its files are gone too): nothing to offer, like before.
-    // Any other failure (rate limit, GitHub down): the last good release
-    if (r && r.status !== 404) rel = (c && c.rel) || null;
+    // Any other failure (rate limit, bad token): public releases can be read from github.com itself (no API
+    // limit - chat 21: the API kept failing and /update offered the stale 1.0.37 while 1.0.43 was out),
+    // else the last good release
+    if (r && r.status !== 404 && isPublic) rel = await releaseFromWeb(repo).catch((e) => { console.log("github: web lookup error", e && e.message); return null; });
+    const fromWeb = !!rel;
+    if (r && r.status !== 404 && !rel) rel = (c && c.rel) || null;
     if (r && r.status !== 404 && !rel) try { const hit = await caches.default.match(ck); if (hit) rel = await hit.json(); } catch {}
     if (r && r.status !== 404 && !rel && env.DB) try {
       const row = await env.DB.prepare("SELECT rel FROM lastrel WHERE repo = ?").bind(repo).first();
       if (row) rel = JSON.parse(row.rel);
     } catch {}
-    if (rel) console.log("github: using the last known release of", repo, relVersion(rel));
+    if (rel && !fromWeb) console.log("github: using the last known release of", repo, relVersion(rel));
   }
   releaseCache.set(repo, { at: now(), rel });
   return rel;
+}
+/// the public release "latest" without the GitHub API: title + notes from the releases feed, files checked
+/// with HEAD on their github.com download links (302 = there). Same shape as the API answer.
+async function releaseFromWeb(repo) {
+  const feed = await fetch(`https://github.com/${repo}/releases.atom`, { headers: { "user-agent": "echo-cloud", accept: "application/atom+xml" } });
+  if (!feed.ok) { console.log("github: releases feed failed", repo, feed.status); return null; }
+  const xml = await feed.text();
+  const entry = (xml.match(/<entry>([\s\S]*?)<\/entry>/) || [])[1] || "";
+  const unesc = (t) => t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+  const name = unesc(((entry.match(/<title[^>]*>([\s\S]*?)<\/title>/) || [])[1] || "").trim());
+  const tag = (((entry.match(/<link[^>]*href="([^"]+)"/) || [])[1] || "").match(/\/releases\/tag\/([^"/?#]+)/) || [])[1];
+  if (!/\d+\.\d+\.\d+/.test(name) || tag !== "latest") { console.log("github: releases feed has no usable entry", repo, name, tag); return null; }
+  const html = unesc((entry.match(/<content[^>]*>([\s\S]*?)<\/content>/) || [])[1] || "");
+  const body = unesc(html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|li|div|h\d)>/gi, "\n").replace(/<[^>]+>/g, ""));
+  const updated = ((entry.match(/<updated>([^<]+)<\/updated>/) || [])[1] || "").trim();
+  const v = (name.match(/\d+\.\d+\.\d+/) || [])[0];
+  const names = [];
+  for (const f of Object.values(DOWNLOADS)) names.push(f, `${f}.sig`);
+  const have = await Promise.all(names.map(async (n) => {
+    try {
+      const h = await fetch(`https://github.com/${repo}/releases/download/latest/${encodeURIComponent(n)}`, { method: "HEAD", redirect: "manual", headers: { "user-agent": "echo-cloud" } });
+      return h.status >= 300 && h.status < 400;
+    } catch { return false; }
+  }));
+  const assets = names.filter((n, i) => have[i]).map((n) => ({ id: `web:${v}:${n}`, name: n,
+    browser_download_url: `https://github.com/${repo}/releases/download/latest/${encodeURIComponent(n)}` }));
+  if (!assets.length) { console.log("github: no release files found on the web for", repo, v); return null; }
+  console.log("github: API failed, read", repo, v, "from github.com (", assets.length, "files)");
+  return { name, body, published_at: updated, created_at: updated, public: true, assets };
 }
 const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
 /// newest release that has `file` (and its .sig when `withSig`); "private" = only the private repo
@@ -1527,7 +1593,17 @@ async function changes(env, since) {
   let rows = [];
   try { rows = ((await env.DB.prepare("SELECT version, notes, at FROM releases ORDER BY at DESC LIMIT 200").all()).results) || []; } catch { /* table not there yet */ }
   // only versions that really came out (a build can fail after its commit)
-  const latest = relVersion(await releaseOf(env, publicRepo(env), true).catch(() => null));
+  const latestRel = await releaseOf(env, publicRepo(env), true).catch(() => null);
+  const latest = relVersion(latestRel);
+  // the commit list (GitHub API) can fail; the newest release's own notes keep the changelog current
+  if (latest && !rows.some((x) => x.version === latest)) {
+    const notes = (((latestRel.body || "").match(/Built from: (.*)/) || [])[1] || "").trim().slice(0, 600);
+    const at = Math.floor(Date.parse(latestRel.published_at || latestRel.created_at || "") / 1000) || now();
+    if (notes) {
+      rows.push({ version: latest, notes, at });
+      try { await env.DB.prepare("INSERT OR IGNORE INTO releases (version, notes, at, sha) VALUES (?, ?, ?, NULL)").bind(latest, notes, at).run(); } catch {}
+    }
+  }
   let list = rows.filter((x) => !latest || !newer(x.version, latest));
   list.sort((a, b) => (newer(a.version, b.version) ? -1 : newer(b.version, a.version) ? 1 : 0));
   if (since) list = list.filter((x) => newer(x.version, since));
@@ -1601,7 +1677,7 @@ async function serveShare(req, env, id, ext) {
   return new Response(o.body, { headers: h });
 }
 
-const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /checkout", "POST /portal", "POST /auth/logout",
+const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /shares/views", "POST /checkout", "POST /portal", "POST /auth/logout",
   "POST /upload", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
@@ -1621,6 +1697,8 @@ export default {
         return r || (await notFound(req, env));
       }
       if (route === "POST /hit") return await hit(req, env);
+      const vm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})\/view\/?$/);
+      if (vm && req.method === "POST") return await shareView(req, env, vm[1]);
       const pm = url.pathname.match(/^\/u\/([a-z0-9_]{3,20})(\/avatar\.jpg)?\/?$/);
       if (pm && (req.method === "GET" || req.method === "HEAD")) return pm[2] ? await avatarFile(env, pm[1]) : await profilePage(req, env, pm[1]);
       const om = url.pathname.match(/^\/oembed\/([a-z0-9]{6,20})\/?$/);
@@ -1639,7 +1717,7 @@ export default {
       if (route === "POST /admin/takedown") return await takedown(req, env);
       if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);
       if (route === "POST /admin/profile-handle") return await profileHandle(req, env);
-      if (route === "GET /admin/stats") return await adminStats(req, env);
+      if (route === "GET /admin/stats") { const r = await adminStats(req, env); r.headers.set("cache-control", "no-store"); return r; }
       if (route === "POST /log") return await logUpload(req, env, url.origin);
       const lm = url.pathname.match(/^\/log\/([a-z2-9]{14})\/?$/);
       if (lm && req.method === "GET") return await logRead(req, env, lm[1]);
@@ -1651,6 +1729,7 @@ export default {
       if (route === "POST /creds") return await creds(user, env);
       if (route === "POST /share") return await share(req, user, env, url.origin);
       if (route === "POST /share/remove") return await unshare(req, user, env);
+      if (route === "POST /shares/views") return await shareViews(req, user, env);
       if (route === "POST /upload") return await upload(req, user, env);
       if (route === "POST /delete") return await del(req, user, env);
       if (route === "POST /move") return await move(req, user, env);

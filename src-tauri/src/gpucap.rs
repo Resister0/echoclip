@@ -145,6 +145,12 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
         .collect()
 }
 
+/// PCI vendor of the GPU that drives a monitor (0x1002 AMD, 0x10DE NVIDIA, 0x8086 Intel; 0 = unknown).
+/// The CPU fallback tries that vendor's ffmpeg encoder first (it used to try AMD's on every PC).
+pub fn monitor_vendor(name: &str) -> u32 {
+    pick_output(name).ok().and_then(|o| unsafe { o.adapter.GetDesc1().ok() }).map_or(0, |d| d.VendorId)
+}
+
 /// ddagrab output index of a monitor (CPU fallback modes).
 pub fn output_index(name: &str) -> u32 {
     pick_output(name).map(|o| o.idx).unwrap_or(0)
@@ -369,10 +375,16 @@ struct CursorDraw {
     y: i32,
     visible: bool,
     buf: Vec<u8>,
+    /// screen size + since when the pointer sits (still) in the middle: games that lock a visible pointer to the
+    /// centre while you play (mouse-look) shouldn't show it (chat 21)
+    sw: i32,
+    sh: i32,
+    mid_since: Option<std::time::Instant>,
 }
 
 impl CursorDraw {
     fn new(device: &ID3D11Device, vdev: &ID3D11VideoDevice, venum: &ID3D11VideoProcessorEnumerator, w: u32, h: u32) -> Result<Self, String> {
+        let (sw, sh) = (w, h);
         unsafe {
             let comp = bgra_tex(device, w, h)?;
             let mut rtv = None;
@@ -430,12 +442,16 @@ impl CursorDraw {
                 y: 0,
                 visible: false,
                 buf: Vec::new(),
+                sw: sw as i32,
+                sh: sh as i32,
+                mid_since: None,
             })
         }
     }
 
     fn showing(&self) -> bool {
-        self.visible && self.w > 0 && (self.norm.is_some() || self.inv.is_some())
+        let parked = self.mid_since.is_some_and(|t| t.elapsed().as_millis() > 1000);
+        self.visible && !parked && self.w > 0 && (self.norm.is_some() || self.inv.is_some())
     }
 
     /// New position / shape from this frame's info (call before ReleaseFrame).
@@ -444,6 +460,12 @@ impl CursorDraw {
             self.visible = info.PointerPosition.Visible.as_bool();
             self.x = info.PointerPosition.Position.x;
             self.y = info.PointerPosition.Position.y;
+            let mid = (self.x - self.sw / 2).abs() <= 8 && (self.y - self.sh / 2).abs() <= 8;
+            if !mid {
+                self.mid_since = None;
+            } else if self.mid_since.is_none() {
+                self.mid_since = Some(std::time::Instant::now());
+            }
         }
         if info.PointerShapeBufferSize == 0 {
             return;
@@ -593,6 +615,7 @@ struct Capture {
     nv12: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
     /// mouse pointer drawn on top (whole-monitor capture only; window capture lets Windows draw it)
     cursor: Option<CursorDraw>,
+    log: Log,
 }
 
 unsafe fn bgra_tex(device: &ID3D11Device, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
@@ -782,7 +805,7 @@ impl Capture {
             } else { None };
             let mut c = Capture {
                 device, ctx, src, luid: adesc.AdapterLuid, vendor: adesc.VendorId, hdr, width, height, out_w, out_h, bgra,
-                vdev, vctx, venum, vproc, in_view: in_v, nv12, cursor,
+                vdev, vctx, venum, vproc, in_view: in_v, nv12, cursor, log,
             };
             if let Source::Dup { .. } = c.src {
                 c.reduplicate();
@@ -799,7 +822,17 @@ impl Capture {
     fn fit(&self) {
         unsafe {
             let (iw, ih, ow, oh) = (self.width as f64, self.height as f64, self.out_w as f64, self.out_h as f64);
+            // whole monitor: always fill the picture. A game that switches the screen to a stretched mode
+            // (Fortnite / CS2 "stretched res", e.g. 1440x1080 on a 1920x1080 screen) is shown stretched on the
+            // monitor, so the clip looks the same (chat 21). One window: keep its shape (black bars)
             let s = (ow / iw).min(oh / ih);
+            if matches!(self.src, Source::Dup { .. }) {
+                let dst = RECT { left: 0, top: 0, right: self.out_w as i32, bottom: self.out_h as i32 };
+                let src = RECT { left: 0, top: 0, right: self.width as i32, bottom: self.height as i32 };
+                self.vctx.VideoProcessorSetStreamSourceRect(&self.vproc, 0, TRUE, Some(&src));
+                self.vctx.VideoProcessorSetStreamDestRect(&self.vproc, 0, TRUE, Some(&dst));
+                return;
+            }
             let (w, h) = (iw * s, ih * s);
             let l = ((ow - w) / 2.0).round() as i32 & !1;
             let t = ((oh - h) / 2.0).round() as i32 & !1;
@@ -826,6 +859,19 @@ impl Capture {
                 }
             };
         }
+    }
+
+    /// Whole-monitor capture: the screen mode changed size. New input texture; the pointer overlay is made again
+    /// for the new size (it copies the frame), or dropped if that fails.
+    fn screen_resized(&mut self, w: u32, h: u32) {
+        let (ow, oh) = (self.width, self.height);
+        if self.resize_input(w, h).is_err() {
+            return;
+        }
+        if self.cursor.is_some() {
+            self.cursor = CursorDraw::new(&self.device, &self.vdev, &self.venum, w, h).ok();
+        }
+        (self.log)(&format!("gpu: screen is now {w}x{h} (was {ow}x{oh}) - scaled to the recording size"));
     }
 
     /// The window changed size: new input texture + view (output size stays, the picture is letterboxed).
@@ -857,6 +903,13 @@ impl Capture {
                     Ok(()) => {
                         if info.LastPresentTime != 0 {
                             if let Some(tex) = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
+                                // the screen changed resolution (a game's own / stretched mode): new input size,
+                                // scaled to the recording size (before: only the top-left part was copied)
+                                let mut td = D3D11_TEXTURE2D_DESC::default();
+                                tex.GetDesc(&mut td);
+                                if !hdr && (td.Width != self.width || td.Height != self.height) && td.Width >= 320 && td.Height >= 240 {
+                                    self.screen_resized(td.Width, td.Height);
+                                }
                                 self.put(&tex, hdr);
                             }
                         }

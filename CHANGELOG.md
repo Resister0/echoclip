@@ -4,7 +4,29 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Share links count views: the share page shows how often the clip was watched, and Echo shows it on the clip ("Shared · 12 views")
+- Deleting a clip that's also in the cloud asks once: only from this PC, or everywhere (no second popup right after)
+- The player's Share button lets you pick how long the link lasts before it's made
+- Editor: "Discord" export renders once at a size that fits, instead of exporting and then shrinking it again
+- Hold Ctrl in the library to see every clip's buttons, plus keys for the clip under the mouse (Enter, E, F, F2, Ctrl+C, L, O, Del)
+- New users: the setup can bring in clips from Medal and other apps (or remind you later), and a short "Show me around" tour (Settings → App)
+- Stretched resolutions (e.g. 1440x1080 in Fortnite / CS2) record properly, stretched like on your screen
+- No mouse pointer in VR clips, or in games that keep a hidden pointer in the middle of the screen
+- Settings that do nothing in your setup are greyed out (e.g. the mix switches while the mix has everything on the PC)
+- Clips filed as GTA V can be moved to FiveM in one click (Settings → Games); imported "GTA V Legacy" clips go to FiveM if you play FiveM
+- Fixed: Enter didn't save a new folder name; moving a clip into a folder could fail with "being used by another process"
+- Fixed: Esc on "Edit the project?" opened the editor instead of cancelling
+- Fixed: after Trim → Replace the player still showed the old video
+- Fixed: sub-folders showed up as games in Settings → Games
+- Faster seek-bar previews; the editor's shortcut list is up to date
+
+## Server (no app update needed) - 4 Nov evening
+- Fixed: Echo could keep offering an older version (1.0.37) when a newer one was out; the server now reads new versions straight from the download page when GitHub's API is busy, and the changelog shows the newest version too
+
+## 1.0.43 - Clearer profile page
 - Settings → Profile: clearer which clips are public - "On your page" (with Remove) and "Your share links" (only you see them, "+ Add to page")
+
+## 1.0.42 - (Echo) in clip file names
 - New clips are saved as e.g. "FiveM 2026-11-04 15-50-51 (Echo).mp4", so people see where a clip came from when it's pasted into Discord; the library and share pages show the name without it
 
 ## 1.0.41 - Faster seek bar previews

@@ -6,6 +6,16 @@
   if (!v || !box) return;
   v.controls = false;
   box.classList.add("ep");
+  // one view once the video has really played for a second (the server counts each viewer once a day)
+  const vid = (location.pathname.match(/^\/s\/([a-z0-9]{6,20})/) || [])[1];
+  if (vid) {
+    const seen = () => {
+      if (v.currentTime < 1) return;
+      v.removeEventListener("timeupdate", seen);
+      try { navigator.sendBeacon ? navigator.sendBeacon(`/s/${vid}/view`) : fetch(`/s/${vid}/view`, { method: "POST", keepalive: true }); } catch {}
+    };
+    v.addEventListener("timeupdate", seen);
+  }
   const I = {
     play: '<path d="M8 5.5v13l11-6.5z"/>',
     pause: '<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/>',

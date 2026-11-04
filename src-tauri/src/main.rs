@@ -331,6 +331,10 @@ async fn profile_avatar(rec: State<'_, Recorder>, path: String) -> Result<serde_
     rec.profile_avatar(&path)
 }
 #[tauri::command]
+async fn share_views(rec: State<'_, Recorder>) -> Result<std::collections::BTreeMap<String, u64>, String> {
+    rec.share_views()
+}
+#[tauri::command]
 async fn echocloud_me(rec: State<'_, Recorder>) -> Result<serde_json::Value, String> {
     rec.echocloud_me()
 }
@@ -1703,6 +1707,7 @@ fn main() {
                                 vr_hwnd = 0;
                             }
                         }
+                        recorder::VR_WINDOW.store(vr_hwnd, std::sync::atomic::Ordering::Relaxed);
                         if game.as_ref().is_some_and(|g| !winutil::pid_alive(g.1)) {
                             game = None;
                             SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed); // "upload when the game closes"
@@ -1888,7 +1893,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, clip_is_av1, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

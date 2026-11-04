@@ -168,3 +168,64 @@
   });
   document.addEventListener("click", (e) => { if (!app.contains(e.target)) closeMenu(); });
 })();
+
+// ----- first visit to the homepage: a short, skippable "what makes Echo different" walk (chat 21). Shown once per
+// browser (localStorage), never on phones, never if the visitor already scrolled. Scrolls to each highlight. -----
+(() => {
+  if (location.pathname !== "/" && !/\/index(\.html)?$/.test(location.pathname)) return;
+  let seen = false; try { seen = !!localStorage.getItem("echo_tour"); } catch { return; }
+  if (seen || innerWidth < 900 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const STEPS = [
+    [".stats", "Tiny and light", "About 12 MB, a native Rust core and no bundled browser. Echo records in the background without costing you frames, even on low-end PCs."],
+    [".hero .app", "Try it right here", "This is the real app layout - click around. One key saves the last moments; Copy ▾ shrinks a clip to fit Discord and copies it."],
+    ["#features", "Everything after the moment", "Trim, edit, caption and share without another program. Share links play right inside Discord."],
+    ["#switch", "Bring your old clips", "Coming from Medal or another app? Echo finds your clips and copies them in, dates and game folders kept."],
+    ["#storage", "Your clips, your storage", "Free Echo Cloud, or your own Google Drive, NAS or server. No ads, no account needed to clip."],
+  ];
+  const start = () => {
+    try { localStorage.setItem("echo_tour", "1"); } catch {}
+    const ov = document.createElement("div"); ov.className = "wtour";
+    ov.innerHTML = '<div class="wthole"></div><div class="wtbub" role="dialog" aria-label="What makes Echo different"><span class="wtk">What makes Echo different</span><b></b><p></p><div class="wtbtns"><span class="wtn"></span><button class="wtskip">Skip</button><button class="wtnext">Next</button></div></div>';
+    document.body.appendChild(ov);
+    let i = -1, el = null;
+    const hole = ov.querySelector(".wthole"), bub = ov.querySelector(".wtbub");
+    const place = () => {
+      if (!el) return;
+      const r = el.getBoundingClientRect(), pad = 10;
+      Object.assign(hole.style, { left: r.left - pad + "px", top: Math.max(8, r.top - pad) + "px", width: r.width + pad * 2 + "px", height: Math.min(r.height + pad * 2, innerHeight - 16) + "px" });
+      const bh = bub.offsetHeight, below = r.bottom + 18 + bh < innerHeight;
+      // a big section: the bubble waits in the bottom-right corner instead of covering its heading
+      if (r.height > innerHeight * 0.55) { bub.style.left = innerWidth - bub.offsetWidth - 24 + "px"; bub.style.top = innerHeight - bh - 24 + "px"; return; }
+      bub.style.left = Math.max(16, Math.min(innerWidth - bub.offsetWidth - 16, r.left)) + "px";
+      bub.style.top = (below ? r.bottom + 18 : Math.max(16, Math.min(innerHeight - bh - 16, r.top + 20))) + "px";
+    };
+    const end = () => { ov.remove(); removeEventListener("scroll", place); removeEventListener("resize", place); removeEventListener("keydown", key); };
+    const next = () => {
+      i++; if (i >= STEPS.length) return end();
+      const [sel, t, p] = STEPS[i];
+      el = document.querySelector(sel); if (!el) return next();
+      bub.querySelector("b").textContent = t; bub.querySelector("p").textContent = p;
+      bub.querySelector(".wtn").textContent = `${i + 1} / ${STEPS.length}`;
+      bub.querySelector(".wtnext").textContent = i === STEPS.length - 1 ? "Get started" : "Next";
+      el.scrollIntoView({ behavior: "smooth", block: el.offsetHeight > innerHeight * 0.7 ? "start" : "center" });
+      setTimeout(place, 450); place();
+    };
+    const key = (e) => { if (e.key === "Escape") end(); else if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); next(); } };
+    ov.querySelector(".wtskip").onclick = end;
+    ov.querySelector(".wtnext").onclick = () => { if (i === STEPS.length - 1) { end(); location.hash = "#download"; scrollTo({ top: 0, behavior: "smooth" }); } else next(); };
+    ov.addEventListener("click", (e) => { if (e.target === ov) end(); });
+    addEventListener("scroll", place, { passive: true }); addEventListener("resize", place); addEventListener("keydown", key);
+    next();
+  };
+  // not on top of someone who's already reading: a small invite after a few seconds, only if they haven't scrolled
+  setTimeout(() => {
+    if (scrollY > 120) { try { localStorage.setItem("echo_tour", "1"); } catch {} return; }
+    const inv = document.createElement("div"); inv.className = "wtinv";
+    inv.innerHTML = '<span>New here? See what makes Echo different <i>(30 seconds)</i></span><button class="wtgo">Show me</button><button class="wtno" aria-label="No thanks">✕</button>';
+    document.body.appendChild(inv);
+    requestAnimationFrame(() => inv.classList.add("on"));
+    const close = () => { inv.classList.remove("on"); setTimeout(() => inv.remove(), 300); };
+    inv.querySelector(".wtgo").onclick = () => { close(); start(); };
+    inv.querySelector(".wtno").onclick = () => { close(); try { localStorage.setItem("echo_tour", "1"); } catch {} };
+  }, 2500);
+})();

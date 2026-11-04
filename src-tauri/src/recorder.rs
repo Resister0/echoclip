@@ -446,6 +446,10 @@ pub struct Edit {
     /// scale the result to this height (export presets); None = source size
     #[serde(default)]
     pub out_h: Option<u32>,
+    /// "Discord" export: aim the bitrate so the file fits in this many MB - ONE encode instead of exporting at
+    /// full size and shrinking that again (chat 21)
+    #[serde(default)]
+    pub max_mb: Option<f64>,
 }
 
 /// Path inside a filtergraph option: forward slashes, escaped drive colon.
@@ -1209,6 +1213,46 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// The seek-bar strip being made right now (clip path + its ffmpeg), so a move/rename/delete of that clip
+/// can stop it instead of failing with "being used by another process" (os error 32, chat 21).
+static STRIP_RUN: Mutex<Option<(PathBuf, std::process::Child)>> = Mutex::new(None);
+
+fn stop_strip_for(p: &Path) {
+    if let Ok(mut g) = STRIP_RUN.lock() {
+        if let Some((cp, ch)) = g.as_mut() {
+            if cp.as_path() == p {
+                let _ = ch.kill();
+                log_line(&format!("filmstrip: stopped for {} (clip is being moved)", p.display()));
+            }
+        }
+    }
+}
+
+/// fs::rename that waits a moment when Windows says the file is in use (a preview, a strip being made,
+/// antivirus): stops our own strip build for it, then retries for up to ~4 s.
+fn rename_patient(from: &Path, to: &Path) -> Result<(), String> {
+    let mut tries = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if tries < 16 && matches!(e.raw_os_error(), Some(32) | Some(33) | Some(5)) => {
+                if tries == 0 {
+                    stop_strip_for(from);
+                }
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => {
+                return Err(if e.raw_os_error() == Some(32) {
+                    "The clip is open in another program (a video player or editor) - close it and try again".into()
+                } else {
+                    e.to_string()
+                })
+            }
+        }
+    }
+}
+
 /// Kill ffmpeg recorders left behind by a crashed Clipper (they block screen capture).
 fn kill_leftovers() {
     #[cfg(windows)]
@@ -1766,6 +1810,12 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
     }
 }
 
+/// The window of the VR game running right now (0 = none), set by main's game loop. Recorded even in "whole
+/// screen" mode, and never with the mouse pointer: the desktop pointer sits on the VR mirror window although
+/// the player never sees it (chat 21, Blade & Sorcery clip had a pointer in the middle)
+#[allow(dead_code)]
+pub static VR_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 /// Starts the zero-copy capture thread; returns ffmpeg input args + pipe name.
 #[cfg(windows)]
 fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) -> Option<(Vec<String>, String)> {
@@ -1779,6 +1829,10 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) ->
         }
     };
     let s = stop.clone();
+    let vr = VR_WINDOW.load(Ordering::Relaxed);
+    if window != 0 && window == vr {
+        log_line("capture: VR game window, without the mouse pointer");
+    }
     let opts = crate::gpucap::Opts {
         fps: cfg.fps,
         bitrate_mbps: cfg.bitrate_mbps,
@@ -1786,10 +1840,10 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) ->
         target_h: cfg.resolution.parse().unwrap_or(0),
         monitor: cfg.monitor.clone(),
         codec: cfg.codec.clone(),
-        window: if cfg.capture == "game" { window } else { 0 },
+        window: if cfg.capture == "game" || (window != 0 && window == vr) { window } else { 0 },
         smart_bitrate: cfg.smart_bitrate,
         smart_quality: cfg.smart_quality,
-        cursor: cfg.capture_cursor,
+        cursor: cfg.capture_cursor && !(window != 0 && window == vr),
     };
     let fps = cfg.fps;
     std::thread::spawn(move || {
@@ -2018,6 +2072,15 @@ impl Recorder {
         let last: usize = fs::read_to_string(&mode_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
         // always try the zero-copy GPU path first; among the fallbacks, start with the one that worked last
         let mut order: Vec<usize> = (0..all.len()).collect();
+        // the graphics card's own encoder first among the fallbacks (Intel -> Quick Sync, NVIDIA -> NVENC)
+        #[cfg(windows)]
+        {
+            let first = match crate::gpucap::monitor_vendor(&cfg.monitor) { 0x10DE => Some(2), 0x8086 => Some(3), _ => None };
+            if let Some(f) = first {
+                order.retain(|&i| i != f);
+                order.insert(1, f);
+            }
+        }
         if last > 0 && last < all.len() {
             order.retain(|&i| i != last);
             order.insert(1, last);
@@ -2697,7 +2760,7 @@ impl Recorder {
             return Err(format!("{} already has a clip with that name", if folder.is_empty() { "The main folder" } else { &folder }));
         }
         let old_rel = self.rel_of(path);
-        fs::rename(&p, &new).map_err(err)?;
+        rename_patient(&p, &new)?;
         self.remove_if_empty(p.parent());
         if let (Some(o), Some(n)) = (old_rel, self.rel_of(&new.to_string_lossy())) {
             self.cloud_follow_move(o, n);
@@ -2851,6 +2914,28 @@ impl Recorder {
             // games Echo already knows beat built-in names, whole words beat glued-together text, then the longest
             .max_by_key(|(known, word, len, _)| (*known, *word, *len))
             .map(|(_, _, _, v)| v)
+            // other apps (Medal…) call FiveM clips "Grand Theft Auto V (Legacy)": those go to FiveM, but only for
+            // people who play FiveM (played with Echo open, a FiveM folder, or FiveM installed) - chat 21
+            .map(|v| if v == "GTA V" && self.fivem_player() { "FiveM".to_string() } else { v })
+    }
+
+    /// Does this person play FiveM? A FiveM game/folder Echo knows, or FiveM installed (Windows: %LOCALAPPDATA%\FiveM).
+    pub fn fivem_player(&self) -> bool {
+        if self.settings().not_games.iter().any(|x| x.eq_ignore_ascii_case("FiveM")) {
+            return false;
+        }
+        let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if seen.keys().any(|k| k.eq_ignore_ascii_case("FiveM")) || self.clips_dir().join("FiveM").is_dir() {
+            return true;
+        }
+        #[cfg(windows)]
+        if let Ok(la) = std::env::var("LOCALAPPDATA") {
+            if Path::new(&la).join("FiveM").join("FiveM.exe").exists() {
+                return true;
+            }
+        }
+        false
     }
 
     /// The Echo watermark ("Echo / By Kimbo", bottom-right) as filtergraph text: video [inl] of height `h` -> [outl]. None = off.
@@ -2929,7 +3014,8 @@ impl Recorder {
         let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
             .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         names.extend(seen.keys().cloned());
-        names.extend(self.clip_dirs().into_iter().map(|d| d.0).filter(|n| !n.is_empty()));
+        // top-level folders only: sub-folders you made ("FiveM/Evidence") aren't games (chat 21)
+        names.extend(self.clip_dirs().into_iter().map(|d| d.0).filter(|n| !n.is_empty() && !n.contains('/')));
         names.extend(self.settings().games.iter().map(|g| g.name.clone()));
         let not = self.settings().not_games;
         names.retain(|n| !not.iter().any(|x| x.eq_ignore_ascii_case(n)));
@@ -3245,7 +3331,7 @@ impl Recorder {
             return Err("a clip with that name already exists".into());
         }
         let old_rel = self.rel_of(path);
-        fs::rename(&p, &new).map_err(err)?;
+        rename_patient(&p, &new)?;
         if let (Some(o), Some(n)) = (old_rel, self.rel_of(&new.to_string_lossy())) {
             self.cloud_follow_move(o, n);
         }
@@ -3997,14 +4083,34 @@ impl Recorder {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x0800_0000 | 0x0000_4000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
             }
-            let ok = cmd
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-skip_frame", "nokey", "-i"])
+            // -discard nokey drops non-key packets already in the demuxer (with -skip_frame alone some clips were
+            // still decoded frame by frame: 48 s for a 3 min clip, chat 21); -an/-sn: the 6 audio tracks aren't read
+            // into the decoder at all; 2 threads keep it light next to a game
+            let child = cmd
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "2", "-discard", "nokey", "-skip_frame", "nokey", "-an", "-sn", "-dn", "-i"])
                 .arg(clip)
-                .args(["-vf", &format!("tpad=stop_mode=clone:stop_duration={:.2},fps={fps:.5},scale=-2:72,tile={N}x1", t.duration.max(1.0) + 1.0),
+                .args(["-map", "0:v:0", "-vf", &format!("tpad=stop_mode=clone:stop_duration={:.2},fps={fps:.5},scale=-2:72:flags=fast_bilinear,tile={N}x1", t.duration.max(1.0) + 1.0),
                     "-frames:v", "1", "-q:v", "5"])
                 .arg(&img)
-                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(err)?.success();
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(err)?;
+            *STRIP_RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some((PathBuf::from(clip), child));
+            let ok = loop {
+                let st = {
+                    let mut g = STRIP_RUN.lock().unwrap_or_else(|e| e.into_inner());
+                    match g.as_mut() {
+                        Some((_, ch)) => ch.try_wait().map(|o| o.map(|x| x.success())),
+                        None => Ok(Some(false)),
+                    }
+                };
+                match st {
+                    Ok(Some(done)) => break done,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+                    Err(_) => break false,
+                }
+            };
+            *STRIP_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
             if !ok {
+                let _ = fs::remove_file(&img);
                 return Err("could not build filmstrip".into());
             }
             log_line(&format!("filmstrip: {stem} ({:.0} s clip) in {} ms", t.duration, t0.elapsed().as_millis()));
@@ -4735,16 +4841,37 @@ impl Recorder {
         let tmp_out = out_dir.join(format!("{stem}.render.tmp"));
         let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
         let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0) as f64;
-        let kbps = if dur > 0.0 { ((size * 8.0 / dur / 1000.0) as u64).clamp(4000, 80000) } else { 20000 };
+        let mut kbps = if dur > 0.0 { ((size * 8.0 / dur / 1000.0) as u64).clamp(4000, 80000) } else { 20000 };
+        let mut akbps = 192u64;
+        let mut out_h = e.out_h;
+        // size target (Discord): video bitrate from the budget, 5% kept for the mp4 container; low budgets get a
+        // smaller picture (a sharp 720p beats a blocky 1080p)
+        let sized = e.max_mb.filter(|&mb| mb >= 1.0 && total_len > 0.5);
+        if let Some(mb) = sized {
+            akbps = if audio { 128 } else { 0 };
+            let budget = (mb * 8_000.0 * 0.95 / total_len) as u64;   // kbit/s for everything
+            let v = budget.saturating_sub(akbps).max(250);
+            if v < kbps {
+                kbps = v;
+            }
+            if out_h.is_none() && h > 720 && kbps < 2500 {
+                out_h = Some(720);
+            }
+            if out_h.is_none() && h > 480 && kbps < 900 {
+                out_h = Some(480);
+            }
+            log_line(&format!("edit: export sized for {mb} MB - {kbps} kbps video{}", out_h.map(|x| format!(", {x}p")).unwrap_or_default()));
+        }
         let b = format!("{kbps}k");
+        let ab = format!("{akbps}k");
         let audio_g = g;
         let variant = |ass: bool| -> Result<(String, String), String> {
             let (mut tg, mut last) = build_text(ass)?;
-            if let Some(oh) = e.out_h.filter(|&oh| oh >= 240 && oh != h) {
+            if let Some(oh) = out_h.filter(|&oh| oh >= 240 && oh != h) {
                 tg.push(format!("[{last}]scale=-2:{oh}:flags=lanczos,setsar=1[vout]"));
                 last = "vout".into();
             }
-            if let Some(w) = self.watermark_graph(&last, "vwm", e.out_h.filter(|&oh| oh >= 240).unwrap_or(h)) {
+            if let Some(w) = self.watermark_graph(&last, "vwm", out_h.filter(|&oh| oh >= 240).unwrap_or(h)) {
                 tg.push(w);
                 last = "vwm".into();
             }
@@ -4762,7 +4889,7 @@ impl Recorder {
             }
             c.args(["-filter_complex", graph, "-map", &format!("[{last}]")]);
             if audio {
-                c.args(["-map", "[ao]", "-c:a", "aac", "-b:a", "192k"]);
+                c.args(["-map", "[ao]", "-c:a", "aac", "-b:a", &ab]);
             }
             // -progress on stdout: "out_time_us=…" lines -> EXPORT_PROGRESS for the UI's bar
             EXPORT_PROGRESS.store(0, Ordering::Relaxed);
@@ -4799,7 +4926,8 @@ impl Recorder {
             Ok(run_with(graph, last, &["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])?
                 || run_with(graph, last, &["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])?
                 || run_with(graph, last, &["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])?
-                || run_with(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])?)
+                || (sized.is_some() && run_with(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b])?)
+                || (sized.is_none() && run_with(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])?))
         };
         let mut ok = false;
         if !karaoke.is_empty() {
@@ -5881,6 +6009,35 @@ impl Recorder {
             _ => return Err("Couldn't read that picture - try a PNG or JPG".into()),
         };
         self.ec_profile("POST", "/profile/avatar", Some(serde_json::json!({ "img": base64(&bytes) })))
+    }
+
+    /// How often each shared clip was watched on its share page: {clip name (no .mp4): views}. Only Echo Cloud
+    /// links (echoclip.link/s/<id>) count; other clouds' links can't be counted.
+    pub fn share_views(&self) -> Result<std::collections::BTreeMap<String, u64>, String> {
+        let cfg = self.settings();
+        let mut out = std::collections::BTreeMap::new();
+        if cfg.ec_token.is_empty() {
+            return Ok(out);
+        }
+        let now = now_unix();
+        let ids: Vec<(String, String)> = self.links().into_iter()
+            .filter(|(_, e)| e.expires == 0 || e.expires > now)
+            .filter_map(|(rel, e)| {
+                let id = e.url.split("/s/").nth(1)?.split(['?', '#', '.']).next()?.to_string();
+                let stem = Path::new(&rel).file_stem()?.to_string_lossy().to_string();
+                (!id.is_empty()).then_some((stem, id))
+            }).collect();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let v = ec_call(&ec_api(&cfg), "POST", "/shares/views", &cfg.ec_token,
+            Some(serde_json::json!({ "ids": ids.iter().map(|(_, i)| i.clone()).collect::<Vec<_>>() })))?;
+        for (stem, id) in ids {
+            if let Some(n) = v["views"][&id].as_u64() {
+                *out.entry(stem).or_insert(0) += n;
+            }
+        }
+        Ok(out)
     }
 
     pub fn echocloud_me(&self) -> Result<serde_json::Value, String> {
