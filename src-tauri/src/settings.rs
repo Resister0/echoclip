@@ -71,6 +71,8 @@ pub struct Settings {
     pub bookmark_key: String,
     /// small "clip saved" popup over games
     pub show_overlay: bool,
+    /// library: "On this day" bar with a clip from the same date in an earlier year
+    pub on_this_day: bool,
     /// pause the replay buffer after this many idle minutes (0 = never)
     pub idle_pause_min: u32,
     /// what the plain Copy button does: "full", "free", "basic", "nitro" or "custom"
@@ -225,6 +227,7 @@ impl Default for Settings {
             screenshot_key: "Shift+F10".into(),
             bookmark_key: "Shift+F9".into(),
             show_overlay: true,
+            on_this_day: true,
             idle_pause_min: 0,
             copy_default: "full".into(),
             discord_free_mb: 20.0,

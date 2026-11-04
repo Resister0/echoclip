@@ -4,6 +4,12 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- The in-game "Clip saved" popup shows the game's icon and the clip's length
+- 4 new colour themes: Frost, Lime, Gold and Midnight
+- "On this day": a clip from the same date a year ago shows above your library (✕ hides it for today or for good; also a switch in Settings → App)
+- A small note when your library reaches 10, 50, 100… clips
+
+## 1.0.44 - View counts, one-step delete, faster Discord export
 - Share links count views: the share page shows how often the clip was watched, and Echo shows it on the clip ("Shared · 12 views")
 - Deleting a clip that's also in the cloud asks once: only from this PC, or everywhere (no second popup right after)
 - The player's Share button lets you pick how long the link lasts before it's made

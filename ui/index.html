@@ -632,6 +632,11 @@
 
   .row.dep > :not(.lbl), .switch.dep { opacity:.38; pointer-events:none; }
   .row.dep .lbl b { opacity:.55; }
+  #otd { display:flex; align-items:center; gap:10px; margin:8px 28px 4px; padding:8px 8px 8px 14px; border-radius:12px; font-size:13px;
+    background:linear-gradient(90deg, rgba(var(--accent-rgb),.13), transparent 70%); border:1px solid rgba(var(--accent-rgb),.25); }
+  #otd .otdk { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent2); flex:none; }
+  #otd .otdt { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
+  #otd .ib { width:28px; height:28px; }
   #tour { position:fixed; inset:0; z-index:60; }
   #tour .thole { position:fixed; border-radius:12px; box-shadow:0 0 0 9999px #000000b8, 0 0 0 2px var(--accent); transition:all .25s ease; pointer-events:none; }
   #tour .tbub { position:fixed; width:300px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow:0 18px 50px #000a; transition:top .25s, left .25s; }
@@ -1023,6 +1028,7 @@
             <h3>Behaviour</h3>
             <div class="row"><div class="lbl"><b>Start with Windows</b><small>Starts quietly in the tray and begins buffering</small></div><label class="switch"><input type="checkbox" data-k="start_with_windows"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Start minimized</b><small>When Echo starts with your PC it stays in the tray (opening Echo yourself always shows the window)</small></div><label class="switch"><input type="checkbox" data-k="start_minimized"><span></span></label></div>
+            <div class="row"><div class="lbl"><b>"On this day"</b><small>Shows a clip from the same date in an earlier year above your library</small></div><label class="switch"><input type="checkbox" data-k="on_this_day"><span></span></label></div>
             <div class="row"><div class="lbl"><b>In-game popup</b><small>A small "Clip saved" notice in the top-right corner (works in borderless / windowed games)</small></div><label class="switch"><input type="checkbox" data-k="show_overlay"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Pause when idle</b><small>Pause background recording while you're away from the PC; it starts again on your next key or mouse move</small></div>
               <select data-k="idle_pause_min" data-num><option value="0">Never</option><option value="5">After 5 min</option><option value="10">After 10 min</option><option value="20">After 20 min</option><option value="30">After 30 min</option></select></div>
@@ -1445,8 +1451,37 @@
     shots = shR.status === "fulfilled" ? shR.value : [];
     if (fvR.status === "fulfilled") { const f = fvR.value, k2 = f.join("|"); if (k2 !== [...favs].join("|")) { favs = new Set(f); listKey = ""; } }
     const key = clips.concat(shots).map(c => c.path + c.size).join("|") + "#" + folderList.join("|");
-    if (key !== listKey) { listKey = key; renderGrid(); }
+    if (key !== listKey) { listKey = key; renderGrid(); charm(); }
     refresh.done = true;
+  }
+  // ----- small touches (chat 21): clip milestones, "on this day" -----
+  const MILESTONES = [10, 50, 100, 250, 500, 1000, 2500, 5000];
+  function charm() {
+    const n = clips.filter(c => !isEdited(c)).length;
+    // milestones: a quiet note when the library passes 10, 50, 100… clips (never a pile of them at first start)
+    try {
+      const top = MILESTONES.filter(m => n >= m).pop() || 0, had = localStorage.getItem("echo_ms");
+      if (had === null) localStorage.setItem("echo_ms", String(top));
+      else if (top > +had) { localStorage.setItem("echo_ms", String(top)); setTimeout(() => toast(`That's ${top} clips saved with Echo. Nice.`), 1500); }
+    } catch {}
+    // on this day: a clip from the same date in an earlier year, once a day, until it's closed
+    const old = $("otd"); if (old) old.remove();
+    const d = new Date(), today = d.toDateString();
+    let gone = ""; try { gone = localStorage.getItem("echo_otd") || ""; } catch {}
+    if (gone === today || (cfg && cfg.on_this_day === false)) return;
+    const hit = clips.filter(c => { const t = new Date(c.modified * 1000); return t.getMonth() === d.getMonth() && t.getDate() === d.getDate() && t.getFullYear() < d.getFullYear(); })
+      .sort((a, b) => favs.has(b.name) - favs.has(a.name) || b.size - a.size)[0];
+    if (!hit) return;
+    const yrs = d.getFullYear() - new Date(hit.modified * 1000).getFullYear();
+    const bar = document.createElement("div"); bar.id = "otd";
+    bar.innerHTML = `<span class="otdk">On this day</span><span class="otdt"></span><button class="btn sm">Watch</button><button class="ib" title="Hide" aria-label="Hide"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>`;
+    bar.querySelector(".otdt").textContent = `${yrs === 1 ? "A year" : yrs + " years"} ago: ${shownName(hit)}`;
+    bar.querySelector(".btn").onclick = () => openPlayer(hit);
+    // ✕: hide it for today, or for good (also a switch in Settings → App)
+    bar.querySelector(".ib").onclick = e => ctxMenu(e, [
+      ["Hide for today", () => { try { localStorage.setItem("echo_otd", today); } catch {} bar.remove(); }],
+      ["Don't show \"On this day\" again", () => { cfg.on_this_day = false; changed(true); bar.remove(); toast('Turned off - switch it back on in Settings → App'); }]]);
+    $("grid").before(bar);
   }
 
   // no page zoom from Ctrl+scroll / Ctrl+plus/minus (the timeline uses Ctrl+scroll for its own zoom)
@@ -4904,6 +4939,11 @@
     ["crimson", "Crimson", "#d0505a", "#e8838a", ["#e8838a", "#d0505a", "#a3306e"], "#100b0c"],
     ["rose", "Rosé", "#e0609e", "#f29ac4", ["#f29ac4", "#e0609e", "#9b5be0"], "#100c0f"],
     ["slate", "Slate", "#8a96a8", "#c3ccd8", ["#c3ccd8", "#8a96a8", "#5d6a7c"], "#0c0d0f"],
+    // chat 21: 4 more so the picker is 3 full rows of 4 (keep the count a multiple of 4)
+    ["frost", "Frost", "#4fb8f0", "#9ad8f8", ["#bfe8ff", "#4fb8f0", "#5a7cf0"], "#0a0e12"],
+    ["lime", "Lime", "#8fcf3c", "#b8e57e", ["#c5ef8a", "#8fcf3c", "#2fae6f"], "#0c0f0a"],
+    ["gold", "Gold", "#e0a93a", "#f0cb7a", ["#f5d68a", "#e0a93a", "#c06a2a"], "#100e0a"],
+    ["midnight", "Midnight", "#6a6ff0", "#a3a6fa", ["#a3a6fa", "#6a6ff0", "#3a3fb8"], "#08080f"],
     ["custom", "Custom"],
   ];
   const hexRgb = h => { h = String(h || "").replace("#", ""); if (h.length === 3) h = [...h].map(c => c + c).join(""); const n = parseInt(h, 16) || 0; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };

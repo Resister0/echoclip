@@ -198,6 +198,10 @@ async fn get_status(rec: State<'_, Recorder>) -> Result<Status, String> {
 /// In-game popup ("Clip saved") - a small always-on-top window that never takes focus.
 static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn toast(app: &AppHandle, title: &str, sub: &str, ok: bool) {
+    toast_icon(app, title, sub, ok, "");
+}
+/// `icon` = data: URL shown instead of the tick (the game's icon), "" = tick
+fn toast_icon(app: &AppHandle, title: &str, sub: &str, ok: bool, icon: &str) {
     if !app.state::<Recorder>().settings().show_overlay {
         return;
     }
@@ -208,8 +212,9 @@ fn toast(app: &AppHandle, title: &str, sub: &str, ok: bool) {
     }
     #[allow(unreachable_code)]
     let Some(w) = app.get_webview_window("toast") else { return };
-    let js = format!("window.show && show({}, {}, {})",
-        serde_json::to_string(title).unwrap_or_default(), serde_json::to_string(sub).unwrap_or_default(), ok);
+    let js = format!("window.show && show({}, {}, {}, {})",
+        serde_json::to_string(title).unwrap_or_default(), serde_json::to_string(sub).unwrap_or_default(), ok,
+        serde_json::to_string(icon).unwrap_or_default());
     let _ = w.eval(&js);
     #[cfg(windows)]
     if let Ok(h) = w.hwnd() {
@@ -665,7 +670,11 @@ fn do_save(app: &AppHandle, seconds: Option<u32>) -> Result<String, String> {
                 rec.write_marks(p, &marks);
             }
             let name = std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            toast(app, "Clip saved", &name, true);
+            // "FiveM · 2:00 · ready to share" with the game's icon, instead of the file name
+            let (game, icon) = recorder::toast_game(&name);
+            let len = if dur >= 60.0 { format!("{}:{:02}", dur as u64 / 60, dur as u64 % 60) } else { format!("{} s", dur.round() as u64) };
+            let sub = match game { Some(g) => format!("{g} · {len}"), None => format!("{len} · in your library") };
+            toast_icon(app, "Clip saved", &sub, true, &icon);
             strip_soon(app, p);
             SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
         }

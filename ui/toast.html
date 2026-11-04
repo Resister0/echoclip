@@ -15,6 +15,11 @@
         background:linear-gradient(135deg,#8b6cff,#4f7bff); }
   .t.bad .ic { background:#fb5c7c; }
   .ic svg { width:18px; height:18px; fill:none; stroke:#fff; stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; }
+  .ic.gm { position:relative; background:#ffffff14 !important; }
+  .ic.gm img { width:30px; height:30px; border-radius:7px; object-fit:contain; }
+  .ic.gm i { position:absolute; right:-5px; bottom:-5px; width:17px; height:17px; border-radius:50%; display:grid; place-items:center;
+             background:linear-gradient(135deg,#8b6cff,#4f7bff); box-shadow:0 0 0 2px #141418; }
+  .ic.gm i svg { width:10px; height:10px; stroke-width:3.2; }
   b { display:block; font-weight:600; font-size:14px; }
   small { display:block; color:#a0a0ab; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px; }
 </style>
@@ -25,14 +30,19 @@
   const OK = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
   const BAD = '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>';
   let h;
-  window.show = (title, sub, ok) => {
+  window.show = (title, sub, ok, icon) => {
     const t = document.getElementById("t");
     document.getElementById("ti").textContent = title;
     document.getElementById("su").textContent = sub || "";
-    document.getElementById("ic").innerHTML = ok ? OK : BAD;
+    const ic = document.getElementById("ic");
+    ic.innerHTML = ok ? OK : BAD;
     t.classList.toggle("bad", !ok);
     // same colours as the theme picked in Echo (Settings > Appearance)
-    try { const g = JSON.parse(localStorage.getItem("echo_theme") || "null"); document.getElementById("ic").style.background = ok && g && g.grad ? g.grad : ""; } catch (e) {}
+    try { const g = JSON.parse(localStorage.getItem("echo_theme") || "null"); ic.style.background = ok && g && g.grad ? g.grad : ""; } catch (e) {}
+    // the game's own icon with a small tick on it (clip saved in a known game)
+    if (ok && icon && /^data:image\/png;base64,/.test(icon)) {
+      ic.innerHTML = '<img alt="">' + '<i>' + OK + '</i>'; ic.querySelector("img").src = icon; ic.classList.add("gm");
+    } else ic.classList.remove("gm");
     t.classList.remove("on"); void t.offsetWidth; t.classList.add("on");
     clearTimeout(h); h = setTimeout(() => t.classList.remove("on"), 2300);
   };

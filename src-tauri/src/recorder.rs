@@ -38,6 +38,16 @@ fn folder_reserved(rel: &str) -> bool {
         || rel.split('/').next().map_or(false, |f| RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(f)))
 }
 
+/// For the in-game "Clip saved" popup: the game's name and its icon as a data: URL (the popup window can't
+/// load files), from a clip file stem like "FiveM 2026-11-04 15-50-51 (Echo)".
+pub fn toast_game(stem: &str) -> (Option<String>, String) {
+    let Some(g) = game_of_name(stem) else { return (None, String::new()) };
+    let icon = fs::read(app_dir().join("icons").join(format!("{}.png", safe_name(&g)))).ok()
+        .filter(|b| !b.is_empty() && b.len() < 200_000)
+        .map(|b| format!("data:image/png;base64,{}", base64(&b))).unwrap_or_default();
+    (Some(g), icon)
+}
+
 /// "Valorant 2026-10-31 23-39-26 (edit)" -> Some("Valorant"); "Clip ..." / other names -> None.
 fn game_of_name(name: &str) -> Option<String> {
     let b = name.as_bytes();
