@@ -4,12 +4,19 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- New clips are saved as e.g. "FiveM 2026-11-04 15-50-51 (Echo).mp4", so people see where a clip came from when it's pasted into Discord; the library and share pages show the name without it
+
+## 1.0.41 - Faster seek bar previews
 - The frame strip in the player's seek bar shows up much sooner: it's made in the background right after a clip is saved (and when you hover a clip), cloud clips reuse the strip from when they were on this PC, and otherwise start building after a few seconds instead of 20
 - Clips that are already AV1 no longer offer "Convert to AV1" or "Make smaller" (it would only make them look worse)
 - Fixed: on clips that were shared and in the cloud, the "Shared" and cloud badges sat on top of each other ("Sha☁"); they now sit side by side
+
+## 1.0.40 - Mouse pointer in clips
 - The mouse pointer shows in clips (menus, phones, inventories, the desktop); games that hide it while you play stay clean. Switch it off in Settings → Quality → Capture → Mouse pointer
-- Uploads say where they're going ("Uploading X to Google Drive") and have a Cancel button; while the cloud is still getting ready (Google Drive can take a while to find the folder) the box says so instead of sitting at 0%. A cancelled clip isn't uploaded again by itself until Echo restarts
+
+## 1.0.39 - Faster share links, cancel uploads
 - Faster share links when Echo Cloud and another cloud (e.g. Google Drive) are both connected: the link no longer waits for the whole clip to upload to the other cloud first (it sat at 0% for most of a minute); "Making link" shows real upload progress
+- Uploads say where they're going ("Uploading X to Google Drive") and have a Cancel button; while the cloud is still getting ready (Google Drive can take a while to find the folder) the box says so instead of sitting at 0%. A cancelled clip isn't uploaded again by itself until Echo restarts
 
 ## 1.0.38 - Update button fix
 - Fixed: clicking "Restart Echo" on the update card could say "Echo is already up to date" - Echo now installs the update it just found instead of asking the server again

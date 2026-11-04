@@ -1448,6 +1448,9 @@
   const isEdited = c => /\((edit|trim)( \d+)?\)$/.test(c.name);
   const dayStart = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
   const DATE_RE = / \d{4}-\d\d-\d\d \d\d-\d\d-\d\d.*$/;
+  // new clips are saved as "FiveM 2026-11-04 15-50-51 (Echo).mp4": the tag is for the file (Discord shows the
+  // file name), the library shows the name without it
+  const shownName = c => DATE_RE.test(c.name) ? c.name.replace(" (Echo)", "") : c.name;
   const gameOf = c => { if (c.folder) return c.folder; const g = c.name.replace(DATE_RE, ""); return g !== c.name && g !== "Clip" && g !== "Montage" && g !== "Recording" ? g : null; };
   let favs = new Set(), picked = new Set(), shots = [], meta = {}, metaKey = "", durs = {}, folderList = [];
   // a clip is "in" a folder when it's in it or in one of its sub-folders
@@ -1837,7 +1840,7 @@
     const row = (c, checked, keep) => {
       const r = document.createElement("label"); r.className = "tr";
       r.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}><span class="tt"></span><span class="tn"><b></b><small></small></span>`;
-      r.querySelector("b").textContent = c.name; if (keep) r.querySelector("b").insertAdjacentHTML("beforeend", `<span class="keep">KEEP (longest)</span>`);
+      r.querySelector("b").textContent = shownName(c); if (keep) r.querySelector("b").insertAdjacentHTML("beforeend", `<span class="keep">KEEP (longest)</span>`);
       r.querySelector("small").textContent = [fmtSize(c.size), dur(c) ? fmtDur(dur(c)) : "", ago(c.modified), gameOf(c) || "", c.cloud ? "only in the cloud" : inCloud(c) ? "also in the cloud" : ""].filter(Boolean).join(" · ");
       const cb = r.querySelector("input"); cb._clip = c; cb.onchange = tidySum;
       const t = r.querySelector(".tt"); t.onclick = e => { e.preventDefault(); $("tidy").classList.remove("on"); openPlayer(c); };
@@ -2025,7 +2028,7 @@
         const el = document.createElement("div"); el.className = "card";
         el.innerHTML = `<div class="thumb"></div><div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
           <div class="ovl"><button class="ib" data-a="copy" title="Copy to clipboard">${ICON.copy}</button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></div></div>`;
-        el.querySelector(".name").textContent = c.name;
+        el.querySelector(".name").textContent = shownName(c);
         const th = el.querySelector(".thumb"); th.style.backgroundImage = `url("${convertFileSrc(c.path)}?${c.size}")`;
         th.onclick = () => openShot(c);
         el.querySelectorAll(".ib").forEach(b => b.onclick = async () => {
@@ -2141,7 +2144,7 @@
       if (!ghost) {
         if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
         ghost = document.createElement("div"); ghost.id = "dragghost";
-        ghost.textContent = sel.length > 1 ? `${sel.length} clips` : c.name;
+        ghost.textContent = sel.length > 1 ? `${sel.length} clips` : shownName(c);
         document.body.appendChild(ghost); document.body.classList.add("cdrag");
       }
       ghost.style.left = ev.clientX + 14 + "px"; ghost.style.top = ev.clientY + 10 + "px";
@@ -2162,7 +2165,7 @@
     el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}<span class="tbadges">${shared.has(c.name) ? '<span class="shr" title="Shared - link copied before">Shared</span>' : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there">☁ Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud">☁</span>' : ""}</span></div>
       <div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
         <div class="ovl"><span class="more"><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></span><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button></div></div>`;
-    const nm = el.querySelector(".name"); nm.textContent = c.name; nm.title = "Click to rename";
+    const nm = el.querySelector(".name"); nm.textContent = shownName(c); nm.title = "Click to rename";
     { const m = meta[c.name]; if (m && (m.tags.length || m.note)) {
       const tx = el.querySelector(".txt");
       if (m.tags.length) { const tg = document.createElement("div"); tg.className = "tags"; m.tags.forEach(t => { const x = document.createElement("span"); x.className = "tchip"; x.textContent = "#" + t; tg.appendChild(x); }); tx.appendChild(tg); }
@@ -2176,9 +2179,9 @@
       const finish = async ok => {
         nm.contentEditable = "false"; nm.onblur = nm.onkeydown = null;
         const v = nm.textContent.trim();
-        if (!ok || !v || v === c.name) { nm.textContent = c.name; return; }
+        if (!ok || !v || v === c.name || v === shownName(c)) { nm.textContent = shownName(c); return; }
         try { await invoke("rename_clip", { path: c.path, name: v }); toast("Renamed"); listKey = ""; refresh(); }
-        catch (e) { nm.textContent = c.name; toast(String(e)); }
+        catch (e) { nm.textContent = shownName(c); toast(String(e)); }
       };
       nm.onblur = () => finish(true);
       nm.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); nm.blur(); } if (e.key === "Escape") finish(false); };
@@ -2337,7 +2340,7 @@
 
   function openPlayer(c) {
     if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur();
-    $("pname").textContent = c.name;
+    $("pname").textContent = shownName(c);
     $("pcopy").onclick = e => e.ctrlKey ? copyMenu($("pcopy"), c) : action("copy", c);
     $("pcopym").onclick = () => copyMenu($("pcopy"), c);
     $("pshow").onclick = () => action("folder", c);
@@ -2430,7 +2433,7 @@
   }
   async function sideRename() {
     const c = sideClip, name = $("sname").value.replace(/\s+/g, " ").trim();
-    if (!c || !name || name === c.name) { $("sname").value = c ? c.name : ""; return; }
+    if (!c || !name || name === c.name || name === shownName(c)) { $("sname").value = c ? shownName(c) : ""; return; }
     const v = $("pvideo"), t = v.currentTime, playing = !v.paused;
     v.pause(); v.removeAttribute("src"); v.load();                // the player holds the file open - let go before renaming
     await new Promise(r => setTimeout(r, 150));
@@ -2439,13 +2442,13 @@
       if (meta[c.name]) { meta[name] = meta[c.name]; delete meta[c.name]; }
       Object.assign(c, { path, name }); $("pname").textContent = name; toast("Renamed");
       listKey = ""; refresh();
-    } catch (e) { toast(String(e)); $("sname").value = c.name; }
+    } catch (e) { toast(String(e)); $("sname").value = shownName(c); }
     if (sideClip !== c || !$("player").classList.contains("open")) return;   // moved on / closed meanwhile
     v.src = convertFileSrc(c.path); v.addEventListener("loadedmetadata", () => { v.currentTime = t; if (playing) v.play().catch(() => {}); }, { once: true });
   }
   function drawSide(c) {
     sideClip = c; const m = meta[c.name] || { tags: [], note: "" }; sideTags = [...(m.tags || [])];
-    $("sname").value = c.name; $("snote").value = m.note || ""; $("stagin").value = "";
+    $("sname").value = shownName(c); $("snote").value = m.note || ""; $("stagin").value = "";
     $("sinfo").innerHTML = [c.folder || "Main folder", fmtSize(c.size), new Date(c.modified * 1000).toLocaleString()].map(x => `<div>${String(x).replace(/</g, "&lt;")}</div>`).join("");
     const all = new Set(); Object.values(meta).forEach(x => (x.tags || []).forEach(t => all.add(t)));
     $("staglist").innerHTML = [...all].map(t => `<option value="${t.replace(/"/g, "&quot;")}">`).join("");
@@ -2461,7 +2464,7 @@
   $("stagin").onblur = sideAddTag;
   $("snote").onkeydown = e => { e.stopPropagation(); if (e.key === "Escape") e.target.blur(); };
   $("snote").onblur = sideSaveMeta;
-  $("sname").onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); if (e.key === "Escape") $("sname").value = sideClip ? sideClip.name : ""; e.target.blur(); } };
+  $("sname").onkeydown = e => { e.stopPropagation(); if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); if (e.key === "Escape") $("sname").value = sideClip ? shownName(sideClip) : ""; e.target.blur(); } };
   $("sname").onblur = sideRename;
   // ----- seek bar previews: YouTube-style frame under the mouse (hover + drag) and a frame strip for cloud clips -----
   // A second muted <video> on the same source seeks to the time under the mouse; its frame is drawn into a small
@@ -2665,7 +2668,7 @@
       }
     }
     stopAudios(); stopOverlays(); Object.assign(ed, { rng: null, clip: c, segs: [], texts: [], boxes: [], audio: [], over: [], volume: 1, mute: false, sel: null, zoom: 0.85, T: 0, cur: 0, playing: false, hist: [], fut: [], strip: "", vertical: null, srcs: {}, strips: {}, loading: false, capStyle: undefined, capHl: undefined, capHlColor: undefined, capShowBox: false, normalize: false, capBox: undefined });
-    $("ename").textContent = c.name; $("editor").classList.add("open");
+    $("ename").textContent = shownName(c); $("editor").classList.add("open");
     const v = EV(); v.dataset.cur = convertFileSrc(c.path); v.src = v.dataset.cur; v.muted = false;
     await new Promise(r => v.addEventListener("loadedmetadata", r, { once: true }));
     ed.dur = v.duration; ed.segs = [{ start: 0, end: ed.dur, speed: 1, at: 0 }];

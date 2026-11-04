@@ -2247,7 +2247,8 @@ impl Recorder {
                 .map(|(g, _)| g.clone())
         });
         let prefix = if cfg.name_by_game { game.clone() } else { None }.unwrap_or_else(|| "Clip".into());
-        let name = format!("{prefix} {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S.mp4"));
+        // " (Echo)" only in the file name (Discord shows it when the file is pasted); the library hides it
+        let name = format!("{prefix} {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S (Echo).mp4"));
         let dir = match game.map(|g| cfg.game_folder(&g)).filter(|g| !g.is_empty() && cfg.game_folders && cfg.game_rule(g).folder && !RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(g))) {
             Some(g) => PathBuf::from(&cfg.clips_dir).join(g.trim_end_matches('.')),
             None => PathBuf::from(&cfg.clips_dir),
@@ -3038,7 +3039,7 @@ impl Recorder {
             None => self.clips_dir(),
         };
         fs::create_dir_all(&dir).map_err(err)?;
-        let out = dir.join(format!("{prefix} {}.mp4", chrono::Local::now().format("%Y-%m-%d %H-%M-%S")));
+        let out = dir.join(format!("{prefix} {} (Echo).mp4", chrono::Local::now().format("%Y-%m-%d %H-%M-%S")));
         let list: Vec<(SystemTime, PathBuf)> = parts.into_iter().map(|p| (SystemTime::UNIX_EPOCH, p)).collect();
         let tmp = out.with_extension("saving.tmp");
         let ok = self.join(&list, &tmp)? && fs::rename(&tmp, &out).is_ok();
@@ -6585,7 +6586,7 @@ impl Recorder {
 
     fn share_preview(&self, rel: &str, req: &mut serde_json::Value) {
         let stem = Path::new(rel).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        req["title"] = serde_json::json!(stem);
+        req["title"] = serde_json::json!(stem.replacen(" (Echo)", "", 1));   // the share page has its own Echo branding
         let wm = share_wm(&self.settings()).to_string();
         req["wm"] = serde_json::json!(wm);
         let local = self.clips_dir().join(rel);
