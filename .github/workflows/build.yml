@@ -172,7 +172,12 @@ jobs:
         run: |
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update
-          sudo apt-get $APT install -y flatpak flatpak-builder elfutils appstream ostree rclone gnupg
+          sudo apt-get $APT install -y flatpak flatpak-builder elfutils appstream ostree gnupg unzip
+          # rclone: the current release, not Ubuntu's 1.60 (that one got "NotImplemented 501" from R2 on the
+          # first try of every upload, run #35)
+          curl -fsSL --retry 5 -o /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip -q -j /tmp/rclone.zip '*/rclone' -d /tmp/rclone && sudo install -m 755 /tmp/rclone/rclone /usr/local/bin/rclone
+          rclone version | head -1
           # Ubuntu 24.04 blocks the user namespaces flatpak-builder's sandbox needs
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo

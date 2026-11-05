@@ -279,6 +279,8 @@ modules:
       - sed -i -E 's/("identifier":[[:space:]]*)"dk\.volkan\.clipper"/\1"link.echoclip.Echo"/' src-tauri/tauri.conf.json
       - cd src-tauri && cargo --offline build --release
       - install -Dm755 src-tauri/target/release/echo /app/bin/echo-clips
+      # the tray library is loaded at runtime - fail the build here instead of shipping an Echo that panics at start
+      - test -e /app/lib/libayatana-appindicator3.so.1
       - install -Dm644 flatpak/link.echoclip.Echo.desktop /app/share/applications/link.echoclip.Echo.desktop
       - install -Dm644 flatpak/link.echoclip.Echo.metainfo.xml /app/share/metainfo/link.echoclip.Echo.metainfo.xml
       - install -Dm644 flatpak/link.echoclip.Echo.png /app/share/icons/hicolor/256x256/apps/link.echoclip.Echo.png

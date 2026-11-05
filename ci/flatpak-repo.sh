@@ -50,6 +50,11 @@ flatpak-builder --user --force-clean --disable-rofiles-fuse --install-deps-from=
   --default-branch=stable --state-dir="$T/state" --repo="$REPO" \
   --subject="Echo $V" "$T/build" flatpak/$APP.yml
 
+# ---- no .Debug extension in the repo: nobody installs it and it is often bigger than Echo itself (R2 space) ----
+for ref in $(ostree refs --repo="$REPO" | grep -E "^runtime/$APP\.Debug/" || true); do
+  echo "dropping $ref"; ostree refs --repo="$REPO" --delete "$ref"
+done
+
 # ---- sign the new commits, update the summary (+ deltas = small updates), keep the last 3 versions ----
 for ref in $(ostree refs --repo="$REPO" | grep -E "^(app|runtime)/$APP"); do
   # sign each commit once (ostree would add the same signature again every run)

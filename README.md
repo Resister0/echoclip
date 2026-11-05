@@ -4,6 +4,8 @@
 
 Website and downloads: **https://echoclip.link**
 
+![Echo's clip library: clips sorted by game, with folders, favourites and cloud backup](cloud/site/screenshots/library.png)
+
 ## Why Echo
 
 - **Light**: written in Rust with [Tauri](https://tauri.app). The app itself is about 12 MB and uses the web view your system already has (WebView2 on Windows, WebKitGTK on Linux) instead of shipping its own Chromium.

@@ -682,12 +682,19 @@ async function hit(req, env) {
 // Only real clicks count, once per person per file per day (chat 20: the same 5 hits on all four files in a day =
 // link scanners / antivirus / prefetch, not people). Browsers mark a click on a link with Sec-Fetch-Mode "navigate";
 // scanners and prefetchers don't (or send "no-cors"/"prefetch"). Anything without the header (old browser, script)
-// isn't counted - better too low than made-up numbers.
+// isn't counted - better too low than made-up numbers. Also needs a real page visit first (see below).
 async function countDownload(req, env, what) {
   try {
     if (isBot(req) || req.headers.get("sec-fetch-mode") !== "navigate") return;
     const pf = (req.headers.get("sec-purpose") || req.headers.get("purpose") || "").toLowerCase();
     if (pf.includes("prefetch") || pf.includes("prerender")) return;
+    // chat 27: downloads were ~92% of visitors (scanners that act like browsers). Count a download only when the
+    // same person (IP + browser) also loaded a page with its script today or yesterday - a real visit first.
+    const seen = async (day) => {
+      const v = (await sha256(`${day}|${ipOf(req)}|${req.headers.get("user-agent")}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
+      return !!(await env.DB.prepare("SELECT 1 FROM uv WHERE day = ? AND h = ?").bind(day, v).first());
+    };
+    if (!(await seen(utcDay())) && !(await seen(utcDay(now() - 86400)))) return;
     const h = (await sha256(`${utcDay()}|${ipOf(req)}|${req.headers.get("user-agent")}|dl:${what}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, "dl:" + what);
@@ -1638,6 +1645,9 @@ async function update(env, target, current) {
     sigCache.set(sig.id, signature);
   }
   const notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
+  // "#…" publish text = internal build (e.g. a CI fix): not offered as an update - people get it with the next
+  // real release (downloads from the website still are the newest build)
+  if (notes.trim().startsWith("#")) return none();
   // the installer from the SAME release as the signature
   const url = rel.public ? rel.assets.find((a) => a.name === file).browser_download_url : `https://echoclip.link/download/${what}?from=private`;
   return json({ version, notes, pub_date: rel.published_at || rel.created_at, url, signature });
