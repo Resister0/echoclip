@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>link.echoclip.Echo</id>
+  <name>Echo</name>
+  <summary>Save your best game moments with one key</summary>
+  <developer id="link.echoclip">
+    <name>Kimbo</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Echo keeps the last minutes of your game in a replay buffer. Press a key and the moment is saved as a clip -
+      lightweight instant replay that records on your GPU, so it barely touches your frame rate.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Instant replay: save the last 30 seconds to 10 minutes with a hotkey</li>
+      <li>GPU recording (AMD, Intel and NVIDIA) with game audio, microphone and separate tracks for Discord, browser and music</li>
+      <li>A clip library sorted by game, with favourites, tags, search and folders</li>
+      <li>Trim, combine and edit clips, add text and automatic captions</li>
+      <li>Share a link that plays right in Discord, or copy the clip and paste it anywhere</li>
+      <li>Optional cloud backup (Echo Cloud, Google Drive and more)</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">link.echoclip.Echo.desktop</launchable>
+  <url type="homepage">https://echoclip.link</url>
+  <url type="vcs-browser">https://github.com/Resister0/echoclip</url>
+  <url type="bugtracker">https://github.com/Resister0/echoclip/issues</url>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Game</category>
+  </categories>
+
+  <keywords>
+    <keyword>clip</keyword>
+    <keyword>clipping</keyword>
+    <keyword>clips</keyword>
+    <keyword>replay</keyword>
+    <keyword>instant replay</keyword>
+    <keyword>replay buffer</keyword>
+    <keyword>highlights</keyword>
+    <keyword>game recording</keyword>
+    <keyword>game recorder</keyword>
+    <keyword>screen recorder</keyword>
+    <keyword>record gameplay</keyword>
+    <keyword>gameplay</keyword>
+    <keyword>capture</keyword>
+    <keyword>share clips</keyword>
+    <keyword>steam deck</keyword>
+  </keywords>
+
+  <provides>
+    <binary>echo-clips</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#b9a6ff</color>
+    <color type="primary" scheme_preference="dark">#3b2a7a</color>
+  </branding>
+
+  <!-- TODO before the Flathub PR: real screenshots hosted on echoclip.link (1920x1080 or 1280x800 PNG) -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>The clip library</caption>
+      <image>https://echoclip.link/flathub/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Watch, trim and share a clip</caption>
+      <image>https://echoclip.link/flathub/player.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The editor</caption>
+      <image>https://echoclip.link/flathub/editor.png</image>
+    </screenshot>
+  </screenshots>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="1.0.50" date="2026-11-05">
+      <description>
+        <p>First Flatpak build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

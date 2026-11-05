@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Echo
+GenericName=Game Clip Recorder
+Comment=Save your best game moments with one key
+Exec=echo-clips
+Icon=link.echoclip.Echo
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+Keywords=clip;clipping;clips;replay;instant replay;replay buffer;highlights;game recording;game recorder;screen recorder;record gameplay;gameplay;capture;share clips;steam deck;
+StartupWMClass=link.echoclip.Echo
+SingleMainWindow=true

@@ -4,6 +4,27 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Linux: recording, thumbnails and seek-bar previews work in the AppImage (it no longer breaks the system's ffmpeg / gpu-screen-recorder)
+- Linux: clips no longer freeze in the player, and it recovers by itself if a clip gets stuck
+- Smoother clips: no more tiny hitch every 2 seconds
+- Linux: better picture quality (records at the full bitrate you picked)
+- Linux: Echo no longer takes your headset mic away from Discord
+- Linux: separate audio tracks for game, Discord, browser and music
+- Linux: cloud clips stream and download much faster
+- Linux: notifications no longer flicker; library cards no longer turn grey
+- Player closes with Esc / a click beside it every time, Space no longer gets stuck
+- Clips no longer start playing in the background after closing the player
+- Ctrl+A selects only the clips you're looking at (was every clip in the library); deleting says if some selected clips are in other folders
+- Clearer cloud badge
+- Seek-bar previews line up with the video again for edited / imported clips (they could be seconds off)
+- Linux: screenshots work (the screenshot key used to fail)
+- Linux: dragging the seek bar no longer hides the player's buttons
+- Lighter seek-bar dragging on slower PCs: Echo notices when jumping around a clip is slow and shows quick preview pictures while you drag instead
+- Screenshots can be selected and deleted together (Ctrl+click, Ctrl+A)
+- Clip cards no longer jump when you hover them
+- Save keys: Echo renews its keyboard hook by itself if Windows ever drops it, and says so when a game runs as administrator (Windows hides those keys from normal programs)
+
+## 1.0.50 - Ctrl+scroll, saving clip card, captions as .txt, clearer cloud folders
 - Cloud date folders are easier to read: 2026 / 11 - November / 04 - Wednesday (older clips stay where they are)
 - Scrolling works while holding Ctrl in the library
 - A new clip shows as "Saving clip…" at the top right away and becomes clickable once it's ready
@@ -11,6 +32,9 @@ internal builds). Release builds since the open-source switch come from this rep
 - Editor: save the captions as a .txt file
 - Copy → Custom size: clicking it lets you type the size first (Enter copies); no more two shrinks fighting each other
 - Uploads: the bar follows the file being sent (a retried Google Drive upload showed double the size and sat at 100%), says when it's waiting for the cloud to finish, and the log shows Google Drive's errors as they happen
+
+## 1.0.49 - More reliable update checks
+- Every new version now reaches everyone's update check right away (no change in the app itself)
 
 ## 1.0.48 - No restarts from game launchers, Linux update command
 - "Game window only" recording no longer restarts (and loses the replay) for small launcher / loading windows while a game starts, e.g. FiveM

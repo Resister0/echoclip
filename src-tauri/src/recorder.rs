@@ -563,8 +563,8 @@ pub fn play_sound(kind: Sound, cfg: &Settings, force: bool) {
                     f
                 }
             };
-            let ok = Command::new("pw-play").arg(&f).stderr(Stdio::null()).status().map_or(false, |s| s.success());
-            if !ok { let _ = Command::new("paplay").arg(&f).stderr(Stdio::null()).status(); }
+            let ok = sys_cmd("pw-play").arg(&f).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+            if !ok { let _ = sys_cmd("paplay").arg(&f).stderr(Stdio::null()).status(); }
         }
     });
 }
@@ -610,6 +610,8 @@ pub fn vr_game_name(stem: &str, title: &str) -> Option<String> {
 /// Several running: the one using the most memory. Returns (name, pid, exe path).
 #[cfg(target_os = "linux")]
 pub fn linux_game() -> Option<(String, u32, String)> {
+    // Flatpak: the sandbox only sees its own processes in /proc - find the game by its sound instead
+    if crate::linuxutil::in_flatpak() { return linux_game_from_streams(); }
     const WINE_HELPERS: &[&str] = &["wineserver", "services", "explorer", "winedevice", "plugplay", "svchost", "rpcss", "steam",
         "conhost", "start", "tabtip", "rundll32", "winemenubuilder", "steamwebhelper", "crashhandler", "crashreporter",
         "unitycrashhandler64", "easyanticheat", "easyanticheat_eos", "battleye", "beservice", "eosoverlayrenderer-win64-shipping",
@@ -652,6 +654,68 @@ pub fn linux_game() -> Option<(String, u32, String)> {
         }
     }
     best.map(|(_, n, p, x)| (n, p, x))
+}
+
+/// Flatpak version of linux_game(): the playing sound streams (pactl) say which program plays them.
+/// Wine / Proton games (Steam, Lutris, Heroic) show up as "<game>.exe" or as wine with the exe as the app
+/// name; a native game counts once it was seen as a game before (games.json) or is Minecraft.
+/// A game that hasn't made a sound yet isn't found (logged once per game when it is).
+#[cfg(target_os = "linux")]
+fn linux_game_from_streams() -> Option<(String, u32, String)> {
+    const WINE: &[&str] = &["wine", "wine64", "wine-preloader", "wine64-preloader", "wineserver", "proton"];
+    const NOT_GAMES: &[&str] = &["steam", "steamwebhelper", "pipewire", "wireplumber", "kwin_wayland", "plasmashell", "gnome-shell",
+        "speech-dispatcher", "sd_espeak-ng", "xdg-desktop-portal", "telegram-desktop", "signal-desktop", "slack", "zoom", "teams",
+        "mpv", "totem", "celluloid", "haruna", "smplayer", "kdeconnectd", "obs", "gpu-screen-recorder", "echo", "echo-clips"];
+    let known: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
+        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let known_stems: Vec<String> = known.values().filter_map(|x| Path::new(&x.replace('\\', "/")).file_stem().map(|s| s.to_string_lossy().to_lowercase())).collect();
+    for st in linux_sink_inputs().unwrap_or_default() {
+        if linux_app_group(&st.binary, &st.name).is_some() { continue; }
+        let b = st.binary.to_lowercase();
+        if NOT_GAMES.contains(&b.as_str()) { continue; }
+        let (stem, exe) = if b.ends_with(".exe") {
+            (Path::new(&st.binary).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default(), st.binary.clone())
+        } else if WINE.contains(&b.as_str()) {
+            // wine plays the sound; the app name is usually the game's exe ("GTA5.exe") or its title
+            let n = st.name.trim();
+            if n.is_empty() || n.eq_ignore_ascii_case("wine") || n.to_lowercase().contains("wine ") { continue; }
+            (n.trim_end_matches(".exe").trim_end_matches(".EXE").to_string(), n.to_string())
+        } else if st.name.to_lowercase().contains("minecraft") || b == "java" && st.name.to_lowercase().contains("minecraft") {
+            ("minecraft".to_string(), "Minecraft".to_string())
+        } else if !b.is_empty() && known_stems.contains(&b) {
+            (st.binary.clone(), st.binary.clone())
+        } else { continue };
+        let title = if stem == "minecraft" { "Minecraft".to_string() } else { String::new() };
+        let Some(name) = game_name(&stem, &title, true) else { continue };
+        static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        if let Ok(mut said) = SAID.lock() {
+            if !said.contains(&name) {
+                log_line(&format!("game: {name} (Flatpak: found by its sound - stream {}, {} / {})", st.index, st.binary, st.name));
+                said.push(name.clone());
+            }
+        }
+        return Some((name, st.pid.unwrap_or(0), exe));
+    }
+    None
+}
+
+/// Longest stretch (seconds) between two keyframes in the clip's video, from packet flags (no decoding: fast).
+/// 0 when it can't be read.
+fn max_key_gap(clip: &str) -> f64 {
+    let Ok(o) = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0"])
+        .arg(clip).stdin(Stdio::null()).stderr(Stdio::null()).output() else { return 0.0 };
+    let (mut last, mut gap, mut end) = (None::<f64>, 0f64, 0f64);
+    for l in String::from_utf8_lossy(&o.stdout).lines() {
+        let mut it = l.split(',');
+        let Some(t) = it.next().and_then(|x| x.trim().parse::<f64>().ok()) else { continue };
+        end = end.max(t);
+        if it.next().map_or(false, |f| f.starts_with('K')) {
+            if let Some(p) = last { gap = gap.max(t - p); }
+            last = Some(t);
+        }
+    }
+    if let Some(p) = last { gap = gap.max(end - p); }
+    gap
 }
 
 fn app_dir() -> PathBuf {
@@ -921,6 +985,7 @@ fn whisper_cli() -> Result<PathBuf, String> {
         if let Some(p) = linux_whisper() {
             return Ok(p);
         }
+        if crate::linuxutil::in_flatpak() { return Err("Speech recognition is missing from this Echo build".into()); }
         return Err("Speech recognition isn't installed - run: sudo dnf install whisper-cpp".into());
     }
     #[allow(unreachable_code)]
@@ -1109,7 +1174,30 @@ pub fn log_path() -> PathBuf {
     std::env::temp_dir().join("clipper_ffmpeg.log")
 }
 
+/// GPU encoders that can't work on this system: AMD AMF and Intel QSV are Windows-only here, NVENC on Linux needs
+/// NVIDIA's libcuda. Each one tried in vain cost an ffmpeg start + decoding (exports were slow on Linux).
+#[allow(dead_code)]
+fn skip_enc(venc: &[&str]) -> bool {
+    if cfg!(windows) { return false; }
+    static CUDA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let cuda = *CUDA.get_or_init(|| ["/usr/lib64/libcuda.so.1", "/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/lib/libcuda.so.1", "/usr/lib64/nvidia/libcuda.so.1"]
+        .iter().any(|p| Path::new(p).exists()));
+    venc.iter().any(|a| a.ends_with("_amf") || a.ends_with("_qsv") || (a.ends_with("_nvenc") && !cuda))
+}
+
+/// ffmpeg error lines that health() treats as "the recorder's encoder stopped" - but written by log_line (an
+/// export's / shrink's ffmpeg output), not by the recorder's own ffmpeg. health() subtracts these.
+const REC_FAIL_MARKS: [&str; 3] = ["Terminating thread with return code", "Error submitting audio frame", "Error submitting video frame"];
+static LOGGED_MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Linux: the web view's GStreamer warnings/errors (main.rs sets GST_DEBUG_FILE to this); part of "Send log".
+pub fn gst_log_path() -> PathBuf {
+    std::env::temp_dir().join("clipper_gst.log")
+}
+
 pub fn log_line(msg: &str) {
+    let marks: u64 = REC_FAIL_MARKS.iter().map(|m| msg.matches(m).count() as u64).sum();
+    if marks > 0 { LOGGED_MARKS.fetch_add(marks, Ordering::Relaxed); }
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(log_path()) {
         let _ = writeln!(f, "{msg}");
     }
@@ -1130,9 +1218,49 @@ fn serve_token() -> &'static str {
     SERVE_TOKEN.get_or_init(random_token)
 }
 
-fn hidden(program: &str) -> Command {
+/// A Command for a program from the system. Inside the AppImage, Echo's own bundled
+/// libraries (LD_LIBRARY_PATH, GIO/GTK/GStreamer paths pointing into the mount) are
+/// removed from its environment - otherwise the system's gpu-screen-recorder, ffmpeg,
+/// parec... load the AppImage's older libgnutls/libssl and quit at once
+/// ("version `GNUTLS_3_7_7' not found").
+pub fn sys_cmd(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(program);
+    #[cfg(target_os = "linux")]
+    for (k, v) in appimage_env_fixes() { match v { Some(v) => { c.env(k, v); } None => { c.env_remove(k); } } }
+    c
+}
+
+/// Environment changes for programs started from inside the AppImage (empty outside it).
+#[cfg(target_os = "linux")]
+fn appimage_env_fixes() -> &'static [(String, Option<String>)] {
+    static FIX: std::sync::OnceLock<Vec<(String, Option<String>)>> = std::sync::OnceLock::new();
+    FIX.get_or_init(|| {
+        if std::env::var_os("APPIMAGE").is_none() { return Vec::new(); }
+        let dir = std::env::var("APPDIR").ok().filter(|d| d.len() > 1).or_else(|| {
+            // .../.mount_XXXX/usr/bin/echo -> .../.mount_XXXX
+            std::env::current_exe().ok()?.parent()?.parent()?.parent().map(|p| p.to_string_lossy().into_owned())
+        });
+        let Some(dir) = dir else { return Vec::new() };
+        let dir = dir.trim_end_matches('/').to_string();
+        let inside = |p: &str| p == dir || p.starts_with(&format!("{dir}/"));
+        let mut out = Vec::new();
+        for (k, v) in std::env::vars() {
+            if matches!(k.as_str(), "APPIMAGE" | "APPDIR" | "ARGV0" | "OWD") || !v.contains(&dir) { continue; }
+            let keep: Vec<&str> = v.split(':').filter(|p| !p.is_empty() && !inside(p)).collect();
+            if keep.is_empty() { out.push((k, None)); } else { out.push((k, Some(keep.join(":")))); }
+        }
+        if !out.is_empty() {
+            let names: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
+            log_line(&format!("appimage: system programs start without Echo's bundled paths ({})", names.join(", ")));
+        }
+        out
+    })
+}
+
+fn hidden(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = sys_cmd(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1347,6 +1475,19 @@ impl Resampler {
 /// pushes samples, converted to `ch` channels, into `buf`. Never blocks the caller.
 /// Microphones Windows knows about: (names, default name).
 pub fn list_mics() -> (Vec<String>, String) {
+    // Linux: the sound server's microphones (PipeWire / PulseAudio), never the raw ALSA cards - opening those
+    // directly took the headset mic away from PipeWire (Discord lost it, even after Echo closed)
+    #[cfg(target_os = "linux")]
+    {
+        let srcs = linux_sources();
+        // name of the current default ("System default (DualShock 4 …)") - so a controller that took over is visible
+        let def = sys_cmd("pactl").env("LC_ALL", "C").arg("get-default-source").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .and_then(|n| srcs.iter().find(|(a, _)| *a == n).map(|(_, d)| d.clone()))
+            .unwrap_or_default();
+        return (srcs.into_iter().map(|(n, _)| n).collect(), def);
+    }
+    #[allow(unreachable_code)]
     let host = cpal::default_host();
     #[allow(unused_mut)]
     let mut names: Vec<String> = host.input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
@@ -1364,6 +1505,8 @@ pub fn list_mics() -> (Vec<String>, String) {
 /// Friendly mic name: on Linux "sysdefault:CARD=Wireless" -> the card's full name from /proc/asound/cards
 pub fn mic_label(name: &str) -> String {
     #[cfg(target_os = "linux")]
+    if let Some(d) = SRC_DESC.lock().unwrap().desc_of(name) { return d.clone(); }
+    #[cfg(target_os = "linux")]
     { if let Some(id) = name.strip_prefix("sysdefault:CARD=") {
         if let Ok(t) = std::fs::read_to_string("/proc/asound/cards") {
             for l in t.lines() {
@@ -1380,10 +1523,96 @@ pub fn mic_label(name: &str) -> String {
     name.to_string()
 }
 
+/// Linux: sound-server source name -> its description ("HyperX Cloud Alpha Wireless Mono"), from the last list
+#[cfg(target_os = "linux")]
+static SRC_DESC: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+#[cfg(target_os = "linux")]
+trait DescGet { fn desc_of(&self, n: &str) -> Option<&String>; }
+#[cfg(target_os = "linux")]
+impl DescGet for Vec<(String, String)> { fn desc_of(&self, n: &str) -> Option<&String> { self.iter().find(|(a, _)| a == n).map(|(_, d)| d) } }
+
+/// Linux: microphones of the sound server (`pactl list sources`, monitors of speakers left out): (name, description)
+#[cfg(target_os = "linux")]
+fn linux_sources() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Ok(o) = sys_cmd("pactl").env("LC_ALL", "C").args(["list", "sources"]).stdin(Stdio::null()).stderr(Stdio::null()).output() {
+        let t = String::from_utf8_lossy(&o.stdout);
+        let (mut name, mut desc, mut monitor) = (String::new(), String::new(), false);
+        let mut flush = |name: &mut String, desc: &mut String, monitor: &mut bool| {
+            if !name.is_empty() && !*monitor && !name.ends_with(".monitor") {
+                out.push((name.clone(), if desc.is_empty() { name.clone() } else { desc.clone() }));
+            }
+            name.clear(); desc.clear(); *monitor = false;
+        };
+        for l in t.lines() {
+            let l2 = l.trim();
+            if l.starts_with("Source #") { flush(&mut name, &mut desc, &mut monitor); }
+            else if let Some(v) = l2.strip_prefix("Name:") { name = v.trim().to_string(); }
+            else if let Some(v) = l2.strip_prefix("Description:") { desc = v.trim().to_string(); }
+            else if l2.starts_with("Monitor of Sink:") { monitor = l2 != "Monitor of Sink: n/a"; }
+            else if l2.starts_with("device.class = \"monitor\"") { monitor = true; }
+        }
+        flush(&mut name, &mut desc, &mut monitor);
+    } else {
+        log_line("audio: listing microphones needs pactl (sudo dnf install pulseaudio-utils)");
+    }
+    *SRC_DESC.lock().unwrap() = out.clone();
+    out
+}
+
+/// Linux mic through the sound server (parec), like desktop sound: the device stays shared with Discord etc.
+/// `mic_name` = a source name from list_mics, "" = system default. Old settings ("sysdefault:CARD=…", raw ALSA)
+/// are matched to the source with the same card name, else the default.
+#[cfg(target_os = "linux")]
+fn linux_mic(mic_name: String, buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    use std::io::Read;
+    let srcs = linux_sources();
+    let dev = if mic_name.is_empty() { None }
+        else if srcs.iter().any(|(n, _)| *n == mic_name) { Some(mic_name.clone()) }
+        else {
+            let card = mic_label(&mic_name).to_lowercase();
+            let hit = if mic_name.starts_with("sysdefault:") && !card.is_empty() {
+                srcs.iter().find(|(_, d)| d.to_lowercase().contains(&card)).map(|(n, _)| n.clone())
+            } else { None };
+            if hit.is_none() { log_line(&format!("audio: mic '{mic_name}' not found, using the system default")); }
+            hit
+        };
+    let device = dev.clone().unwrap_or_else(|| "@DEFAULT_SOURCE@".into());
+    let mut child = match sys_cmd("parec")
+        .args([&format!("--device={device}"), "--format=float32le", &format!("--rate={rate}"), &format!("--channels={ch}"), "--raw", "--latency-msec=20",
+            "--client-name=Echo", "--stream-name=Echo microphone"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+    {
+        Ok(c) => c,
+        Err(e) => { log_line(&format!("audio: mic capture needs parec (sudo dnf install pulseaudio-utils): {e}")); return; }
+    };
+    CAP_DEV.lock().unwrap()[1] = device.clone();
+    log_line(&format!("audio: mic via parec {} (shared with other apps)",
+        dev.as_deref().map(|d| format!("'{}'", mic_label(d))).unwrap_or_else(|| "system default".into())));
+    let mut out = child.stdout.take().unwrap();
+    let mut b = vec![0u8; 4096 * 4];
+    let mut rest: Vec<u8> = Vec::new();
+    while !stop.load(Ordering::Relaxed) {
+        let n = match out.read(&mut b) {
+            Ok(0) | Err(_) => { if !stop.load(Ordering::Relaxed) { log_line("audio: mic capture ended (device gone?)"); } break; }
+            Ok(n) => n,
+        };
+        rest.extend_from_slice(&b[..n]);
+        let whole = rest.len() / 4 * 4;
+        {
+            let mut q = buf.lock().unwrap();
+            for c in rest[..whole].chunks_exact(4) { q.push_back(f32::from_le_bytes([c[0], c[1], c[2], c[3]])); }
+        }
+        rest.drain(..whole);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[cfg(target_os = "linux")]
 fn linux_desktop_audio(buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     use std::io::Read;
-    let mut child = match Command::new("parec")
+    let mut child = match sys_cmd("parec")
         .args(["--device=@DEFAULT_MONITOR@", "--format=float32le", &format!("--rate={rate}"), &format!("--channels={ch}"), "--raw", "--latency-msec=20"])
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
     {
@@ -1408,6 +1637,63 @@ fn linux_desktop_audio(buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     let _ = child.wait();
 }
 
+/// Video timing of one buffer segment (mpegts), read straight from the file's PES headers (no ffprobe):
+/// (first video PTS - first PTS of any stream, video length incl. its last frame), both in seconds.
+/// The concat demuxer otherwise steps from segment to segment by the LONGEST stream (audio runs a few ms
+/// past the video), which left a one-frame hole in the video at every 2 s segment join = clips looked choppy.
+fn ts_video_timing(path: &std::path::Path) -> Option<(f64, f64)> {
+    let d = std::fs::read(path).ok()?;
+    let pts_of = |p: &[u8]| -> u64 {
+        (((p[0] as u64 >> 1) & 7) << 30) | ((p[1] as u64) << 22) | (((p[2] as u64) >> 1) << 15) | ((p[3] as u64) << 7) | ((p[4] as u64) >> 1)
+    };
+    let (mut vmin, mut vmax, mut smin) = (u64::MAX, 0u64, u64::MAX);
+    let mut vpts: Vec<u64> = Vec::new();
+    let mut i = 0;
+    while i + 188 <= d.len() {
+        let pk = &d[i..i + 188];
+        i += 188;
+        if pk[0] != 0x47 || pk[1] & 0x40 == 0 { continue; } // only packets that start a PES
+        let afc = (pk[3] >> 4) & 3;
+        if afc & 1 == 0 { continue; }
+        let mut o = 4;
+        if afc & 2 != 0 { o += 1 + pk[4] as usize; }
+        if o + 14 > 188 { continue; }
+        let p = &pk[o..];
+        if p[0] != 0 || p[1] != 0 || p[2] != 1 { continue; }
+        let sid = p[3];
+        if p[7] & 0x80 == 0 { continue; } // no PTS
+        let pts = pts_of(&p[9..14]);
+        smin = smin.min(pts);
+        if (0xE0..=0xEF).contains(&sid) { vmin = vmin.min(pts); vmax = vmax.max(pts); vpts.push(pts); }
+    }
+    if vpts.len() < 2 || smin == u64::MAX { return None; }
+    vpts.sort_unstable();
+    let mut deltas: Vec<u64> = vpts.windows(2).map(|w| w[1] - w[0]).filter(|&x| x > 0).collect();
+    if deltas.is_empty() { return None; }
+    deltas.sort_unstable();
+    let frame = deltas[deltas.len() / 2];
+    Some(((vmin - smin) as f64 / 90000.0, (vmax - vmin + frame) as f64 / 90000.0))
+}
+
+/// concat list for the segments: with "duration" lines so the VIDEO of each segment joins the next one exactly
+/// (falls back to plain "file" lines if a segment can't be read).
+fn concat_list(segs: &[std::path::PathBuf]) -> String {
+    let t: Vec<Option<(f64, f64)>> = segs.iter().map(|p| ts_video_timing(p)).collect();
+    let all = t.iter().all(|x| x.is_some());
+    let mut body = String::new();
+    for (k, p) in segs.iter().enumerate() {
+        body += &format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"));
+        if all && k + 1 < segs.len() {
+            let (lead, vdur) = t[k].unwrap();
+            let (next_lead, _) = t[k + 1].unwrap();
+            // next segment's video must start right where this one's video ends
+            let dur = vdur + lead - next_lead;
+            if dur > 0.0 { body += &format!("duration {dur:.6}\n"); }
+        }
+    }
+    body
+}
+
 /// Device each capture is using right now: [desktop, mic] ("" = none / not started). health() compares them
 /// with Windows' current defaults (headset switched off and on again, default speakers changed).
 static CAP_DEV: Mutex<[String; 2]> = Mutex::new([String::new(), String::new()]);
@@ -1417,8 +1703,9 @@ static DEV_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     CAP_DEV.lock().unwrap()[mic as usize] = String::new();
     #[cfg(target_os = "linux")]
-    if !mic {
-        std::thread::spawn(move || linux_desktop_audio(buf, stop, rate, ch));
+    {
+        if mic { std::thread::spawn(move || linux_mic(mic_name, buf, stop, rate, ch)); }
+        else { std::thread::spawn(move || linux_desktop_audio(buf, stop, rate, ch)); }
         return;
     }
     std::thread::spawn(move || {
@@ -1428,7 +1715,7 @@ fn spawn_capture(mic: bool, mic_name: String, buf: Buf, stop: Arc<AtomicBool>, r
             let chosen = if mic && !mic_name.is_empty() {
                 let d = host.input_devices().ok().and_then(|mut it| it.find(|d| d.name().map_or(false, |n| n == mic_name)));
                 if d.is_none() {
-                    log_line(&format!("audio: mic '{mic_name}' not found, using the Windows default"));
+                    log_line(&format!("audio: mic '{mic_name}' not found, using the {} default", if cfg!(windows) { "Windows" } else { "system" }));
                 }
                 d
             } else {
@@ -1602,8 +1889,178 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
     });
 }
 
-#[cfg(not(windows))]
+/// Linux: the same 4 app tracks from PipeWire / PulseAudio. Every ~2 s the playback streams ("sink inputs")
+/// are listed with pactl and sorted onto the tracks by their app (binary / name / process); each one is
+/// recorded on its own with `parec --monitor-stream=<index>` (only listens - what you hear is unchanged).
+/// AppSrc.pid holds the stream index here.
+#[cfg(target_os = "linux")]
+fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
+    std::thread::spawn(move || {
+        let mut said_missing = false;
+        let mut logged: std::collections::HashSet<u32> = Default::default();
+        while !stop.load(Ordering::Relaxed) {
+            let streams = linux_sink_inputs();
+            if streams.is_none() && !said_missing {
+                said_missing = true;
+                log_line("audio: per-app tracks need pactl + parec (sudo dnf install pulseaudio-utils)");
+            }
+            let streams = streams.unwrap_or_default();
+            // the game and everything it started (Wine / Proton games play sound from their own process)
+            let game_pids: Vec<u32> = match linux_game() { Some((_, pid, _)) => linux_process_tree(pid), None => Vec::new() };
+            let mut want: [Vec<u32>; 4] = Default::default();
+            for s in &streams {
+                let k = if s.pid.is_some_and(|p| game_pids.contains(&p)) { 0 } else if let Some(k) = linux_app_group(&s.binary, &s.name) { k } else { continue };
+                want[k].push(s.index);
+                if logged.insert(s.index) {
+                    log_line(&format!("audio: {} track <- {} (stream {}{})", APP_TRACKS[k], if s.binary.is_empty() { &s.name } else { &s.binary }, s.index,
+                        s.pid.map(|p| format!(", pid {p}")).unwrap_or_default()));
+                }
+            }
+            for (k, g) in groups.iter().enumerate() {
+                let mut list = g.lock().unwrap();
+                list.retain(|s| {
+                    let keep = want[k].contains(&s.pid) && !s.stop.load(Ordering::Relaxed);
+                    if !keep { s.stop.store(true, Ordering::Relaxed); }
+                    keep
+                });
+                for &idx in &want[k] {
+                    if list.iter().any(|s| s.pid == idx) { continue; }
+                    let src = AppSrc { pid: idx, buf: Arc::new(Mutex::new(VecDeque::new())), stop: Arc::new(AtomicBool::new(false)) };
+                    let (b, st, all) = (src.buf.clone(), src.stop.clone(), stop.clone());
+                    std::thread::spawn(move || linux_stream_capture(idx, b, st, all, rate, ch));
+                    list.push(src);
+                }
+            }
+            for _ in 0..20 {
+                if stop.load(Ordering::Relaxed) { break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        for g in &groups {
+            for s in g.lock().unwrap().iter() { s.stop.store(true, Ordering::Relaxed); }
+        }
+    });
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn app_supervisor(_: [Group; 4], _: Arc<AtomicBool>, _: u32, _: u16) {}
+
+#[cfg(target_os = "linux")]
+struct LinuxStream { index: u32, pid: Option<u32>, binary: String, name: String }
+
+/// Playback streams from `pactl list sink-inputs` (text output: works with PulseAudio and pipewire-pulse,
+/// old and new pactl). None = pactl missing / no sound server.
+#[cfg(target_os = "linux")]
+fn linux_sink_inputs() -> Option<Vec<LinuxStream>> {
+    let o = sys_cmd("pactl").env("LC_ALL", "C").args(["list", "sink-inputs"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    if !o.status.success() { return None; }
+    Some(parse_sink_inputs(&String::from_utf8_lossy(&o.stdout)))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_sink_inputs(text: &str) -> Vec<LinuxStream> {
+    let mut out: Vec<LinuxStream> = Vec::new();
+    // properties look like:   application.process.binary = "firefox"
+    let prop = |l: &str, key: &str| -> Option<String> {
+        let rest = l.trim().strip_prefix(key)?.trim_start().strip_prefix('=')?.trim();
+        Some(rest.trim_matches('"').to_string())
+    };
+    for l in text.lines() {
+        if let Some(n) = l.trim().strip_prefix("Sink Input #") {
+            if let Ok(index) = n.trim().parse() { out.push(LinuxStream { index, pid: None, binary: String::new(), name: String::new() }); }
+            continue;
+        }
+        let Some(s) = out.last_mut() else { continue };
+        if let Some(v) = prop(l, "application.process.id") { s.pid = v.parse().ok(); }
+        else if let Some(v) = prop(l, "application.process.binary") { s.binary = v; }
+        else if let Some(v) = prop(l, "application.name") { s.name = v; }
+    }
+    // Echo's own sounds (save / bookmark beeps) and capture helpers are never an app track
+    out.retain(|s| !matches!(s.binary.as_str(), "echo" | "echo-clips" | "parec" | "pw-play" | "paplay"));
+    out
+}
+
+/// Which app track a stream belongs on (1 Discord, 2 browsers, 3 music), from its binary or app name.
+#[cfg(target_os = "linux")]
+fn linux_app_group(binary: &str, name: &str) -> Option<usize> {
+    let b = binary.to_lowercase();
+    let b = b.trim_end_matches(".exe");
+    let n = name.to_lowercase();
+    const DISCORD: &[&str] = &["discord", "discordcanary", "discordptb", "discord-canary", "discord-ptb", "vesktop", "webcord", "legcord", "armcord", "equibop"];
+    const BROWSER: &[&str] = &["firefox", "firefox-bin", "firefox-esr", "chrome", "google-chrome", "chromium", "chromium-browser", "brave", "brave-browser",
+        "msedge", "microsoft-edge", "opera", "vivaldi", "vivaldi-bin", "librewolf", "zen", "zen-bin", "floorp", "waterfox", "thorium"];
+    const MUSIC: &[&str] = &["spotify", "tidal-hifi", "deezer", "vlc", "rhythmbox", "elisa", "strawberry", "clementine", "audacious", "amberol",
+        "lollypop", "youtube-music", "youtube-music-desktop-app", "cider", "feishin", "spotube", "tauon", "quodlibet", "musicbee", "foobar2000", "aimp"];
+    if DISCORD.contains(&b) || n.contains("discord") || n == "vesktop" || n == "webrtc voiceengine" && b.contains("discord") { return Some(1); }
+    if BROWSER.contains(&b) || ["firefox", "chromium", "google chrome", "brave", "microsoft edge", "vivaldi", "librewolf", "zen"].iter().any(|x| n == *x) { return Some(2); }
+    if MUSIC.contains(&b) || ["spotify", "vlc media player", "rhythmbox", "elisa", "strawberry", "tidal", "deezer", "cider", "amberol"].iter().any(|x| n == *x) { return Some(3); }
+    None
+}
+
+/// `pid` and all its child processes (from /proc/<pid>/stat parent ids).
+#[cfg(target_os = "linux")]
+fn linux_process_tree(pid: u32) -> Vec<u32> {
+    let mut parent: Vec<(u32, u32)> = Vec::new();
+    if let Ok(rd) = fs::read_dir("/proc") {
+        for e in rd.flatten() {
+            let Ok(p) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+            let Ok(st) = fs::read_to_string(e.path().join("stat")) else { continue };
+            // "pid (comm) state ppid ..." - comm can contain spaces / brackets: read after the last ')'
+            let Some(rest) = st.rfind(')').map(|i| &st[i + 1..]) else { continue };
+            if let Some(pp) = rest.split_whitespace().nth(1).and_then(|x| x.parse().ok()) { parent.push((p, pp)); }
+        }
+    }
+    let mut tree = vec![pid];
+    let mut i = 0;
+    while i < tree.len() && tree.len() < 4096 {
+        let p = tree[i];
+        for &(c, pp) in &parent { if pp == p && !tree.contains(&c) { tree.push(c); } }
+        i += 1;
+    }
+    tree
+}
+
+/// Records one playback stream (sink input) into `buf` until it's not wanted or the stream ends.
+#[cfg(target_os = "linux")]
+fn linux_stream_capture(idx: u32, buf: Buf, st: Arc<AtomicBool>, all: Arc<AtomicBool>, rate: u32, ch: u16) {
+    use std::io::Read;
+    let mut child = match sys_cmd("parec")
+        .args([&format!("--monitor-stream={idx}"), "--format=float32le", &format!("--rate={rate}"), &format!("--channels={ch}"), "--raw", "--latency-msec=20",
+            "--client-name=Echo", "--stream-name=Echo app track"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+    {
+        Ok(c) => c,
+        Err(e) => { log_line(&format!("audio: could not record stream {idx}: {e}")); st.store(true, Ordering::Relaxed); return; }
+    };
+    let mut out = child.stdout.take().unwrap();
+    // a reader thread, so a quiet stream (no data) can still be stopped at once
+    let (b2, st2) = (buf.clone(), st.clone());
+    let reader = std::thread::spawn(move || {
+        let mut b = vec![0u8; 4096 * 4];
+        let mut rest: Vec<u8> = Vec::new();
+        loop {
+            let n = match out.read(&mut b) { Ok(0) | Err(_) => break, Ok(n) => n };
+            rest.extend_from_slice(&b[..n]);
+            let whole = rest.len() / 4 * 4;
+            {
+                let mut q = b2.lock().unwrap();
+                for c in rest[..whole].chunks_exact(4) { q.push_back(f32::from_le_bytes([c[0], c[1], c[2], c[3]])); }
+                // nobody reading (should not happen): keep at most ~2 s
+                let cap = rate as usize * ch as usize * 2;
+                if q.len() > cap { let d = q.len() - cap; q.drain(..d); }
+            }
+            rest.drain(..whole);
+        }
+        st2.store(true, Ordering::Relaxed);   // stream ended: the supervisor drops it
+    });
+    while !st.load(Ordering::Relaxed) && !all.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    st.store(true, Ordering::Relaxed);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+}
 
 /// Mixes desktop + mic and writes to ffmpeg at exactly real-time pace,
 /// padding with silence when nothing is playing (keeps A/V in sync).
@@ -1898,31 +2355,51 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, window: isize) ->
     Some((args, name))
 }
 
+/// gpu-screen-recorder runs constant bitrate: with smart bitrate on, cfg.bitrate_mbps is the Windows encoder's
+/// MAXIMUM (average / 0.6 etc.), so Linux records at the average instead (before: 33 Mbps CBR for "20 avg")
+#[cfg(target_os = "linux")]
+fn linux_kbps(cfg: &Settings) -> u32 {
+    // gpu-screen-recorder runs a CONSTANT bitrate: it can't go up in busy scenes like Windows' smart bitrate does,
+    // so the old "60-90 % of the maximum" (12 Mbps for 20) starved fast motion / foliage = blocky clips (chat 24).
+    // Linux records at the full bitrate the user picked.
+    let _ = (cfg.smart_bitrate, cfg.smart_quality);
+    (cfg.bitrate_mbps * 1000).max(1000) as u32
+}
+
 /// Linux: gpu-screen-recorder captures the screen and encodes on the GPU (VAAPI),
 /// writes MPEG-TS into a FIFO, ffmpeg copies it into the same segment buffer as on Windows.
 #[cfg(target_os = "linux")]
 fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -> Option<(Vec<String>, String)> {
-    let _ = Command::new("pkill").args(["-f", "gpu-screen-recorder.*clipper_v_"]).status();
-    let name = std::env::temp_dir().join(format!("clipper_v_{}_{}.ts", std::process::id(), i));
+    let _ = sys_cmd("pkill").args(["-f", "gpu-screen-recorder.*clipper_v_"]).status();
+    // a new name every start: the previous run's clean-up (below) deleted the pipe of the NEXT start when both had
+    // the same name ("Error opening input … No such file" right after a restart)
+    static RUN: AtomicU32 = AtomicU32::new(0);
+    let name = std::env::temp_dir().join(format!("clipper_v_{}_{}_{}.ts", std::process::id(), i, RUN.fetch_add(1, Ordering::Relaxed)));
     let _ = fs::remove_file(&name);
-    let ok = Command::new("mkfifo").arg(&name).status().map(|s| s.success()).unwrap_or(false);
+    let ok = sys_cmd("mkfifo").arg(&name).status().map(|s| s.success()).unwrap_or(false);
     if !ok {
         log_line("gsr: could not create the video pipe (mkfifo)");
         return None;
     }
     let codec = match cfg.codec.as_str() { "hevc" => "hevc", "av1" => "av1", _ => "h264" };
-    let mut a: Vec<String> = vec![
-        "-w".into(), "screen".into(), "-f".into(), cfg.fps.to_string(), "-k".into(), codec.into(),
-        "-c".into(), "mpegts".into(), "-bm".into(), "cbr".into(), "-q".into(), (cfg.bitrate_mbps * 1000).to_string(),
+    // Flatpak: no KMS capture (needs root rights the sandbox can't have) - the desktop's screen-share portal
+    // instead (KDE/GNOME ask once which screen; "-restore-portal-session" remembers the answer)
+    let target: Vec<String> = if crate::linuxutil::in_flatpak() {
+        vec!["-w".into(), "portal".into(), "-restore-portal-session".into(), "yes".into()]
+    } else { vec!["-w".into(), "screen".into()] };
+    let mut a: Vec<String> = target;
+    a.extend::<Vec<String>>(vec![
+        "-f".into(), cfg.fps.to_string(), "-k".into(), codec.into(),
+        "-c".into(), "mpegts".into(), "-bm".into(), "cbr".into(), "-q".into(), linux_kbps(cfg).to_string(),
         "-keyint".into(), SEG.to_string(), "-cursor".into(), if cfg.capture_cursor { "yes" } else { "no" }.into(), "-fm".into(), "cfr".into(),
-    ];
+    ]);
     if let Ok(h) = cfg.resolution.parse::<u32>() {
         a.extend(["-s".into(), format!("{}x{h}", h * 16 / 9)]);
     }
     a.extend(["-o".into(), name.to_string_lossy().into_owned()]);
     log_line(&format!("gsr: gpu-screen-recorder {}", a.join(" ")));
     let log = fs::OpenOptions::new().create(true).append(true).open(log_path()).ok();
-    let mut cmd = Command::new("gpu-screen-recorder");
+    let mut cmd = sys_cmd("gpu-screen-recorder");
     cmd.args(&a).stdin(Stdio::null()).stdout(Stdio::null());
     if let Some(l) = log { cmd.stderr(l); }
     let mut child = match cmd.spawn() {
@@ -1940,7 +2417,7 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
             if let Ok(Some(st)) = child.try_wait() { log_line(&format!("gsr: exited ({st})")); break; }
             std::thread::sleep(Duration::from_millis(200));
         }
-        let _ = Command::new("kill").args(["-INT", &child.id().to_string()]).status();
+        let _ = sys_cmd("kill").args(["-INT", &child.id().to_string()]).status();
         for _ in 0..25 {
             if matches!(child.try_wait(), Ok(Some(_))) { break; }
             std::thread::sleep(Duration::from_millis(100));
@@ -1957,6 +2434,10 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
         "-i".into(), name.to_string_lossy().into_owned(),
         "-map".into(), "1:v".into(),
         "-c:v".into(), "copy".into(),
+        // Wall-clock stamps (arrival time from the pipe) jitter - big keyframes arrive late, which left a one-frame
+        // hole after some keyframes = a hitch every 2 s (chat 24). gpu-screen-recorder runs at a constant frame
+        // rate (-fm cfr), so keep the wall-clock time of the FIRST frame (A/V sync) and number the rest evenly.
+        "-bsf:v".into(), format!("setts=ts=STARTPTS+N/({}*TB)", cfg.fps.max(1)),
     ];
     Some((args, name.to_string_lossy().into_owned()))
 }
@@ -1989,6 +2470,7 @@ fn full_range_share(p: &Path) -> f64 {
 fn to_tv_range(src: &Path, out: &Path) -> bool {
     let vf = "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p";
     let run = |venc: &[&str]| -> bool {
+        if skip_enc(venc) { return false; }
         ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
             .args(["-map", "0:v:0", "-map", "0:a?", "-vf", vf]).args(venc).args(TV_TAGS)
             .args(["-c:a", "copy", "-movflags", "+faststart", "-f", "mp4"]).arg(out)
@@ -2058,6 +2540,10 @@ impl Recorder {
     }
 
     pub fn start(&self) -> Result<(), String> {
+        // Flatpak first start: the screen-share dialog waits for the Welcome screen + shortcut dialog
+        // (main.rs starts recording once they're done)
+        #[cfg(target_os = "linux")]
+        if !crate::linuxutil::flatpak_may_record() { return Ok(()); }
         let _life = self.life.lock().unwrap_or_else(|e| e.into_inner());
         self.stop_inner();
         let cfg = self.settings();
@@ -2394,10 +2880,8 @@ impl Recorder {
 
     fn join(&self, segs: &[(SystemTime, PathBuf)], out: &PathBuf) -> Result<bool, String> {
         let list = self.buf_dir.join(format!("list_{}.txt", std::process::id()));
-        let body: String = segs
-            .iter()
-            .map(|(_, p)| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/")))
-            .collect();
+        let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
+        let body = concat_list(&paths);
         fs::write(&list, body).map_err(err)?;
         let status = ffmpeg()
             .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
@@ -2495,7 +2979,11 @@ impl Recorder {
         f.take(256 * 1024).read_to_end(&mut new).ok()?;
         REC_LOG_POS.store(len, Ordering::Relaxed);
         let t = String::from_utf8_lossy(&new);
-        if t.contains("Terminating thread with return code") || t.contains("Error submitting audio frame") || t.contains("Error submitting video frame") {
+        // only the recorder's ffmpeg writes straight into the log; exports etc. go through log_line (counted there):
+        // an export failing on an encoder restarted the recorder over and over ("Recorder stopped" spam, chat 23)
+        let seen: u64 = REC_FAIL_MARKS.iter().map(|m| t.matches(m).count() as u64).sum();
+        let other = LOGGED_MARKS.swap(0, Ordering::Relaxed);
+        if seen > other {
             return Some("an encoder inside ffmpeg stopped".into());
         }
         None
@@ -2852,7 +3340,7 @@ impl Recorder {
                 fs::rename(&p, &to).map_err(err)?;
                 let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 if new_stem != stem {
-                    for x in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+                    for x in ["jpg", "dur", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
                         let _ = fs::rename(self.thumbs_dir().join(format!("{stem}.{x}")), self.thumbs_dir().join(format!("{new_stem}.{x}")));
                     }
                     let mut meta = self.meta_all();
@@ -3319,7 +3807,7 @@ impl Recorder {
         #[cfg(not(windows))]
         {
             // to the Trash (KDE / freedesktop), plain delete if gio is missing
-            let ok = Command::new("gio").arg("trash").arg(&p).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+            let ok = sys_cmd("gio").arg("trash").arg(&p).stderr(Stdio::null()).status().map_or(false, |s| s.success());
             if !ok { fs::remove_file(&p).map_err(err)?; }
         }
         if !shot {
@@ -3331,7 +3819,7 @@ impl Recorder {
             let _ = self.set_favorite(&stem, false);
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.dur")));
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
-            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip2.jpg")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip3.jpg")));
             for t in 0..6 {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.a{t}.m4a")));
             }
@@ -3379,7 +3867,7 @@ impl Recorder {
                 meta.insert(name.clone(), m);
                 let _ = self.write_meta(&meta);
             }
-            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
                 let _ = fs::rename(self.thumbs_dir().join(format!("{old}.{ext}")), self.thumbs_dir().join(format!("{name}.{ext}")));
             }
         }
@@ -3436,6 +3924,7 @@ impl Recorder {
             let buf = format!("{}k", (v_kbps * 2.0) as u64);
             let ab = format!("{}k", a_kbps as u64);
             let run = |venc: &[&str]| -> Result<bool, String> {
+                if skip_enc(venc) { return Ok(false); }
                 let mut c = ffmpeg();
                 c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
                 match self.watermark_graph("v0", "out", th) {
@@ -3583,6 +4072,7 @@ impl Recorder {
         let copy_ok = vc == "h264" && !full && vinfo.trim().starts_with("yuv420p") && (ac.is_empty() || ac == "aac" || ac == "mp3");
         let vf = if full { "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p".to_string() } else { TV_YUV.to_string() };
         let run = |args: &[&str]| -> bool {
+            if skip_enc(args) { return false; }
             let reenc = !args.contains(&"copy");
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
@@ -3897,6 +4387,7 @@ impl Recorder {
         };
 
         let run = |venc: &[&str]| -> Result<bool, String> {
+            if skip_enc(venc) { return Ok(false); }
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
                 .arg(&src)
@@ -3943,7 +4434,7 @@ impl Recorder {
                 let _ = fs::remove_file(&tmp);
                 return Err("original is in use - close it and try again".into());
             }
-            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "a1.m4a", "a2.m4a"] {
+            for ext in ["jpg", "dur", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a"] {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{ext}")));
             }
         }
@@ -3985,6 +4476,7 @@ impl Recorder {
         let tmp = dir.join(format!("{}.tmp", src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
         let t0 = Instant::now();
         let run = |venc: &[&str]| -> bool {
+            if skip_enc(venc) { return false; }
             ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
                 .args(["-map", "0", "-c:a", "copy"]).args(venc)
                 .args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
@@ -4025,6 +4517,7 @@ impl Recorder {
         let t0 = Instant::now();
         // ffmpeg reports "out_time_us=<microseconds>" on stdout while encoding -> progress 0..1
         let run = |venc: &[&str]| -> bool {
+            if skip_enc(venc) { return false; }
             progress(0.0);
             let child = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
                 .args(["-map", "0", "-c:a", "copy"]).args(venc)
@@ -4075,7 +4568,7 @@ impl Recorder {
         }
         if let Some(stem) = src.file_stem() {
             let stem = stem.to_string_lossy();
-            for x in ["strip.jpg", "strip2.jpg", "levels.json", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
+            for x in ["strip.jpg", "strip2.jpg", "strip3.jpg", "levels.json", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.{x}")));
             }
         }
@@ -4098,13 +4591,19 @@ impl Recorder {
         let t = self.thumb(clip)?;
         let stem = PathBuf::from(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
         // ".strip2": older strips of short clips ended in black (see below) - made again once
-        let img = self.thumbs_dir().join(format!("{stem}.strip2.jpg"));
+        let img = self.thumbs_dir().join(format!("{stem}.strip3.jpg"));
         // one at a time: hover, open and the after-save build can ask for the same strip at once
         static STRIP_LOCK: Mutex<()> = Mutex::new(());
         let _one = STRIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if !img.exists() {
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip2.jpg")));
             let fps = N as f64 / t.duration.max(1.0);
+            // keyframes only is exact enough for Echo's recordings (a keyframe every 2 s), but edited / imported
+            // clips can have one every 4-10 s (a 10 s black gap from the editor showed up seconds late in the
+            // seek-bar preview, chat 25): those decode every frame (packet flags are read without decoding)
+            let gap = max_key_gap(clip);
+            let keys_only = gap <= 2.5 || t.duration > 600.0;
             let t0 = Instant::now();
             // decode keyframes only (one every ~2 s) - 10+ minute clips took ages otherwise.
             // tpad repeats the last keyframe to the end: without it the tiles after the last keyframe stayed
@@ -4120,7 +4619,9 @@ impl Recorder {
             // still decoded frame by frame: 48 s for a 3 min clip, chat 21); -an/-sn: the 6 audio tracks aren't read
             // into the decoder at all; 2 threads keep it light next to a game
             let child = cmd
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "2", "-discard", "nokey", "-skip_frame", "nokey", "-an", "-sn", "-dn", "-i"])
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-threads", if keys_only { "2" } else { "4" }])
+                .args(if keys_only { &["-discard", "nokey", "-skip_frame", "nokey"][..] } else { &[][..] })
+                .args(["-an", "-sn", "-dn", "-i"])
                 .arg(clip)
                 .args(["-map", "0:v:0", "-vf", &format!("tpad=stop_mode=clone:stop_duration={:.2},fps={fps:.5},scale=-2:72:flags=fast_bilinear,tile={N}x1", t.duration.max(1.0) + 1.0),
                     "-frames:v", "1", "-q:v", "5"])
@@ -4144,6 +4645,7 @@ impl Recorder {
             *STRIP_RUN.lock().unwrap_or_else(|e| e.into_inner()) = None;
             if !ok {
                 let _ = fs::remove_file(&img);
+                log_line(&format!("filmstrip: {stem} failed (ffmpeg could not read the clip, {:.0} s long)", t.duration));
                 return Err("could not build filmstrip".into());
             }
             log_line(&format!("filmstrip: {stem} ({:.0} s clip) in {} ms", t.duration, t0.elapsed().as_millis()));
@@ -4155,8 +4657,85 @@ impl Recorder {
     /// making one - cloud clips have no local file for ffmpeg.
     pub fn cached_strip(&self, rel: &str) -> Option<String> {
         let stem = Path::new(rel).file_stem()?.to_string_lossy().to_string();
-        let img = self.thumbs_dir().join(format!("{stem}.strip2.jpg"));
+        let img = self.thumbs_dir().join(format!("{stem}.strip3.jpg"));
         img.exists().then(|| img.to_string_lossy().into())
+    }
+
+    /// Seek-bar strip (40 tiles, same file as filmstrip()) for a cloud-only clip, made by ffmpeg straight from
+    /// the streaming server: one pass over the clip, keyframes only. Used on Linux,
+    /// where WebKitGTK can't draw <video> frames into a canvas (the strip and hover frames stayed empty).
+    pub fn cloud_strip(&self, rel: &str) -> Result<String, String> {
+        if let Some(p) = self.cached_strip(rel) { return Ok(p); }
+        const N: u32 = 40;
+        let d = self.cloud_thumb(rel)?.duration;
+        if d <= 0.0 { return Err("clip length unknown".into()); }
+        let stem = Path::new(rel).file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+        let img = self.thumbs_dir().join(format!("{stem}.strip3.jpg"));
+        let url = format!("{}/{}", self.cloud_stream_base()?, self.cpath(rel).split('/').map(url_part).collect::<Vec<_>>().join("/"));
+        static CLOUD_STRIP_LOCK: Mutex<()> = Mutex::new(());
+        let _one = CLOUD_STRIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if img.exists() { return Ok(img.to_string_lossy().into()); }
+        let t0 = Instant::now();
+        // ONE pass over the clip, only its keyframes decoded, picked at 40 even spots (the last keyframe repeated to
+        // the end). Before: 40 separate inputs = 40 look-ups at the cloud one after another (21 s for a 30 s clip on
+        // Google Drive) while the player's own stream waited behind them (chat 24).
+        let vf = format!("tpad=stop_mode=clone:stop_duration=5,fps={N}/{d:.3}:start_time=0,scale=-2:72:flags=fast_bilinear,setsar=1,tile={N}x1");
+        let out = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "2", "-skip_frame", "nokey", "-an", "-sn", "-dn", "-i", &url,
+                "-vf", &vf, "-frames:v", "1", "-q:v", "5"]).arg(&img)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+        if !out.status.success() || !img.exists() {
+            let _ = fs::remove_file(&img);
+            let e = String::from_utf8_lossy(&out.stderr);
+            log_line(&format!("filmstrip: cloud {stem} failed: {}", e.lines().last().unwrap_or("").chars().take(200).collect::<String>()));
+            return Err("could not build filmstrip".into());
+        }
+        log_line(&format!("filmstrip: cloud {stem} ({d:.0} s clip) in {} ms", t0.elapsed().as_millis()));
+        Ok(img.to_string_lossy().into())
+    }
+
+    /// Linux, dragging the seek bar: WebKitGTK can't show the video jumping around (grey patches), so a picture
+    /// covers it while dragging. This is the sharper set for that: 60 frames at 640x360 in a 10x6 grid
+    /// ("<name>.scrub.jpg" next to the thumbnails). Local clip (`path`) or cloud clip (`rel`, read over the
+    /// streaming server). Clips up to 90 s: every frame decoded (exact spots); longer: keyframes only (one per ~2 s).
+    pub fn scrub_sheet(&self, path: Option<&str>, rel: Option<&str>) -> Result<String, String> {
+        const COLS: u32 = 10;
+        const ROWS: u32 = 6;
+        let n = COLS * ROWS;
+        let (input, stem, d) = match (path, rel) {
+            (Some(p), _) => (p.to_string(), Path::new(p).file_stem().ok_or("bad path")?.to_string_lossy().to_string(), self.thumb(p)?.duration),
+            (None, Some(r)) => (
+                format!("{}/{}", self.cloud_stream_base()?, self.cpath(r).split('/').map(url_part).collect::<Vec<_>>().join("/")),
+                Path::new(r).file_stem().ok_or("bad path")?.to_string_lossy().to_string(),
+                self.cloud_thumb(r)?.duration,
+            ),
+            _ => return Err("no clip".into()),
+        };
+        if d <= 0.0 { return Err("clip length unknown".into()); }
+        let img = self.thumbs_dir().join(format!("{stem}.scrub.jpg"));
+        static SCRUB_LOCK: Mutex<()> = Mutex::new(());
+        let _one = SCRUB_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // a local clip changed since (trimmed / replaced): make it again
+        let fresh = match (fs::metadata(&img).and_then(|m| m.modified()), path.map(|p| fs::metadata(p).and_then(|m| m.modified()))) {
+            (Ok(_), None) => true,
+            (Ok(a), Some(Ok(b))) => a >= b,
+            _ => false,
+        };
+        if fresh { return Ok(img.to_string_lossy().into()); }
+        let t0 = Instant::now();
+        let mut cmd = ffmpeg();
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "4"]);
+        if d > 90.0 { cmd.args(["-discard", "nokey", "-skip_frame", "nokey"]); }
+        let vf = format!("tpad=stop_mode=clone:stop_duration=5,fps={n}/{d:.3}:start_time=0,scale=640:360:force_original_aspect_ratio=decrease:flags=bilinear,pad=640:360:-1:-1,setsar=1,tile={COLS}x{ROWS}");
+        let out = cmd.args(["-an", "-sn", "-dn", "-i", &input, "-map", "0:v:0", "-vf", &vf, "-frames:v", "1", "-q:v", "4"]).arg(&img)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+        if !out.status.success() || !img.exists() {
+            let _ = fs::remove_file(&img);
+            let e = String::from_utf8_lossy(&out.stderr);
+            log_line(&format!("scrub pictures: {stem} failed: {}", e.lines().last().unwrap_or("").chars().take(200).collect::<String>()));
+            return Err("could not make the scrub pictures".into());
+        }
+        log_line(&format!("scrub pictures: {stem} ({d:.0} s clip) in {} ms", t0.elapsed().as_millis()));
+        Ok(img.to_string_lossy().into())
     }
 
     fn probe(&self, clip: &Path) -> (u32, u32, bool) {
@@ -4285,7 +4864,34 @@ impl Recorder {
         fs::create_dir_all(&dir).map_err(err)?;
         let prefix = if cfg.name_by_game { detect_game() } else { None }.unwrap_or_else(|| "Screenshot".into());
         let out = dir.join(format!("{prefix} {}", chrono::Local::now().format("%Y-%m-%d %H-%M-%S.png")));
+        // Linux: the ffmpeg screen grabbers below are Windows-only (screenshots never worked on Linux).
+        // 1) the desktop's Screenshot portal (full resolution, works in the Flatpak; KDE may ask once),
+        // 2) the newest picture in the replay buffer (recording resolution)
+        #[cfg(target_os = "linux")]
+        {
+            if crate::linuxutil::portal_screenshot(&out) {
+                log_line(&format!("screenshot: {} (portal)", out.display()));
+                return Ok(out.to_string_lossy().into());
+            }
+            let mut segs: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&self.buf_dir).map(|rd| rd.flatten()
+                .filter(|e| e.path().extension().map_or(false, |x| x == "ts"))
+                .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect()).unwrap_or_default();
+            segs.sort();
+            // the newest segment is still being written: take the last frame of the one before it if needed
+            for (_, seg) in segs.iter().rev().take(2) {
+                let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-sseof", "-0.5", "-i"]).arg(seg)
+                    .args(["-update", "1", "-frames:v", "30"]).arg(&out)
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success());
+                if ok && fs::metadata(&out).map_or(false, |m| m.len() > 0) {
+                    log_line(&format!("screenshot: {} (from the replay buffer)", out.display()));
+                    return Ok(out.to_string_lossy().into());
+                }
+            }
+            log_line("screenshot: failed (no portal answer, no recording to take it from)");
+            return Err("screenshot failed - is Echo recording?".into());
+        }
         // desktop duplication (works for borderless/fullscreen games), GDI capture as a fallback
+        #[allow(unreachable_code)]
         let tries: [Vec<&str>; 2] = [
             vec!["-filter_complex", "ddagrab=output_idx=0:draw_mouse=0,hwdownload,format=bgra"],
             vec!["-f", "gdigrab", "-draw_mouse", "0", "-i", "desktop"],
@@ -4427,6 +5033,13 @@ impl Recorder {
         };
         out += &format!("\n--- log ---\n{}\n", tail(log_path()));
         out += &format!("\n--- previous run ---\n{}\n", tail(log_path().with_extension("prev.log")));
+        #[cfg(target_os = "linux")]
+        {
+            // video playback engine of the window (GStreamer): only its last 300 lines, it can be chatty
+            let s = fs::read_to_string(gst_log_path()).unwrap_or_default();
+            let lines: Vec<&str> = s.lines().collect();
+            out += &format!("\n--- player video engine (GStreamer warnings) ---\n{}\n", lines[lines.len().saturating_sub(300)..].join("\n"));
+        }
         let file = std::env::temp_dir().join(format!("Echo log {}.txt", chrono::Local::now().format("%Y-%m-%d %H-%M")));
         fs::write(&file, out).map_err(err)?;
         Ok(file.to_string_lossy().to_string())
@@ -4915,6 +5528,7 @@ impl Recorder {
             Ok((all.join(";"), last))
         };
         let run_with = |graph: &str, last: &str, venc: &[&str]| -> Result<bool, String> {
+            if skip_enc(venc) { return Ok(false); }
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src);
             for inp in &inputs {
@@ -5030,7 +5644,7 @@ impl Recorder {
             if let Some(stem) = p.file_stem() {
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.jpg", stem.to_string_lossy())));
                 let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip.jpg", stem.to_string_lossy())));
-                let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip2.jpg", stem.to_string_lossy())));
+                let _ = fs::remove_file(self.thumbs_dir().join(format!("{}.strip3.jpg", stem.to_string_lossy())));
             }
             log_line(&format!("colorfix: {} ({:.1}% pixels outside TV range)", c.name, out_of_range * 100.0));
             fixed += 1;
@@ -5060,6 +5674,11 @@ impl Recorder {
 fn ensure_rclone() -> Result<PathBuf, String> {
     #[cfg(not(windows))]
     {
+        // Flatpak: rclone comes with Echo (/app/bin) - no downloading programs inside the sandbox
+        #[cfg(target_os = "linux")]
+        if crate::linuxutil::in_flatpak() {
+            return Ok(PathBuf::from("/app/bin/rclone").exists().then(|| PathBuf::from("/app/bin/rclone")).unwrap_or_else(|| PathBuf::from("rclone")));
+        }
         // own up-to-date copy (distro rclone is often too old for Filen): ~/.config/Clipper/rclone
         let dir = app_dir().join("rclone");
         if let Some(p) = find_file(&dir, &["rclone"]).filter(|p| p.is_file()) {
@@ -5165,7 +5784,7 @@ fn uri_escape(p: &str) -> String {
 #[cfg(not(windows))]
 fn wl_copy(args: &[&str], data: &[u8]) -> Result<(), String> {
     let run = |prog: &str, a: Vec<&str>| -> bool {
-        let Ok(mut c) = Command::new(prog).args(&a).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return false };
+        let Ok(mut c) = sys_cmd(prog).args(&a).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return false };
         if let Some(mut i) = c.stdin.take() { let _ = i.write_all(data); }
         c.wait().map_or(false, |s| s.success())
     };
@@ -5732,7 +6351,7 @@ pub fn open_web(url: &str) -> Result<(), String> {
         return Err("Couldn't open the browser".into());
     }
     #[cfg(not(windows))]
-    Command::new("xdg-open").arg(url).spawn().map_err(err)?;
+    sys_cmd("xdg-open").arg(url).spawn().map_err(err)?;
     Ok(())
 }
 
@@ -6411,17 +7030,73 @@ impl Recorder {
                 }
             });
         }
-        let r = rclone_out(&["copyto", &remote(&self.cpath(rel)), &out.to_string_lossy()]);
+        // fast path: through the streaming server that's already running (its folder look-ups are cached) - a new
+        // rclone process per download first searched the folders again: ~20 s at 0 % even for a 2 MB clip (chat 24)
+        let fast = self.serve_download(rel, &out);
+        if let Err(e) = &fast { log_line(&format!("cloud: quick download of {rel} didn't work ({e}) - using rclone")); }
+        let r = if fast.is_ok() { Ok(String::new()) } else { rclone_out(&["copyto", &remote(&self.cpath(rel)), &out.to_string_lossy()]) };
         done.store(true, Ordering::Relaxed);
         DL_PROGRESS.lock().unwrap().remove(rel);
         r?;
-        log_line(&format!("cloud: downloaded {rel} in {:.0}s", t0.elapsed().as_secs_f32()));
+        log_line(&format!("cloud: downloaded {rel} in {:.0}s{}", t0.elapsed().as_secs_f32(), if fast.is_ok() { " (streaming server)" } else { "" }));
         let mut st = self.cloud_state();
         st.keep_remote.remove(rel);
         self.save_cloud_state(&st);
         let out = out.to_string_lossy().to_string();
         let _ = self.thumb(&out);
         Ok(out)
+    }
+
+    /// Download one cloud clip over the local streaming server (rclone serve http) into `out`, keeping the clip's
+    /// date (Last-Modified). Writes "<name>.echodl" first (the progress watcher sees it grow), renamed when complete.
+    fn serve_download(&self, rel: &str, out: &Path) -> Result<(), String> {
+        use std::io::{BufRead, BufReader, Write};
+        let base = self.cloud_stream_base()?;
+        let rest = base.strip_prefix("http://").ok_or("bad address")?;
+        let (host, tok) = rest.split_once('/').ok_or("bad address")?;
+        let enc = |seg: &str| seg.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+        let path = format!("/{tok}/{}", self.cpath(rel).trim_start_matches('/').split('/').map(enc).collect::<Vec<_>>().join("/"));
+        // the server process may still be starting (it answers only once it has connected to the cloud):
+        // "connection refused" -> try again for up to 20 s
+        let t0 = Instant::now();
+        let mut sock = loop {
+            match std::net::TcpStream::connect(host) {
+                Ok(c) => break c,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused && t0.elapsed() < Duration::from_secs(20) => {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(e) => return Err(err(e)),
+            }
+        };
+        if t0.elapsed() > Duration::from_secs(1) { log_line(&format!("cloud: streaming server answered after {:.1} s", t0.elapsed().as_secs_f32())); }
+        let _ = sock.set_read_timeout(Some(Duration::from_secs(60)));
+        // HTTP/1.0: a plain body, no chunked encoding
+        write!(sock, "GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n").map_err(err)?;
+        let mut r = BufReader::with_capacity(1 << 20, sock);
+        let mut line = String::new();
+        r.read_line(&mut line).map_err(err)?;
+        if line.split_whitespace().nth(1) != Some("200") { return Err(format!("server answered {}", line.trim())); }
+        let (mut len, mut modified): (Option<u64>, Option<SystemTime>) = (None, None);
+        loop {
+            let mut h = String::new();
+            if r.read_line(&mut h).map_err(err)? == 0 || h.trim().is_empty() { break; }
+            let (k, v) = match h.split_once(':') { Some((k, v)) => (k.trim().to_ascii_lowercase(), v.trim().to_string()), None => continue };
+            if k == "content-length" { len = v.parse().ok(); }
+            if k == "last-modified" {
+                modified = chrono::DateTime::parse_from_rfc2822(&v).ok()
+                    .and_then(|d| u64::try_from(d.timestamp()).ok()).map(|t| SystemTime::UNIX_EPOCH + Duration::from_secs(t));
+            }
+        }
+        let tmp = PathBuf::from(format!("{}.echodl", out.to_string_lossy()));
+        let mut f = fs::File::create(&tmp).map_err(err)?;
+        let n = match std::io::copy(&mut r, &mut f) { Ok(n) => n, Err(e) => { drop(f); let _ = fs::remove_file(&tmp); return Err(err(e)); } };
+        if let Some(t) = modified { let _ = f.set_modified(t); }
+        drop(f);
+        if n == 0 || len.map_or(false, |l| l != n) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("got {n} of {} bytes", len.map_or("?".into(), |l| l.to_string())));
+        }
+        fs::rename(&tmp, out).map_err(err)
     }
 
     /// Free up space: delete the PC copy once the cloud has the whole file (thumbnail stays).
@@ -6683,6 +7358,7 @@ impl Recorder {
         };
         let t0 = Instant::now();
         let run = |venc: &[&str]| -> bool {
+            if skip_enc(venc) { return false; }
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0"]);
             if audio { c.args(["-map", "0:a:0", "-c:a", "copy"]); }

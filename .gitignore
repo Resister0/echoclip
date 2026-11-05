@@ -11,3 +11,7 @@ clipper_ffmpeg.log
 Claude outputs/
 *.secret.txt
 *.key
+.flatpak-builder/
+/build-dir/
+/repo/
+/flatpak/flathub/

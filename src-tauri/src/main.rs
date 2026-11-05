@@ -22,19 +22,21 @@ use winutil as picker;
 #[cfg(target_os = "linux")]
 mod picker {
     pub fn pick_path(title: &str, filter: Option<(&str, &str)>, folder: bool) -> Option<String> {
+        // Flatpak: no kdialog / zenity inside the sandbox - the desktop's own file dialog through the portal
+        if crate::linuxutil::in_flatpak() { return crate::linuxutil::portal_pick(title, filter, folder); }
         let home = std::env::var("HOME").unwrap_or_default();
         let pat = filter.map(|(n, p)| format!("{n} ({})", p.replace(';', " ")));
-        let mut k = std::process::Command::new("kdialog");
+        let mut k = crate::recorder::sys_cmd("kdialog");
         k.arg("--title").arg(title);
         if folder { k.arg("--getexistingdirectory").arg(&home); } else { k.arg("--getopenfilename").arg(&home); if let Some(p) = &pat { k.arg(p); } }
         let out = match k.output() {
             Ok(o) => o,
             Err(_) => {
-                let mut z = std::process::Command::new("zenity");
+                let mut z = crate::recorder::sys_cmd("zenity");
                 z.args(["--file-selection", "--title", title]);
                 if folder { z.arg("--directory"); }
                 if let Some((n, p)) = filter { z.arg(format!("--file-filter={n} | {}", p.replace(';', " "))); }
-                z.output().ok()?
+                match z.output() { Ok(o) => o, Err(_) => return crate::linuxutil::portal_pick(title, filter, folder) }
             }
         };
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -85,7 +87,7 @@ fn can_self_update() -> bool {
     #[cfg(windows)]
     { std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("uninstall.exe").exists())).unwrap_or(false) }
     #[cfg(not(windows))]
-    { std::env::var_os("APPIMAGE").is_some() }
+    { std::env::var_os("APPIMAGE").is_some() && !linuxutil::in_flatpak() }
 }
 
 #[derive(serde::Serialize)]
@@ -105,7 +107,7 @@ fn linux_update_cmd() -> Option<String> {
     { None }
     #[cfg(not(windows))]
     {
-        if can_self_update() {
+        if can_self_update() || linuxutil::in_flatpak() {
             return None;
         }
         let exe = std::env::current_exe().ok()?;
@@ -134,6 +136,11 @@ async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     if current == "0.1.0" {
         if first { recorder::log_line("update: this is a hand-made build (0.1.0, build.cmd) - it never updates itself"); }
         return Ok(None); // own build (build.cmd / build.sh): never offer updates
+    }
+    #[cfg(target_os = "linux")]
+    if linuxutil::in_flatpak() {
+        if first { recorder::log_line(&format!("update: Flatpak {current} - updates come from the software store (Flathub)")); }
+        return Ok(None);
     }
     let u = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| {
         recorder::log_line(&format!("update: check failed: {e}"));
@@ -1111,6 +1118,14 @@ fn cached_strip(rec: State<'_, Recorder>, rel: String) -> Option<String> {
     rec.cached_strip(&rel)
 }
 #[tauri::command]
+async fn cloud_strip(rec: State<'_, Recorder>, rel: String) -> Result<String, String> {
+    rec.cloud_strip(&rel)
+}
+#[tauri::command]
+async fn scrub_sheet(rec: State<'_, Recorder>, path: Option<String>, rel: Option<String>) -> Result<String, String> {
+    rec.scrub_sheet(path.as_deref(), rel.as_deref())
+}
+#[tauri::command]
 async fn clip_is_av1(path: String) -> bool {
     recorder::is_av1(&path)
 }
@@ -1260,12 +1275,12 @@ fn open_in_folder(path: String) {
         // open the folder with the clip selected (Dolphin etc.), else just the folder
         let p = std::path::Path::new(&path);
         let uri = format!("file://{}", p.to_string_lossy().replace('%', "%25").replace(' ', "%20"));
-        let ok = !p.is_dir() && std::process::Command::new("dbus-send")
+        let ok = !p.is_dir() && crate::recorder::sys_cmd("dbus-send")
             .args(["--session", "--dest=org.freedesktop.FileManager1", "--type=method_call", "/org/freedesktop/FileManager1",
                    "org.freedesktop.FileManager1.ShowItems", &format!("array:string:{uri}"), "string:"])
             .status().map_or(false, |s| s.success());
         let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
-        if !ok { let _ = std::process::Command::new("xdg-open").arg(dir).spawn(); }
+        if !ok { let _ = crate::recorder::sys_cmd("xdg-open").arg(dir).spawn(); }
     }
 }
 
@@ -1323,6 +1338,17 @@ fn set_autostart(on: bool) {
         winutil::set_run_entry("Echo", on.then_some(cmd.as_str()));
         // the app used to be called Clipper: drop its old autostart entry
         winutil::set_run_entry("Clipper", None);
+    }
+    #[cfg(target_os = "linux")]
+    if linuxutil::in_flatpak() {
+        // the sandbox can't write ~/.config/autostart: the Background portal does it. Only ask when it changes
+        // (this runs at every start; "off" at the first start = nothing to undo, no question for the user)
+        static LAST: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+        let mut l = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = l.replace(on);
+        if prev == Some(on) || (prev.is_none() && !on) { return; }
+        linuxutil::portal_autostart(on);
+        return;
     }
     #[cfg(not(windows))]
     {
@@ -1406,6 +1432,13 @@ fn ui_ready(clips: u32) {
 }
 
 fn main() {
+    // Flatpak: the window's Wayland id must be the app id, or KDE/GNOME show a generic icon in the taskbar
+    // (GTK uses the program name, here "echo-clips")
+    #[cfg(target_os = "linux")]
+    if linuxutil::in_flatpak() {
+        glib::set_prgname(Some("link.echoclip.Echo"));
+        glib::set_application_name("Echo");
+    }
     STARTED.get_or_init(std::time::Instant::now);
     // Linux: map the Windows folders the code uses to their Linux homes
     #[cfg(target_os = "linux")]
@@ -1416,6 +1449,15 @@ fn main() {
             std::env::set_var("APPDATA", cfg);
         }
         if std::env::var_os("USERPROFILE").is_none() { std::env::set_var("USERPROFILE", &home); }
+        // the web view's video engine (GStreamer): warnings + errors into a side file that "Send log" includes
+        // (why a clip freezes in the player). Only when the user didn't set GST_DEBUG himself.
+        if std::env::var_os("GST_DEBUG").is_none() {
+            let p = recorder::gst_log_path();
+            let _ = std::fs::remove_file(&p);
+            std::env::set_var("GST_DEBUG", "2");
+            std::env::set_var("GST_DEBUG_NO_COLOR", "1");
+            std::env::set_var("GST_DEBUG_FILE", &p);
+        }
     }
     // rclone asking for the cloud config password (see recorder::secure_cloud_conf): answer and quit,
     // before anything else (no window, no "already running" check)
@@ -1464,6 +1506,18 @@ fn main() {
         .manage(Recorder::new(cfg.clone()))
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Linux: WebKitGTK scrolls in hard steps per wheel notch unless smooth scrolling is on (choppy, chat 23)
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.with_webview(|wv| {
+                    use webkit2gtk::{SettingsExt, WebViewExt};
+                    if let Some(s) = wv.inner().settings() {
+                        let was = s.enables_smooth_scrolling();
+                        s.set_enable_smooth_scrolling(true);
+                        recorder::log_line(&format!("webview: smooth scrolling {} (was {was}), hardware acceleration {:?}", s.enables_smooth_scrolling(), s.hardware_acceleration_policy()));
+                    }
+                });
+            }
             // turn off the browser's own shortcuts (Ctrl+F find bar, F5 reload, Ctrl+P print…) so Echo's own keys work
             #[cfg(windows)]
             if let Some(w) = app.get_webview_window("main") {
@@ -1736,6 +1790,7 @@ fn main() {
                     let mut vr_hwnd: isize = 0;
                     // capture target asked for in the last loop + how many loops in a row (switch only when steady)
                     let mut want_seen: (isize, u32) = (0, 0);
+                    let mut admin_warned: std::collections::HashSet<String> = Default::default();
                     let mut down = 0u32;
                     let mut last_fix = std::time::Instant::now() - std::time::Duration::from_secs(120);
                     loop {
@@ -1747,6 +1802,14 @@ fn main() {
                                 recorder::remember_game(&name, &exe);
                             }
                             *rec.last_game.lock().unwrap() = Some((name.clone(), std::time::Instant::now()));
+                            // the game is in front, you're playing, but no key reached Echo for a minute: an admin game
+                            // hides its keys from normal programs - say so once instead of save keys silently not working
+                            if hotkey::key_age() > 60 && winutil::idle_seconds() < 10 && !admin_warned.contains(&name)
+                                && winutil::elevated_vs_echo(pid) {
+                                admin_warned.insert(name.clone());
+                                recorder::log_line(&format!("hotkey: {name} runs as administrator - its keys don't reach Echo"));
+                                toast(&h, "Save keys can't reach this game", &format!("{name} runs as administrator. Start Echo as administrator too, or the game normally."), false);
+                            }
                             game = Some((name, pid));
                             game_hwnd = winutil::foreground_hwnd();
                         }
@@ -1892,6 +1955,21 @@ fn main() {
             std::thread::spawn(move || {
                 // cloud logins in echo.conf: encrypted once (Windows), a second or so the first time
                 handle.state::<Recorder>().secure_cloud();
+                // Flatpak: one desktop dialog at a time - Welcome screen, then the shortcut dialog, then the
+                // screen-share dialog (recording)
+                #[cfg(target_os = "linux")]
+                if linuxutil::in_flatpak() {
+                    let mut said = false;
+                    loop {
+                        if !linuxutil::portals_open() && handle.state::<Recorder>().settings().setup_done {
+                            std::thread::sleep(std::time::Duration::from_millis(1500));
+                            linuxutil::open_portals();
+                        }
+                        if linuxutil::flatpak_may_record() { break; }
+                        if !said { said = true; recorder::log_line("flatpak: recording starts after the Welcome screen and the shortcut dialog"); }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
                 let _ = handle.state::<Recorder>().start();
             });
             Ok(())
@@ -1967,7 +2045,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, cloud_strip, scrub_sheet, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

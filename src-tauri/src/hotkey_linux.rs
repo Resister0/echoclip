@@ -217,6 +217,8 @@ fn portal_loop() -> Result<(), String> {
     use dbus::arg::{PropMap, RefArg, Variant};
     use dbus::blocking::Connection;
     use dbus::message::MatchRule;
+    // Flatpak first start: no shortcut dialog on top of the Welcome screen
+    while !crate::linuxutil::portals_open() { std::thread::sleep(Duration::from_millis(500)); }
     let conn = Connection::new_session().map_err(|e| e.to_string())?;
     let sender = conn.unique_name().trim_start_matches(':').replace('.', "_");
     let proxy = conn.with_proxy("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", Duration::from_secs(30));
@@ -236,6 +238,15 @@ fn portal_loop() -> Result<(), String> {
             true
         }).map_err(|e| e.to_string())?;
     }
+    // the answer to our BindShortcuts dialog (OK or Cancel): the screen-share dialog may come next
+    let me = format!("echo{}_", std::process::id());
+    conn.add_match(MatchRule::new_signal("org.freedesktop.portal.Request", "Response"), move |_: (), _, msg| {
+        if msg.path().map_or(false, |p| { let p = p.to_string(); p.contains(&me) && p.ends_with('b') }) {
+            crate::linuxutil::set_shortcuts_settled();
+        }
+        true
+    }).map_err(|e| e.to_string())?;
+    let mut bound_at: Option<Instant> = None;
     let mut n = 0u32;
     PORTAL_DIRTY.store(true, Ordering::Relaxed);
     let mut session: Option<dbus::Path<'static>> = None;
@@ -279,7 +290,10 @@ fn portal_loop() -> Result<(), String> {
             let _: (dbus::Path,) = proxy.method_call(iface, "BindShortcuts", (sp.clone(), list, "", opt)).map_err(|e| e.to_string())?;
             crate::recorder::log_line("hotkey: shortcuts sent to the KDE portal (confirm them in the KDE dialog)");
             session = Some(sp);
+            bound_at.get_or_insert_with(Instant::now);
         }
+        // no answer (dialog ignored / portal without one): don't hold recording back forever
+        if bound_at.is_some_and(|t| t.elapsed() > Duration::from_secs(90)) { crate::linuxutil::set_shortcuts_settled(); }
         conn.process(Duration::from_millis(500)).map_err(|e| e.to_string())?;
     }
 }

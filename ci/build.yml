@@ -60,6 +60,9 @@ jobs:
             Echo-Setup.exe
             Echo-Setup.exe.sig
           if-no-files-found: warn
+          # only passed on to the release job (the release keeps the files) - 1 day instead of 90 keeps the
+          # private repo inside GitHub's free 0.5 GB Actions storage
+          retention-days: 1
 
   linux:
     # Ubuntu 22.04 = older system libraries, so the build also runs on newer distros (Fedora / Nobara, Arch, Ubuntu 24…)
@@ -129,10 +132,16 @@ jobs:
             Echo-x86_64.AppImage
             Echo-x86_64.AppImage.sig
           if-no-files-found: warn
+          # only passed on to the release job (the release keeps the files) - 1 day instead of 90 keeps the
+          # private repo inside GitHub's free 0.5 GB Actions storage
+          retention-days: 1
 
   release:
     # publishes whatever built (one OS failing doesn't block the other)
     needs: [windows, linux]
+    permissions:
+      contents: write   # gh release
+      actions: write    # delete this run's artifacts
     if: always() && (needs.windows.result == 'success' || needs.linux.result == 'success')
     runs-on: ubuntu-latest
     steps:
@@ -154,6 +163,14 @@ jobs:
           Windows build: ${{ needs.windows.result }} / Linux build: ${{ needs.linux.result }}"
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           gh release create latest $files --title "Echo 1.0.${{ github.run_number }}" --notes "$notes"
+      - name: Delete this run's build files (the release has them now)
+        # artifacts of a private repo count against GitHub's free 0.5 GB Actions storage (~230 MB per publish)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" -q '.artifacts[].id' \
+            | xargs -r -I{} gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/{}" || echo "::warning::couldn't delete the build files"
 
   public:
     # copies the code (+ ci/public-build.yml as its workflow, + ci/version.txt) (without the private notes, see ci/public-exclude.txt) to the public repo

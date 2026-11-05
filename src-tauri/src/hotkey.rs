@@ -13,6 +13,11 @@ static DOWN: Mutex<[bool; 256]> = Mutex::new([false; 256]);
 static LAST: Mutex<[u32; 256]> = Mutex::new([0; 256]);
 /// last time a save fired (ms tick) - guards against double triggers
 static FIRED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// when the hook last saw any key (unix s) - a hook Windows removed (or an admin game in front) sees nothing
+static LAST_KEY_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) }
+/// seconds since the hook last saw a key
+pub fn key_age() -> u64 { unix_now().saturating_sub(LAST_KEY_AT.load(std::sync::atomic::Ordering::Relaxed)) }
 /// true (and remembers it) unless something fired in the last 0.4 s - the hook and Echo's own window can both
 /// see the same key press
 fn first_fire() -> bool {
@@ -93,6 +98,7 @@ pub fn set(list: &[(String, u32)]) -> Vec<String> {
 
 unsafe extern "system" fn hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if code >= 0 {
+        LAST_KEY_AT.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
         let k = &*(l.0 as *const KBDLLHOOKSTRUCT);
         let vk = (k.vkCode & 0xFF) as usize;
         let msg = w.0 as u32;
@@ -136,13 +142,31 @@ unsafe extern "system" fn hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 /// Install the hook on its own thread (needs a message loop). Call once.
 pub fn start(cb: Box<dyn Fn(u32) + Send + Sync>) {
     let _ = CB.set(cb);
+    LAST_KEY_AT.store(unix_now(), std::sync::atomic::Ordering::Relaxed);
     std::thread::spawn(|| unsafe {
-        if SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), None, 0).is_err() {
-            crate::recorder::log_line("hotkey: failed to install keyboard hook");
-            return;
-        }
+        let mut hk = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), None, 0) {
+            Ok(h) => h,
+            Err(_) => { crate::recorder::log_line("hotkey: failed to install keyboard hook"); return; }
+        };
+        // watchdog, every 20 s: Windows quietly removes a keyboard hook after a hard stall. Someone is using
+        // the PC but the hook saw no key for a minute -> put a fresh one in (a few microseconds of work)
+        let _ = SetTimer(None, 0, 20_000, None);
+        let mut logged: Option<std::time::Instant> = None;
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if msg.message == WM_TIMER {
+                if key_age() > 60 && crate::winutil::idle_seconds() < 20 {
+                    if let Ok(n) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), None, 0) {
+                        let _ = UnhookWindowsHookEx(hk);
+                        hk = n;
+                        if logged.map_or(true, |t| t.elapsed().as_secs() > 3600) {
+                            logged = Some(std::time::Instant::now());
+                            crate::recorder::log_line("hotkey: no keys seen for a minute while the PC is in use - keyboard hook renewed");
+                        }
+                    }
+                }
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

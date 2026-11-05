@@ -1,0 +1,295 @@
+# Echo - Flatpak manifest (Flathub / Bazaar / GNOME Software / KDE Discover)
+#
+# Local test build (from the repo root, on Nobara):
+#   flatpak run org.flatpak.Builder --user --install --force-clean --install-deps-from=flathub build-dir flatpak/link.echoclip.Echo.yml
+#   flatpak run link.echoclip.Echo
+# Full steps + test checklist: flatpak/README.md
+#
+# For the Flathub submission the "echo" module's `type: dir` source is swapped for the public repo
+# (type: git, url https://github.com/Resister0/echoclip.git, tag + commit) - see README.md.
+
+id: link.echoclip.Echo
+runtime: org.gnome.Platform
+runtime-version: '50'          # WebKitGTK 4.1 (2.54) + libsoup3 ship in GNOME 50; check before moving to 51
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: echo-clips
+
+finish-args:
+  - --share=ipc
+  - --share=network                 # cloud uploads / share links / sign-in
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio             # desktop + per-app audio tracks, mic (pactl / parec)
+  - --device=dri                    # GPU encoding (VAAPI / NVENC) + GPU video in the player
+  - --filesystem=xdg-videos         # clips: ~/Videos/EchoClips (and other clipping apps' folders to import)
+  - --filesystem=xdg-run/pipewire-0 # screen capture stream from the ScreenCast portal (gpu-screen-recorder -w portal)
+  - --talk-name=org.freedesktop.secrets            # cloud logins in the keyring (KWallet / GNOME Keyring)
+  - --talk-name=org.kde.StatusNotifierWatcher      # tray icon
+  - --filesystem=xdg-run/tray-icon:create         # the tray icon picture (Tauri writes it there for the tray to read)
+  - --talk-name=org.freedesktop.Notifications      # "Clip saved" popups (notify-send)
+  - --talk-name=org.freedesktop.ScreenSaver        # idle time (pause recording when away)
+  - --talk-name=org.freedesktop.FileManager1       # "Show in folder"
+  # VAAPI drivers: the GL extension's Mesa drivers (+ the Intel driver path), same list as Flathub's GPU Screen Recorder
+  - --env=LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri:/usr/lib/x86_64-linux-gnu/dri/intel-vaapi-driver:/usr/lib/x86_64-linux-gnu/dri/nvidia-vaapi-driver:/usr/lib/x86_64-linux-gnu/GL/lib/dri:/usr/lib/aarch64-linux-gnu/dri:/usr/lib/aarch64-linux-gnu/dri/nvidia-vaapi-driver:/usr/lib/aarch64-linux-gnu/GL/lib/dri:/app/lib/dri
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/*.a
+  - /lib/*.la
+  - /share/man
+  - /share/doc
+  - /share/gtk-doc
+
+modules:
+  # ---- tray icon (Tauri loads libayatana-appindicator at runtime; not in the GNOME runtime) ----
+  - libayatana-appindicator3-0.1.yml
+
+  # ---- clipboard: "Copy" puts the clip file on the clipboard (wl-copy --type text/uri-list) ----
+  - name: wl-clipboard
+    buildsystem: meson
+    config-opts:
+      - -Dzshcompletiondir=no
+      - -Dfishcompletiondir=no
+    sources:
+      - type: git
+        url: https://github.com/bugaevc/wl-clipboard.git
+        tag: v2.3.0
+        commit: 67a7b937895bceec1ae5ccebb10216f63f70ca1b
+
+  # ---- pactl / parec: microphone, desktop audio, per-app tracks ----
+  # (if `flatpak run --command=sh link.echoclip.Echo -c 'ls -l /usr/bin/pactl /usr/bin/parec'` shows the runtime
+  #  already has both, this module can go)
+  - name: pulseaudio-utils
+    buildsystem: meson
+    config-opts:
+      - -Ddaemon=false
+      - -Dclient=true
+      - -Ddoxygen=false
+      - -Dman=false
+      - -Dtests=false
+      - -Ddatabase=simple
+      - -Dbashcompletiondir=no
+      - -Dzshcompletiondir=no
+    cleanup:
+      - /etc
+      - /share
+      - /lib/cmake
+      - /bin/pa-info
+      - /bin/pasuspender
+      - /bin/padsp
+      - /bin/pamon
+      - /bin/parecord
+      - /bin/pacmd
+      - /bin/pulseaudio
+      - /bin/start-pulseaudio-x11
+    sources:
+      - type: git
+        url: https://github.com/pulseaudio/pulseaudio.git
+        tag: v17.0
+        commit: 1f020889c9aa44ea0f63d7222e8c2b62c3f45f68
+
+  # ---- gpu-screen-recorder: GPU capture + encode. Same sources as Flathub's com.dec05eba.gpu_screen_recorder,
+  # without the KMS server (needs root rights; in the sandbox Echo records through the ScreenCast portal) ----
+  # (built BEFORE our own ffmpeg/x264/lame: its meson build would otherwise pick up their static libraries
+  #  from /app and fail to link - it brings its own ffmpeg)
+  - name: gpu-screen-recorder
+    buildsystem: simple
+    build-commands:
+      - meson setup build
+      - meson configure --prefix=$FLATPAK_DEST --buildtype=release -Dcapabilities=false
+        -Dsystemd=false -Dnvidia_suspend_fix=false -Dffmpeg_static=true -Dstrip=true build
+      - ninja -C build install
+    sources:
+      - type: archive
+        url: https://dec05eba.com/snapshot/gpu-screen-recorder.git.r1550.f97d1e3.tar.gz
+        sha512: 4579f57495b0ba00da36813b44161f27eb31cbe60374dda94f488082516c78ea78a1c87fc4d7b35ed92b22dbf169426c870512f80b620c059d0f5bf8ac72c6a4
+        strip-components: 0
+      - type: file
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz
+        sha256: 7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
+        dest: subprojects/packagecache
+        dest-filename: ffmpeg-9.0.tar.xz
+      - type: file
+        url: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
+        sha256: 3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+        dest: subprojects/packagecache
+        dest-filename: lame-4.0.tar.gz
+      - type: file
+        url: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+        sha256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+        dest: subprojects/packagecache
+        dest-filename: mbedtls-3.6.7.tar.bz2
+      - type: file
+        url: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.0.tar.gz
+        sha256: 86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116
+        dest: subprojects/packagecache
+        dest-filename: nv-codec-headers-13.0.19.0.tar.gz
+      - type: file
+        url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+        dest: subprojects/packagecache
+        dest-filename: opus-1.6.1.tar.gz
+      - type: file
+        url: https://github.com/Haivision/srt/archive/refs/tags/v1.5.6.tar.gz
+        sha256: 2c4980c2c4cfd142d21b829d939dc51db9c6628af5967fff62fd7290769569c7
+        dest: subprojects/packagecache
+        dest-filename: srt-1.5.6.tar.gz
+      - type: file
+        url: https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+        sha256: 6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224
+        dest: subprojects/packagecache
+        dest-filename: x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+
+  # ---- ffmpeg + ffprobe (exports, thumbnails, seek strips, captions, MP3) ----
+  - name: x264
+    buildsystem: simple
+    build-commands:
+      - ./configure --prefix=/app --enable-static --enable-pic --disable-cli
+      - make -j$FLATPAK_BUILDER_N_JOBS
+      - make install
+    sources:
+      - type: archive
+        url: https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+        sha256: 6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224
+
+  - name: lame
+    buildsystem: autotools
+    config-opts:
+      - --disable-frontend
+      - --disable-decoder          # MP3 encoding only (lame 4's decoder pulls in libmpg123)
+      - --disable-shared
+      - --enable-static
+      - --with-pic
+    post-install:
+      # ffmpeg looks for lame with pkg-config, and lame doesn't install a .pc file
+      # (-lmpg123 in case this lame still has its decoder: the runtime has libmpg123)
+      - mkdir -p /app/lib/pkgconfig
+      - |
+        cat > /app/lib/pkgconfig/libmp3lame.pc <<'PC'
+        prefix=/app
+        libdir=${prefix}/lib
+        includedir=${prefix}/include
+
+        Name: libmp3lame
+        Description: LAME MP3 encoder
+        Version: 3.100
+        Libs: -L${libdir} -lmp3lame -lm -lmpg123
+        Cflags: -I${includedir}
+        PC
+    sources:
+      - type: archive
+        url: https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz
+        sha256: 3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+
+  - name: libass
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+      - --disable-libunibreak
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+        sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+  - name: nv-codec-headers
+    only-arches:
+      - x86_64
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app install
+    sources:
+      - type: archive
+        url: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.0.tar.gz
+        sha256: 86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116
+
+  - name: ffmpeg
+    buildsystem: simple
+    build-commands:
+      - ./configure --prefix=/app --enable-gpl --enable-version3 --disable-debug --disable-doc --disable-ffplay
+        --enable-static --disable-shared --enable-pic
+        --enable-libx264 --enable-libmp3lame --enable-libass --enable-libfreetype --enable-libharfbuzz
+        --enable-libfontconfig --enable-libfribidi --enable-libdrm --enable-vaapi
+        $FFMPEG_NV
+      - make -j$FLATPAK_BUILDER_N_JOBS
+      # only the two programs - its libraries in /app/lib would be picked up by other builds
+      - install -Dm755 -t /app/bin ffmpeg ffprobe
+    build-options:
+      arch:
+        x86_64:
+          env:
+            FFMPEG_NV: --enable-ffnvcodec --enable-nvenc
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz
+        sha256: 7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
+
+  # ---- rclone (cloud: Echo Cloud, Google Drive, Filen, MEGA...) - upstream release binary ----
+  - name: rclone
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 rclone /app/bin/rclone
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-amd64.zip
+        sha256: 349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-arm64.zip
+        sha256: 7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
+
+  # ---- whisper.cpp: automatic captions (whisper-cli; the speech models are downloaded on first use) ----
+  - name: whisper-cpp
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DGGML_NATIVE=OFF          # runs on every CPU, not just the build machine's
+      - -DWHISPER_BUILD_TESTS=OFF
+      - -DWHISPER_BUILD_SERVER=OFF
+      - -DWHISPER_SDL2=OFF
+      - -DWHISPER_CURL=OFF
+    post-install:
+      # only the command-line tool is needed
+      - find /app/bin -maxdepth 1 \( -name 'whisper-*' -o -name 'parakeet-*' -o -name 'main' -o -name 'bench' -o -name 'quantize' \) ! -name whisper-cli -delete
+    sources:
+      - type: git
+        url: https://github.com/ggml-org/whisper.cpp.git
+        tag: v1.9.5
+        commit: d1be6fde11ac6e0407606b4e42fe72d34add8037
+
+  # ---- Echo itself (Rust + Tauri; the UI is plain ui/index.html, no npm step) ----
+  - name: echo
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/echo/cargo
+        CARGO_NET_OFFLINE: 'true'
+        ECHO_VERSION: 0.1.0       # set to the release (1.0.N) for Flathub builds; 0.1.0 = hand-made build
+    build-commands:
+      - sed -i -E 's/("version":[[:space:]]*)"0\.1\.0"/\1"'"$ECHO_VERSION"'"/' src-tauri/tauri.conf.json
+      # window id (Wayland app_id) = the Flatpak id, so the taskbar / dock finds the icon and desktop file
+      - sed -i -E 's/("identifier":[[:space:]]*)"dk\.volkan\.clipper"/\1"link.echoclip.Echo"/' src-tauri/tauri.conf.json
+      - cd src-tauri && cargo --offline build --release
+      - install -Dm755 src-tauri/target/release/echo /app/bin/echo-clips
+      - install -Dm644 flatpak/link.echoclip.Echo.desktop /app/share/applications/link.echoclip.Echo.desktop
+      - install -Dm644 flatpak/link.echoclip.Echo.metainfo.xml /app/share/metainfo/link.echoclip.Echo.metainfo.xml
+      - install -Dm644 flatpak/link.echoclip.Echo.png /app/share/icons/hicolor/256x256/apps/link.echoclip.Echo.png
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - src-tauri/target
+          - src-tauri/gen
+          - Echo
+          - Claude outputs
+          - cloud
+      - cargo-sources.json

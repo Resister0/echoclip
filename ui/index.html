@@ -182,6 +182,16 @@
   /* long libraries: the browser skips layout + painting for cards that are off screen */
   .grid .card { content-visibility:auto; contain-intrinsic-size:auto 330px; }
   .grid.list .card { contain-intrinsic-size:auto 76px; }
+  /* Linux/WebKitGTK: skipped cards sometimes stayed grey (not redrawn) after a text drag / scroll - always draw them */
+  html.linux .grid .card { content-visibility:visible; }
+  /* Linux/WebKitGTK: CSS transitions/animations of opacity + transform near the bottom flickered (they run as GPU
+     layer animations; chat 24). On Linux the notifications are animated from JS instead (fade + slide via "top",
+     drawn with the page - see noteAnim), and the loading bar moves with "left" instead of transform. */
+  html.linux #notes { left:0; right:0; margin:0 auto; width:max-content; transform:none; transition:none; }
+  html.linux #notes .note, html.linux #notes .note.on { transform:none !important; transition:none !important; position:relative; }
+  html.linux #pload.ind .bar i { position:relative; animation:plindL 1.1s ease-in-out infinite !important; }
+  @keyframes plindL { 0% { left:-30%; } 100% { left:100%; } }
+  html.linux #keyhint, html.linux .pickbar { transition:none !important; }
   .grid.list .card:hover { transform:none; }
   .grid.list .thumb { width:176px; flex:none; }
   .grid.list .info { flex:1; min-width:0; }
@@ -196,7 +206,8 @@
   #stres .str { display:flex; gap:10px; align-items:baseline; padding:6px 2px; border-top:1px solid var(--line); font-size:13px; }
   #stres .str b { min-width:190px; font-weight:600; } #stres .str span { color:var(--muted); }
   #stres .str i { font-style:normal; width:18px; flex:none; text-align:center; font-weight:700; }
-  .thumb .cld { background:#000c; border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; }
+  .thumb .cld { background:#000c; border-radius:6px; padding:3px 7px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:4px; line-height:14px; }
+  .thumb .cld svg { width:14px; height:14px; flex:none; fill:currentColor; stroke:none; }
   .thumb .cld.only { background:#4cc2ffd9; color:#001018; }
   .spin { width:26px; height:26px; margin:0 auto 8px; border:3px solid #ffffff22; border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -279,12 +290,16 @@
   /* floats at the bottom over the clips, so starting a selection doesn't push the page down */
   .pickbar { position:fixed; left:calc(50% + 90px); bottom:22px; transform:translateX(-50%); z-index:25; display:none; align-items:center; gap:8px; padding:8px 10px 8px 16px; background:var(--panel2); border:1px solid var(--accent); border-radius:12px; box-shadow:0 12px 40px #000c; white-space:nowrap; }
   .pickbar.on { display:flex; }
+  /* screenshots page: only Delete / Clear make sense */
+  .pickbar.shots #pickjoin, .pickbar.shots #pickmove, .pickbar.shots #pickav1, .pickbar.shots #pickfav { display:none !important; }
   .ib svg { width:17px; height:17px; }
   .info { padding:12px 10px 12px 16px; display:flex; align-items:center; gap:10px; }
   .info .txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
   .info .name { font-weight:600; font-size:15px; outline:none; border-radius:4px; cursor:text; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .info .name[contenteditable=true] { background:var(--bg); box-shadow:0 0 0 2px var(--accent); padding:0 4px; }
-  .info .meta { color:var(--muted); font-size:12.5px; display:flex; gap:6px; align-items:center; }
+  .info .meta { color:var(--muted); font-size:12.5px; display:flex; gap:6px; align-items:center; white-space:nowrap; overflow:hidden; min-width:0; }
+  .info .meta > span { overflow:hidden; text-overflow:ellipsis; }
+  .info .meta i { flex:none; }
   .info .meta i { width:3px; height:3px; border-radius:50%; background:var(--dim); }
   .empty { grid-column:1/-1; text-align:center; color:var(--muted); padding:110px 0; display:flex; flex-direction:column; align-items:center; gap:6px; }
   .empty .ic { width:72px; height:72px; border-radius:22px; background:var(--panel); border:1px solid var(--line); display:grid; place-items:center; margin-bottom:12px; color:var(--accent2); box-shadow:0 10px 30px rgba(var(--accent-rgb),0.12); }
@@ -295,6 +310,9 @@
   #player { --pv:330px; position:fixed; inset:0; background:#0b0b0f99; backdrop-filter:blur(1.5px); display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:28px; z-index:10; }
   #player.open { display:flex; }
   .pwrap { position:relative; width:min(100%, calc((100vh - var(--pv)) * 16 / 9)); border-radius:12px; overflow:hidden; background:#000; }
+  /* Linux: picture shown over the video while dragging the seek bar (a tile of the seek-bar strip), YouTube-style */
+  #pscrub { position:absolute; inset:0; display:none; pointer-events:none; background-color:#000; background-repeat:no-repeat; background-size:4000% 100%; }
+  #pscrub.on { display:block; }
   #player video { display:block; width:100%; max-height:calc(100vh - var(--pv)); aspect-ratio:16/9; background:#000; object-fit:contain; cursor:pointer; }
   .pwrap { background:var(--panel); border:1px solid var(--line); box-shadow:0 20px 60px #000c; }
   .ctl { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--panel2); border-top:1px solid var(--line); }
@@ -355,7 +373,8 @@
   #ptip canvas { display:block; width:224px; }
   #ptip span { position:absolute; left:0; right:0; bottom:5px; text-align:center; font:600 12.5px system-ui,Segoe UI,sans-serif; color:#fff; text-shadow:0 1px 3px #000, 0 0 8px #000; }
   .pnav { position:fixed; top:50%; width:46px; height:46px; margin-top:-23px; border-radius:50%; border:1px solid var(--line); background:#17171ccc; color:#fff; display:grid; place-items:center; z-index:2; }
-  .pnav:hover { background:#26262e; } .pnav:disabled { opacity:.25; cursor:default; }
+  .pnav:hover { background:#26262e; } .pnav:disabled { visibility:hidden; pointer-events:none; }   /* no clip that way: clicks there close the player */
+  #player { cursor:default; }
   .pnav svg { width:22px; height:22px; } #pprev { left:18px; } #pnext { right:18px; }
   .phint { color:var(--dim); font-size:12px; } .phint kbd { font-size:11px; }
   /* Settings → Profile */
@@ -392,8 +411,9 @@
   .btn.ic.danger { color:#fb5c7cbb; }
   .btn.ic.danger:hover { color:var(--bad); border-color:var(--bad); background:rgba(251,92,124,.1); }
   /* keyboard hints only while the mouse is on the video / controls */
-  #player .phint { opacity:0; transition:opacity .2s; }
-  #player:has(.pwrap:hover) .phint, #player .phint:hover { opacity:1; }
+  /* fades out only after 0.5 s: moving the mouse from the video down to the hints crosses a gap (it flickered) */
+  #player .phint { opacity:0; transition:opacity .25s ease .5s; }
+  #player:has(.pwrap:hover) .phint, #player .phint:hover { opacity:1; transition-delay:0s; }
   .seek .tsel { position:absolute; top:5px; bottom:5px; border:2px solid var(--hi); border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px #0000; }
   .seek .h { position:absolute; top:3px; bottom:3px; width:12px; margin-left:-6px; border-radius:4px; background:var(--hi); cursor:ew-resize; z-index:2; }
   .seek .h::after { content:""; position:absolute; left:5px; top:8px; bottom:8px; width:2px; border-radius:2px; background:#0008; }
@@ -750,7 +770,12 @@
   .custrow label { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); cursor:pointer; }
   .custrow input[type=color] { width:34px; height:26px; border:1px solid var(--line); border-radius:7px; background:none; padding:0 2px; cursor:pointer; }
   /* weak PCs (4 threads or 4 GB or less): no blurred overlays (expensive to draw on integrated graphics) */
-  html.lite * { backdrop-filter:none !important; }
+  html.lite *, html.linux * { backdrop-filter:none !important; }   /* Linux: blur behind panels is expensive in WebKitGTK (choppy scrolling test) */
+  html.linux .winonly { display:none !important; }
+  /* WebKitGTK: the fading hint line flickered with every mouse move (re-drawn under the blurred backdrop) -
+     on Linux the hints just stay visible, and the backdrop isn't blurred (also lighter to draw) */
+  html.linux #player .phint { opacity:.85 !important; transition:none !important; }
+  html.linux #player { backdrop-filter:none; background:#0b0b0fcc; }   /* Windows-only features (FPS test, game-window capture, smart bitrate) */
 </style>
 </head>
 <body>
@@ -872,16 +897,16 @@
               <select data-k="fps" data-num class="segsrc"><option>30</option><option>60</option><option>120</option><option>144</option></select></div>
             <div class="row"><div class="lbl"><b>Bitrate</b><small id="brhint">Around 20 Mbps is plenty for 1440p60</small></div>
               <input type="range" min="4" max="80" step="1" id="brslider"><span class="val" id="v-bitrate"></span></div>
-            <div class="row"><div class="lbl"><b>Smart bitrate</b><small>Busy moments (running, driving, fights) can go well above the bitrate, calm moments use much less. Clips stay about the same size, but action looks sharper.</small></div>
+            <div class="row winonly"><div class="lbl"><b>Smart bitrate</b><small>Busy moments (running, driving, fights) can go well above the bitrate, calm moments use much less. Clips stay about the same size, but action looks sharper.</small></div>
               <label class="switch"><input type="checkbox" data-k="smart_bitrate"><span></span></label></div>
-            <div class="row col" id="sqrow"><div class="lbl"><b>Smart bitrate quality</b><small id="sqhint"></small></div>
+            <div class="row col winonly" id="sqrow"><div class="lbl"><b>Smart bitrate quality</b><small id="sqhint"></small></div>
               <select data-k="smart_quality" data-num class="segsrc"><option value="72" data-hint="Busy moments get up to 1.7x the bitrate. The presets use this.">Balanced</option><option value="82" data-hint="Same maximum as Balanced, but a higher average: about 25% bigger clips, a little sharper overall.">High</option><option value="90" data-hint="Same maximum, highest average: the biggest clips, close to always using the maximum.">Very high</option></select></div>
           </div>
           <div class="box">
             <h3>Capture</h3>
             <div class="row"><div class="lbl"><b>Monitor</b><small>HDR monitors are converted to normal colours automatically.</small></div>
               <select data-k="monitor" id="monsel" style="max-width:340px"><option value="">Main monitor</option></select></div>
-            <div class="row col"><div class="lbl"><b>Record</b><small id="caphint"></small></div>
+            <div class="row col winonly"><div class="lbl"><b>Record</b><small id="caphint"></small></div>
               <select data-k="capture" class="segsrc"><option value="screen" data-hint="Records everything on the monitor, including Discord or anything else on top.">Whole monitor</option><option value="game" data-hint="Switches to just the game window while a game is open, so overlays on top stay out of the clip. Switching takes a few seconds and starts a fresh buffer.">Game window when open</option></select></div>
             <div class="row"><div class="lbl"><b>Mouse pointer</b><small>Show the pointer in clips, e.g. in menus, phones and inventories. Games that hide it while you play stay clean.</small></div>
               <label class="switch"><input type="checkbox" data-k="capture_cursor"><span></span></label></div>
@@ -1073,7 +1098,7 @@
             <div class="row"><div class="lbl"><b>Self-test</b><small>Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.</small></div><button class="btn" id="stbtn" onclick="selfTest()">Run self-test</button></div>
             <div id="stres"></div>
             <div class="row"><div class="lbl"><b>Send log</b><small>Uploads Echo's log and settings (passwords, keys and email addresses left out) and copies a private link - paste it into Discord for whoever helps you. Links stop working after 14 days. Without internet the log file is copied instead.</small></div><button class="btn" onclick="sendLog()">Send log</button></div>
-            <div class="row"><div class="lbl"><b>FPS test</b><small>How much does recording cost in your game? Open the game first, click Start, allow the Windows prompt, then switch to the game within 15 s and play normally for about a minute. Recording is paused for the first half.</small></div><button class="btn" id="fpsbtn" onclick="fpsTest()">Start</button></div>
+            <div class="row winonly"><div class="lbl"><b>FPS test</b><small>How much does recording cost in your game? Open the game first, click Start, allow the Windows prompt, then switch to the game within 15 s and play normally for about a minute. Recording is paused for the first half.</small></div><button class="btn" id="fpsbtn" onclick="fpsTest()">Start</button></div>
             <div class="note" id="fpsres" style="display:none;margin:4px 0 8px"></div>
             <div class="row"><div class="lbl"><b>Welcome setup</b><small>The quick setup shown on the first start</small></div><button class="btn" onclick="openSetup()">Show again</button></div>
             <div class="row"><div class="lbl"><b>Restart recorder</b><small id="lognote"></small></div><button class="btn" onclick="restart()">Restart</button></div>
@@ -1100,7 +1125,7 @@
   </div>
   <button class="pnav" id="pprev" title="Previous clip (Shift+←)"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
   <button class="pnav" id="pnext" title="Next clip (Shift+→)"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
-  <div class="pwrap"><video id="pvideo"></video><div id="pup"><i></i></div><div id="puplbl"></div><div id="pload"><b>Loading from the cloud…</b><div class="bar"><i></i></div><small></small></div>
+  <div class="pwrap"><video id="pvideo"></video><div id="pscrub"></div><div id="pup"><i></i></div><div id="puplbl"></div><div id="pload"><b>Loading from the cloud…</b><div class="bar"><i></i></div><small></small></div>
     <div class="pstrip"><div class="seek" id="pseek" title="Click to jump · drag the yellow ends to trim"><div class="buf" id="pbuf"></div><div class="fill" id="pfill"></div><div class="tsel" id="tsel"></div><div class="h" id="th0"></div><div class="h" id="th1"></div><div class="knob" id="pknob"></div></div></div>
     <div class="ctl">
       <button class="pb" id="pplay"></button>
@@ -1214,8 +1239,11 @@
   /* ---------- helpers ---------- */
   // Linux: Windows words -> Linux words in messages and static texts
   const IS_LINUX = /Linux/.test(navigator.userAgent);
+  if (IS_LINUX) document.documentElement.classList.add("linux");
   const plat = t => !IS_LINUX || typeof t !== "string" ? t : t.replace(/the Recycle Bin/g, "the Trash").replace(/Recycle Bin/g, "Trash")
-    .replace(/Open in Explorer/g, "Open in file manager").replace(/Start with Windows/g, "Start with the PC").replace(/Windows default/g, "System default");
+    .replace(/Open in Explorer/g, "Open in file manager").replace(/Start with Windows/g, "Start with the PC").replace(/Windows default/g, "System default")
+    .replace(/default Windows input device/g, "default input device").replace(/if Windows' default/g, "if the system default")
+    .replace(/ through Steam Input or DS4Windows/g, " through Steam Input");
   if (IS_LINUX) addEventListener("DOMContentLoaded", () => {
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n; (n = w.nextNode());) { const v = plat(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
@@ -1338,6 +1366,30 @@
 
   // bottom messages: several at once stack; the same text again just stays up longer
   const noteOut = el => { el._out = true; el.classList.remove("on"); setTimeout(() => el.remove(), 220); };
+  // Linux: fade + slide the notifications from JS (opacity and "top" set each frame, no CSS transition) - the
+  // CSS version flickered in WebKitGTK. Watches the "on" class, so every notification gets it.
+  if (IS_LINUX) (() => {
+    const box = document.getElementById("notes"); if (!box) return;
+    const anim = el => {
+      const show = el.classList.contains("on");
+      if (el._shown === show) return; el._shown = show;
+      const from = el.style.opacity === "" ? (show ? 0 : 1) : parseFloat(el.style.opacity), to = show ? 1 : 0, t0 = performance.now(), id = (el._an = (el._an || 0) + 1);
+      const step = now => {
+        if (el._an !== id) return;
+        const p = Math.min(1, (now - t0) / 200), e = 1 - Math.pow(1 - p, 3), o = from + (to - from) * e;
+        el.style.opacity = o.toFixed(3); el.style.top = ((1 - o) * 14).toFixed(1) + "px";
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    };
+    new MutationObserver(ms => ms.forEach(m => {
+      if (m.type === "attributes" && m.target.classList && m.target.classList.contains("note")) anim(m.target);
+      if (m.type === "childList") m.addedNodes.forEach(n => {
+        if (!n.classList || !n.classList.contains("note")) return;
+        if (n.classList.contains("on")) anim(n); else { n._shown = false; n.style.opacity = "0"; n.style.top = "14px"; }
+      });
+    })).observe(box, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+  })();
   // hover previews keep the video file open: Windows then refuses rename / move / delete (os error 32)
   const stopPreviews = () => document.querySelectorAll(".card .thumb video").forEach(v => { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); });
   let lastAct = "";   // the last clip action (for the log line below)
@@ -1372,6 +1424,8 @@
         sp.classList.add("sub"); el.appendChild(sp); return this;
       },
       pct(p) { i.style.width = Math.max(0, Math.min(100, p)).toFixed(1) + "%"; return this; },
+      // hide / show again without closing (a download's box while the player shows that progress itself)
+      hide(h) { el.style.display = h ? "none" : ""; return this; },
       done(ms = 0) { if (gone) return; gone = true; setTimeout(() => noteOut(el), ms); },
     };
   }
@@ -1469,6 +1523,9 @@
     folderList = fR.status === "fulfilled" ? fR.value : [];
     // cloud: clips only in the cloud join the library (path "cloud:<rel>")
     cloudList = cfR.status === "fulfilled" ? cfR.value : [];
+    // clips that are only in the cloud: connect the streaming server in the background once, so opening one
+    // doesn't wait for the cloud (Google Drive takes 10-30 s to answer the first time). Stops after 10 idle minutes.
+    if (!window._cloudWarm && cloudList.some(f => !f.local)) { window._cloudWarm = true; ensureBase().catch(() => {}); }
     cloudRels = new Set(cloudList.map(f => f.rel)); cloudPaths = new Map(cloudList.map(f => [f.rel, f.path || f.rel]));
     // the streaming server (rclone) is started only when it's about to be needed: the Cloud view is open,
     // or the mouse rests on a cloud-only clip - not just because cloud-only clips exist
@@ -1513,14 +1570,42 @@
 
   // no page zoom from Ctrl+scroll / Ctrl+plus/minus (the timeline uses Ctrl+scroll for its own zoom)
   // Ctrl+wheel would zoom the whole window: block that, but keep scrolling (holding Ctrl shows the card buttons)
-  addEventListener("wheel", e => {
+  // how fast the window really draws while scrolling (frames per second + the longest frame) -> Echo's log, at most
+  // every 30 s. For "scrolling is choppy" reports (Linux: the web view's frame rate vs the monitor)
+  (() => {
+    let on = false, frames = 0, t0 = 0, last = 0, worst = 0, stopT = 0, logged = 0;
+    const tick = now => { if (!on) return; frames++; if (last) worst = Math.max(worst, now - last); last = now; requestAnimationFrame(tick); };
+    addEventListener("scroll", () => {
+      if (!on) { on = true; frames = 0; worst = 0; last = 0; t0 = performance.now(); requestAnimationFrame(tick); }
+      clearTimeout(stopT);
+      stopT = setTimeout(() => {
+        on = false; const secs = (performance.now() - t0 - 250) / 1000;
+        if (secs > 0.5 && Date.now() - logged > 30000) { logged = Date.now();
+          invoke("ui_log", { msg: `scrolling drew ${Math.round(frames / secs)} fps for ${secs.toFixed(1)} s, longest frame ${Math.round(worst)} ms` }).catch(() => {}); }
+      }, 250);
+    }, { capture: true, passive: true });
+  })();
+  // Linux: how often the web view draws at all (its frame clock), once ~4 s after start. Lower than the monitor's
+  // Hz = WebKitGTK caps it, not our page
+  if (IS_LINUX) setTimeout(() => { let n = 0, t0 = 0; const f = now => { if (!t0) t0 = now; n++; if (now - t0 < 1000) requestAnimationFrame(f);
+    else invoke("ui_log", { msg: `webview draws ${Math.round(n * 1000 / (now - t0))} fps when idle (screen ${screen.width}x${screen.height}, scale ${devicePixelRatio}, ${document.visibilityState}${document.hasFocus() ? ", focused" : ", not focused"})` }).catch(() => {}); }; requestAnimationFrame(f); }, 4000);
+  // Only listening while Ctrl is held: a non-passive wheel listener on the whole window makes the web view
+  // wait for JS before every scroll step (choppy scrolling everywhere on Linux / WebKitGTK)
+  const ctrlWheel = e => {
     if (!e.ctrlKey || e.defaultPrevented) return;
     e.preventDefault();
     for (let el = e.target; el && el !== document.documentElement; el = el.parentElement) {
       const oy = getComputedStyle(el).overflowY;
       if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 1) { el.scrollBy({ top: e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY }); return; }
     }
-  }, { passive: false });
+  };
+  let ctrlWheelOn = false;
+  const setCtrlWheel = on => { if (on === ctrlWheelOn) return; ctrlWheelOn = on; (on ? addEventListener : removeEventListener)("wheel", ctrlWheel, { passive: false }); };
+  addEventListener("keydown", e => { if (e.key === "Control") setCtrlWheel(true); }, true);
+  addEventListener("keyup", e => { if (e.key === "Control") setCtrlWheel(false); }, true);
+  addEventListener("blur", () => setCtrlWheel(false));
+  // Ctrl pressed while another window had focus: the first wheel event still carries ctrlKey
+  addEventListener("mousemove", e => { if (e.ctrlKey !== ctrlWheelOn) setCtrlWheel(e.ctrlKey); }, { passive: true });
   addEventListener("keydown", e => { if (e.ctrlKey && ["Equal", "Minus", "NumpadAdd", "NumpadSubtract", "Digit0", "Numpad0"].includes(e.code)) e.preventDefault(); });
   let filter = "all", viewList = [], gameIcons = {}, iconKey = "", gamesKey = "", gameList = [], shared = new Set(), sharedKey = "", sessAt = null, shareViews = {}, viewsKey = "", viewsAt = 0;
   function drawLong() {
@@ -1575,6 +1660,9 @@
   const relOf = c => c.rel || (c.folder ? c.folder + "/" : "") + c.name + ".mp4";
   const inCloud = c => !!c.cloud || cloudRels.has(relOf(c));
   const streamUrl = c => cloudBase + "/" + (cloudPaths.get(relOf(c)) || relOf(c)).split("/").map(encodeURIComponent).join("/");
+  // what the player plays for a cloud clip. Linux: through Echo's media server, which passes the stream on and fixes
+  // the header like for local clips - WebKitGTK straight from rclone's server froze the whole window (chat 23)
+  const cloudSrc = c => (IS_LINUX && mediaBase) ? mediaBase + encodeURIComponent(streamUrl(c)) : streamUrl(c);
   let basePending = null;   // one start at a time, however many cards ask
   // Echo stops the streaming server after 10 minutes without use: ask again (cheap while it runs) when the
   // last answer is older than a minute, so a stopped server is started again before the video needs it
@@ -1590,11 +1678,21 @@
   // one download per clip at a time: a second click / the player waits for the one already running
   const dlJobs = new Map();
   const cloudDl = c => { let p = dlJobs.get(c.rel); if (!p) { p = invoke("cloud_download", { rel: c.rel }).finally(() => dlJobs.delete(c.rel)); dlJobs.set(c.rel, p); } return p; };
-  async function ensureLocal(c) {
-    if (!c.cloud) return c;
-    const p = await withDlProgress(c, cloudDl(c));
-    listKey = ""; await refresh(); toast("Downloaded");
-    return clips.find(x => x.path === p) || clips.find(x => !x.cloud && relOf(x) === relOf(c)) || c;
+  // one run per clip: opening the clip again while it downloads waits for the same run (one "Downloaded" message)
+  const localJobs = new Map();
+  function ensureLocal(c) {
+    if (!c.cloud) return Promise.resolve(c);
+    const key = relOf(c);
+    let j = localJobs.get(key);
+    if (!j) {
+      j = (async () => {
+        const p = await withDlProgress(c, cloudDl(c));
+        listKey = ""; await refresh(); toast("Downloaded");
+        return clips.find(x => x.path === p) || clips.find(x => !x.cloud && relOf(x) === relOf(c)) || c;
+      })().finally(() => localJobs.delete(key));
+      localJobs.set(key, j);
+    }
+    return j;
   }
   // player overlay while a cloud-only clip streams in (instead of a black screen)
   function cloudLoading(v, c) {
@@ -1613,11 +1711,12 @@
       stop(); if (trim.clip !== c) return;
       v.pause(); v.removeAttribute("src"); v.load();
       toast("Couldn't stream this clip - downloading it instead");
+      const cg = closeGen;   // closed while downloading -> just keep the download, don't reopen (it played in the background)
       try {
         const l = await ensureLocal(c);
         // play the downloaded copy: also when the list refresh swapped / closed the player meanwhile
         const same = trim.clip && relOf(trim.clip) === relOf(c);
-        if (!l.cloud && (same || !$("player").classList.contains("open"))) openPlayer(l);
+        if (!l.cloud && (same || (!$("player").classList.contains("open") && closeGen === cg))) openPlayer(l);
       } catch (e) { toast(String(e)); }
     } };
     Object.entries(h).forEach(([e, f]) => v.addEventListener(e, f));
@@ -1627,12 +1726,27 @@
     const slow = setTimeout(() => { if (trim.clip === c && v.readyState < 2) h.error(); }, 25000);
   }
   // progress bar (bottom) while a cloud clip downloads
+  // ONE progress display per clip download, however often it's asked for (download, Esc, open the clip again
+  // showed two boxes). It follows the player: inside the video while that clip is open, a box at the bottom otherwise.
+  const dlShown = new Map();
   async function withDlProgress(c, job) {
-    // clip open in the player: the progress shows inside the video (full-width bar); otherwise the bar at the bottom
-    const inPlayer = $("player").classList.contains("open") && trim.clip && (trim.clip === c || (trim.clip.rel && trim.clip.rel === c.rel));
+    const key = relOf(c) || c.path;
+    if (dlShown.has(key)) return job;   // already shown by the first call
+    dlShown.set(key, true);
     const o = $("pload"), ob = o.querySelector("i"), ot = o.querySelector("b"), os = o.querySelector("small");
-    if (inPlayer) { o.classList.add("on"); o.classList.remove("ind"); ot.textContent = "Downloading from the cloud…"; ob.style.width = "0"; os.textContent = ""; }
-    const box = inPlayer ? null : progBox("Downloading from the cloud…");
+    const here = () => $("player").classList.contains("open") && trim.clip && relOf(trim.clip) === key;
+    let box = null, inP = false, last = { f: 0, txt: "Starting…" };
+    const show = () => {
+      if (here()) {
+        if (!inP) { inP = true; o.classList.add("on"); o.classList.remove("ind"); ot.textContent = "Downloading from the cloud…"; }
+        ob.style.width = (last.f * 100).toFixed(1) + "%"; os.textContent = last.txt;
+      } else if (inP) { inP = false; o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; }
+      // ONE box at the bottom for the whole download, also while the player shows the same progress on the video
+      // (hiding it in the player made it pop in and out with every open / close)
+      if (!box) box = progBox("Downloading from the cloud…");
+      box.pct(last.f * 100).text(last.txt);
+    };
+    show();
     const t0 = Date.now();
     let best = 0;   // never show less than before (a late answer must not make it jump back)
     const t = setInterval(async () => {
@@ -1640,12 +1754,15 @@
         if (got < best) got = best; best = got;
         if (tot) {
           const f = Math.min(1, got / tot), secs = (Date.now() - t0) / 1000, left = got > 0 && f > 0.02 ? Math.round(secs * (1 - f) / f) : null;
-          const txt = `${fmtSize(got)} of ${fmtSize(tot)} · ${Math.round(f * 100)}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "");
-          if (inPlayer) { ob.style.width = (f * 100).toFixed(1) + "%"; os.textContent = txt; }
-          else box.pct(f * 100).text(txt);
+          last = { f, txt: `${fmtSize(got)} of ${fmtSize(tot)} · ${Math.round(f * 100)}%` + (left != null && left > 1 ? ` · about ${left < 60 ? left + " s" : Math.round(left / 60) + " min"} left` : "") };
         } } catch {}
+      show();
     }, 300);
-    try { return await job; } finally { clearInterval(t); if (inPlayer) { o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; } else box.done(); }
+    try { return await job; } finally {
+      clearInterval(t); dlShown.delete(key);
+      if (inP) { o.classList.remove("on"); ot.textContent = "Loading from the cloud…"; }
+      if (box) box.done();
+    }
   }
   // share link: rclone link, but Filen can't make public links for other apps -> use Share (R2) instead
   const linkLife = d => !d ? "never expires" : d === 1 ? "expires in 24 hours" : `expires in ${d} days`;
@@ -2127,8 +2244,10 @@
     build(deep ? jobs.length : 48);
   }
   // ----- screenshots -----
+  let shotView = [];   // the screenshots on screen (Ctrl+A on the Screenshots page)
   function renderShots(g, q) {
     const list = shots.filter(c => c.name.toLowerCase().includes(q));
+    shotView = list;
     $("count").textContent = `${list.length} screenshot${list.length === 1 ? "" : "s"} · ${fmtSize(list.reduce((n, c) => n + c.size, 0))}`;
     if (!list.length) {
       g.innerHTML = `<div class="group"><div class="grid"><div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><b>No screenshots yet</b>Press ${cfg && cfg.screenshot_key ? kbdHtml(cfg.screenshot_key) : "your screenshot hotkey"} in game.</div></div></div>`;
@@ -2146,7 +2265,13 @@
           <div class="ovl"><button class="ib" data-a="copy" title="Copy to clipboard">${ICON.copy}</button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></div></div>`;
         el.querySelector(".name").textContent = shownName(c);
         const th = el.querySelector(".thumb"); th.style.backgroundImage = `url("${convertFileSrc(c.path)}?${c.size}")`;
-        th.onclick = () => openShot(c);
+        // select like clips: the round tick, Ctrl/Shift+click, or a click while something is selected
+        th.insertAdjacentHTML("beforeend", `<button class="pick" title="Select (Ctrl+click)"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>`);
+        if (picked.has(c.path)) el.classList.add("picked");
+        const togglePick = () => { picked.has(c.path) ? picked.delete(c.path) : picked.add(c.path); el.classList.toggle("picked", picked.has(c.path)); renderPickBar(); };
+        th.querySelector(".pick").onclick = e => { e.stopPropagation(); togglePick(); };
+        el.addEventListener("click", e => { if ((e.ctrlKey || e.shiftKey) && !e.target.closest(".ib")) { e.preventDefault(); e.stopPropagation(); togglePick(); } }, true);
+        th.onclick = () => picked.size ? togglePick() : openShot(c);
         el.querySelectorAll(".ib").forEach(b => b.onclick = async () => {
           try {
             if (b.dataset.a === "copy") { await invoke("copy_clip", { path: c.path }); toast("Screenshot copied - paste it into Discord or anywhere"); }
@@ -2169,8 +2294,10 @@
     o.onclick = close; addEventListener("keydown", esc, true); document.body.appendChild(o);
   }
   function renderPickBar() {
+    const sh = filter === "shots", what = sh ? "screenshot" : "clip";
     $("pickbar").classList.toggle("on", picked.size > 0);
-    $("pickn").textContent = `${picked.size} clip${picked.size === 1 ? "" : "s"} selected`;
+    $("pickbar").classList.toggle("shots", sh);
+    $("pickn").textContent = `${picked.size} ${what}${picked.size === 1 ? "" : "s"} selected`;
   }
   $("pickclr").onclick = () => { picked.clear(); renderPickBar(); renderGrid(); };
   $("pickav1").onclick = async () => {
@@ -2225,13 +2352,16 @@
     b.disabled = false;
   };
   $("pickdel").onclick = async () => {
-    const sel = clips.filter(c => picked.has(c.path));
+    const sel = [...clips, ...shots].filter(c => picked.has(c.path));
     const nCloud = sel.filter(c => c.cloud || inCloud(c)).length, nOnly = sel.filter(c => c.cloud).length;
-    const many = `${sel.length} clip${sel.length === 1 ? "" : "s"}`;
+    const word = filter === "shots" ? "screenshot" : "clip", many = `${sel.length} ${word}${sel.length === 1 ? "" : "s"}`;
+    // picked clips can be in other folders / hidden by a filter: say so before deleting them
+    const shownSet = new Set((filter === "shots" ? shotView : viewList).map(c => c.path)), hiddenN = sel.filter(c => !shownSet.has(c.path)).length;
+    const hidNote = hiddenN ? ` ${hiddenN} of them ${hiddenN === 1 ? "isn't" : "aren't"} in the view you're looking at (other folders / filters).` : "";
     const how = nCloud
-      ? await choiceBox(`Delete ${many}?`, `${nCloud === sel.length ? (sel.length === 1 ? "It's" : "They're all") : nCloud + " of them are"} also in your cloud.${nOnly ? ` ${nOnly} only live in the cloud - "Only from this PC" leaves those alone.` : ""}`,
+      ? await choiceBox(`Delete ${many}?`, hidNote.trim() + (hidNote ? " " : "") + `${nCloud === sel.length ? (sel.length === 1 ? "It's" : "They're all") : nCloud + " of them are"} also in your cloud.${nOnly ? ` ${nOnly} only live in the cloud - "Only from this PC" leaves those alone.` : ""}`,
         [["Cancel", null], ["Only from this PC", "pc"], ["Everywhere", "all", "delb"]])
-      : ((await confirmBox(`Delete ${many}?`, "They will be moved to the Recycle Bin.", "Delete")) ? "pc" : null);
+      : ((await confirmBox(`Delete ${many}?`, "They will be moved to the Recycle Bin." + hidNote, "Delete")) ? "pc" : null);
     if (!how) return;
     closePlayer(); await new Promise(r => setTimeout(r, 150));
     let n = 0, i = 0;
@@ -2250,7 +2380,7 @@
       if (i % 5 === 0 && i < sel.length) { listKey = ""; refresh(); }   // cards disappear as it goes
     }
     if (prog) box.done(600);
-    picked.clear(); renderPickBar(); listKey = ""; await refresh(); toast(how === "all" && nCloud ? `Deleted ${n} clip${n === 1 ? "" : "s"} from this PC and the cloud` : `Moved ${n} clip${n === 1 ? "" : "s"} to the Recycle Bin`);
+    picked.clear(); renderPickBar(); listKey = ""; await refresh(); toast(how === "all" && nCloud ? `Deleted ${n} clip${n === 1 ? "" : "s"} from this PC and the cloud` : `Moved ${n} ${word}${n === 1 ? "" : "s"} to the Recycle Bin`);
   };
   document.addEventListener("keydown", e => {
     if (!$("page-library").classList.contains("on") || $("editor").classList.contains("open") || $("player").classList.contains("open")) return;
@@ -2258,7 +2388,7 @@
     if (e.key === "Escape" && picked.size && !e.target.matches("[contenteditable=true]")) { e.preventDefault(); $("pickclr").click(); return; }
     if (e.target.matches("input,textarea,select,[contenteditable=true]")) return;
     if (e.key === "Delete" && picked.size) $("pickdel").onclick();
-    if (e.ctrlKey && e.code === "KeyA") { e.preventDefault(); const q = $("search").value.toLowerCase(); clips.forEach(c => { if (c.name.toLowerCase().includes(q)) picked.add(c.path); }); renderPickBar(); renderGrid(); }
+    if (e.ctrlKey && e.code === "KeyA") { e.preventDefault(); (filter === "shots" ? shotView : viewList).forEach(c => picked.add(c.path)); renderPickBar(); renderGrid(); }   // what the library shows (folder, filters, search) - was every clip
   });
   // ----- power-user keys (chat 21): hold Ctrl = every card shows its buttons + a key hint; keys act on the
   // clip under the mouse -----
@@ -2327,7 +2457,7 @@
   function makeCard(c) {
     const el = document.createElement("div"); el.className = "card"; el.dataset.rel = relOf(c); el.dataset.path = c.path;
     const gi = gameIcons[gameOf(c)];
-    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}<span class="tbadges">${shared.has(c.name) ? (shareViews[c.name] ? `<span class="shr" title="Shared - watched ${shareViews[c.name]} time${shareViews[c.name] === 1 ? "" : "s"} on its share page">Shared · ${shareViews[c.name]} view${shareViews[c.name] === 1 ? "" : "s"}</span>` : '<span class="shr" title="Shared - link copied before">Shared</span>') : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there">☁ Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud">☁</span>' : ""}</span></div>
+    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}<span class="tbadges">${shared.has(c.name) ? (shareViews[c.name] ? `<span class="shr" title="Shared - watched ${shareViews[c.name]} time${shareViews[c.name] === 1 ? "" : "s"} on its share page">Shared · ${shareViews[c.name]} view${shareViews[c.name] === 1 ? "" : "s"}</span>` : '<span class="shr" title="Shared - link copied before">Shared</span>') : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg>Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span>' : ""}</span></div>
       <div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
         <div class="ovl"><span class="more"><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></span><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button></div></div>`;
     const nm = el.querySelector(".name"); nm.textContent = shownName(c); nm.title = "Click to rename";
@@ -2386,7 +2516,10 @@
       hv = setTimeout(() => {
       vid = document.createElement("video"); vid.muted = true; vid.loop = true;
       const v0 = vid; v0.oncanplay = () => v0.classList.add("on"); th.prepend(v0);
-      const go = () => { if (vid !== v0 || document.body.classList.contains("cdrag")) return; v0.src = c.cloud ? streamUrl(c) : vidSrc(c); v0.play().catch(() => {}); };
+      // not while Echo is in the background: the mouse can still pass over the window then, and even a muted
+      // <video> is a (muted) sound stream on Linux - KDE showed a muted speaker on Echo, and un-muting it played
+      // a clip's sound (chat 25)
+      const go = () => { if (vid !== v0 || document.body.classList.contains("cdrag") || (c.cloud && IS_LINUX) || !document.hasFocus() || !winFocused) return; v0.src = c.cloud ? streamUrl(c) : vidSrc(c); v0.play().catch(() => {}); };
       if (c.cloud) ensureBase().then(go).catch(() => {}); else go();
     }, LITE ? 900 : 450); };
     th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
@@ -2536,6 +2669,76 @@
     });
   }
 
+  // start the player. WebKitGTK (Linux) only allows sound without a click right before it (a clip opened after a
+  // download / any wait just sat there until you clicked): then it starts muted and the sound comes on with the
+  // first click or key press in Echo
+  let pWatchGen = 0;
+  // dragging the seek bar: live jumps in the video (exact; Windows decodes them on the GPU) or YouTube-style
+  // preview pictures over a still video (nearly free while dragging; the picture set costs a few seconds once per
+  // clip). Pictures on Linux (WebKitGTK draws half frames after jumps), on weak PCs (Lite), and on any PC where
+  // jumps turned out slow while dragging (> 250 ms, 3 times) - remembered on this PC
+  let slowSeekPC = false; try { slowSeekPC = localStorage.getItem("slowSeek") === "1"; } catch {}
+  const pDragSheet = () => IS_LINUX || LITE || slowSeekPC;
+  const scrubAsked = new Set();
+  function askScrubSheet(c) {
+    if (!c || trim.clip !== c || scrubAsked.has(c)) return; scrubAsked.add(c);
+    invoke("scrub_sheet", c.cloud ? { path: null, rel: c.rel } : { path: c.path, rel: null })
+      .then(p => { if (trim.clip === c && p) { scrubSheet = { clip: c, url: convertFileSrc(p) + "?" + Date.now() }; const im = new Image(); im.src = scrubSheet.url; } })
+      .catch(() => {}).finally(() => scrubAsked.delete(c));
+  }
+  // Linux: WebKitGTK's GPU video path sometimes fails to start the picture (GStreamer "not negotiated": the GPU
+  // decoder and the web view's video sink don't agree on a format) - the clip sits on frame 1 with everything
+  // loaded (ready 2). Random, not the file: the same clip plays fine the next time. Recovery: a tiny seek first,
+  // then reload the video (new pipeline = new negotiation) and continue where it was. Keeps GPU decoding.
+  function pWatch(v) {
+    const gen = ++pWatchGen, src = v.currentSrc || v.src, t0 = performance.now();
+    let lastT = -1, sameSince = 0, tries = 0, firstMove = 0, stuckAt = -1;
+    const st = () => { let b = 0; try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 0.1) b = Math.max(b, v.buffered.end(i)); } catch {}
+      return `at ${v.currentTime.toFixed(2)} s, ready ${v.readyState}, network ${v.networkState}, buffered to ${b.toFixed(1)} s of ${(v.duration || 0).toFixed(1)}`; };
+    const alive = () => gen === pWatchGen && (v.currentSrc || v.src) === src && $("player").classList.contains("open");
+    const tick = () => {
+      if (!alive()) return;
+      const now = performance.now();
+      if (v.paused || v.seeking || v.ended) { lastT = -1; sameSince = 0; }
+      // "moving" = clearly past where it got stuck (our own nudge moves the clock by a hair)
+      else if (lastT < 0 || v.currentTime > lastT + 0.03 || v.currentTime < lastT - 0.03) {
+        if (stuckAt >= 0 && v.currentTime > stuckAt + 0.1) { invoke("ui_log", { msg: `player: moving again after ${tries} fix${tries === 1 ? "" : "es"} (${st()})` }).catch(() => {}); stuckAt = -1; }
+        if (!firstMove && v.currentTime > 0.1) { firstMove = now; if (now - t0 > 1500) invoke("ui_log", { msg: `player: first frames after ${Math.round(now - t0)} ms` }).catch(() => {}); }
+        lastT = v.currentTime; sameSince = 0;
+      } else if (!sameSince) sameSince = now;
+      else if (now - sameSince > 1200 && tries < 3) {
+        tries++; sameSince = now; if (stuckAt < 0) stuckAt = v.currentTime;
+        const t = v.currentTime;
+        if (tries === 1) {
+          invoke("ui_log", { msg: `player: picture stuck (${st()}) - tiny seek` }).catch(() => {});
+          try { v.currentTime = t + 0.001; } catch {}
+          if (v.paused) v.play().catch(() => {});
+        } else {
+          invoke("ui_log", { msg: `player: picture stuck (${st()}) - reloading the video (try ${tries})` }).catch(() => {});
+          const muted = v.muted;
+          v.addEventListener("loadedmetadata", () => { if (!alive()) return; try { v.currentTime = t; } catch {} v.muted = muted; v.play().catch(() => {}); }, { once: true });
+          try { v.load(); } catch {}
+          lastT = -1; sameSince = 0;
+        }
+      }
+      setTimeout(tick, 300);
+    };
+    setTimeout(tick, 300);
+  }
+  function pPlay(v) {
+    // WebKitGTK/GStreamer (Linux): the picture sometimes stops after a few frames (first clip after launch) and
+    // only moves again after a seek / click. Watch the whole playback, not just the start: time not moving for
+    // 1.2 s while "playing" -> log why (ready / network / buffered) and nudge with a tiny seek (3 times max per clip)
+    if (IS_LINUX) pWatch(v);
+    v.play().catch(e => {
+      if (!e || e.name !== "NotAllowedError" || v.muted) return;
+      v.muted = true;
+      v.play().catch(() => {});
+      const un = ev => { if (ev.code === "KeyM") return off(); v.muted = false; off(); };
+      const off = () => { removeEventListener("pointerdown", un, true); removeEventListener("keydown", un, true); };
+      addEventListener("pointerdown", un, true); addEventListener("keydown", un, true);
+    });
+  }
   function openPlayer(c) {
     if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur();
     $("pname").textContent = shownName(c);
@@ -2561,10 +2764,22 @@
       catch (e) { toast(String(e)); }
     };
     drawSide(c);
-    trim.clip = c; setTrim(false);
+    trim.clip = c; setTrim(false); $("pscrub").classList.remove("on");
     const v = $("pvideo");
-    if (c.cloud) { v.removeAttribute("src"); cloudLoading(v, c); ensureBase().then(() => { if (trim.clip === c) { v.src = streamUrl(c); v.play().catch(() => {}); } }).catch(e => { $("pload").classList.remove("on"); toast(String(e)); }); }
-    else { v.src = vidSrc(c); v.play().catch(() => {}); }
+    // Linux: sharp pictures for dragging the seek bar, made in the background once the clip plays
+    // (cloud clips: once fully loaded, or after 20 s - it reads the clip from the cloud too)
+    // Windows: only on weak PCs (Lite) or once dragging showed slow jumps (pDragSheet) - normal PCs drag live
+    if (scrubSheet.clip !== c) scrubSheet = { clip: null, url: "" };
+    if (pDragSheet() && scrubSheet.clip !== c) {
+      const ask = () => askScrubSheet(c);
+      const full = () => { const b = v.buffered; return v.duration && b.length && b.end(b.length - 1) >= v.duration - 0.5; };
+      const t1 = Date.now(), w8 = () => { if (trim.clip !== c) return; if (!c.cloud || full() || Date.now() - t1 > 20000) ask(); else setTimeout(w8, 500); };
+      v.addEventListener("playing", () => setTimeout(w8, 700), { once: true });
+    }
+    // cloud clip: streamed, nothing kept on this PC (Linux: through Echo's own media server, see cloudSrc;
+    // still not playing after 25 s -> cloudLoading downloads it instead)
+    if (c.cloud) { v.removeAttribute("src"); cloudLoading(v, c); ensureBase().then(() => { if (trim.clip === c) { v.src = cloudSrc(c); pPlay(v); } }).catch(e => { $("pload").classList.remove("on"); toast(String(e)); }); }
+    else { v.src = vidSrc(c); pPlay(v); }
     $("pcloud").onclick = () => cloudMenu($("pcloud"), c);
     $("sname").readOnly = !!c.cloud;
     if (c.cloud) {   // needs the file on this PC: download first, then do it
@@ -2574,7 +2789,11 @@
     }
     $("pseek").style.backgroundImage = "";
     pPrev.open(c);
-    if (!c.cloud) invoke("filmstrip", { path: c.path }).then(p => { if (trim.clip === c) { const u = `${convertFileSrc(p)}?${c.size}`; $("pseek").style.backgroundImage = `url("${u}")`; pPrev.strip(u); } }).catch(() => {});
+    if (!c.cloud) {   // seek-bar strip (+ hover frames on Linux): one retry - right after a save / export the file can still be busy
+      const strip = again => invoke("filmstrip", { path: c.path }).then(p => { if (trim.clip === c) { const u = `${convertFileSrc(p)}?${c.size}`; $("pseek").style.backgroundImage = `url("${u}")`; pPrev.strip(u); } })
+        .catch(e => { if (again && trim.clip === c) setTimeout(() => strip(false), 2000); else invoke("ui_log", { msg: `filmstrip for ${c.name} failed: ${e}` }).catch(() => {}); });
+      strip(true);
+    }
     const nav = viewList.findIndex(x => x.path === c.path);
     $("pprev").disabled = nav <= 0; $("pnext").disabled = nav < 0 || nav >= viewList.length - 1;
     $("pprev").onclick = () => { if (nav > 0) openPlayer(viewList[nav - 1]); };
@@ -2689,21 +2908,21 @@
       busy = true; const t = want; want = null;
       try { pv.currentTime = Math.min(t, (pv.duration || t) - 0.05); } catch { busy = false; }
     };
-    pv.addEventListener("seeked", () => onFrame(pv, () => { busy = false; if (tip.classList.contains("on") && pv.videoWidth) { fit(); tx.drawImage(pv, 0, 0, tc.width, tc.height); } pull(); }));
+    pv.addEventListener("seeked", () => onFrame(pv, () => { busy = false; if (!IS_LINUX && tip.classList.contains("on") && pv.videoWidth) { fit(); tx.drawImage(pv, 0, 0, tc.width, tc.height); } pull(); }));
     pv.addEventListener("error", () => { busy = false; });
     const show = x => {
       const d = v.duration; if (!d || !clip) return;
       const r = seek.getBoundingClientRect(), f = Math.min(1, Math.max(0, (x - r.left) / r.width)), t = f * d;
       tt.textContent = fmtDur(t);
       if (stripImg && stripImg.complete && stripImg.naturalWidth) {   // instant blurry frame from the filmstrip (40 tiles)
-        const n = 40, sw = stripImg.naturalWidth / n, i = Math.min(n - 1, Math.floor(f * n));
+        const n = 40, sw = stripImg.naturalWidth / n, i = Math.min(n - 1, Math.round(f * n));   // tile k = the picture at k/40 of the clip: nearest one
         tx.drawImage(stripImg, i * sw, 0, sw, stripImg.naturalHeight, 0, 0, tc.width, tc.height);
       }
       tip.classList.add("on");
       const w = tip.offsetWidth, h = tip.offsetHeight;
       tip.style.left = Math.min(r.right - w, Math.max(r.left, x - w / 2)) + "px";
       tip.style.top = (r.top - h - 10) + "px";
-      want = t; pull();
+      if (!pDragSheet()) { want = t; pull(); }   // live frame under the mouse; weak / slow PCs: strip picture only
     };
     const hide = () => { if (!seek.classList.contains("drag") && !hovering) tip.classList.remove("on"); };
     seek.addEventListener("pointerenter", () => { hovering = true; });
@@ -2746,6 +2965,18 @@
       const ahead = () => { const b = v.buffered; return v.duration && b.length && (b.end(b.length - 1) >= v.duration - 0.5 || b.end(b.length - 1) - v.currentTime > 6); };
       const t0 = Date.now();
       const wait = () => { if (clip !== c || c._strip) return; if (ahead() || Date.now() - t0 > 6000) run(); else setTimeout(wait, 500); };
+      if (IS_LINUX) {   // WebKitGTK draws no <video> frames into canvases: ffmpeg makes the strip from the stream
+        const lin = () => { if (clip !== c || c._strip) return; invoke("cloud_strip", { rel: c.rel }).then(p => {
+          c._strip = true; if (clip !== c || !p) return;
+          const u = convertFileSrc(p); seek.style.backgroundImage = `url("${u}")`; pPrev.strip(u);
+        }).catch(() => {}); };
+        // only once the clip has fully loaded (or after 20 s): the strip reads the clip from the cloud too and must not
+        // slow down the stream that's playing
+        const full = () => { const b = v.buffered; return v.duration && b.length && b.end(b.length - 1) >= v.duration - 0.5; };
+        const t1 = Date.now(), lwait = () => { if (clip !== c || c._strip) return; if (full() || Date.now() - t1 > 20000) lin(); else setTimeout(lwait, 500); };
+        v.addEventListener("playing", () => setTimeout(lwait, 500), { once: true });
+        return;
+      }
       v.addEventListener("playing", () => setTimeout(wait, 500), { once: true });
     }
     return {
@@ -2765,9 +2996,10 @@
     const v = $("pvideo"), seek = $("pseek"), wrap = document.querySelector(".pwrap");
     const sync = () => {
       const d = v.duration || 0, p = d ? v.currentTime / d * 100 : 0;
-      $("pfill").style.width = p + "%"; $("pknob").style.left = p + "%";
+      const held = pDragSheet() && seek.classList.contains("drag");   // the bar follows the mouse, not the video
+      if (!held) { $("pfill").style.width = p + "%"; $("pknob").style.left = p + "%"; }
       if (v.buffered.length && d) $("pbuf").style.width = v.buffered.end(v.buffered.length - 1) / d * 100 + "%";
-      $("ptime").textContent = fmtDur(v.currentTime) + " / " + fmtDur(d);
+      if (!held) $("ptime").textContent = fmtDur(v.currentTime) + " / " + fmtDur(d);
       $("pplay").innerHTML = v.paused ? P_ICONS.play : P_ICONS.pause; $("pplay").className = "pb fillsvg";
       $("pmute").innerHTML = v.muted || v.volume === 0 ? P_ICONS.mute : P_ICONS.vol;
     };
@@ -2789,13 +3021,60 @@
     ["play", "pause"].forEach(e => v.addEventListener(e, wake));
     document.addEventListener("fullscreenchange", () => { $("pfs").blur(); wake(); });
     document.addEventListener("keydown", () => { if (document.fullscreenElement === wrap) wake(); });
-    const seekTo = e => { const r = seek.getBoundingClientRect(); v.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * (v.duration || 0); sync(); };
-    seek.onpointerdown = e => { seek.classList.add("drag"); seek.setPointerCapture(e.pointerId); seekTo(e); seek.onpointermove = seekTo; };
-    seek.onpointerup = () => { seek.classList.remove("drag"); seek.onpointermove = null; };
+    // dragging queued a seek per mouse move: WebKitGTK showed half-drawn frames (flicker). One seek at a time,
+    // the newest position wins; keyframe seeks (fastSeek) while dragging, an exact one when the mouse is let go
+    let seekBusy = false, seekWant = null, seekT = 0;
+    const doSeek = t => {
+      // Linux: WebKitGTK redraws only parts of the video after each jump (grey area with bits of video while dragging,
+      // chat 24 - also with keyframe-only jumps on a paused video). So the video doesn't move while dragging: the
+      // matching picture of the seek-bar strip covers it (like YouTube), one exact jump when the mouse is let go
+      if (pDragSheet() && seek.classList.contains("drag")) {
+        $("ptime").textContent = fmtDur(t) + " / " + fmtDur(v.duration || 0);
+        const sc = $("pscrub"), sh = scrubSheet.clip === trim.clip ? scrubSheet.url : "", bg = seek.style.backgroundImage;
+        // cover only the video, not the seek bar + buttons below it (it covered the whole player box: the play
+        // button, time and volume vanished and the picture reached the bottom border while dragging)
+        if (!sc.classList.contains("on")) Object.assign(sc.style, { left: v.offsetLeft + "px", top: v.offsetTop + "px", width: v.offsetWidth + "px", height: v.offsetHeight + "px", right: "auto", bottom: "auto" });
+        if (sh && v.duration) {   // sharp set: 60 frames, 10 x 6 grid
+          const i = Math.min(59, Math.max(0, Math.floor(t / v.duration * 60))), want = `url("${sh}")`;
+          if (sc.style.backgroundImage !== want) { sc.style.backgroundImage = want; sc.style.backgroundSize = "1000% 600%"; }
+          sc.style.backgroundPosition = ((i % 10) / 9 * 100).toFixed(3) + "% " + (Math.floor(i / 10) / 5 * 100).toFixed(3) + "%"; sc.classList.add("on");
+        } else if (bg && bg !== "none" && v.duration) {   // not made yet: the small seek-bar strip
+          const i = Math.min(39, Math.max(0, Math.round(t / v.duration * 40)));   // nearest tile (tile k = k/40 of the clip)
+          if (sc.style.backgroundImage !== bg) { sc.style.backgroundImage = bg; sc.style.backgroundSize = "4000% 100%"; }
+          sc.style.backgroundPosition = (i / 39 * 100).toFixed(3) + "% 0"; sc.classList.add("on");
+        }
+        return;
+      }
+      if (seekBusy) { seekWant = t; return; }
+      seekBusy = true; clearTimeout(seekT); seekT = setTimeout(() => { seekBusy = false; }, 600);   // no "seeked": don't get stuck
+      seekAt = seek.classList.contains("drag") ? performance.now() : 0;
+      if (seek.classList.contains("drag") && v.fastSeek) v.fastSeek(t); else v.currentTime = t;
+    };
+    let seekAt = 0, slowJumps = 0;
+    v.addEventListener("seeked", () => {
+      // this PC can't jump fast enough while dragging: preview pictures from now on (this clip + later ones)
+      if (seekAt && !slowSeekPC) { const ms = performance.now() - seekAt;
+        if (ms > 250 && ++slowJumps >= 3) { slowSeekPC = true; try { localStorage.setItem("slowSeek", "1"); } catch {}
+          invoke("ui_log", { msg: `player: jumps while dragging take ${Math.round(ms)} ms - dragging shows preview pictures from now on` }).catch(() => {});
+          askScrubSheet(trim.clip); } }
+      seekAt = 0;
+    });
+    v.addEventListener("seeked", () => { seekBusy = false; clearTimeout(seekT); if (seekWant !== null) { const t = seekWant; seekWant = null; doSeek(t); } });
+    let seekLast = 0;
+    const seekTo = e => { const r = seek.getBoundingClientRect(), f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); seekLast = f * (v.duration || 0);
+      $("pfill").style.width = f * 100 + "%"; $("pknob").style.left = f * 100 + "%"; doSeek(seekLast); };
+    let dragResume = false;   // Linux: paused while dragging, playing again when the mouse is let go
+    seek.onpointerdown = e => { seek.classList.add("drag"); seek.setPointerCapture(e.pointerId); if (pDragSheet() && !v.paused) { dragResume = true; v.pause(); } seekTo(e); seek.onpointermove = seekTo; };
+    seek.onpointerup = () => { const was = seek.classList.contains("drag"); seek.classList.remove("drag"); seek.onpointermove = null; if (was) { seekWant = null; seekBusy = false; v.currentTime = seekLast; sync(); if (dragResume) { dragResume = false; pPlay(v); }
+      // the strip picture goes away once the video shows the new spot (not before: no grey flash)
+      const sc = $("pscrub"); if (sc.classList.contains("on")) { let hid = false; const off = () => { if (!hid) { hid = true; sc.classList.remove("on"); } };
+        v.addEventListener("seeked", () => setTimeout(off, 80), { once: true }); setTimeout(off, 1200); } } };
+    document.addEventListener("keyup", e => { if (e.code === "Space" && $("player").classList.contains("open") && !e.target.matches("input,textarea,select,[contenteditable=true]")) e.preventDefault(); }, true);
+    $("player").addEventListener("click", e => { const b = e.target.closest && e.target.closest("button"); if (b && e.detail) setTimeout(() => b.blur()); });   // mouse clicks leave no focus behind
     document.addEventListener("keydown", e => {
       if (!$("player").classList.contains("open") || listening) return;
       if (e.target.matches("input,textarea,select,[contenteditable=true]")) return;   // typing in a box, not a shortcut
-      if (e.code === "Space") { e.preventDefault(); toggle(); }
+      if (e.code === "Space") { e.preventDefault(); if (e.repeat) return; if (document.activeElement && document.activeElement !== document.body && document.activeElement.closest("#player")) document.activeElement.blur(); const t0 = performance.now(); toggle(); const ms = performance.now() - t0; if (ms > 300) invoke("ui_log", { msg: `player: play/pause took ${Math.round(ms)} ms` }).catch(() => {}); }
       const step = e.ctrlKey ? 2.5 : 5;   // YouTube-style skipping; Ctrl = finer
       if (e.code === "ArrowLeft") { e.preventDefault(); e.shiftKey ? $("pprev").onclick() : v.currentTime -= step; }
       if (e.code === "ArrowRight") { e.preventDefault(); e.shiftKey ? $("pnext").onclick() : v.currentTime += step; }
@@ -4491,11 +4770,81 @@
     trim.busy = false; ["tsave", "treplace"].forEach(id => $(id).disabled = false);
   }
 
-  function closePlayer() { if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur(); sideClip = null; pPrev.close(); const v = $("pvideo"); v.pause(); v.removeAttribute("src"); v.load(); $("player").classList.remove("open"); $("pload").classList.remove("on", "ind"); }
+  // into Echo's log: how smoothly a clip played (frames shown / dropped per second played) - for "choppy" reports
+  function logPlayback() {
+    try {
+      const v = $("pvideo"), q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+      let played = 0; for (let i = 0; i < v.played.length; i++) played += v.played.end(i) - v.played.start(i);
+      if (!q) return;
+      if (played < 1) { if (IS_LINUX) invoke("ui_log", { msg: `player: ${trim.clip ? trim.clip.name : "?"} - barely played (${played.toFixed(2)} s, ${q.totalVideoFrames} frames, at ${v.currentTime.toFixed(2)} s, ready ${v.readyState}, network ${v.networkState}, ${v.paused ? "paused" : "playing"})` }).catch(() => {}); return; }
+      const shown = q.totalVideoFrames - q.droppedVideoFrames;
+      invoke("ui_log", { msg: `player: ${trim.clip ? trim.clip.name : "?"} - ${Math.round(shown / played)} fps shown over ${played.toFixed(1)} s (${q.totalVideoFrames} frames, ${q.droppedVideoFrames} dropped${v.videoWidth ? `, ${v.videoWidth}x${v.videoHeight}` : ""})` }).catch(() => {});
+    } catch {}
+  }
+  function closePlayer() {
+    const pl = $("player"), was = pl.classList.contains("open");
+    if (was) logPlayback();
+    trim.clip = null;   // late callbacks (cloud stream start, 25 s download fallback) check this: no playing after close
+    pl.classList.remove("open"); $("pload").classList.remove("on", "ind");
+    try { if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#player")) document.activeElement.blur(); } catch {}
+    sideClip = null;
+    const v = $("pvideo"); try { v.pause(); } catch {}
+    if (!was) return;
+    const gen = ++closeGen;
+    setTimeout(() => {   // after the window has redrawn: stopping the video can take a moment on Linux
+      if (gen !== closeGen || pl.classList.contains("open")) return;
+      const t0 = performance.now();
+      try { pPrev.close(); } catch (e) { invoke("ui_log", { msg: "player: preview close failed: " + e }).catch(() => {}); }
+      try { v.removeAttribute("src"); v.load(); } catch {}
+      const ms = performance.now() - t0; if (ms > 300) invoke("ui_log", { msg: `player: stopping the video took ${Math.round(ms)} ms` }).catch(() => {});
+    }, 30);
+  }
+  let closeGen = 0;
+  // clip sound with the player closed / Echo in the background (William, 5 Nov): the player video must never play
+  // while closed; anything else making sound while Echo isn't in front gets a log line saying what it was
+  document.addEventListener("play", e => {
+    const m = e.target; if (!(m instanceof HTMLMediaElement)) return;
+    const what = m.id || (m.closest && m.closest(".card") ? "card preview" : m.className || m.tagName.toLowerCase());
+    let src = String(m.currentSrc || m.src || "").split("/").pop().slice(0, 120); try { src = decodeURIComponent(src); } catch {}
+    if (m.id === "pvideo" && !$("player").classList.contains("open")) {
+      try { m.pause(); } catch {}
+      invoke("ui_log", { msg: `ui: player video started while the player was closed (${src}) - stopped it` }).catch(() => {});
+      return;
+    }
+    if (!m.muted && m.volume > 0 && (isAway() || !document.hasFocus()))
+      invoke("ui_log", { msg: `ui: sound started while Echo is in the background: ${what} (${src})` }).catch(() => {});
+  }, true);
+  // hover previews: PAUSE when Echo loses focus (the mouse "leaves" no card when you Alt+Tab away). Only pause:
+  // unloading a <video> can block WebKitGTK's whole window for seconds (= a freeze on every Alt+Tab, chat 25)
+  const pausePreviews = () => document.querySelectorAll(".card .thumb video").forEach(v => { try { v.pause(); } catch {} });
+  addEventListener("blur", pausePreviews);
+  // WebKitGTK doesn't always fire the page's "blur" on Alt+Tab (a hovered preview kept playing while Echo was in
+  // the background, chat 25): Tauri's own window-focus event too, and a check while previews play
+  listen("tauri://blur", pausePreviews);
+  let winFocused = true;
+  listen("tauri://focus", () => { winFocused = true; }); listen("tauri://blur", () => { winFocused = false; });
+  setInterval(() => { if ((!winFocused || !document.hasFocus()) && [...document.querySelectorAll(".card .thumb video")].some(v => !v.paused)) pausePreviews(); }, 1000);
+  listen("window-hidden", () => stopPreviews());
+  // Linux: log when the page stops responding (freezes when switching windows) - what was going on at the time
+  if (IS_LINUX) {
+    let last = performance.now(), told = 0;
+    setInterval(() => {
+      const now = performance.now(), gap = now - last - 500; last = now;
+      if (gap > 1500 && now - told > 10000 && !document.hidden) {
+        told = now;
+        const vids = [...document.querySelectorAll("video")].filter(v => v.getAttribute("src")).length;
+        invoke("ui_log", { msg: `ui: page froze for ${(gap / 1000).toFixed(1)} s (focused ${document.hasFocus()}, ${vids} videos loaded, player ${$("player").classList.contains("open") ? "open" : "closed"})` }).catch(() => {});
+      }
+    }, 500);
+  }
+  let scrubSheet = { clip: null, url: "" };   // Linux: sharp pictures for dragging the seek bar (see openPlayer)
   // close on a click on the dark backdrop only - not when a text selection / drag started inside and ended outside
   let pDownOnBackdrop = false;
-  $("player").addEventListener("pointerdown", e => { pDownOnBackdrop = e.target.id === "player"; });
-  $("player").onclick = e => { if (e.target.id === "player" && pDownOnBackdrop) closePlayer(); pDownOnBackdrop = false; };
+  // empty = not the video, a button or a box: the side panel's empty space and the gaps between counts too
+  // (before: the whole invisible side-panel column and greyed-out arrows swallowed clicks)
+  const pEmpty = t => !(t.closest && t.closest(".pwrap, button:not(:disabled), input, textarea, select, a, .dtagrow, #sinfo, #pname, .pg"));
+  $("player").addEventListener("pointerdown", e => { pDownOnBackdrop = pEmpty(e.target); });
+  $("player").onclick = e => { if (pDownOnBackdrop && pEmpty(e.target)) closePlayer(); pDownOnBackdrop = false; };
 
   async function saveClip() { try { await invoke("save_clip", { seconds: null }); } catch (e) { toast(String(e)); } }
   async function cleanNow() {
@@ -5448,6 +5797,13 @@
     const keys = [...cfg.hotkeys.map(h => h.keys), cfg.screenshot_key, cfg.bookmark_key, cfg.session_key, cfg.mic_mute_key].filter(Boolean);
     const k = keys.find(same);
     if (k) { e.preventDefault(); invoke("hotkey_ui", { keys: k }).catch(() => {}); }
+  }, true);
+  // Esc closes the player even when the video / a button has focus (WebKitGTK: only every other press worked)
+  addEventListener("keydown", e => {
+    if (e.key !== "Escape" || listening || !$("player").classList.contains("open")) return;
+    if (e.target.matches && e.target.matches("input,textarea,select,[contenteditable=true]")) return;   // the box's own Esc
+    if (document.querySelector("#confirm.open, #ectx.on, #copymenu.on, #foldmenu.on, #fmenu.on")) return;   // a menu / dialog on top closes first
+    e.preventDefault(); e.stopPropagation(); closePlayer();
   }, true);
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { if (listening) { listening = null; unpauseKeys(); renderSettings(); } else closePlayer(); return; }

@@ -78,6 +78,32 @@ pub fn show_existing() {
 }
 
 /// Seconds since the last keyboard/mouse input anywhere on the PC.
+/// true when `pid` most likely runs as administrator and Echo doesn't: Windows then hides that window's keys
+/// from Echo's keyboard hook. A token a normal program can't read counts as admin (or a protected process).
+pub fn elevated_vs_echo(pid: u32) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe fn elevated(p: HANDLE) -> Option<bool> {
+        let mut t = HANDLE::default();
+        OpenProcessToken(p, TOKEN_QUERY, &mut t).ok()?;
+        let mut e = TOKEN_ELEVATION::default();
+        let mut n = 0u32;
+        let r = GetTokenInformation(t, TokenElevation, Some(&mut e as *mut TOKEN_ELEVATION as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut n);
+        let _ = CloseHandle(t);
+        r.ok()?;
+        Some(e.TokenIsElevated != 0)
+    }
+    unsafe {
+        if elevated(GetCurrentProcess()) == Some(true) { return false; }
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let r = elevated(h);
+        let _ = CloseHandle(h);
+        r.unwrap_or(true)
+    }
+}
+
 pub fn idle_seconds() -> u64 {
     use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
