@@ -3203,9 +3203,43 @@ impl Recorder {
 
     /// All clip folders (also empty ones you made), as "Folder/Sub folder" paths.
     pub fn list_folders(&self) -> Vec<String> {
+        // the cloud's date folders ("2026/11 - November/05 - Thursday") showed up as EMPTY clip folders on Windows
+        // (chat 26, cause unknown): remove empty ones once per run and say so in the log (with any clips inside: kept)
+        static TIDIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !TIDIED.swap(true, Ordering::Relaxed) { self.tidy_date_dirs(); }
         let mut v: Vec<String> = self.clip_dirs().into_iter().map(|(f, _)| f).filter(|f| !f.is_empty()).collect();
         v.sort_by_key(|f| f.to_lowercase());
         v
+    }
+
+    fn tidy_date_dirs(&self) {
+        let root = self.clips_dir();
+        let Ok(rd) = fs::read_dir(&root) else { return };
+        fn files_in(d: &Path, out: &mut Vec<PathBuf>) {
+            for e in fs::read_dir(d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() { files_in(&p, out); } else if e.file_name() != ".echo-folder" { out.push(p); }
+            }
+        }
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            // a year folder ("2026") whose sub folders look like the cloud's months ("11 - November", "11", "November")
+            if !(name.len() == 4 && name.bytes().all(|b| b.is_ascii_digit()) && e.path().is_dir()) { continue; }
+            let months: Vec<String> = fs::read_dir(e.path()).into_iter().flatten().flatten().map(|m| m.file_name().to_string_lossy().to_string()).collect();
+            let monthish = |m: &str| { let w = m.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start_matches(" - ").trim();
+                MONTHS.contains(&w) || (w.is_empty() && m.len() == 2) };
+            if months.is_empty() || !months.iter().all(|m| monthish(m)) { continue; }
+            let mut files = Vec::new();
+            files_in(&e.path(), &mut files);
+            if files.is_empty() {
+                let made = e.metadata().and_then(|m| m.modified()).ok().map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
+                let r = fs::remove_dir_all(e.path());
+                log_line(&format!("folders: removed the empty cloud-date folder '{name}' ({}, last changed {made})", r.map_or_else(|e| format!("failed: {e}"), |_| "ok".into())));
+            } else {
+                log_line(&format!("folders: '{name}' looks like a cloud date folder but has {} file(s), e.g. {} - kept", files.len(),
+                    files[0].strip_prefix(&root).unwrap_or(&files[0]).display()));
+            }
+        }
     }
 
     /// Make an (empty) folder; `name` may be "Parent/Child". A hidden marker keeps it when its last clip moves out.
@@ -4738,6 +4772,65 @@ impl Recorder {
         Ok(img.to_string_lossy().into())
     }
 
+    /// Editor timeline dragging: sharp single pictures every 0.1 s (at most 450, spread over longer clips), up to
+    /// 1280x720, good JPEG quality with full colour detail (the player's 640x360 sheet looked grainy/green in the
+    /// editor, where lining up exact moments matters - William, chat 26). Kept for the last 3 clips opened.
+    /// Returns {prefix, step, count}: picture k = `<prefix><k:04>.jpg` = time k * step.
+    /// `player` = the lighter set for dragging the player's seek bar on Linux (chat 26): one every 0.2 s (max 300),
+    /// 960x540, -q:v 3, last 5 clips kept - between the 60-picture sheet (grainy) and the editor's set.
+    pub fn edit_frames(&self, path: &str, player: bool) -> Result<serde_json::Value, String> {
+        let d = self.thumb(path)?.duration;
+        if d <= 0.0 { return Err("clip length unknown".into()); }
+        let stem = Path::new(path).file_stem().ok_or("bad path")?.to_string_lossy().to_string();
+        let (per_s, max_n, w, h, q, keep, folder) = if player { (5.0, 300u32, 960, 540, "3", 4usize, "playerframes") } else { (10.0, 450u32, 1280, 720, "2", 2usize, "editframes") };
+        let root = self.thumbs_dir().join(folder);
+        let dir = root.join(&stem);
+        let n = ((d * per_s).ceil() as u32).clamp(1, max_n);
+        let step = d / n as f64;
+        let prefix = dir.join("f_").to_string_lossy().to_string();
+        let answer = |count: u32| serde_json::json!({ "prefix": prefix, "step": step, "count": count });
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let done = dir.join("done");
+        let fresh = match (fs::metadata(&done).and_then(|m| m.modified()), fs::metadata(path).and_then(|m| m.modified())) {
+            (Ok(a), Ok(b)) => a >= b,
+            _ => false,
+        };
+        if fresh {
+            let count = fs::read_to_string(&done).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            if count > 0 {
+                // mark as just used (the folder's time = which sets are kept)
+                let u = dir.join("used"); let _ = fs::write(&u, b""); let _ = fs::remove_file(&u);
+                return Ok(answer(count));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(err)?;
+        // only the 3 most recently used clips keep their pictures (each set is some tens of MB)
+        if let Ok(rd) = fs::read_dir(&root) {
+            let mut sets: Vec<(std::time::SystemTime, PathBuf)> = rd.flatten().filter(|e| e.path() != dir && e.path().is_dir())
+                .map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path())).collect();
+            sets.sort_by(|a, b| b.0.cmp(&a.0));
+            for (_, p) in sets.into_iter().skip(keep) { let _ = fs::remove_dir_all(p); }
+        }
+        let t0 = Instant::now();
+        let vf = format!("fps={n}/{d:.4}:start_time=0:round=near,scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1,format=yuvj444p");
+        let out = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "0", "-an", "-sn", "-dn", "-i", path, "-map", "0:v:0",
+                "-vf", &vf, "-frames:v", &n.to_string(), "-q:v", q, "-start_number", "0"])
+            .arg(format!("{prefix}%04d.jpg"))
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(err)?;
+        let count = (0..n).take_while(|k| Path::new(&format!("{prefix}{k:04}.jpg")).exists()).count() as u32;
+        if !out.status.success() || count == 0 {
+            let _ = fs::remove_dir_all(&dir);
+            let e = String::from_utf8_lossy(&out.stderr);
+            log_line(&format!("editor pictures: {stem} failed: {}", e.lines().last().unwrap_or("").chars().take(200).collect::<String>()));
+            return Err("could not make the editor pictures".into());
+        }
+        let _ = fs::write(&done, count.to_string());
+        log_line(&format!("{} pictures: {stem} ({d:.0} s clip) - {count} pictures every {:.2} s in {} ms", if player { "seek-bar" } else { "editor" }, step, t0.elapsed().as_millis()));
+        Ok(answer(count))
+    }
+
     fn probe(&self, clip: &Path) -> (u32, u32, bool) {
         let out = hidden("ffprobe")
             .args(["-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "csv=p=0"])
@@ -5031,6 +5124,12 @@ impl Recorder {
             let lines: Vec<&str> = s.lines().collect();
             lines[lines.len().saturating_sub(400)..].join("\n")
         };
+        // start-up facts (libraries, Flatpak, webview) - a long run pushes them out of the last 400 lines (chat 26)
+        {
+            let s = fs::read_to_string(log_path()).unwrap_or_default();
+            let keep: Vec<&str> = s.lines().filter(|l| ["linux: libraries", "flatpak:", "webview:", "hotkey:", "update:"].iter().any(|k| l.contains(k))).take(40).collect();
+            if !keep.is_empty() { out += &format!("\n--- start-up ---\n{}\n", keep.join("\n")); }
+        }
         out += &format!("\n--- log ---\n{}\n", tail(log_path()));
         out += &format!("\n--- previous run ---\n{}\n", tail(log_path().with_extension("prev.log")));
         #[cfg(target_os = "linux")]
@@ -5038,7 +5137,13 @@ impl Recorder {
             // video playback engine of the window (GStreamer): only its last 300 lines, it can be chatty
             let s = fs::read_to_string(gst_log_path()).unwrap_or_default();
             let lines: Vec<&str> = s.lines().collect();
-            out += &format!("\n--- player video engine (GStreamer warnings) ---\n{}\n", lines[lines.len().saturating_sub(300)..].join("\n"));
+            // Flatpak: which plugins loaded (GPU "va" vs CPU "libav"/"openh264" decoders) - early lines, keep them
+            let loaded: Vec<&str> = lines.iter().copied().filter(|l| l.contains("GST_PLUGIN_LOADING") && l.contains("loaded")).take(80).collect();
+            if !loaded.is_empty() {
+                out += &format!("\n--- player video engine (plugins loaded) ---\n{}\n", loaded.join("\n"));
+            }
+            let warn: Vec<&str> = lines.iter().copied().filter(|l| !l.contains("GST_PLUGIN_LOADING")).collect();
+            out += &format!("\n--- player video engine (GStreamer warnings) ---\n{}\n", warn[warn.len().saturating_sub(300)..].join("\n"));
         }
         let file = std::env::temp_dir().join(format!("Echo log {}.txt", chrono::Local::now().format("%Y-%m-%d %H-%M")));
         fs::write(&file, out).map_err(err)?;

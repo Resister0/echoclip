@@ -14,7 +14,11 @@
   }
   * { box-sizing:border-box; margin:0; }
   html, body { height:100%; }
-  body { background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; display:flex; overflow:hidden; user-select:none; -webkit-font-smoothing:antialiased; }
+  body { background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; display:flex; overflow:hidden; -webkit-user-select:none; user-select:none; -webkit-font-smoothing:antialiased; }
+  /* WebKitGTK (Flatpak) ignored the unprefixed user-select: whole pages could be dragged blue. Text fields stay selectable,
+     in the theme colour */
+  input, textarea, [contenteditable="true"] { -webkit-user-select:text; user-select:text; }
+  ::selection { background:rgba(var(--accent-rgb),.45); color:inherit; }
   h1, h2, h3, .brand { font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif; letter-spacing:-.01em; }
   svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
   button { font:inherit; color:inherit; cursor:pointer; }
@@ -233,6 +237,9 @@
   #puplbl.on { display:block; }
   .thumb video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; opacity:0; transition:opacity .25s; }
   .thumb video.on { opacity:1; }
+  /* hover preview as a flipbook of 60 still pictures (Linux + weak PCs): no video engine, no sound stream */
+  .thumb .flip { position:absolute; inset:0; background-repeat:no-repeat; background-size:1000% 600%; display:none; pointer-events:none; }
+  .thumb .flip.on { display:block; }
   .thumb::after { content:""; position:absolute; inset:auto 0 0 0; height:22%; background:linear-gradient(transparent,#0005); pointer-events:none; }
   .thumb .dur { position:absolute; right:9px; bottom:9px; background:#000d; border-radius:6px; padding:2px 7px; font-size:11.5px; font-weight:600; z-index:2; font-variant-numeric:tabular-nums; }
   .thumb .tag { position:absolute; left:9px; bottom:9px; background:rgba(var(--accent-rgb),0.85); border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600; z-index:2; }
@@ -249,7 +256,9 @@
   .card:hover .ovl .more, .card:focus-within .ovl .more { max-width:150px; margin-right:6px; opacity:1; visibility:visible;
     transition:max-width .18s ease, margin .18s ease, opacity .15s .05s; }
   .ovl .more .ib { flex:none; }
-  body.ctrlheld .card .ovl .more { max-width:150px; margin-right:6px; opacity:1; visibility:visible; transition:max-width .18s ease, margin .18s ease, opacity .15s; }
+  body.ctrlheld .card .ovl .more { max-width:150px; margin-right:6px; opacity:1; visibility:visible; }
+  /* holding Ctrl: the extra buttons are there at once, no slide (William, chat 26) - also when Ctrl is let go */
+  body.ctrlinst .card .ovl .more, body.ctrlinst #keyhint { transition:none !important; }
   #keyhint { position:fixed; left:50%; bottom:18px; transform:translate(-50%,8px); z-index:40; opacity:0; pointer-events:none; transition:.15s;
     background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 14px; font-size:12px; color:var(--muted); box-shadow:0 10px 30px #0008; white-space:nowrap; }
   #keyhint kbd { font-size:11px; }
@@ -277,7 +286,26 @@
   .thumb .pick { position:absolute; left:9px; top:9px; width:26px; height:26px; border-radius:50%; border:2px solid #fffc; background:#0006; display:grid; place-items:center; opacity:0; transition:.15s; z-index:3; padding:0; }
   .thumb .pick svg { width:14px; height:14px; stroke:#fff; stroke-width:3; opacity:0; }
   .card:hover .pick, .card.picked .pick, body.picking .pick { opacity:1; }
-  .card.picked { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent); }
+  /* selected: slim accent edge + a light accent tint on the picture + the filled tick (the old 3 px ring looked bulky
+     with Ctrl+A, chat 26); while picking, the clips NOT selected fade back a little */
+  .card.picked { border-color:rgba(var(--accent-rgb),0.9); box-shadow:none; }
+  /* the same hover shadow as every card: without it the lift of a selected card ran choppy on Linux (chat 26 - the
+     shadow fading in keeps WebKitGTK repainting the card instead of moving a GPU layer, which stutters there) */
+  .card.picked:hover { box-shadow:0 14px 34px #0009; }
+  /* Linux: the hover shadow is redrawn every frame of the lift (that's what keeps the lift smooth there): a tighter,
+     less blurry shadow is much cheaper to draw, so it keeps up instead of stepping (chat 26) */
+  html.linux .card:hover { box-shadow:0 8px 16px #0008, 0 0 0 1px rgba(var(--accent-rgb),0.2); }
+  html.linux .card.picked:hover { box-shadow:0 8px 16px #0008; }
+  /* tints as a COLOUR fade on an overlay, not an opacity fade of the picture: WebKitGTK (Linux) runs opacity /
+     transform fades as GPU layers that flicker on William's PC (chat 24 notifications, chat 26 here); a colour
+     change is painted with the page = smooth everywhere */
+  .card .thumb::before { content:""; position:absolute; inset:0; background:transparent; pointer-events:none; z-index:1; transition:background-color .15s; }
+  .card.picked .thumb::before { background:rgba(var(--accent-rgb),0.16); }
+  body.picking .card:not(.picked) .thumb::before { background:rgba(11,11,15,0.5); }
+  body.picking .card:not(.picked):hover .thumb::before { background:rgba(11,11,15,0.15); }
+  /* Linux: a colour fade INSIDE a card that is lifting (hover transform) makes WebKitGTK repaint the card's GPU
+     layer every frame = the lift ran at ~2 fps (chat 26). Tints switch at once there, the lift stays smooth */
+  html.linux .card .thumb::before { transition:none; }
   /* per-clip job (convert / make smaller): label + bar over the bottom of the preview */
   .thumb .job { position:absolute; left:0; right:0; bottom:0; z-index:4; padding:22px 10px 8px; background:linear-gradient(transparent,#000c); pointer-events:none; }
   .thumb .job span { display:block; font-size:12px; font-weight:600; margin-bottom:5px; text-shadow:0 1px 3px #000; font-variant-numeric:tabular-nums; }
@@ -313,7 +341,16 @@
   /* Linux: picture shown over the video while dragging the seek bar (a tile of the seek-bar strip), YouTube-style */
   #pscrub { position:absolute; inset:0; display:none; pointer-events:none; background-color:#000; background-repeat:no-repeat; background-size:4000% 100%; }
   #pscrub.on { display:block; }
-  #player video { display:block; width:100%; max-height:calc(100vh - var(--pv)); aspect-ratio:16/9; background:#000; object-fit:contain; cursor:pointer; }
+  #pscrub img { width:100%; height:100%; object-fit:contain; display:none; }
+  #pscrub.frames img { display:block; }
+  /* Linux: black cover over the video while a clip starts (its first frames came out squashed, chat 26) */
+  #pcover { position:absolute; left:0; top:0; width:100%; height:calc(min(100vw - 56px, (100vh - var(--pv)) * 16 / 9) * 9 / 16); background:#000; display:none; pointer-events:none; }
+  .pwrap.pwait #pcover { display:block; }
+  /* Linux: editor timeline drag shows sharp still pictures over the video instead of jumping it (black flashes) */
+  #escrub { position:absolute; display:none; pointer-events:none; background:#000; }
+  #escrub img { width:100%; height:100%; object-fit:contain; display:block; }
+  #escrub.on { display:block; }
+  #player video { display:block; width:100%; max-height:calc(100vh - var(--pv)); aspect-ratio:16/9; /* fixed height (= .pwrap width x 9/16): before the clip loads WebKit sized the black box from its own default, a bit too short */ height:calc(min(100vw - 56px, (100vh - var(--pv)) * 16 / 9) * 9 / 16); background:#000; object-fit:contain; cursor:pointer; }
   .pwrap { background:var(--panel); border:1px solid var(--line); box-shadow:0 20px 60px #000c; }
   .ctl { display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--panel2); border-top:1px solid var(--line); }
   /* fullscreen: video fills the screen, strip + controls float over it and hide when the mouse rests (YouTube style) */
@@ -412,8 +449,8 @@
   .btn.ic.danger:hover { color:var(--bad); border-color:var(--bad); background:rgba(251,92,124,.1); }
   /* keyboard hints only while the mouse is on the video / controls */
   /* fades out only after 0.5 s: moving the mouse from the video down to the hints crosses a gap (it flickered) */
-  #player .phint { opacity:0; transition:opacity .25s ease .5s; }
-  #player:has(.pwrap:hover) .phint, #player .phint:hover { opacity:1; transition-delay:0s; }
+  /* always shown, one look: fading in/out on hover flickered between two looks as the mouse came near (chat 26) */
+  #player .phint { opacity:.85; }
   .seek .tsel { position:absolute; top:5px; bottom:5px; border:2px solid var(--hi); border-radius:6px; pointer-events:none; box-shadow:0 0 0 9999px #0000; }
   .seek .h { position:absolute; top:3px; bottom:3px; width:12px; margin-left:-6px; border-radius:4px; background:var(--hi); cursor:ew-resize; z-index:2; }
   .seek .h::after { content:""; position:absolute; left:5px; top:8px; bottom:8px; width:2px; border-radius:2px; background:#0008; }
@@ -1125,7 +1162,7 @@
   </div>
   <button class="pnav" id="pprev" title="Previous clip (Shift+←)"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
   <button class="pnav" id="pnext" title="Next clip (Shift+→)"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
-  <div class="pwrap"><video id="pvideo"></video><div id="pscrub"></div><div id="pup"><i></i></div><div id="puplbl"></div><div id="pload"><b>Loading from the cloud…</b><div class="bar"><i></i></div><small></small></div>
+  <div class="pwrap"><video id="pvideo"></video><div id="pcover"></div><div id="pscrub"><img id="pscrubimg" alt=""></div><div id="pup"><i></i></div><div id="puplbl"></div><div id="pload"><b>Loading from the cloud…</b><div class="bar"><i></i></div><small></small></div>
     <div class="pstrip"><div class="seek" id="pseek" title="Click to jump · drag the yellow ends to trim"><div class="buf" id="pbuf"></div><div class="fill" id="pfill"></div><div class="tsel" id="tsel"></div><div class="h" id="th0"></div><div class="h" id="th1"></div><div class="knob" id="pknob"></div></div></div>
     <div class="ctl">
       <button class="pb" id="pplay"></button>
@@ -1156,7 +1193,7 @@
     <button class="btn primary" id="eexport"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>Export</button>
   </div>
   <div class="emain">
-    <div class="ewrap" id="ewrap"><div class="estage" id="estage"><video id="evideo"></video><div id="efade" style="position:absolute;inset:0;background:#000;pointer-events:none;opacity:0"></div><div id="eovs" style="position:absolute;inset:0"></div><div id="etexts"></div></div></div>
+    <div class="ewrap" id="ewrap"><div class="estage" id="estage"><video id="evideo"></video><div id="escrub"><img id="escrubimg" alt=""></div><div id="efade" style="position:absolute;inset:0;background:#000;pointer-events:none;opacity:0"></div><div id="eovs" style="position:absolute;inset:0"></div><div id="etexts"></div></div></div>
     <aside class="einsp" id="einsp"></aside>
   </div>
   <div class="etools">
@@ -1391,7 +1428,76 @@
     })).observe(box, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
   })();
   // hover previews keep the video file open: Windows then refuses rename / move / delete (os error 32)
-  const stopPreviews = () => document.querySelectorAll(".card .thumb video").forEach(v => { v.pause(); v.removeAttribute("src"); v.load(); v.remove(); });
+  const stopPreviews = () => { document.querySelectorAll(".card .thumb video").forEach(v => dropVideo(v, "hover preview")); document.querySelectorAll(".card .thumb").forEach(flipStop); };
+  // Hover previews as a flipbook on Linux and weak PCs (chat 26): the 60 sharp pictures of the clip that the seek bar
+  // uses for dragging (scrub_sheet, 640x360), ~10 a second = a quick time-lapse. No <video> = no sound stream (KDE's
+  // speaker button could un-mute muted previews), no GStreamer pipeline (its teardown froze WebKitGTK), little CPU.
+  // Pictures are made the first time a clip is hovered (one at a time; the newest hover wins), then cached on disk.
+  const flipOn = () => IS_LINUX || LITE;
+  const flipSheets = new Map();
+  let flipBusy = false, flipWant = null;
+  function flipSheet(c) {
+    const k = c.path + "|" + c.size;
+    if (flipSheets.has(k)) return Promise.resolve(flipSheets.get(k));
+    return new Promise(res => { flipWant = { c, k, res }; flipRun(); });
+  }
+  function flipRun() {
+    if (flipBusy || !flipWant) return;
+    const w = flipWant; flipWant = null; flipBusy = true;
+    invoke("scrub_sheet", { path: w.c.path, rel: null })
+      .then(p => { const u = convertFileSrc(p) + "?" + w.c.size; flipSheets.set(w.k, u); w.res(u); })
+      .catch(() => w.res(null)).finally(() => { flipBusy = false; flipRun(); });
+  }
+  function flipStart(th, c) {
+    flipStop(th);
+    const f = document.createElement("div"); f.className = "flip"; th.prepend(f); th._flip = f;
+    flipSheet(c).then(u => {
+      if (th._flip !== f || !u) return;
+      const im = new Image();
+      im.onload = () => {
+        if (th._flip !== f) return;
+        f.style.backgroundImage = `url("${u}")`;
+        let i = 0;
+        const step = () => { f.style.backgroundPosition = ((i % 10) / 9 * 100).toFixed(3) + "% " + (Math.floor(i / 10) / 5 * 100).toFixed(3) + "%"; i = (i + 1) % 60; };
+        step(); f.classList.add("on");
+        const t0 = Date.now();
+        f._t = setInterval(() => { if (th._flip !== f || !document.hasFocus() || Date.now() - t0 > 20000) { flipStop(th); return; } step(); }, 100);
+      };
+      im.src = u;
+    });
+  }
+  function flipStop(th) {
+    const f = th && th._flip; if (!f) return;
+    clearInterval(f._t); f.remove(); th._flip = null;
+  }
+  // Linux: unloading a <video> (src removed) can block WebKitGTK's whole page while the window isn't being drawn -
+  // moving it to another monitor / Alt+Tab froze Echo for 13.8 s (chat 26). So: pause + hide at once, unload later,
+  // one at a time, only when the window is focused and drawing frames again. Every slow unload is logged.
+  const deadVids = [];
+  let reaping = false;
+  function dropVideo(v, why) {
+    if (!v || v._dead) return;
+    try { v.pause(); } catch {}
+    if (!IS_LINUX) { v.removeAttribute("src"); v.load(); v.remove(); return; }
+    v._dead = true; v.style.display = "none"; v.classList.remove("on");
+    if (!v.getAttribute("src")) { v.remove(); return; }
+    deadVids.push([v, why]); reapVids();
+  }
+  function reapVids() {
+    if (reaping || !deadVids.length) return;
+    reaping = true;
+    // two drawn frames in a row = the window is on screen and drawing (rAF stops while it isn't)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!document.hasFocus() || document.hidden || !(() => { try { return winFocused; } catch { return true; } })()) { reaping = false; setTimeout(reapVids, 1000); return; }
+      const [v, why] = deadVids.shift(), t0 = performance.now();
+      try { v.removeAttribute("src"); v.load(); } catch {}
+      v.remove();
+      const ms = performance.now() - t0;
+      if (ms > 300) invoke("ui_log", { msg: `ui: unloading a ${why} video took ${Math.round(ms)} ms` }).catch(() => {});
+      reaping = false;
+      if (deadVids.length) setTimeout(reapVids, 50);
+    }));
+  }
   let lastAct = "";   // the last clip action (for the log line below)
   function toast(msg) {
     msg = plat(String(msg)); const box = $("notes");
@@ -1442,6 +1548,17 @@
   }
   const keyName = k => k.replace(/^Key/, "").replace(/^Digit/, "").replace("Control", "Ctrl");
   const kbdHtml = keys => keys.split("+").map(k => `<kbd>${keyName(k)}</kbd>`).join("");
+  // Linux with KDE's shortcuts portal (the Flatpak): KDE decides the keys - it keeps the ones confirmed first, and a
+  // key changed in Echo doesn't change them there. So Echo shows the keys KDE really uses and sends changes there.
+  let kdeKeys = null;   // { Echo's key setting: the key KDE uses ("" = none) } or null
+  const kdeTip = "Your desktop decides Echo's keys: change them in System Settings > Shortcuts > Echo";
+  const keyShow = keys => {
+    if (kdeKeys && keys && Object.prototype.hasOwnProperty.call(kdeKeys, keys)) {
+      const t = kdeKeys[keys];
+      return t ? t.split("+").map(k => `<kbd>${k.replace(/</g, "&lt;")}</kbd>`).join("") : '<span style="color:var(--dim)">No key in KDE</span>';
+    }
+    return kbdHtml(keys);
+  };
   function chime() {
     try {
       const a = new AudioContext(), g = a.createGain(); g.connect(a.destination); g.gain.value = 0.08;
@@ -2215,7 +2332,7 @@
     if (!list.length) {
       g.innerHTML = `<div class="group"><div class="grid">` + (clips.length
         ? `<div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></div><b>Nothing here</b>No clips match this search or filter.</div>`
-        : `<div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg></div><b>No clips yet</b>Press ${cfg && cfg.hotkeys[0] ? kbdHtml(cfg.hotkeys[0].keys) : "your hotkey"} in game to save the last moments.</div>`) + `</div></div>`;
+        : `<div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg></div><b>No clips yet</b>Press ${cfg && cfg.hotkeys[0] ? keyShow(cfg.hotkeys[0].keys) : "your hotkey"} in game to save the last moments.</div>`) + `</div></div>`;
       return;
     }
     // group by date when sorted by date
@@ -2250,7 +2367,7 @@
     shotView = list;
     $("count").textContent = `${list.length} screenshot${list.length === 1 ? "" : "s"} · ${fmtSize(list.reduce((n, c) => n + c.size, 0))}`;
     if (!list.length) {
-      g.innerHTML = `<div class="group"><div class="grid"><div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><b>No screenshots yet</b>Press ${cfg && cfg.screenshot_key ? kbdHtml(cfg.screenshot_key) : "your screenshot hotkey"} in game.</div></div></div>`;
+      g.innerHTML = `<div class="group"><div class="grid"><div class="empty"><div class="ic"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><b>No screenshots yet</b>Press ${cfg && cfg.screenshot_key ? keyShow(cfg.screenshot_key) : "your screenshot hotkey"} in game.</div></div></div>`;
       return;
     }
     const groups = [];
@@ -2269,7 +2386,9 @@
         th.insertAdjacentHTML("beforeend", `<button class="pick" title="Select (Ctrl+click)"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>`);
         if (picked.has(c.path)) el.classList.add("picked");
         const togglePick = () => { picked.has(c.path) ? picked.delete(c.path) : picked.add(c.path); el.classList.toggle("picked", picked.has(c.path)); renderPickBar(); };
-        th.querySelector(".pick").onclick = e => { e.stopPropagation(); togglePick(); };
+        th.querySelector(".pick").onclick = e => { e.stopPropagation(); e.currentTarget.blur(); togglePick(); };
+    // the tick must not keep keyboard focus: a focused card keeps its extra buttons open (the name got cut short)
+    th.querySelector(".pick").onmousedown = e => e.preventDefault();
         el.addEventListener("click", e => { if ((e.ctrlKey || e.shiftKey) && !e.target.closest(".ib")) { e.preventDefault(); e.stopPropagation(); togglePick(); } }, true);
         th.onclick = () => picked.size ? togglePick() : openShot(c);
         el.querySelectorAll(".ib").forEach(b => b.onclick = async () => {
@@ -2285,17 +2404,50 @@
       }
     }
   }
-  function openShot(c) {   // full-size view, click or Esc to close
+  // Mouse-wheel zoom on a picture / video (toward the mouse, up to 8x), drag to move around while zoomed.
+  // `el` is scaled inside its own box; clip = keep it inside that box (the player's video would cover the controls).
+  // Returns { reset, moved() }: moved() = the last press was a drag, not a click.
+  function wheelZoom(box, el, clip) {
+    let s = 1, x = 0, y = 0, drag = null, wasDrag = false;
+    const cur0 = box.style.cursor;
+    const size = () => ({ w: el.offsetWidth, h: el.offsetHeight });
+    const fit = () => { const { w, h } = size(); x = Math.min(0, Math.max(w * (1 - s), x)); y = Math.min(0, Math.max(h * (1 - s), y)); };
+    const apply = () => {
+      el.style.transformOrigin = "0 0";
+      el.style.transform = s === 1 ? "" : `translate(${x}px,${y}px) scale(${s})`;
+      if (clip) { const { w, h } = size(); el.style.clipPath = s === 1 ? "" : `inset(${-y / s}px ${w - (w - x) / s}px ${h - (h - y) / s}px ${-x / s}px)`; }
+      box.style.cursor = s > 1 ? (drag ? "grabbing" : "grab") : cur0;
+    };
+    box.addEventListener("wheel", e => {
+      if (e.ctrlKey) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect(), ox = r.left - x, oy = r.top - y;   // where the unscaled picture starts
+      const px = (e.clientX - ox - x) / s, py = (e.clientY - oy - y) / s;   // picture point under the mouse
+      const ns = Math.min(8, Math.max(1, s * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+      x = e.clientX - ox - px * ns; y = e.clientY - oy - py * ns; s = ns < 1.02 ? 1 : ns;
+      if (s === 1) { x = 0; y = 0; } fit(); apply();
+    }, { passive: false });
+    box.addEventListener("pointerdown", e => { wasDrag = false; if (s > 1 && e.button === 0) drag = { sx: e.clientX, sy: e.clientY, x, y }; });
+    addEventListener("pointermove", e => { if (!drag) return; const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 4) wasDrag = true; x = drag.x + dx; y = drag.y + dy; fit(); apply(); });
+    addEventListener("pointerup", () => { if (drag) { drag = null; apply(); } });
+    // a drag isn't a click (closing the picture / play-pause)
+    box.addEventListener("click", e => { if (wasDrag) { e.stopPropagation(); e.preventDefault(); wasDrag = false; } }, true);
+    return { reset() { s = 1; x = 0; y = 0; drag = null; apply(); }, zoomed: () => s > 1 };
+  }
+  function openShot(c) {   // full-size view, click or Esc to close; mouse wheel zooms, drag moves around
     const o = document.createElement("div");
-    o.style.cssText = "position:fixed;inset:0;z-index:150;background:#000e;display:grid;place-items:center;cursor:zoom-out;padding:24px";
-    o.innerHTML = `<img style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 20px 60px #000" src="${convertFileSrc(c.path)}?${c.size}">`;
+    o.style.cssText = "position:fixed;inset:0;z-index:150;background:#000e;display:grid;place-items:center;cursor:zoom-out;padding:24px;overflow:hidden";
+    o.innerHTML = `<img draggable="false" style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 20px 60px #000" src="${convertFileSrc(c.path)}?${c.size}">`;
     const close = () => { o.remove(); removeEventListener("keydown", esc, true); };
     const esc = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
-    o.onclick = close; addEventListener("keydown", esc, true); document.body.appendChild(o);
+    const z = wheelZoom(o, o.firstChild, false);
+    o.onclick = () => { if (!z.zoomed()) close(); };   // zoomed in: a click doesn't close (Esc does, or zoom back out)
+    addEventListener("keydown", esc, true); document.body.appendChild(o);
   }
   function renderPickBar() {
     const sh = filter === "shots", what = sh ? "screenshot" : "clip";
     $("pickbar").classList.toggle("on", picked.size > 0);
+    document.body.classList.toggle("picking", picked.size > 0);
     $("pickbar").classList.toggle("shots", sh);
     $("pickn").textContent = `${picked.size} ${what}${picked.size === 1 ? "" : "s"} selected`;
   }
@@ -2404,10 +2556,11 @@
   };
   const libKeysOk = e => $("page-library").classList.contains("on") && !$("editor").classList.contains("open") && !$("player").classList.contains("open")
     && !$("confirm").classList.contains("open") && !e.target.matches("input,textarea,select,[contenteditable=true]");
-  const ctrlOff = () => { clearTimeout(ctrlT); document.body.classList.remove("ctrlheld"); };
+  let ctrlInstT = 0;
+  const ctrlOff = () => { clearTimeout(ctrlT); const b = document.body; if (b.classList.contains("ctrlheld")) { b.classList.add("ctrlinst"); clearTimeout(ctrlInstT); ctrlInstT = setTimeout(() => b.classList.remove("ctrlinst"), 300); } b.classList.remove("ctrlheld"); };
   document.addEventListener("keydown", e => {
     // not while clips are selected: then Ctrl+click is for selecting and the hint would sit on the selection bar
-    if (e.key === "Control" && !e.repeat && libKeysOk(e) && !picked.size) { clearTimeout(ctrlT); ctrlT = setTimeout(() => { if (!picked.size) document.body.classList.add("ctrlheld"); }, 250); return; }
+    if (e.key === "Control" && !e.repeat && libKeysOk(e) && !picked.size) { clearTimeout(ctrlT); ctrlT = setTimeout(() => { if (!picked.size) { clearTimeout(ctrlInstT); document.body.classList.add("ctrlinst", "ctrlheld"); } }, 150); return; }
     if (e.key !== "Control" && !e.ctrlKey) ctrlOff();
     if (!libKeysOk(e)) return;
     hoverCard = clipUnderMouse();
@@ -2485,7 +2638,9 @@
     th.insertAdjacentHTML("beforeend", `<button class="pick" title="Select (Ctrl+click)"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>`);
     if (picked.has(c.path)) el.classList.add("picked");
     const togglePick = () => { picked.has(c.path) ? picked.delete(c.path) : picked.add(c.path); el.classList.toggle("picked", picked.has(c.path)); renderPickBar(); if (picked.size) ctrlOff(); };
-    th.querySelector(".pick").onclick = e => { e.stopPropagation(); togglePick(); };
+    th.querySelector(".pick").onclick = e => { e.stopPropagation(); e.currentTarget.blur(); togglePick(); };
+    // the tick must not keep keyboard focus: a focused card keeps its extra buttons open (the name got cut short)
+    th.querySelector(".pick").onmousedown = e => e.preventDefault();
     el.addEventListener("click", e => { if ((e.ctrlKey || e.shiftKey) && !e.target.closest(".ib")) { e.preventDefault(); e.stopPropagation(); togglePick(); } }, true);
     th.onclick = () => { if (cardDragged) { cardDragged = false; return; } picked.size ? togglePick() : openPlayer(c); };
     th.addEventListener("pointerdown", e => cardDrag(e, c));
@@ -2514,15 +2669,21 @@
       // likely to be opened: make its seek-bar strip now (cached on disk, nothing happens if it exists)
       else if (!stripAsked.has(c.path)) { stripAsked.add(c.path); setTimeout(() => invoke("filmstrip", { path: c.path }).catch(() => {}), 300); }
       hv = setTimeout(() => {
-      vid = document.createElement("video"); vid.muted = true; vid.loop = true;
+      if (flipOn() && !c.cloud) { if (document.hasFocus() && winFocused && !document.body.classList.contains("cdrag")) flipStart(th, c); return; }
+      // muted AND volume 0: on Linux a muted <video> still has a (muted) sound stream, and KDE's speaker button on
+      // Echo's taskbar icon un-mutes that stream directly - the preview became audible (chat 25/26)
+      vid = document.createElement("video"); vid.muted = true; vid.volume = 0; vid.loop = true;
       const v0 = vid; v0.oncanplay = () => v0.classList.add("on"); th.prepend(v0);
       // not while Echo is in the background: the mouse can still pass over the window then, and even a muted
       // <video> is a (muted) sound stream on Linux - KDE showed a muted speaker on Echo, and un-muting it played
       // a clip's sound (chat 25)
-      const go = () => { if (vid !== v0 || document.body.classList.contains("cdrag") || (c.cloud && IS_LINUX) || !document.hasFocus() || !winFocused) return; v0.src = c.cloud ? streamUrl(c) : vidSrc(c); v0.play().catch(() => {}); };
+      const go = () => { if (vid !== v0 || document.body.classList.contains("cdrag") || (c.cloud && IS_LINUX) || !document.hasFocus() || !winFocused) return; v0.src = c.cloud ? streamUrl(c) : vidSrc(c); v0.play().catch(() => {});
+        // a preview never runs on and on: the mouse resting on a card while you're in another window never "leaves"
+        // it (no mouseleave), and WebKitGTK doesn't always say Echo lost focus - it looped for ages (chat 26)
+        setTimeout(() => { if (vid === v0 && !v0.paused) { v0.pause(); invoke("ui_log", { msg: `ui: hover preview of ${c.name} stopped after 20 s (window focus ${winFocused}, page focus ${document.hasFocus()})` }).catch(() => {}); } }, 20000); };
       if (c.cloud) ensureBase().then(go).catch(() => {}); else go();
     }, LITE ? 900 : 450); };
-    th.onmouseleave = () => { clearTimeout(hv); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); vid.remove(); vid = null; } };
+    th.onmouseleave = () => { clearTimeout(hv); flipStop(th); if (vid) { dropVideo(vid, "hover preview"); vid = null; } };
     // a thumbnail seen before is put back at once when the library is rebuilt (rename, upload, delete…):
     // no blank cards flashing while they load again
     const tkey = (c.cloud ? "c:" + c.rel : c.path) + "|" + c.size + "|" + thumbVer(c.name);
@@ -2739,7 +2900,24 @@
       addEventListener("pointerdown", un, true); addEventListener("keydown", un, true);
     });
   }
+  // Linux: a clip's first frames sometimes come out squashed (WebKitGTK / GStreamer still settling on the picture
+  // size, length not known yet - William's 3 screenshots, chat 26): black box -> squashed picture -> right picture.
+  // Keep it covered (black) until the clip really plays (time moving, length known); 1.5 s at most.
+  let pHoldGen = 0;
+  function pHold(v) {
+    if (!IS_LINUX) return;
+    const gen = ++pHoldGen, wrap = v.closest(".pwrap");
+    wrap.classList.add("pwait");
+    const done = () => { if (gen !== pHoldGen) return; pHoldGen++; wrap.classList.remove("pwait"); v.removeEventListener("timeupdate", tu); };
+    const tu = () => { if (v.currentTime > 0.1 && isFinite(v.duration) && v.duration > 0) done(); };
+    v.addEventListener("timeupdate", tu);
+    v.addEventListener("seeked", done, { once: true });
+    setTimeout(done, 1500);
+  }
+  // mouse wheel over the video zooms into it (drag to look around); back to normal for every clip / on close
+  const pZoom = wheelZoom($("pvideo"), $("pvideo"), true);
   function openPlayer(c) {
+    pZoom.reset();
     if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur();
     $("pname").textContent = shownName(c);
     $("pcopy").onclick = e => e.ctrlKey ? copyMenu($("pcopy"), c) : action("copy", c);
@@ -2770,8 +2948,13 @@
     // (cloud clips: once fully loaded, or after 20 s - it reads the clip from the cloud too)
     // Windows: only on weak PCs (Lite) or once dragging showed slow jumps (pDragSheet) - normal PCs drag live
     if (scrubSheet.clip !== c) scrubSheet = { clip: null, url: "" };
+    if (pFrames.clip !== c) pFrames = { clip: null, f: null };
     if (pDragSheet() && scrubSheet.clip !== c) {
-      const ask = () => askScrubSheet(c);
+      const ask = () => {
+        askScrubSheet(c);
+        if (IS_LINUX && !c.cloud) invoke("edit_frames", { path: c.path, player: true })
+          .then(f => { if (trim.clip === c && f && f.count) { pFrames = { clip: c, f }; const im = new Image(); im.src = convertFileSrc(f.prefix + "0000.jpg"); } }).catch(() => {});
+      };
       const full = () => { const b = v.buffered; return v.duration && b.length && b.end(b.length - 1) >= v.duration - 0.5; };
       const t1 = Date.now(), w8 = () => { if (trim.clip !== c) return; if (!c.cloud || full() || Date.now() - t1 > 20000) ask(); else setTimeout(w8, 500); };
       v.addEventListener("playing", () => setTimeout(w8, 700), { once: true });
@@ -2780,6 +2963,7 @@
     // still not playing after 25 s -> cloudLoading downloads it instead)
     if (c.cloud) { v.removeAttribute("src"); cloudLoading(v, c); ensureBase().then(() => { if (trim.clip === c) { v.src = cloudSrc(c); pPlay(v); } }).catch(e => { $("pload").classList.remove("on"); toast(String(e)); }); }
     else { v.src = vidSrc(c); pPlay(v); }
+    pHold(v);
     $("pcloud").onclick = () => cloudMenu($("pcloud"), c);
     $("sname").readOnly = !!c.cloud;
     if (c.cloud) {   // needs the file on this PC: download first, then do it
@@ -2890,7 +3074,7 @@
     wrap.appendChild(tip);   // inside the fullscreen element, so it shows in fullscreen too
     const tc = tip.querySelector("canvas"), tx = tc.getContext("2d"), tt = tip.querySelector("span");
     // helper videos must be in the page: detached <video>s don't decode new frames after a seek (Chromium)
-    const hidden = vid => { vid.muted = true; vid.preload = "metadata"; vid.playsInline = true; vid.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none"; document.body.appendChild(vid); return vid; };
+    const hidden = vid => { vid.muted = true; vid.volume = 0; vid.preload = "metadata"; vid.playsInline = true; vid.style.cssText = "position:fixed;left:-9999px;top:0;width:160px;height:90px;opacity:0;pointer-events:none"; document.body.appendChild(vid); return vid; };
     const pv = hidden(document.createElement("video"));
     let clip = null, stripImg = null, want = null, busy = false, hovering = false;
     const strips = new Map();   // cloud clip -> finished strip canvas (this session)
@@ -3034,11 +3218,18 @@
         // cover only the video, not the seek bar + buttons below it (it covered the whole player box: the play
         // button, time and volume vanished and the picture reached the bottom border while dragging)
         if (!sc.classList.contains("on")) Object.assign(sc.style, { left: v.offsetLeft + "px", top: v.offsetTop + "px", width: v.offsetWidth + "px", height: v.offsetHeight + "px", right: "auto", bottom: "auto" });
-        if (sh && v.duration) {   // sharp set: 60 frames, 10 x 6 grid
+        const fr = pFrames.clip === trim.clip ? pFrames.f : null, im = $("pscrubimg");
+        if (fr) {   // sharpest: one picture every 0.2 s
+          const k = Math.min(fr.count - 1, Math.max(0, Math.round(t / fr.step))), u = convertFileSrc(fr.prefix + String(k).padStart(4, "0") + ".jpg");
+          if (im.dataset.u !== u) { im.dataset.u = u; im.src = u; }
+          sc.style.backgroundImage = "none"; sc.classList.add("on", "frames");
+        } else if (sh && v.duration) {   // sharp set: 60 frames, 10 x 6 grid
+          sc.classList.remove("frames");
           const i = Math.min(59, Math.max(0, Math.floor(t / v.duration * 60))), want = `url("${sh}")`;
           if (sc.style.backgroundImage !== want) { sc.style.backgroundImage = want; sc.style.backgroundSize = "1000% 600%"; }
           sc.style.backgroundPosition = ((i % 10) / 9 * 100).toFixed(3) + "% " + (Math.floor(i / 10) / 5 * 100).toFixed(3) + "%"; sc.classList.add("on");
         } else if (bg && bg !== "none" && v.duration) {   // not made yet: the small seek-bar strip
+          sc.classList.remove("frames");
           const i = Math.min(39, Math.max(0, Math.round(t / v.duration * 40)));   // nearest tile (tile k = k/40 of the clip)
           if (sc.style.backgroundImage !== bg) { sc.style.backgroundImage = bg; sc.style.backgroundSize = "4000% 100%"; }
           sc.style.backgroundPosition = (i / 39 * 100).toFixed(3) + "% 0"; sc.classList.add("on");
@@ -3099,6 +3290,17 @@
   const EV = () => $("evideo");
   // pieces can come from other files dropped into the editor (o.src); "" = the clip being edited
   const srcUrl = p => convertFileSrc(p || ed.clip.path);
+  // sharp pictures of a source file for timeline dragging: one every 0.1 s, up to 1280x720 (edit_frames); null until made
+  const edSheets = {};
+  function edSheet(path) {
+    if (!path) return null;
+    if (edSheets[path] === undefined) {
+      edSheets[path] = null;
+      invoke("edit_frames", { path }).then(f => { if (f && f.count) edSheets[path] = f; }).catch(() => { delete edSheets[path]; });
+    }
+    return edSheets[path];
+  }
+  const edFrameUrl = (f, k) => convertFileSrc(f.prefix + String(k).padStart(4, "0") + ".jpg");
   const durOf = o => o && o.src ? ((ed.srcs || {})[o.src] || {}).dur || o.end : ed.dur;
   const stripOf = o => o && o.src ? (ed.strips || {})[o.src] : ed.strip;
   const fileName = p => (p || "").split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
@@ -3163,6 +3365,7 @@
       if (n >= 2 && n !== 3) invoke("track_levels", { path: c.path }).then(v => { if (ed.clip === c) ed.levels = v; }).catch(() => {});
     }).catch(() => {});
     fitStage(); renderEd(); seekOut(0);
+    if (pDragSheet()) { delete edSheets[ed.clip.path]; edSheet(ed.clip.path); }   // pictures for timeline dragging, made in the background (again if the clip changed)
     invoke("filmstrip", { path: c.path }).then(p => { ed.strip = convertFileSrc(p) + "?" + c.size; renderTL(); }).catch(() => {});
   }
   // info + filmstrip of another file used in the editor
@@ -3909,6 +4112,28 @@
       return;
     }
     const r = $("etlin").getBoundingClientRect(), to = e => seekOut((e.clientX - r.left - LP) / ed.pps);
+    if (pDragSheet()) {   // Linux / slow PCs: no jumps while dragging (each one flashed black) - still pictures, one jump at the end
+      const v = EV(), sc = $("escrub"), was = ed.playing;
+      if (was) edPause();
+      const show = e => {
+        ed.T = Math.max(0, Math.min((e.clientX - r.left - LP) / ed.pps, total())); drawHead();
+        const { i, src, gap } = locate(ed.T), g = ed.segs[i], f = g && !gap ? edSheet(g.src || ed.clip.path) : null;
+        if (!f) { sc.classList.remove("on"); return; }
+        Object.assign(sc.style, { left: v.offsetLeft + "px", top: v.offsetTop + "px", width: v.offsetWidth + "px", height: v.offsetHeight + "px" });
+        const k = Math.min(f.count - 1, Math.max(0, Math.round(src / f.step))), u = edFrameUrl(f, k), im = $("escrubimg");
+        if (im.dataset.u !== u) { im.dataset.u = u; im.src = u; }
+        sc.classList.add("on");
+      };
+      show(e);
+      const up = () => {
+        removeEventListener("pointermove", show); removeEventListener("pointerup", up);
+        const off = () => setTimeout(() => sc.classList.remove("on"), 80);
+        if (sc.classList.contains("on")) { v.addEventListener("seeked", off, { once: true }); setTimeout(() => sc.classList.remove("on"), 1200); }
+        seekOut(ed.T); if (was) edPlay();
+      };
+      addEventListener("pointermove", show); addEventListener("pointerup", up);
+      return;
+    }
     to(e); const up = () => { removeEventListener("pointermove", to); removeEventListener("pointerup", up); };
     addEventListener("pointermove", to); addEventListener("pointerup", up);
   });
@@ -4784,6 +5009,7 @@
   function closePlayer() {
     const pl = $("player"), was = pl.classList.contains("open");
     if (was) logPlayback();
+    pZoom.reset();
     trim.clip = null;   // late callbacks (cloud stream start, 25 s download fallback) check this: no playing after close
     pl.classList.remove("open"); $("pload").classList.remove("on", "ind");
     try { if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#player")) document.activeElement.blur(); } catch {}
@@ -4813,17 +5039,24 @@
     }
     if (!m.muted && m.volume > 0 && (isAway() || !document.hasFocus()))
       invoke("ui_log", { msg: `ui: sound started while Echo is in the background: ${what} (${src})` }).catch(() => {});
+    // any video (muted too) starting while Echo isn't in front: previews should be paused then (chat 26)
+    else if (isAway() || !document.hasFocus() || !(() => { try { return winFocused; } catch { return true; } })())
+      invoke("ui_log", { msg: `ui: video started while Echo is in the background: ${what} (${src}, ${m.muted ? "muted" : "sound"}, volume ${m.volume}, page focus ${document.hasFocus()})` }).catch(() => {});
   }, true);
   // hover previews: PAUSE when Echo loses focus (the mouse "leaves" no card when you Alt+Tab away). Only pause:
   // unloading a <video> can block WebKitGTK's whole window for seconds (= a freeze on every Alt+Tab, chat 25)
-  const pausePreviews = () => document.querySelectorAll(".card .thumb video").forEach(v => { try { v.pause(); } catch {} });
+  const pausePreviews = () => { document.querySelectorAll(".card .thumb video").forEach(v => { try { v.pause(); } catch {} }); document.querySelectorAll(".card .thumb").forEach(flipStop); };
   addEventListener("blur", pausePreviews);
   // WebKitGTK doesn't always fire the page's "blur" on Alt+Tab (a hovered preview kept playing while Echo was in
   // the background, chat 25): Tauri's own window-focus event too, and a check while previews play
   listen("tauri://blur", pausePreviews);
   let winFocused = true;
   listen("tauri://focus", () => { winFocused = true; }); listen("tauri://blur", () => { winFocused = false; });
-  setInterval(() => { if ((!winFocused || !document.hasFocus()) && [...document.querySelectorAll(".card .thumb video")].some(v => !v.paused)) pausePreviews(); }, 1000);
+  let toldBgPreview = 0;
+  setInterval(() => { if ((!winFocused || !document.hasFocus()) && [...document.querySelectorAll(".card .thumb video")].some(v => !v.paused)) {
+    pausePreviews();
+    if (Date.now() - toldBgPreview > 60000) { toldBgPreview = Date.now(); invoke("ui_log", { msg: `ui: a hover preview was still playing with Echo in the background - paused it (blur missed? window focus ${winFocused}, page focus ${document.hasFocus()})` }).catch(() => {}); }
+  } }, 1000);
   listen("window-hidden", () => stopPreviews());
   // Linux: log when the page stops responding (freezes when switching windows) - what was going on at the time
   if (IS_LINUX) {
@@ -4837,7 +5070,9 @@
       }
     }, 500);
   }
-  let scrubSheet = { clip: null, url: "" };   // Linux: sharp pictures for dragging the seek bar (see openPlayer)
+  let scrubSheet = { clip: null, url: "" };
+  // Linux: sharper single pictures for dragging the seek bar (one every 0.2 s, 960x540 - edit_frames player:true)
+  let pFrames = { clip: null, f: null };   // Linux: sharp pictures for dragging the seek bar (see openPlayer)
   // close on a click on the dark backdrop only - not when a text selection / drag started inside and ended outside
   let pDownOnBackdrop = false;
   // empty = not the video, a button or a box: the side panel's empty space and the gaps between counts too
@@ -4918,7 +5153,7 @@
   // ----- first-start setup -----
   function openSetup() {
     $("sumic").innerHTML = $("micdev").innerHTML; $("sumic").value = cfg.mic_device || "";
-    $("suhk").innerHTML = cfg.hotkeys[0] ? kbdHtml(cfg.hotkeys[0].keys) + " (last " + fmtLen(cfg.hotkeys[0].seconds) + ")" : "your hotkey";
+    $("suhk").innerHTML = cfg.hotkeys[0] ? keyShow(cfg.hotkeys[0].keys) + " (last " + fmtLen(cfg.hotkeys[0].seconds) + ")" : "your hotkey";
     renderSettings();
     $("setup").classList.add("open");
     drawSetupImport();
@@ -5328,7 +5563,21 @@
     drawSavingPh();
     if (e.payload.Ok) toast("Clip saved"); else toast(e.payload.Err);   // sounds are played by the app itself
     refresh();
+    if (e.payload.Ok && IS_LINUX) setTimeout(dndTip, 1500);
   });
+  // Linux (KDE): Do Not Disturb switches on by itself while the screen is shared - and Echo (Flatpak) records through
+  // screen sharing, so "Clip saved" never pops up. Say so ONCE, with where to change it (chat 26)
+  async function dndTip() {
+    let seen = false; try { seen = !!localStorage.getItem("echo_dndtip"); } catch {}
+    if (seen || !(await invoke("desktop_dnd").catch(() => false))) return;
+    try { localStorage.setItem("echo_dndtip", "1"); } catch {}
+    invoke("ui_log", { msg: "Do Not Disturb tip shown" }).catch(() => {});
+    $("cmsg").style.whiteSpace = "pre-line";   // keep the paragraphs (only this dialog)
+    await choiceBox("Your \"Clip saved\" popups are hidden",
+      "Your desktop's Do Not Disturb is on, so Echo's popups only go to the notification history. KDE switches it on by itself while your screen is being shared - and that's how Echo records.\n\nTo see them: System Settings > Notifications > Do Not Disturb, and untick \"During screen sharing\".\n\nThe save sound still plays either way. This tip only shows once.",
+      [["Got it", true, "primary"]]);
+    $("cmsg").style.whiteSpace = "";
+  }
 
   /* ---------- settings ---------- */
   const PRESETS = [
@@ -5537,9 +5786,7 @@
     renderHotkeys(); renderGameRules(); renderSoundFiles(); renderThemes();
     syncDeps();
     syncSegs(); drawQuality();
-    $("chips").innerHTML = cfg.hotkeys.map((h, i) => `<div class="chip"><button class="chk-k" data-i="${i}" title="Click, then press the new keys">${kbdHtml(h.keys)}</button><span>Clip</span><select class="chk-l" data-i="${i}" title="Clip length">${LENGTHS.map(s => `<option value="${s}" ${s === h.seconds ? "selected" : ""}>${fmtLen(s)}</option>`).join("")}</select></div>`).join("");
-    $("chips").querySelectorAll(".chk-k").forEach(b => b.onclick = () => listenHotkey(b, +b.dataset.i));
-    $("chips").querySelectorAll(".chk-l").forEach(s => s.onchange = () => { cfg.hotkeys[+s.dataset.i].seconds = +s.value; changed(); });
+    renderChips();
   }
 
   function renderGameRules() {
@@ -5726,12 +5973,26 @@
     document.querySelector('[data-page=settings]').click();
     const a = document.querySelector(`.snav a[data-sec="${sec}"]`); if (a) a.click();
   }
+  function renderChips() {
+    $("chips").innerHTML = cfg.hotkeys.map((h, i) => `<div class="chip"><button class="chk-k" data-i="${i}" title="Click, then press the new keys">${keyShow(h.keys)}</button><span>Clip</span><select class="chk-l" data-i="${i}" title="Clip length">${LENGTHS.map(s => `<option value="${s}" ${s === h.seconds ? "selected" : ""}>${fmtLen(s)}</option>`).join("")}</select></div>`).join("");
+    $("chips").querySelectorAll(".chk-k").forEach(b => b.onclick = () => listenHotkey(b, +b.dataset.i));
+    $("chips").querySelectorAll(".chk-l").forEach(s => s.onchange = () => { cfg.hotkeys[+s.dataset.i].seconds = +s.value; changed(); });
+  }
+  async function loadKdeKeys() {
+    if (!IS_LINUX || !cfg) return;
+    const r = await invoke("hotkey_triggers").catch(() => null);
+    const k = r && r.portal ? r.keys : null;
+    if (JSON.stringify(k) === JSON.stringify(kdeKeys)) return;
+    kdeKeys = k; renderHotkeys(); renderChips();
+  }
+  if (IS_LINUX) { setTimeout(loadKdeKeys, 4000); addEventListener("focus", loadKdeKeys); setInterval(() => { if (document.hasFocus()) loadKdeKeys(); }, 15000); }
   function renderHotkeys() {
     const box = $("hklist"); box.innerHTML = "";
+    if (kdeKeys) { const n = document.createElement("div"); n.className = "row"; n.innerHTML = `<div class="lbl"><b>Keys are set in KDE</b><small>${kdeTip}. Echo shows the keys KDE uses.</small></div>`; box.appendChild(n); }
     cfg.hotkeys.forEach((h, i) => {
       const row = document.createElement("div"); row.className = "row";
       row.innerHTML = `<div class="lbl"><b>Clip</b><small>Save the previous moments of gameplay</small></div>
-        <button class="hk">${kbdHtml(h.keys)}</button>
+        <button class="hk">${keyShow(h.keys)}</button>
         <select>${LENGTHS.map(s => `<option value="${s}" ${s === h.seconds ? "selected" : ""}>${fmtLen(s)}</option>`).join("")}</select>
         <button class="x" title="Remove">${ICON.x}</button>`;
       row.querySelector(".hk").onclick = ev => listenHotkey(ev.currentTarget, i);
@@ -5741,21 +6002,21 @@
     });
     const shot = document.createElement("div"); shot.className = "row";
     shot.innerHTML = `<div class="lbl"><b>Screenshot</b><small>Saves a full-resolution PNG to your clips folder › Screenshots</small></div>
-      <button class="hk">${cfg.screenshot_key ? kbdHtml(cfg.screenshot_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
+      <button class="hk">${cfg.screenshot_key ? keyShow(cfg.screenshot_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
       <button class="x" title="Turn off">${ICON.x}</button>`;
     shot.querySelector(".hk").onclick = ev => listenHotkey(ev.currentTarget, "shot");
     shot.querySelector(".x").onclick = () => { cfg.screenshot_key = ""; changed(); };
     box.appendChild(shot);
     const mk = document.createElement("div"); mk.className = "row";
     mk.innerHTML = `<div class="lbl"><b>Bookmark</b><small>Marks a moment in the buffer - it shows as a yellow marker on the next clip you save</small></div>
-      <button class="hk">${cfg.bookmark_key ? kbdHtml(cfg.bookmark_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
+      <button class="hk">${cfg.bookmark_key ? keyShow(cfg.bookmark_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
       <button class="x" title="Turn off">${ICON.x}</button>`;
     mk.querySelector(".hk").onclick = ev => listenHotkey(ev.currentTarget, "mark");
     mk.querySelector(".x").onclick = () => { cfg.bookmark_key = ""; changed(); };
     box.appendChild(mk);
     const lr = document.createElement("div"); lr.className = "row";
     lr.innerHTML = `<div class="lbl"><b>Record</b><small>Start / stop recording by hand (like the Record button) - saved as a clip when you stop</small></div>
-      <button class="hk">${cfg.session_key ? kbdHtml(cfg.session_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
+      <button class="hk">${cfg.session_key ? keyShow(cfg.session_key) : '<span style="color:var(--dim)">Off - click to set</span>'}</button>
       <button class="x" title="Turn off">${ICON.x}</button>`;
     lr.querySelector(".hk").onclick = ev => listenHotkey(ev.currentTarget, "long");
     lr.querySelector(".x").onclick = () => { cfg.session_key = ""; changed(); };
@@ -5782,6 +6043,8 @@
 
   let listening = null;
   function listenHotkey(btn, i) {
+    const cur = typeof i === "number" ? (cfg.hotkeys[i] || {}).keys : cfg[{ shot: "screenshot_key", mark: "bookmark_key", long: "session_key", mute: "mic_mute_key" }[i]];
+    if (kdeKeys && cur && Object.prototype.hasOwnProperty.call(kdeKeys, cur)) { toast(kdeTip); return; }
     if (listening) listening.btn.classList.remove("listen");
     listening = { btn, i }; btn.classList.add("listen"); btn.textContent = "Press keys…";
     invoke("hotkeys_paused", { on: true }).catch(() => {});

@@ -1126,6 +1126,10 @@ async fn scrub_sheet(rec: State<'_, Recorder>, path: Option<String>, rel: Option
     rec.scrub_sheet(path.as_deref(), rel.as_deref())
 }
 #[tauri::command]
+async fn edit_frames(rec: State<'_, Recorder>, path: String, player: Option<bool>) -> Result<serde_json::Value, String> {
+    rec.edit_frames(&path, player.unwrap_or(false))
+}
+#[tauri::command]
 async fn clip_is_av1(path: String) -> bool {
     recorder::is_av1(&path)
 }
@@ -1273,14 +1277,16 @@ fn open_in_folder(path: String) {
     #[cfg(not(windows))]
     {
         // open the folder with the clip selected (Dolphin etc.), else just the folder
-        let p = std::path::Path::new(&path);
-        let uri = format!("file://{}", p.to_string_lossy().replace('%', "%25").replace(' ', "%20"));
-        let ok = !p.is_dir() && crate::recorder::sys_cmd("dbus-send")
-            .args(["--session", "--dest=org.freedesktop.FileManager1", "--type=method_call", "/org/freedesktop/FileManager1",
-                   "org.freedesktop.FileManager1.ShowItems", &format!("array:string:{uri}"), "string:"])
-            .status().map_or(false, |s| s.success());
-        let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
-        if !ok { let _ = crate::recorder::sys_cmd("xdg-open").arg(dir).spawn(); }
+        // own thread: a D-Bus answer can take seconds, and this command would hold the window
+        std::thread::spawn(move || {
+            let p = std::path::Path::new(&path);
+            let ok = linuxutil::show_in_folder(p);
+            let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().map(|p| p.to_path_buf()).unwrap_or_default() };
+            if !ok {
+                let r = crate::recorder::sys_cmd("xdg-open").arg(&dir).spawn();
+                crate::recorder::log_line(&format!("folder: xdg-open {} ({})", dir.display(), r.map_or_else(|e| e.to_string(), |_| "started".into())));
+            }
+        });
     }
 }
 
@@ -1423,6 +1429,24 @@ fn ui_log(msg: String) {
     recorder::log_line(&format!("ui: {}", msg.chars().take(400).collect::<String>()));
 }
 
+/// Linux with the KDE shortcuts portal (Flatpak, or no /dev/input access): the keys KDE really uses, by Echo's key
+/// setting ({"Alt+F10": "Alt+F10", "Shift+F9": ""}). portal false = Echo's own keys are what counts.
+#[tauri::command]
+fn hotkey_triggers() -> serde_json::Value {
+    #[cfg(target_os = "linux")]
+    if let Some(m) = hotkey::kde_keys() { return serde_json::json!({ "portal": true, "keys": m }); }
+    serde_json::json!({ "portal": false, "keys": {} })
+}
+
+/// Linux: was KDE's Do Not Disturb on at the last notification (it hides "Clip saved")? The window shows a tip once.
+#[tauri::command]
+fn desktop_dnd() -> bool {
+    #[cfg(target_os = "linux")]
+    { linuxutil::dnd_on() }
+    #[cfg(not(target_os = "linux"))]
+    { false }
+}
+
 /// The window drew its first library: log how long startup took (to spot slow starts in users' logs).
 #[tauri::command]
 fn ui_ready(clips: u32) {
@@ -1454,7 +1478,9 @@ fn main() {
         if std::env::var_os("GST_DEBUG").is_none() {
             let p = recorder::gst_log_path();
             let _ = std::fs::remove_file(&p);
-            std::env::set_var("GST_DEBUG", "2");
+            // Flatpak: also which GStreamer plugins load (va = GPU video decode, libav/openh264 = CPU) - the
+            // player ran 16-19 fps at 1440p in the sandbox (chat 25)
+            std::env::set_var("GST_DEBUG", if linuxutil::in_flatpak() { "2,GST_PLUGIN_LOADING:4" } else { "2" });
             std::env::set_var("GST_DEBUG_NO_COLOR", "1");
             std::env::set_var("GST_DEBUG_FILE", &p);
         }
@@ -1518,6 +1544,8 @@ fn main() {
                     }
                 });
             }
+            #[cfg(target_os = "linux")]
+            { if linuxutil::in_flatpak() { linuxutil::flatpak_video_report(); } linuxutil::lib_report(); }
             // turn off the browser's own shortcuts (Ctrl+F find bar, F5 reload, Ctrl+P print…) so Echo's own keys work
             #[cfg(windows)]
             if let Some(w) = app.get_webview_window("main") {
@@ -2041,7 +2069,7 @@ fn main() {
             pick_image,
             clip_meta,
             library_stamp,
-            ui_ready, ui_log,
+            ui_ready, ui_log, desktop_dnd, edit_frames, hotkey_triggers,
             set_meta,
             set_thumb,
             cleanup_now,

@@ -178,6 +178,9 @@ pub struct Settings {
     /// settings version for smart bitrate: 0 = file from before it existed (migrated once in load())
     #[serde(default)]
     pub smart_v: u32,
+    /// 0 = file from before the Linux screenshot key moved off Shift+F10 (migrated once in load())
+    #[serde(default)]
+    pub shot_key_v: u32,
     /// password of the encrypted rclone cloud config (echo.conf, Windows); made by Echo, never shown
     pub rclone_pass: String,
     /// controller combo that saves a clip (XInput bits, 0 = off) and its length (0 = first hotkey's length)
@@ -224,7 +227,9 @@ impl Default for Settings {
             name_by_game: true,
             game_folders: true,
             caption_model: "base".into(),
-            screenshot_key: "Shift+F10".into(),
+            // Linux: Shift+F10 opens context menus in GTK/KDE apps and clashed with William's screenshot tool
+            screenshot_key: if cfg!(target_os = "linux") { "Alt+F12" } else { "Shift+F10" }.into(),
+            shot_key_v: 1,
             bookmark_key: "Shift+F9".into(),
             show_overlay: true,
             on_this_day: true,
@@ -344,6 +349,15 @@ impl Settings {
                 s.smart_bitrate = false;
             }
             s.smart_v = 1;
+            let _ = s.save();
+        }
+        // Linux: the old default screenshot key Shift+F10 (= "open context menu" in Linux apps) becomes Alt+F12.
+        // Only the untouched default changes; a key someone picked himself stays.
+        if s.shot_key_v < 1 {
+            if cfg!(target_os = "linux") && s.screenshot_key == "Shift+F10" {
+                s.screenshot_key = "Alt+F12".into();
+            }
+            s.shot_key_v = 1;
             let _ = s.save();
         }
         s

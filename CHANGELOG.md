@@ -4,6 +4,17 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Linux: sharper, smoother pictures while dragging the player's seek bar
+- Linux and weaker PCs: hovering a clip shows a quick time-lapse of it (sharp pictures, no sound, lighter on the PC)
+- Linux (KDE): Echo shows the keys KDE really uses and says where to change them
+- Zoom into screenshots and videos with the mouse wheel (drag to look around)
+- Holding Ctrl shows the extra clip buttons instantly
+- The key hints under the player no longer flicker as the mouse comes near
+- Linux: clips no longer flash a squashed picture when they start in the player
+- Linux: dragging through the editor's timeline shows sharp pictures (every 0.1 s) instead of black flashes
+- Player: the black box no longer jumps in size when a clip starts
+- Linux: pages can no longer be dragged blue like selected text; text fields select in your theme colour
+- Linux: the screenshot key is now Alt+F12 (Shift+F10 opens menus in Linux apps)
 - Linux: recording, thumbnails and seek-bar previews work in the AppImage (it no longer breaks the system's ffmpeg / gpu-screen-recorder)
 - Linux: clips no longer freeze in the player, and it recovers by itself if a clip gets stuck
 - Smoother clips: no more tiny hitch every 2 seconds

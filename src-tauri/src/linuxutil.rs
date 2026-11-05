@@ -57,6 +57,13 @@ pub fn disk_free(dir: &str) -> u64 {
     o.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).lines().nth(1).and_then(|l| l.trim().parse().ok())).unwrap_or(0)
 }
 
+static DND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);   // 0 unknown, 1 off, 2 on
+
+/// Was the desktop's Do Not Disturb on when Echo last sent a notification? (the window's one-time tip)
+pub fn dnd_on() -> bool {
+    DND.load(std::sync::atomic::Ordering::Relaxed) == 2
+}
+
 /// Desktop notification (shows over games in KDE's corner; the Windows popup window can't on Wayland).
 /// Straight over D-Bus (no notify-send needed - it isn't in the Flatpak); each new one replaces the last.
 pub fn notify(title: &str, sub: &str, ok: bool) {
@@ -68,6 +75,11 @@ pub fn notify(title: &str, sub: &str, ok: bool) {
         let sent = (|| -> Option<u32> {
             let c = dbus::blocking::Connection::new_session().ok()?;
             let p = c.with_proxy("org.freedesktop.Notifications", "/org/freedesktop/Notifications", std::time::Duration::from_secs(3));
+            // KDE turns on Do Not Disturb by itself while the screen is shared - and the Flatpak records THROUGH screen
+            // sharing, so nothing pops up (chat 26). Remember it: the window shows a one-time tip (desktop_dnd).
+            // ("critical" urgency gets past DND, but KDE keeps those up until clicked away - William said no.)
+            use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
+            if let Ok(on) = p.get::<bool>("org.freedesktop.Notifications", "Inhibited") { DND.store(if on { 2 } else { 1 }, Ordering::Relaxed); }
             let mut hints = PropMap::new();
             hints.insert("urgency".into(), Variant(Box::new(if ok { 0u8 } else { 1u8 }) as Box<dyn RefArg>));
             hints.insert("x-canonical-private-synchronous".into(), Variant(Box::new("echo".to_string()) as Box<dyn RefArg>));
@@ -81,7 +93,8 @@ pub fn notify(title: &str, sub: &str, ok: bool) {
             Some(id)
         })();
         // every notification in the log (chat 25: none showed in the Flatpak, no error either)
-        crate::recorder::log_line(&format!("notify: \"{title}\" -> {}", sent.map_or("not sent (no session bus?) - trying notify-send".to_string(), |id| format!("shown as #{id}"))));
+        crate::recorder::log_line(&format!("notify: \"{title}\" -> {}", sent.map_or("not sent (no session bus?) - trying notify-send".to_string(), |id| format!("shown as #{id}{}",
+            match DND.load(Ordering::Relaxed) { 2 => " - but the desktop's Do Not Disturb is ON (popups only in the history)", 1 => " (Do Not Disturb off)", _ => "" }))));
         match sent {
             Some(id) => LAST.store(id, Ordering::Relaxed),
             None => {   // no notification service on the bus: the old way
@@ -263,4 +276,88 @@ pub fn portal_screenshot(out: &std::path::Path) -> bool {
     // the portal saves it somewhere of its own (often ~/Pictures): move it into Echo's Screenshots folder
     let ok = std::fs::rename(&src, out).is_ok() || (std::fs::copy(&src, out).is_ok() && { let _ = std::fs::remove_file(&src); true });
     ok && std::fs::metadata(out).map_or(false, |m| m.len() > 0)
+}
+
+/// Flatpak: what the player's video engine has to work with, once at start (the player ran 16-19 fps at 1440p
+/// in the sandbox, chat 25): GPU decode needs GStreamer's "va" plugin + a VA-API driver + /dev/dri.
+pub fn flatpak_video_report() {
+    std::thread::spawn(|| {
+        let mut dirs: Vec<String> = std::env::var("GST_PLUGIN_SYSTEM_PATH").unwrap_or_default()
+            .split(':').filter(|d| !d.is_empty()).map(String::from).collect();
+        for d in ["/usr/lib/x86_64-linux-gnu/gstreamer-1.0", "/usr/lib/aarch64-linux-gnu/gstreamer-1.0", "/usr/lib/gstreamer-1.0",
+                  "/app/lib/gstreamer-1.0", "/usr/lib/extensions/gstreamer-1.0"] {
+            if !dirs.iter().any(|x| x == d) { dirs.push(d.into()); }
+        }
+        let has = |f: &str| dirs.iter().find(|d| std::path::Path::new(d).join(f).exists()).cloned();
+        let plug: Vec<String> = [("va", "libgstva.so"), ("vaapi", "libgstvaapi.so"), ("libav", "libgstlibav.so"), ("openh264", "libgstopenh264.so")]
+            .iter().map(|(n, f)| format!("{n} {}", has(f).map_or("no".to_string(), |d| format!("yes ({d})")))).collect();
+        let mut drv: Vec<String> = Vec::new();
+        for d in std::env::var("LIBVA_DRIVERS_PATH").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+            if let Ok(rd) = std::fs::read_dir(d) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n.ends_with("_drv_video.so") { drv.push(format!("{n} in {d}")); }
+                }
+            }
+        }
+        let render = std::fs::read_dir("/dev/dri").map(|rd| rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("renderD")).count()).unwrap_or(0);
+        crate::recorder::log_line(&format!("flatpak: player video - GStreamer plugins: {}; VA-API drivers: {}; GPU render nodes: {render}; WEBKIT_DMABUF_RENDERER_FORCE_SHM={}",
+            plug.join(", "), if drv.is_empty() { "none found".to_string() } else { drv.join(", ") },
+            std::env::var("WEBKIT_DMABUF_RENDERER_FORCE_SHM").unwrap_or_else(|_| "(not set)".into())));
+    });
+}
+
+/// "Show in folder": the file manager opens the clip's folder with the clip selected. Straight over D-Bus
+/// (FileManager1 - Dolphin, Nautilus…; dbus-send isn't in the Flatpak = the folder button did nothing there),
+/// then the Flatpak's OpenURI portal (OpenDirectory). false = the caller falls back to xdg-open.
+pub fn show_in_folder(path: &std::path::Path) -> bool {
+    use dbus::blocking::Connection;
+    let Ok(c) = Connection::new_session() else { return false };
+    let how = (|| {
+        if !path.is_dir() {
+            let uri = format!("file://{}", path.to_string_lossy().replace('%', "%25").replace(' ', "%20").replace('#', "%23"));
+            let p = c.with_proxy("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", std::time::Duration::from_secs(5));
+            let r: Result<(), _> = p.method_call("org.freedesktop.FileManager1", "ShowItems", (vec![uri], ""));
+            match r {
+                Ok(()) => return Some("file manager".to_string()),
+                Err(e) => crate::recorder::log_line(&format!("folder: file manager didn't answer ({e})")),
+            }
+        }
+        if in_flatpak() {
+            use std::os::fd::IntoRawFd;
+            let f = std::fs::File::open(path).ok()?;
+            let fd = unsafe { dbus::arg::OwnedFd::new(f.into_raw_fd()) };
+            let p = c.with_proxy("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", std::time::Duration::from_secs(10));
+            let mut opt = dbus::arg::PropMap::new();
+            opt.insert("handle_token".into(), dbus::arg::Variant(Box::new(token("dir")) as Box<dyn dbus::arg::RefArg>));
+            let r: Result<(dbus::Path<'static>,), _> = p.method_call("org.freedesktop.portal.OpenURI", "OpenDirectory", ("", fd, opt));
+            match r {
+                Ok(_) => return Some("portal".to_string()),
+                Err(e) => crate::recorder::log_line(&format!("folder: portal didn't open it ({e})")),
+            }
+        }
+        None
+    })();
+    if let Some(h) = &how { crate::recorder::log_line(&format!("folder: shown ({h})")); }
+    how.is_some()
+}
+
+/// Which WebKitGTK + Mesa (graphics driver) this Echo runs on, once ~8 s after start: the Flatpak brings its
+/// own (GNOME runtime + Flathub's Mesa), the normal build uses the system's - to compare when only one freezes.
+pub fn lib_report() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
+        let mut libs: Vec<String> = Vec::new();
+        for l in maps.lines() {
+            let Some(path) = l.split_whitespace().nth(5) else { continue };
+            let name = path.rsplit('/').next().unwrap_or("");
+            if (name.starts_with("libwebkit2gtk") || name.starts_with("libgallium") || name.contains("radeonsi") || name.starts_with("libEGL_mesa")
+                || name.starts_with("libgtk-3") || name.starts_with("libgstreamer-1.0")) && !libs.iter().any(|x| x == path) {
+                libs.push(path.to_string());
+            }
+        }
+        crate::recorder::log_line(&format!("linux: libraries ({}): {}", if in_flatpak() { "Flatpak" } else { "system" },
+            if libs.is_empty() { "none found".into() } else { libs.join(", ") }));
+    });
 }

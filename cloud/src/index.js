@@ -1650,7 +1650,9 @@ async function changes(env, since) {
       try { await env.DB.prepare("INSERT OR IGNORE INTO releases (version, notes, at, sha) VALUES (?, ?, ?, NULL)").bind(latest, notes, at).run(); } catch {}
     }
   }
-  let list = rows.filter((x) => !latest || !newer(x.version, latest));
+  // hidden from "What's new" / the changelog: an emptied text (D1: UPDATE releases SET notes='' WHERE version='…'),
+  // or a "What changed?" text starting with "#" (internal builds, chat 26)
+  let list = rows.filter((x) => x.notes && !String(x.notes).trim().startsWith("#") && (!latest || !newer(x.version, latest)));
   list.sort((a, b) => (newer(a.version, b.version) ? -1 : newer(b.version, a.version) ? 1 : 0));
   if (since) list = list.filter((x) => newer(x.version, since));
   return new Response(JSON.stringify({ latest: latest || null, releases: list.slice(0, 60) }), {

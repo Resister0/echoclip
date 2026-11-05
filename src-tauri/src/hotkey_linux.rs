@@ -17,6 +17,46 @@ static CB: OnceLock<Box<dyn Fn(u32) + Send + Sync>> = OnceLock::new();
 static FIRED: Mutex<Option<Instant>> = Mutex::new(None);
 static PORTAL: AtomicBool = AtomicBool::new(false);
 static PORTAL_DIRTY: AtomicBool = AtomicBool::new(false);
+/// KDE shortcuts portal: our shortcut id -> Echo's key setting ("Alt+F10"), and Echo's key setting -> the key KDE
+/// really uses ("" = none). KDE keeps the key from the first confirmation; changing it in Echo doesn't change it there.
+static ID_KEYS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static TRIGGERS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// The keys KDE really uses for Echo's settings (None = not using the KDE portal).
+pub fn kde_keys() -> Option<HashMap<String, String>> {
+    if !PORTAL.load(Ordering::Relaxed) { return None; }
+    Some(TRIGGERS.lock().unwrap().clone().unwrap_or_default())
+}
+
+/// a(sa{sv}) from BindShortcuts' answer / ShortcutsChanged: remember each shortcut's trigger_description.
+fn take_shortcuts(v: &dyn dbus::arg::RefArg) {
+    let ids = ID_KEYS.lock().unwrap().clone().unwrap_or_default();
+    let mut got: Vec<(String, String)> = Vec::new();
+    let Some(items) = v.as_iter() else { return };
+    for item in items {
+        let Some(mut f) = item.as_iter() else { continue };
+        let (Some(id), Some(dict)) = (f.next().and_then(|x| x.as_str().map(String::from)), f.next()) else { continue };
+        let mut trig = String::new();
+        if let Some(mut d) = dict.as_iter() {
+            while let (Some(k), Some(val)) = (d.next(), d.next()) {
+                if k.as_str() == Some("trigger_description") {
+                    trig = val.as_str().map(String::from)
+                        .or_else(|| val.as_iter().and_then(|mut i| i.next().and_then(|x| x.as_str().map(String::from))))
+                        .unwrap_or_default();
+                }
+            }
+        }
+        if let Some(keys) = ids.get(&id) { got.push((keys.clone(), trig)); }
+    }
+    if got.is_empty() { return; }
+    let mut t = TRIGGERS.lock().unwrap();
+    let m = t.get_or_insert_with(HashMap::new);
+    let before = m.clone();
+    for (k, tr) in &got { m.insert(k.clone(), tr.clone()); }
+    if *m != before {
+        crate::recorder::log_line(&format!("hotkey: KDE uses {}", got.iter().map(|(k, tr)| format!("{} for '{k}'", if tr.is_empty() { "no key" } else { tr })).collect::<Vec<_>>().join(", ")));
+    }
+}
 
 /// KeyboardEvent.code -> Linux evdev key code (linux/input-event-codes.h)
 fn key_of(code: &str) -> Option<u16> {
@@ -242,8 +282,19 @@ fn portal_loop() -> Result<(), String> {
     let me = format!("echo{}_", std::process::id());
     conn.add_match(MatchRule::new_signal("org.freedesktop.portal.Request", "Response"), move |_: (), _, msg| {
         if msg.path().map_or(false, |p| { let p = p.to_string(); p.contains(&me) && p.ends_with('b') }) {
+            // the answer lists the keys KDE really uses (the user may have picked others, or none)
+            if let (_, Some(res)) = msg.get2::<u32, PropMap>() {
+                if let Some(v) = res.get("shortcuts") { take_shortcuts(&v.0); }
+            }
             crate::linuxutil::set_shortcuts_settled();
         }
+        true
+    }).map_err(|e| e.to_string())?;
+    // keys changed in KDE's System Settings while Echo runs
+    conn.add_match(MatchRule::new_signal(iface, "ShortcutsChanged"), move |_: (), _, msg| {
+        let mut it = msg.iter_init();
+        it.next();
+        if let Some(v) = it.get_refarg() { take_shortcuts(&*v); }
         true
     }).map_err(|e| e.to_string())?;
     let mut bound_at: Option<Instant> = None;
@@ -267,6 +318,7 @@ fn portal_loop() -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(300));
             let mut list: Vec<(String, PropMap)> = Vec::new();
             let mut map = HashMap::new();
+            let mut idk: HashMap<String, String> = HashMap::new();
             for (i, c) in COMBOS.lock().unwrap().iter().enumerate() {
                 let id = format!("k{i}");
                 let what = match c.seconds { 0 => "Screenshot".to_string(), s if s == u32::MAX => "Bookmark".into(),
@@ -275,6 +327,7 @@ fn portal_loop() -> Result<(), String> {
                 m.insert("description".into(), Variant(Box::new(format!("Echo: {what}")) as Box<dyn RefArg>));
                 if let Some(t) = trigger(&c.keys) { m.insert("preferred_trigger".into(), Variant(Box::new(t) as Box<dyn RefArg>)); }
                 map.insert(id.clone(), c.seconds);
+                idk.insert(id.clone(), c.keys.clone());
                 list.push((id, m));
             }
             let ptt = PTT_CODE.lock().unwrap().clone();
@@ -283,7 +336,9 @@ fn portal_loop() -> Result<(), String> {
                 m.insert("description".into(), Variant(Box::new("Echo: push to talk".to_string()) as Box<dyn RefArg>));
                 if let Some(t) = trigger(&ptt) { m.insert("preferred_trigger".into(), Variant(Box::new(t) as Box<dyn RefArg>)); }
                 list.push(("ptt".into(), m));
+                idk.insert("ptt".into(), ptt.clone());
             }
+            *ID_KEYS.lock().unwrap() = Some(idk);
             *ids.lock().unwrap() = map;
             let mut opt = PropMap::new();
             opt.insert("handle_token".into(), Variant(Box::new(format!("{tok}b")) as Box<dyn RefArg>));
