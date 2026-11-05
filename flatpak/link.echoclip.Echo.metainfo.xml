@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>link.echoclip.Echo</id>
   <name>Echo</name>
-  <summary>Save your best game moments with one key</summary>
+  <summary>Save game highlights with one key</summary>
   <developer id="link.echoclip">
     <name>Kimbo</name>
   </developer>
@@ -71,19 +71,12 @@
     <color type="primary" scheme_preference="dark">#3b2a7a</color>
   </branding>
 
-  <!-- TODO before the Flathub PR: real screenshots hosted on echoclip.link (1920x1080 or 1280x800 PNG) -->
+  <!-- PNGs in cloud/site/screenshots/ (served by echoclip.link after "wrangler deploy"). Shown in Discover / GNOME Software
+       for the Flatpak. Add more (player.png, editor.png, settings.png) as <screenshot> entries once they exist -->
   <screenshots>
     <screenshot type="default">
-      <caption>The clip library</caption>
-      <image>https://echoclip.link/flathub/library.png</image>
-    </screenshot>
-    <screenshot>
-      <caption>Watch, trim and share a clip</caption>
-      <image>https://echoclip.link/flathub/player.png</image>
-    </screenshot>
-    <screenshot>
-      <caption>The editor</caption>
-      <image>https://echoclip.link/flathub/editor.png</image>
+      <caption>Your clips, sorted by game</caption>
+      <image>https://echoclip.link/screenshots/library.png</image>
     </screenshot>
   </screenshots>
 
@@ -91,7 +84,13 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
 
+  <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="1.0.54" date="2026-11-05">
+      <description>
+        <p>Linux Flatpak, fullscreen and update fixes, safer share links, less Echo Cloud space used.</p>
+      </description>
+    </release>
     <release version="1.0.50" date="2026-11-05">
       <description>
         <p>First Flatpak build.</p>

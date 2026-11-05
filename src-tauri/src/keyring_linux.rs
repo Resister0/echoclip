@@ -85,8 +85,12 @@ impl Ks {
     }
 
     fn find(&self, name: &str) -> Result<Option<Path<'static>>, String> {
+        self.find_in(app_attr(), name)
+    }
+
+    fn find_in(&self, app: &str, name: &str) -> Result<Option<Path<'static>>, String> {
         let (unlocked, locked): (Vec<Path<'static>>, Vec<Path<'static>>) =
-            self.svc().method_call(SVC, "SearchItems", (attrs(name),)).map_err(|e| e.to_string())?;
+            self.svc().method_call(SVC, "SearchItems", (attrs_for(app, name),)).map_err(|e| e.to_string())?;
         if let Some(p) = unlocked.into_iter().next() { return Ok(Some(p)); }
         match locked.into_iter().next() {
             Some(p) => { self.unlock(vec![p.clone()])?; Ok(Some(p)) }
@@ -95,8 +99,19 @@ impl Ks {
     }
 }
 
+/// The Flatpak keeps its own items: it has its own settings + cloud config, and sharing "echo" let it overwrite
+/// the normal Echo's cloud password (chat 27: "Couldn't decrypt configuration" in the AppImage after the Flatpak
+/// had signed in to the cloud).
+fn app_attr() -> &'static str {
+    if crate::linuxutil::in_flatpak() { "echo-flatpak" } else { "echo" }
+}
+
+fn attrs_for(app: &str, name: &str) -> HashMap<String, String> {
+    HashMap::from([("application".to_string(), app.to_string()), ("name".to_string(), name.to_string())])
+}
+
 fn attrs(name: &str) -> HashMap<String, String> {
-    HashMap::from([("application".to_string(), "echo".to_string()), ("name".to_string(), name.to_string())])
+    attrs_for(app_attr(), name)
 }
 
 static UP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -122,7 +137,21 @@ pub fn store(name: &str, value: &str) -> Result<(), String> {
 /// Read one secret.
 pub fn load(name: &str) -> Result<String, Miss> {
     let k = open().map_err(|_| Miss::Unavailable)?;
-    let item = k.find(name).map_err(|_| Miss::Unavailable)?.ok_or(Miss::NotFound)?;
+    let item = match k.find(name).map_err(|_| Miss::Unavailable)? {
+        Some(i) => i,
+        None => {
+            // Flatpak from before its own items: its secret is still under "echo" - copy it over once
+            if app_attr() == "echo" { return Err(Miss::NotFound); }
+            let old = k.find_in("echo", name).map_err(|_| Miss::Unavailable)?.ok_or(Miss::NotFound)?;
+            let v = read(&k, old)?;
+            if store(name, &v).is_ok() { crate::recorder::log_line(&format!("keyring: Flatpak now keeps its own '{name}'")); }
+            return Ok(v);
+        }
+    };
+    read(&k, item)
+}
+
+fn read(k: &Ks, item: Path<'static>) -> Result<String, Miss> {
     let (s,): (Secret,) = k.conn.with_proxy(DEST, item, T)
         .method_call("org.freedesktop.Secret.Item", "GetSecret", (k.session.clone(),)).map_err(|_| Miss::Unavailable)?;
     String::from_utf8(s.2).map_err(|_| Miss::NotFound)

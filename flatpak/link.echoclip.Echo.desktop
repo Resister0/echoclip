@@ -2,7 +2,7 @@
 Type=Application
 Name=Echo
 GenericName=Game Clip Recorder
-Comment=Save your best game moments with one key
+Comment=Save game highlights with one key
 Exec=echo-clips
 Icon=link.echoclip.Echo
 Terminal=false

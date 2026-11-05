@@ -361,6 +361,14 @@
   .pwrap:fullscreen .pstrip, .pwrap:fullscreen .ctl { transition:opacity .25s; }
   .pwrap.idle:fullscreen .pstrip, .pwrap.idle:fullscreen .ctl { opacity:0; pointer-events:none; }
   .pwrap.idle:fullscreen, .pwrap.idle:fullscreen video { cursor:none; }
+  /* Linux fullscreen (.pfull): the window is fullscreen and the player covers it - same look as :fullscreen */
+  #player .pwrap.pfull { position:fixed; inset:0; z-index:9999; width:100vw; height:100vh; max-width:none; border:0; border-radius:0; background:#000; box-shadow:none; margin:0; }
+  #player .pwrap.pfull video { width:100vw; height:100vh; max-height:none; aspect-ratio:auto; object-fit:contain; }
+  .pwrap.pfull .pstrip { position:absolute; left:0; right:0; bottom:54px; background:none; border:0; box-shadow:none; padding:40px 24px 6px; background:linear-gradient(transparent,#000a); }
+  .pwrap.pfull .ctl { position:absolute; left:0; right:0; bottom:0; background:#000a; border:0; padding:10px 24px 14px; }
+  .pwrap.idle.pfull .pstrip, .pwrap.idle.pfull .ctl { opacity:0; pointer-events:none; }
+  .pwrap.idle.pfull, .pwrap.idle.pfull video { cursor:none; }
+  body.pfull .phint { display:none; }
   .pb { width:36px; height:36px; border:0; border-radius:9px; background:none; display:grid; place-items:center; color:#fff; }
   .pb:hover { background:#ffffff1a; }
   .pb svg { width:20px; height:20px; }
@@ -1285,7 +1293,6 @@
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n; (n = w.nextNode());) { const v = plat(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
   });
-  if (IS_LINUX) setTimeout(() => invoke("hotkey_mode").then(m => { if (m === "portal") $("hkportal").style.display = ""; }).catch(() => {}), 1500);
   // ----- updates: check 30 s after start, then every 6 hours; never interrupts, the user clicks when ready -----
   let updInfo = null;
   let appVer = "";
@@ -1934,19 +1941,19 @@
       ["Delete from the cloud", once(async () => { if (await confirmBox("Delete from the cloud?", `"${c.name}" is only in the cloud - it will be gone for good.`, "Delete")) await run("Deleting…", async () => { await invoke("cloud_delete", { rel: c.rel }); closePlayer(); })(); }), "", false, "warn"]);
     else if (inCloud(c)) items.push(
       ["Free up space on this PC", once(run("Freeing up space…", async () => { closePlayer(); await new Promise(r => setTimeout(r, 150)); await invoke("cloud_remove_local", { path: c.path }); toast("Removed from this PC - still in the cloud"); }))],
-      ["Delete from the cloud", once(run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))), "", false, "warn"]);
+      ["Delete from the cloud", once(async () => {
+        // a link that plays the clip's own cloud copy ends with it (a share copy's link stays) - say so first
+        if (shared.has(c.name) && !(await confirmBox("Delete from the cloud?", `"${shownName(c)}" stays on this PC. If its share link plays this cloud copy, the link stops working too.`, "Delete"))) return;
+        await run("Deleting from the cloud…", () => invoke("cloud_delete", { rel: relOf(c) }))();
+      }), "", false, "warn"]);
     else items.push(["Upload to the cloud", run("Uploading…", async () => {
-      // Echo Cloud connected but new clips go to another cloud (e.g. Google Drive): the link only needs a copy in
-      // Echo Cloud, so make it first (seconds) instead of after the whole upload (47 s at "0%" for 69 MB, chat 20)
-      const accs = cfg.cloud_accounts || [];
-      if (cfg.auto_copy_link && cfg.cloud !== "filen" && accs.length > 1 && accs.some(a => a.provider === "echocloud") && cfg.cloud_target !== "echocloud") {
-        try { await withLinkProgress(c, invoke("cloud_link", { rel: relOf(c), path: c.path })); toast("Link copied - uploading the clip…"); } catch { }
-        await invoke("cloud_upload", { path: c.path }); toast("Uploaded"); return;
-      }
+      // upload FIRST, then the link (chat 27): making the link first uploaded the whole clip to Echo Cloud for the link,
+      // and then it never went to Google Drive (where "Upload" should put it). Afterwards the link only needs a small
+      // share copy in Echo Cloud.
       await invoke("cloud_upload", { path: c.path });
       if (cfg.auto_copy_link && cfg.cloud !== "filen") { try { await invoke("cloud_link", { rel: relOf(c) }); toast("Uploaded - link copied"); } catch { toast("Uploaded"); } } else toast("Uploaded");
     })]);
-    if (!local && (cfg.cloud_accounts || []).some(a => a.provider === "echocloud"))
+    if ((!local || shared.has(c.name)) && (cfg.cloud_accounts || []).some(a => a.provider === "echocloud"))
       items.push(["Stop sharing", run("Removing the link…", async () => { await invoke("cloud_unshare", { rel: c.cloud ? c.rel : relOf(c) }); toast("Link removed - it no longer works"); })]);
     ctxMenu(ev, items);
   }
@@ -2294,11 +2301,18 @@
     } finally { jobRunning = false; }
   }
   // "Saving clip…" card: stays at the top (through library redraws) until the new clip is in the list
-  let savingPh = null;   // {secs, at, path}
+  let savingPh = null;   // {secs, at, path, folder}
+  let pIsFs = () => false, pSetFs = () => {};   // player fullscreen (set up with the player)
+  // does the clip being saved belong in what the library shows now? (it used to show in any folder for a moment)
+  function savingHere() {
+    if (filter === "all" || filter === "today" || filter === "week") return true;
+    if (filter.startsWith("game:")) { const g = filter.slice(5), f = savingPh.folder; return f === undefined || f === g || f.startsWith(g + "/"); }
+    return false;   // favourites, edited, cloud, tags, screenshots: a new clip isn't in them
+  }
   function drawSavingPh() {
     let ph = $("savingcard");
     if (savingPh && (Date.now() - savingPh.at > 90000 || (savingPh.path && clips.some(c => c.path === savingPh.path)))) savingPh = null;
-    if (!savingPh || filter === "shots") { if (ph) ph.remove(); return; }
+    if (!savingPh || !savingHere()) { if (ph) ph.remove(); return; }
     const g = document.querySelector("#grid .grid"); if (!g) return;
     if (!ph) { ph = document.createElement("div"); ph.id = "savingcard"; ph.className = "card"; }
     ph.innerHTML = `<div class="thumb" style="display:grid;place-items:center;color:var(--muted)"><div style="text-align:center"><div class="spin"></div>${savingPh.path ? "Almost ready…" : `Saving the last ${fmtLen(savingPh.secs)}…`}</div></div><div class="info"><div class="txt"><div class="name">${savingPh.path ? "Clip saved" : "Saving clip…"}</div><div class="meta"><span>${savingPh.path ? "Opens in a moment" : "Long clips take a few seconds"}</span></div></div></div>`;
@@ -3194,17 +3208,27 @@
     v.onclick = toggle; $("pplay").onclick = toggle;
     $("pmute").onclick = () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; $("pvol").value = v.muted ? 0 : v.volume; sync(); };
     $("pvol").oninput = e => { v.volume = +e.target.value; v.muted = false; };
-    $("pfs").onclick = () => document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen();
+    // Linux: WebKitGTK's element fullscreen crashed Echo (AppImage, SIGABRT in libwebkit2gtk - chat 27): the window goes
+    // fullscreen instead and the player fills it (.pfull). Windows keeps the normal fullscreen.
+    pIsFs = () => IS_LINUX ? wrap.classList.contains("pfull") : document.fullscreenElement === wrap;
+    pSetFs = on => {
+      if (!IS_LINUX) return on ? wrap.requestFullscreen().catch(() => {}) : (document.fullscreenElement ? document.exitFullscreen().catch(() => {}) : null);
+      if (on === wrap.classList.contains("pfull")) return;
+      wrap.classList.toggle("pfull", on); document.body.classList.toggle("pfull", on);
+      invoke("window_fullscreen", { on }).catch(() => {});
+      $("pfs").blur(); wake();
+    };
+    $("pfs").onclick = () => pSetFs(!pIsFs());
     // fullscreen: controls fade out after 2.5 s without mouse movement while playing; any movement brings them back
     let idleT;
     const wake = () => {
       wrap.classList.remove("idle"); clearTimeout(idleT);
-      idleT = setTimeout(() => { if (!v.paused && document.fullscreenElement === wrap && !seek.classList.contains("drag") && !wrap.querySelector(".ctl:hover, .pstrip:hover")) wrap.classList.add("idle"); }, 2500);
+      idleT = setTimeout(() => { if (!v.paused && pIsFs() && !seek.classList.contains("drag") && !wrap.querySelector(".ctl:hover, .pstrip:hover")) wrap.classList.add("idle"); }, 2500);
     };
     wrap.addEventListener("pointermove", wake); wrap.addEventListener("pointerdown", wake);
     ["play", "pause"].forEach(e => v.addEventListener(e, wake));
     document.addEventListener("fullscreenchange", () => { $("pfs").blur(); wake(); });
-    document.addEventListener("keydown", () => { if (document.fullscreenElement === wrap) wake(); });
+    document.addEventListener("keydown", () => { if (pIsFs()) wake(); });
     // dragging queued a seek per mouse move: WebKitGTK showed half-drawn frames (flicker). One seek at a time,
     // the newest position wins; keyframe seeks (fastSeek) while dragging, an exact one when the mouse is let go
     let seekBusy = false, seekWant = null, seekT = 0;
@@ -5008,6 +5032,7 @@
   }
   function closePlayer() {
     const pl = $("player"), was = pl.classList.contains("open");
+    if (IS_LINUX && pIsFs()) pSetFs(false);
     if (was) logPlayback();
     pZoom.reset();
     trim.clip = null;   // late callbacks (cloud stream start, 25 s download fallback) check this: no playing after close
@@ -5091,7 +5116,8 @@
   let hPrev = null; const cloudUse = { at: 0, i: null };
   function drawHealth() {
     const el = $("railhealth"), on = status.recording, out = [];
-    if (status.paused || !on) { el.innerHTML = ""; hPrev = null; return; }
+    if (status.cloud_locked) out.push(["bad", "Cloud logins locked - Settings → Cloud"]);
+    if ((status.paused || !on) && !out.length) { el.innerHTML = ""; hPrev = null; return; }
     if (status.buffer_age != null && status.buffer_age > 8) out.push(["bad", `Stalled - no new video for ${Math.round(status.buffer_age)} s (Settings → App → Restart)`]);
     if (status.disk_free && status.disk_free < 5e9) out.push([status.disk_free < 1.5e9 ? "bad" : "warn", `Low disk space - ${fmtSize(status.disk_free)} left`]);
     if (hPrev && status.frames > hPrev.frames) {
@@ -5265,6 +5291,7 @@
     if (on) $("clout").onclick = async () => { if (!(await confirmBox("Sign out of every cloud?", "Clips stay in the clouds and on this PC; Echo just stops syncing.", "Sign out"))) return; await invoke("cloud_disconnect"); cfg = await invoke("get_settings"); cloudBase = ""; drawCloud(); listKey = ""; refresh(); };
     document.querySelectorAll("[data-cl]").forEach(x => x.onclick = () => x.dataset.cl === "own" ? ownMenu(x) : (x.dataset.cl === "pcloud" || x.dataset.cl === "gdrive") ? connectCloud(x.dataset.cl) : loginForm(x.dataset.cl));
     drawAccs(accs.map(a => ({ ...a, used: 0, total: 0, wait: on && fetchInfo })));
+    drawCloudLock();
     if ((on || ec) && fetchInfo) {
       const show = i => {
         const own = (i.accounts || []).filter(a => a.provider !== "echocloud");
@@ -5394,6 +5421,17 @@
         }
       } catch { }
     }, 10000);
+  }
+  // the cloud logins can't be decrypted (their password is gone): say so, offer to start over (chat 27)
+  function drawCloudLock() {
+    let el = $("cloudlock");
+    if (!status.cloud_locked) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement("div"); el.id = "cloudlock"; el.className = "row"; $("cloudaccs").before(el); }
+    el.innerHTML = `<div class="lbl"><b style="color:#f87171">Echo can't unlock your cloud logins</b><small>The password that protects them on this PC is gone (for example when the Flatpak version of Echo signed in to a cloud too). Uploads, downloads and the cloud list don't work until you connect again. Your clips stay where they are - in the clouds and on this PC.</small></div><button class="btn primary" id="cloudlockgo">Sign out and start over</button>`;
+    $("cloudlockgo").onclick = async () => {
+      if (!(await confirmBox("Start over with the cloud?", "Echo signs out of every cloud and forgets the locked logins. Then connect Google Drive / Echo Cloud again - nothing is deleted from the clouds.", "Start over"))) return;
+      try { await invoke("cloud_disconnect"); cfg = await invoke("get_settings"); cloudBase = ""; status.cloud_locked = false; toast("Signed out - connect your clouds again"); drawCloud(); listKey = ""; refresh(); } catch (e) { toast(String(e)); }
+    };
   }
   function drawAccs(list) {
     const box = $("cloudaccs");
@@ -5557,7 +5595,7 @@
   listen("clips-changed", () => { listKey = ""; refresh(); });
   listen("cloud-changed", () => { listKey = ""; refresh(); });
   listen("mic-muted", e => { status.mic_muted = e.payload; drawMic(); });
-  listen("clip-saving", e => { savingPh = { secs: e.payload, at: Date.now() }; drawSavingPh(); });
+  listen("clip-saving", e => { const p = e.payload || {}; savingPh = typeof p === "number" ? { secs: p, at: Date.now() } : { secs: p.secs, folder: p.folder || "", at: Date.now() }; drawSavingPh(); });
   listen("clip-saved", e => {
     if (e.payload.Ok && savingPh) { savingPh.path = e.payload.Ok; listKey = ""; } else savingPh = null;
     drawSavingPh();
@@ -5574,7 +5612,7 @@
     invoke("ui_log", { msg: "Do Not Disturb tip shown" }).catch(() => {});
     $("cmsg").style.whiteSpace = "pre-line";   // keep the paragraphs (only this dialog)
     await choiceBox("Your \"Clip saved\" popups are hidden",
-      "Your desktop's Do Not Disturb is on, so Echo's popups only go to the notification history. KDE switches it on by itself while your screen is being shared - and that's how Echo records.\n\nTo see them: System Settings > Notifications > Do Not Disturb, and untick \"During screen sharing\".\n\nThe save sound still plays either way. This tip only shows once.",
+      "Your desktop's Do Not Disturb is on, so Echo's popups only go to the notification history. KDE switches it on by itself while your screen is being shared (by Discord, a browser, or the Flatpak version of Echo, which records that way).\n\nTo see them: System Settings > Notifications > Do Not Disturb, and untick \"During screen sharing\".\n\nThe save sound still plays either way. This tip only shows once.",
       [["Got it", true, "primary"]]);
     $("cmsg").style.whiteSpace = "";
   }
@@ -5678,7 +5716,7 @@
   function fillCloudTargets() {   // "Upload new clips to": only with 2+ clouds, options = the connected clouds
     const sel = $("ctsel"), accs = (cfg && cfg.cloud_accounts) || []; if (!sel) return;
     $("ctrow").style.display = accs.length > 1 ? "" : "none";
-    const opts = [["", "The cloud with the most free space"]]
+    const opts = [["", accs.filter(a => a.provider !== "echocloud").length > 1 ? "Your own clouds (the one with the most free space)" : "Your own cloud (Echo Cloud only for share links)"]]
       .concat(accs.map(a => a.provider === "echocloud" ? ["echocloud", "Echo Cloud first (then the others when it's full)"] : [String(a.id), (CLOUD_NAMES[a.provider] || a.provider) + (a.label ? " · " + a.label : "")]));
     const key = JSON.stringify(opts); if (sel.dataset.key === key) return; sel.dataset.key = key;
     sel.innerHTML = opts.map(([v, n]) => `<option value="${v}">${esc(n)}</option>`).join("");
@@ -5707,7 +5745,9 @@
   }
   // The slider shows the AVERAGE bitrate (= the fixed bitrate older Echo versions recorded at), so the number
   // people chose before never changes. cfg.bitrate_mbps stays the encoder's maximum: average / pct with smart bitrate.
-  const smartPct = () => !cfg.smart_bitrate ? 1 : cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
+  // Linux: gpu-screen-recorder records a constant bitrate (the full value, see linux_kbps) - no "average" there
+  const smartOn = () => !!cfg.smart_bitrate && !IS_LINUX;
+  const smartPct = () => !smartOn() ? 1 : cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
   $("brslider").addEventListener("input", e => {
     const avg = +e.target.value;
     cfg.bitrate_mbps = Math.max(4, Math.min(80, Math.round(avg / smartPct())));
@@ -5720,15 +5760,15 @@
       sl.max = top; if (document.activeElement !== sl) sl.value = Math.round(cfg.bitrate_mbps * smartPct());
       $("v-bitrate").textContent = Math.round(cfg.bitrate_mbps * smartPct()) + " Mbps"; }
     const res = { native: "Native", 1440: "1440p", 1080: "1080p", 720: "720p" }[cfg.resolution] || cfg.resolution;
-    const avgB = cfg.smart_bitrate ? Math.round(cfg.bitrate_mbps * (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9)) : cfg.bitrate_mbps;
-    $("qbig").innerHTML = cfg.smart_bitrate ? `${res}<span>·</span>${cfg.fps} fps<span>·</span>avg ${avgB} Mbps` : `${res}<span>·</span>${cfg.fps} fps<span>·</span>${cfg.bitrate_mbps} Mbps`;
+    const avgB = smartOn() ? Math.round(cfg.bitrate_mbps * (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9)) : cfg.bitrate_mbps;
+    $("qbig").innerHTML = smartOn() ? `${res}<span>·</span>${cfg.fps} fps<span>·</span>avg ${avgB} Mbps` : `${res}<span>·</span>${cfg.fps} fps<span>·</span>${cfg.bitrate_mbps} Mbps`;
     // video + roughly 2 MB/min of audio; smart bitrate: the estimate uses the average target (calm clips come out smaller)
-    const mbMin = cfg.bitrate_mbps * 60 / 8 * (cfg.smart_bitrate ? (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9) : 1) + 2;
-    $("sqrow").style.display = cfg.smart_bitrate ? "" : "none";
+    const mbMin = cfg.bitrate_mbps * 60 / 8 * (smartOn() ? (cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9) : 1) + 2;
+    $("sqrow").style.display = smartOn() ? "" : "none";
     const pct = cfg.smart_quality <= 72 ? 0.6 : cfg.smart_quality <= 82 ? 0.75 : 0.9;
     const rec = { 720: "6-8", 1080: "12", 1440: "20", native: "20 (1440p) or 40 (4K)" }[cfg.resolution] || "20";
-    const recTxt = `About ${rec} Mbps ${cfg.smart_bitrate ? "average " : ""}is plenty for ${cfg.resolution === "native" ? "native resolution" : cfg.resolution + "p"} at ${cfg.fps} fps.`;
-    $("brhint").textContent = cfg.smart_bitrate ? `Average. Busy moments can use up to ${cfg.bitrate_mbps} Mbps. ${recTxt}` : recTxt;
+    const recTxt = `About ${rec} Mbps ${smartOn() ? "average " : ""}is plenty for ${cfg.resolution === "native" ? "native resolution" : cfg.resolution + "p"} at ${cfg.fps} fps.`;
+    $("brhint").textContent = smartOn() ? `Average. Busy moments can use up to ${cfg.bitrate_mbps} Mbps. ${recTxt}` : recTxt;
     const secs = (cfg.hotkeys && cfg.hotkeys[0] && cfg.hotkeys[0].seconds) || 60;
     $("qmin").textContent = "≈ " + fmtSize(mbMin * 1e6);
     $("qclip").textContent = "≈ " + fmtSize(mbMin * 1e6 * secs / 60);
@@ -5775,10 +5815,10 @@
     for (const p of PRESETS) {
       const b = document.createElement("button");
       // preset bitrates are the AVERAGE; with smart bitrate the maximum is avg / 60% (Balanced)
-      const maxOf = p => cfg.smart_bitrate ? Math.round(p.bitrate_mbps / 0.6) : p.bitrate_mbps;
-      const on = cfg.resolution === p.resolution && cfg.fps === p.fps && cfg.bitrate_mbps === maxOf(p) && (!cfg.smart_bitrate || cfg.smart_quality === 72);
+      const maxOf = p => smartOn() ? Math.round(p.bitrate_mbps / 0.6) : p.bitrate_mbps;
+      const on = cfg.resolution === p.resolution && cfg.fps === p.fps && cfg.bitrate_mbps === maxOf(p) && (!smartOn() || cfg.smart_quality === 72);
       b.className = "preset" + (on ? " on" : ""); b.innerHTML = `<b>${p.name}</b><small>${p.desc}</small>`;
-      b.onclick = () => { Object.assign(cfg, { resolution: p.resolution, fps: p.fps, bitrate_mbps: maxOf(p) }, cfg.smart_bitrate ? { smart_quality: 72 } : {}); changed(); };
+      b.onclick = () => { Object.assign(cfg, { resolution: p.resolution, fps: p.fps, bitrate_mbps: maxOf(p) }, smartOn() ? { smart_quality: 72 } : {}); changed(); };
       $(box).appendChild(b);
     }
     }
@@ -6066,7 +6106,9 @@
     if (e.key !== "Escape" || listening || !$("player").classList.contains("open")) return;
     if (e.target.matches && e.target.matches("input,textarea,select,[contenteditable=true]")) return;   // the box's own Esc
     if (document.querySelector("#confirm.open, #ectx.on, #copymenu.on, #foldmenu.on, #fmenu.on")) return;   // a menu / dialog on top closes first
-    e.preventDefault(); e.stopPropagation(); closePlayer();
+    e.preventDefault(); e.stopPropagation();
+    if (IS_LINUX && pIsFs()) { pSetFs(false); return; }   // Linux fullscreen: Esc leaves it first
+    closePlayer();
   }, true);
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") { if (listening) { listening = null; unpauseKeys(); renderSettings(); } else closePlayer(); return; }

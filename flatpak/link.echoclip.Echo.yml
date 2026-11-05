@@ -1,4 +1,4 @@
-# Echo - Flatpak manifest (Flathub / Bazaar / GNOME Software / KDE Discover)
+# Echo - Flatpak manifest (Echo's own Flatpak repo: ci/flatpak-repo.sh; Discover / GNOME Software)
 #
 # Local test build (from the repo root, on Nobara):
 #   flatpak run org.flatpak.Builder --user --install --force-clean --install-deps-from=flathub build-dir flatpak/link.echoclip.Echo.yml

@@ -139,6 +139,56 @@ jobs:
             Echo-x86_64.AppImage.sig
           if-no-files-found: warn
 
+  flatpak:
+    # Echo's own Flatpak repo (https://flatpak.echoclip.link, install link https://echoclip.link/download/flatpak):
+    # builds flatpak/link.echoclip.Echo.yml from this code and adds it as a signed update (ci/flatpak-repo.sh).
+    # Secrets: FLATPAK_GPG_KEY, R2_ACCOUNT_ID, R2_FLATPAK_ACCESS_KEY_ID, R2_FLATPAK_SECRET_ACCESS_KEY - not set = skipped.
+    # Runs next to the other builds; if it fails, the normal release still goes out.
+    if: github.repository == 'Resister0/echoclip'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    concurrency:
+      group: flatpak-repo
+      cancel-in-progress: false
+    env:
+      FLATPAK_GPG_KEY: ${{ secrets.FLATPAK_GPG_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_FLATPAK_ACCESS_KEY_ID: ${{ secrets.R2_FLATPAK_ACCESS_KEY_ID }}
+      R2_FLATPAK_SECRET_ACCESS_KEY: ${{ secrets.R2_FLATPAK_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Secrets set?
+        id: ok
+        run: |
+          if [ -n "$FLATPAK_GPG_KEY" ] && [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_FLATPAK_ACCESS_KEY_ID" ] && [ -n "$R2_FLATPAK_SECRET_ACCESS_KEY" ]; then
+            echo "go=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Flatpak repo skipped - secrets FLATPAK_GPG_KEY / R2_ACCOUNT_ID / R2_FLATPAK_ACCESS_KEY_ID / R2_FLATPAK_SECRET_ACCESS_KEY not set"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.ok.outputs.go
+      - name: Tools
+        if: steps.ok.outputs.go
+        timeout-minutes: 20
+        run: |
+          APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update
+          sudo apt-get $APT install -y flatpak ostree rclone gnupg
+          # Ubuntu 24.04 blocks the user namespaces flatpak-builder's sandbox needs
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+      - name: Build cache
+        # finished modules (ffmpeg, gpu-screen-recorder, whisper.cpp...) are reused until the manifest changes them
+        if: steps.ok.outputs.go
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/flatpak/state
+          key: flatpak-${{ hashFiles('flatpak/*.yml', 'flatpak/cargo-sources.json') }}-${{ github.run_id }}
+          restore-keys: flatpak-
+      - name: Build + update the repo
+        if: steps.ok.outputs.go
+        run: bash ci/flatpak-repo.sh
+
   release:
     # publishes whatever built (one OS failing doesn't block the other)
     needs: [windows, linux]

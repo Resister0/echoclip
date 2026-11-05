@@ -188,6 +188,8 @@ jobs:
           msg=$(git log -1 --pretty=%s)
           git clone -q "https://x-access-token:${PUBLIC_TOKEN}@github.com/Resister0/echoclip.git" /tmp/pub
           cd /tmp/pub && git checkout -q -B main && cd -
+          # the public copy of the Flatpak metainfo holds the release history (see ci/metainfo-release.py)
+          cp /tmp/pub/flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml 2>/dev/null || true
           rsync -a --delete --exclude-from=ci/public-exclude.txt ./ /tmp/pub/
           cd /tmp/pub
           # last check: never publish something that looks like a key
@@ -196,6 +198,9 @@ jobs:
           fi
           # the public repo builds the releases itself: its workflow + the version number of this build
           echo "1.0.${{ github.run_number }}" > ci/version.txt
+          # this publish as a <release> in the Flatpak metainfo (Flathub's "What's new"); never stops the publish
+          python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "1.0.${{ github.run_number }}" "$msg" \
+            || echo "::warning::Couldn't add the release to the Flatpak metainfo"
           mkdir -p .github/workflows
           cp ci/public-build.yml .github/workflows/build.yml
           git config user.name "Resister0"

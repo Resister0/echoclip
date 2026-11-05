@@ -52,6 +52,15 @@ Builds you make yourself have version `0.1.0` and never update themselves.
 
 Every file on echoclip.link and every automatic update is built by GitHub Actions in this repository from the code you see here (`.github/workflows/build.yml`). What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
+## Packaging Echo
+
+Packagers are welcome: if you'd like Echo in your distro's repository (AUR, COPR, a PPA, Nix…), go ahead, and open an issue if you need anything changed on our side. Useful to know:
+
+- Every release on this repository's [Releases page](https://github.com/Resister0/echoclip/releases) has `Echo-x86_64.AppImage` and `Echo-linux-x86_64.tar.gz` (a plain binary). The version number is in `ci/version.txt`.
+- At runtime Echo needs WebKitGTK 4.1, `gpu-screen-recorder`, `ffmpeg`/`ffprobe`, `pactl`/`parec` (PulseAudio or PipeWire-Pulse) and `wl-clipboard`; `rclone` is used for cloud backups.
+- The built-in updater only runs inside the AppImage or the Windows installer, so a packaged build never replaces itself.
+- `flatpak/` has a Flatpak manifest for local builds.
+
 ## Licence
 
 Echo is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 or (at your option) any later version**. See [LICENSE](LICENSE).

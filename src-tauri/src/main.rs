@@ -77,6 +77,8 @@ struct Status {
     disk_free: u64,
     /// what the cloud sync is doing ("" = idle / off)
     cloud_busy: String,
+    /// the cloud logins can't be unlocked (password lost) - Settings → Cloud offers "start over"
+    cloud_locked: bool,
     frames: u64,
     late: u64,
 }
@@ -199,6 +201,12 @@ async fn update_install(app: AppHandle) -> Result<String, String> {
         recorder::log_line(&format!("update: install failed: {e}"));
         "The update couldn't be installed - try again, or download Echo from echoclip.link".to_string()
     })?;
+    // Linux AppImage: the new version is started from this process, so it would inherit this version's
+    // /tmp/.mount_… library paths - start it with a clean environment (its own AppRun sets its paths again)
+    #[cfg(target_os = "linux")]
+    for (k, v) in recorder::appimage_env_fixes() {
+        match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+    }
     app.restart()
 }
 
@@ -219,6 +227,7 @@ async fn get_status(rec: State<'_, Recorder>) -> Result<Status, String> {
         buffer_age: rec.buffer_age(),
         disk_free: disk_free(&cfg.clips_dir),
         cloud_busy: rec.cloud_busy.lock().unwrap().clone(),
+        cloud_locked: recorder::CLOUD_LOCKED.load(std::sync::atomic::Ordering::Relaxed),
         #[cfg(windows)]
         frames: gpucap::FRAMES.load(std::sync::atomic::Ordering::Relaxed),
         #[cfg(windows)]
@@ -712,7 +721,7 @@ fn do_save(app: &AppHandle, seconds: Option<u32>) -> Result<String, String> {
     recorder::play_sound(recorder::Sound::Saved, &cfg, false);
     let secs = seconds.unwrap_or_else(|| cfg.hotkeys.first().map(|h| h.seconds).unwrap_or(30));
     toast(app, "Saving clip…", &format!("Last {}", if secs >= 60 { format!("{} min", secs / 60) } else { format!("{secs} s") }), true);
-    let _ = app.emit("clip-saving", secs);
+    let _ = app.emit("clip-saving", serde_json::json!({ "secs": secs, "folder": rec.save_target(secs) }));
     let r = rec.save(seconds);
     match &r {
         Ok(p) => {
@@ -1438,6 +1447,13 @@ fn hotkey_triggers() -> serde_json::Value {
     serde_json::json!({ "portal": false, "keys": {} })
 }
 
+/// Linux player fullscreen: the window itself goes fullscreen and the page fills it (WebKitGTK's own element
+/// fullscreen crashed the AppImage - SIGABRT in libwebkit2gtk, chat 27).
+#[tauri::command]
+fn window_fullscreen(app: AppHandle, on: bool) {
+    if let Some(w) = app.get_webview_window("main") { let _ = w.set_fullscreen(on); }
+}
+
 /// Linux: was KDE's Do Not Disturb on at the last notification (it hides "Clip saved")? The window shows a tip once.
 #[tauri::command]
 fn desktop_dnd() -> bool {
@@ -2019,6 +2035,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_check,
+            window_fullscreen,
             app_version,
             update_install,
             hotkey_mode,

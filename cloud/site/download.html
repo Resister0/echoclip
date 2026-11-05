@@ -60,9 +60,10 @@
         <a class="btn small" href="/download/windows-portable">Download</a></div>
       <div class="card"><h3>Linux AppImage</h3><p>One file that runs on most distributions. Updates itself like on Windows.</p>
         <a class="btn small" href="/download/linux">Download</a></div>
-      <div class="card"><h3>Linux, plain build</h3><p>A .tar.gz with the program files, for packaging or if AppImages don't suit your system.</p>
-        <a class="btn small" href="/download/linux-tar">Download</a></div>
+      <div class="card"><h3>Linux Flatpak</h3><p>Opens in Discover or GNOME Software and updates from there. Brings everything it needs - <b>best for Steam Deck and Bazzite</b>.</p>
+        <a class="btn small" href="/download/flatpak">Install with Flatpak</a></div>
     </div>
+    <p class="sub" style="margin-top:18px">Packaging Echo or no AppImages on your system? There's also a <a href="/download/linux-tar">plain .tar.gz build</a>.</p>
   </div>
 </section>
 
@@ -71,7 +72,7 @@
     <h2>Installing</h2>
     <div class="steps">
       <div class="card"><h3>Windows</h3><p>Run Echo-Setup.exe. If Windows says "Windows protected your PC", click <b>More info</b> → <b>Run anyway</b> - Echo isn't code-signed yet, so SmartScreen doesn't know it.</p></div>
-      <div class="card"><h3>Linux</h3><p>Make the AppImage runnable (right-click → Properties → "Allow executing", or <code>chmod +x Echo-x86_64.AppImage</code>) and open it. Echo uses gpu-screen-recorder and ffmpeg from your system.</p></div>
+      <div class="card"><h3>Linux</h3><p>Make the AppImage runnable (right-click → Properties → "Allow executing", or <code>chmod +x Echo-x86_64.AppImage</code>) and open it. Echo uses gpu-screen-recorder and ffmpeg from your system. Flatpak: click "Install with Flatpak" and confirm in your software center.</p></div>
       <div class="card"><h3>First start</h3><p>A short setup picks your hotkey and where clips go. Then play - press the key whenever something happens worth keeping.</p></div>
     </div>
   </div>
@@ -82,7 +83,7 @@
     <h2>What you need</h2>
     <div class="grid">
       <div class="card"><h3>Windows</h3><p>Windows 10 (1903 or newer) or 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years.</p></div>
-      <div class="card"><h3>Linux</h3><p>A current 64-bit distribution with gpu-screen-recorder and ffmpeg installed.</p></div>
+      <div class="card"><h3>Linux</h3><p>A current 64-bit distribution. The AppImage also needs gpu-screen-recorder and ffmpeg installed; the Flatpak brings its own.</p></div>
       <div class="card"><h3>Disk space</h3><p>About 12 MB for Echo, plus roughly 1.5 GB for a 10-minute replay buffer at the standard quality.</p></div>
     </div>
     <p class="sub" style="margin-top:28px">Stuck? Ask in the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a> or email <a href="mailto:support@echoclip.link">support@echoclip.link</a>.</p>

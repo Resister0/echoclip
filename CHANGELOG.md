@@ -4,6 +4,20 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Echo tidies the cloud by itself: empty folders in your own cloud go once a week, unused share copies in Echo Cloud are cleaned up daily
+- "Copy the link after uploading" is now off by default (switch it on in Settings › Sharing) - uploads no longer make Echo Cloud share copies unless you ask
+- "Upload to the cloud" puts the clip in the cloud you chose (e.g. Google Drive) even when it also copies a share link - it used to land in Echo Cloud instead
+- Deleting, moving or renaming a shared clip keeps its share link - Echo still shows it as shared, and Stop sharing works
+- Echo tells you when it can't unlock your cloud logins (Settings › Cloud) and lets you start over in one click
+- Moving clips no longer leaves empty folders in Google Drive
+- Linux: fullscreen in the player (F) no longer crashes Echo
+- The "Saving clip…" card only shows in the folder the clip goes to
+- Linux: the quality page shows the real bitrate (Linux records a constant bitrate, there's no "average")
+- "Stop sharing" also for clips that are shared but not backed up in the cloud
+- Linux: Settings › Hotkeys lost its yellow KDE note (the KDE row below says the same)
+- Linux: the log no longer fills up with a line from the recorder every second
+- Linux: recording works straight after an automatic update (before, Echo had to be closed and opened again)
+- Linux: the Flatpak and the normal Echo no longer overwrite each other's cloud password
 - Linux: sharper, smoother pictures while dragging the player's seek bar
 - Linux and weaker PCs: hovering a clip shows a quick time-lapse of it (sharp pictures, no sound, lighter on the PC)
 - Linux (KDE): Echo shows the keys KDE really uses and says where to change them

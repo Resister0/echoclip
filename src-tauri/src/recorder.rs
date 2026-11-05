@@ -1233,7 +1233,7 @@ pub fn sys_cmd(program: &str) -> Command {
 
 /// Environment changes for programs started from inside the AppImage (empty outside it).
 #[cfg(target_os = "linux")]
-fn appimage_env_fixes() -> &'static [(String, Option<String>)] {
+pub fn appimage_env_fixes() -> &'static [(String, Option<String>)] {
     static FIX: std::sync::OnceLock<Vec<(String, Option<String>)>> = std::sync::OnceLock::new();
     FIX.get_or_init(|| {
         if std::env::var_os("APPIMAGE").is_none() { return Vec::new(); }
@@ -1243,10 +1243,13 @@ fn appimage_env_fixes() -> &'static [(String, Option<String>)] {
         });
         let Some(dir) = dir else { return Vec::new() };
         let dir = dir.trim_end_matches('/').to_string();
-        let inside = |p: &str| p == dir || p.starts_with(&format!("{dir}/"));
+        // also any OTHER AppImage's mount: after an update Echo restarts itself from the old version, so its
+        // variables still hold the old /tmp/.mount_EchoXXXX paths next to the new ones (chat 27: recording
+        // failed after every auto-update until Echo was quit and started again)
+        let inside = |p: &str| p == dir || p.starts_with(&format!("{dir}/")) || p.contains("/.mount_");
         let mut out = Vec::new();
         for (k, v) in std::env::vars() {
-            if matches!(k.as_str(), "APPIMAGE" | "APPDIR" | "ARGV0" | "OWD") || !v.contains(&dir) { continue; }
+            if matches!(k.as_str(), "APPIMAGE" | "APPDIR" | "ARGV0" | "OWD") || !v.split(':').any(|p| inside(p)) { continue; }
             let keep: Vec<&str> = v.split(':').filter(|p| !p.is_empty() && !inside(p)).collect();
             if keep.is_empty() { out.push((k, None)); } else { out.push((k, Some(keep.join(":")))); }
         }
@@ -2392,6 +2395,8 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
         "-f".into(), cfg.fps.to_string(), "-k".into(), codec.into(),
         "-c".into(), "mpegts".into(), "-bm".into(), "cbr".into(), "-q".into(), linux_kbps(cfg).to_string(),
         "-keyint".into(), SEG.to_string(), "-cursor".into(), if cfg.capture_cursor { "yes" } else { "no" }.into(), "-fm".into(), "cfr".into(),
+        // no "update fps: 61, damage fps: 61" line every second: it filled the log and pushed out everything else
+        "-v".into(), "no".into(),
     ]);
     if let Ok(h) = cfg.resolution.parse::<u32>() {
         a.extend(["-s".into(), format!("{}x{h}", h * 16 / 9)]);
@@ -2776,6 +2781,22 @@ impl Recorder {
     /// Save the last `seconds` (default: first hotkey's length).
     pub fn save(&self, seconds: Option<u32>) -> Result<String, String> {
         self.save_to(seconds, None)
+    }
+
+    /// Where a clip saved now goes, for the library's "Saving clip…" card (only shown in the folder it lands in):
+    /// the clip's folder, else its game name (name_by_game), else "" (no folder / game). Same rules as save_to.
+    pub fn save_target(&self, seconds: u32) -> String {
+        let cfg = self.settings();
+        let game = detect_game().or_else(|| {
+            self.last_game.lock().unwrap().as_ref()
+                .filter(|(_, t)| t.elapsed().as_secs() <= seconds as u64 + 30)
+                .map(|(g, _)| g.clone())
+        });
+        let folder = game.as_ref().map(|g| cfg.game_folder(g)).filter(|g| !g.is_empty() && cfg.game_folders && cfg.game_rule(g).folder && !RESERVED_DIRS.iter().any(|r| r.eq_ignore_ascii_case(g)));
+        match folder {
+            Some(f) => f.trim_end_matches('.').to_string(),
+            None => if cfg.name_by_game { game.unwrap_or_default() } else { String::new() },
+        }
     }
 
     /// `to`: write the clip there instead of the library (self-test); no thumbnail / storage check then.
@@ -6237,8 +6258,13 @@ fn secure_cloud_conf(cfg: &mut crate::settings::Settings) -> bool {
     changed
 }
 
+/// The cloud config (logins) can't be decrypted any more - its password is gone (chat 27: the Flatpak had
+/// overwritten it in the shared keyring). The UI shows a warning + "Sign out and start over".
+pub static CLOUD_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn rclone_out(args: &[&str]) -> Result<String, String> {
     let o = rclone_cmd()?.args(args).output().map_err(err)?;
+    CLOUD_LOCKED.store(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("decrypt configuration"), Ordering::Relaxed);
     if !o.status.success() {
         let e = String::from_utf8_lossy(&o.stderr).to_string();
         let last = e.trim().lines().last().unwrap_or("rclone failed").to_string();
@@ -6831,6 +6857,7 @@ impl Recorder {
         self.stop_serve();
         self.ec_sign_out();
         let _ = fs::remove_file(cloud_conf());
+        CLOUD_LOCKED.store(false, Ordering::Relaxed);
         // signed out: no cloud-only clips in the library, no old links handed out
         let mut st = self.cloud_state();
         st.files.clear();
@@ -7223,7 +7250,10 @@ impl Recorder {
     }
 
     pub fn cloud_delete(&self, rel: &str) -> Result<(), String> {
-        self.forget_link(rel);
+        // a link that plays a share copy (Echo/.shared/…) keeps working after the clip's cloud copy is deleted
+        // (the server only ends links of the deleted file) - so remember it, or "Shared" + "Stop sharing" vanished
+        // while the link still worked (chat 27)
+        if !self.links().get(rel).map_or(false, |e| e.key.contains("/.shared/")) { self.forget_link(rel); }
         let cp = self.cpath(rel);
         let cfg = self.settings();
         // Echo Cloud: delete through the server (works with read-only keys); other clouds: rclone as before
@@ -7284,6 +7314,8 @@ impl Recorder {
         if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }
         let mut paths = vec![format!("Echo/{}", self.cpath(rel).trim_start_matches('/'))];
         if let Some(n) = Path::new(rel).file_name() { paths.push(format!("Echo/.shared/{}", n.to_string_lossy())); }
+        // the exact object the link plays (a share copy keeps its old name when the clip is renamed later)
+        if let Some(e) = self.links().get(rel) { if !e.key.is_empty() && !paths.contains(&e.key) { paths.push(e.key.clone()); } }
         let mut removed = 0;
         for p in paths {
             let j = ec_call(&ec_api(&cfg), "POST", "/share/remove", &cfg.ec_token, Some(serde_json::json!({ "path": p })))?;
@@ -7325,14 +7357,25 @@ impl Recorder {
 
     /// Keep the cloud copy in step when a clip is renamed / moved on this PC.
     pub fn cloud_follow_move(&self, old_rel: String, new_rel: String) {
-        self.forget_link(&old_rel);
-        if !self.cloud_on() || old_rel == new_rel || !self.cloud_state().files.iter().any(|f| f.rel == old_rel) {
+        if old_rel == new_rel { return; }
+        // the clip's share link keeps working after a move / rename (the server moves the clip's link with it, a share
+        // copy doesn't move at all): carry the link over instead of forgetting it - forgetting it left links that still
+        // played but that Echo no longer showed or could stop (chat 27)
+        let old_p = self.cpath(&old_rel);
+        let new_p = match old_p.strip_suffix(old_rel.as_str()) { Some(pre) => format!("{pre}{new_rel}"), None => new_rel.clone() };
+        {
+            let mut m = self.links();
+            if let Some(mut e) = m.remove(&old_rel) {
+                if e.key == format!("Echo/{}", old_p.trim_start_matches('/')) { e.key = format!("Echo/{}", new_p.trim_start_matches('/')); }
+                m.insert(new_rel.clone(), e);
+                self.save_links(&m);
+            }
+        }
+        if !self.cloud_on() || !self.cloud_state().files.iter().any(|f| f.rel == old_rel) {
             return;
         }
         let mut st = self.cloud_state();
-        let old_p = self.cpath(&old_rel);
-        // keep the date folder: only the part after it changes
-        let new_p = match old_p.strip_suffix(old_rel.as_str()) { Some(pre) => format!("{pre}{new_rel}"), None => new_rel.clone() };
+        // keep the date folder: only the part after it changes (old_p / new_p above)
         for f in st.files.iter_mut().filter(|f| f.rel == old_rel) {
             f.rel = new_rel.clone();
             f.path = new_p.clone();
@@ -7352,7 +7395,14 @@ impl Recorder {
                     Err(e) => { if only_ec { log_line(&format!("echo cloud: move failed: {e}")); return; } }   // multi: maybe not in Echo Cloud
                 }
             }
-            let _ = rclone_out(&["moveto", "--retries", "1", &remote(&old_p), &remote(&new_p)]);
+            if rclone_out(&["moveto", "--retries", "1", &remote(&old_p), &remote(&new_p)]).is_err() {
+                // the clip wasn't in that cloud (e.g. only in Echo Cloud, which moved on the server above): rclone had
+                // already made the new folder - remove it again if it's empty, so no empty "Mixed" folders are left
+                // in Google Drive (chat 27). rmdir never removes a folder that has files.
+                if let Some((dir, _)) = new_p.rsplit_once('/') {
+                    if rclone_out(&["rmdir", &remote(dir)]).is_ok() { log_line(&format!("cloud: removed the empty folder {dir} again")); }
+                }
+            }
         });
     }
 
@@ -7767,6 +7817,25 @@ impl Recorder {
 
     /// Background sync, run every few minutes: upload new clips / favourites, download clips from other PCs.
     /// Returns true when the library changed.
+    /// Once a week: remove EMPTY folders under Echo/ in the user's own clouds (Google Drive…) - left by failed moves
+    /// and deleted clips (chat 27). rclone rmdirs never removes a folder that has a file in it; Echo Cloud has no
+    /// real folders (its stray share copies are cleaned up by the server).
+    fn tidy_cloud_folders(&self, cfg: &crate::settings::Settings) {
+        let stamp = self.thumbs_dir().join("cloud_tidy.txt");
+        let last: u64 = fs::read_to_string(&stamp).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        if now_unix().saturating_sub(last) < 7 * 86400 { return; }
+        let _ = fs::write(&stamp, now_unix().to_string());
+        for a in cfg.cloud_accounts.iter().filter(|a| a.provider != "echocloud").cloned() {
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                match rclone_out(&["rmdirs", "--leave-root", &acc_path(&a, "Echo")]) {
+                    Ok(_) => log_line(&format!("cloud: tidied empty folders in {} ({} s)", cloud_name(&a.provider), t.elapsed().as_secs())),
+                    Err(e) => log_line(&format!("cloud: tidying {} skipped: {e}", cloud_name(&a.provider))),
+                }
+            });
+        }
+    }
+
     pub fn cloud_sync(&self) -> bool {
         if !self.cloud_on() {
             return false;
@@ -7781,6 +7850,7 @@ impl Recorder {
         let cfg = self.settings();
         let mut changed = false;
         let Ok(files) = self.cloud_refresh() else { return false };
+        self.tidy_cloud_folders(&cfg);
         let in_cloud: std::collections::HashSet<String> = files.iter().map(|f| f.rel.clone()).collect();
         // 1) uploads
         if cfg.cloud_upload != "off" {

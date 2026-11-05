@@ -483,6 +483,37 @@ async function cleanupExpired(env) {
   return { expired: rows.length, copies };
 }
 
+// Share copies (Echo/.shared/…) that no link uses any more - left behind by app bugs (chat 27: links forgotten
+// after a delete / move) or crashes between upload and /share. Daily, a day's grace (a link being made right now
+// uploads its copy first), at most 2000 deletions per run. Normal clips are never touched.
+async function cleanupStrayCopies(env) {
+  await migrate(env);
+  const users = (await env.DB.prepare("SELECT id FROM users").all()).results || [];
+  const old = Date.now() - 86400 * 1000;
+  let checked = 0, deleted = 0, freed = 0;
+  for (const u of users) {
+    let cursor;
+    let touched = false;
+    do {
+      const l = await env.BUCKET.list({ prefix: `u/${u.id}/Echo/.shared/`, cursor, limit: 1000 });
+      for (const o of l.objects) {
+        checked++;
+        if (o.uploaded && o.uploaded.getTime() > old) continue;
+        const used = await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? LIMIT 1").bind(o.key).first();
+        if (used) continue;
+        await env.BUCKET.delete(o.key);
+        deleted++; freed += o.size || 0; touched = true;
+        if (deleted >= 2000) break;
+      }
+      cursor = l.truncated && deleted < 2000 ? l.cursor : undefined;
+    } while (cursor);
+    if (touched) await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(u.id).run();   // recount next time
+    if (deleted >= 2000) break;
+  }
+  console.log("cleanup: stray share copies", { checked, deleted, freed });
+  return { checked, deleted, freed };
+}
+
 // ----- over the plan (terms: email at least 30 days before clips above the plan are removed) -----
 // A paid plan that ended leaves its clips in R2 (William pays for them). Daily: warn by email, remind after
 // 23 days, after 30 days remove the oldest clips until the account fits its plan again (clips with a working
@@ -1561,6 +1592,11 @@ async function assetLink(env, rel, asset) {
 }
 
 async function download(env, what, from) {
+  // Linux Flatpak: the one-click install file of Echo's own Flatpak repo (ci/flatpak-repo.sh in the public repo
+  // writes it to the R2 bucket echo-flatpak, served on flatpak.echoclip.link). Discover / GNOME Software open it.
+  if (what === "flatpak") {
+    return new Response(null, { status: 302, headers: { location: env.FLATPAK_REF || "https://flatpak.echoclip.link/echo.flatpakref", "cache-control": "no-store" } });
+  }
   const file = DOWNLOADS[what];
   if (!file) return null;
   const rel = await release(env, file, false, from);
@@ -1803,7 +1839,7 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(cleanupExpired(env).catch((e) => console.log("cleanup error", e && e.stack)));
+    ctx.waitUntil(cleanupExpired(env).then(() => cleanupStrayCopies(env)).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
     ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));

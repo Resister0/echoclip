@@ -1,6 +1,6 @@
-# Echo as a Flatpak (Flathub → Bazaar, GNOME Software, KDE Discover)
+# Echo as a Flatpak (own repo on flatpak.echoclip.link → Discover, GNOME Software)
 
-App id: `link.echoclip.Echo` (needs echoclip.link verified on Flathub). Command inside the sandbox: `echo-clips`.
+App id: `link.echoclip.Echo`. Command inside the sandbox: `echo-clips`.
 
 ## Files
 
@@ -11,7 +11,7 @@ App id: `link.echoclip.Echo` (needs echoclip.link verified on Flathub). Command 
 | `link.echoclip.Echo.metainfo.xml` | store page text, keywords, screenshots, releases |
 | `link.echoclip.Echo.desktop` / `.png` | app menu entry + icon |
 | `libayatana-appindicator3-0.1.yml` | tray icon library (copied from Flathub's GPU Screen Recorder manifest) |
-| `make-flathub-manifest.sh` | writes `flatpak/flathub/` = the manifest building the published code (public repo, exact commit, version from ci/version.txt) - what goes to Flathub |
+| `make-flathub-manifest.sh` | (unused since Flathub is off) writes `flatpak/flathub/` = the manifest building the published code |
 
 ## What changes in Echo when it runs as a Flatpak (code: `linuxutil::in_flatpak()`)
 
@@ -59,13 +59,18 @@ Checklist (then Settings → Send log):
 Settings live in `~/.var/app/link.echoclip.Echo/config/Clipper`. They are not shared with the normal Echo, so you sign in to the cloud again.
 Clips stay in `~/Videos/EchoClips` (shared).
 
-## Stage 3 - Flathub submission
+## Echo's own Flatpak repo (what users install)
 
-1. Screenshots: 3 PNGs (library, player, editor) at `https://echoclip.link/flathub/*.png` (URLs already in the metainfo).
-2. Domain check: `https://echoclip.link/.well-known/org.flathub.VerifiedApps.txt` (Worker route) with the token Flathub shows after the PR.
-3. After a publish that includes `flatpak/`, run `bash flatpak/make-flathub-manifest.sh`. It writes `flatpak/flathub/` from the public repo's newest commit and version. Add a `<release>` for that version to the metainfo.
-4. Fork github.com/flathub/flathub, branch `new-pr`, add the 3 files from `flatpak/flathub/`, then open the PR.
-5. After it's accepted, `flathub/link.echoclip.Echo` exists. A step in ci/public-build.yml then bumps tag/commit/version, regenerates `cargo-sources.json`, and pushes there (secret `FLATHUB_TOKEN`). Flathub builds and publishes ~1-3 h later.
+Flathub is off: its rules don't allow AI-written manifests or apps that are mostly AI-written (see `Claude outputs/ECHO_HANDOFF_chat23.md`, chat 27).
+Instead every publish builds the Flatpak in GitHub Actions and adds it to Echo's own repo:
+
+- **Build**: job `flatpak` in `ci/public-build.yml` runs `ci/flatpak-repo.sh` in the public repo: this manifest, `ECHO_VERSION` from `ci/version.txt`, signed with GPG, last 3 versions kept, small update downloads (static deltas).
+- **Hosting**: Cloudflare R2 bucket `echo-flatpak`, public on `https://flatpak.echoclip.link` (`repo/` = the OSTree repo, `echo.flatpakref` = one-click install, `echo.flatpakrepo` = add the repo).
+- **Website**: "Install with Flatpak" on echoclip.link/download → `/download/flatpak` (Worker, counted like the other downloads) → `echo.flatpakref`. Discover / GNOME Software open it; the GNOME runtime comes from Flathub (`RuntimeRepo`), and updates show up in the software center.
+- **Secrets** (in github.com/Resister0/echoclip → Settings → Secrets → Actions): `FLATPAK_GPG_KEY`, `R2_ACCOUNT_ID`, `R2_FLATPAK_ACCESS_KEY_ID`, `R2_FLATPAK_SECRET_ACCESS_KEY`. Without them the job is skipped and nothing else changes.
+- **By hand from the command line**: `flatpak install --user https://flatpak.echoclip.link/echo.flatpakref`
+- **Release notes** in the software center come from the metainfo: `ci/build.yml` adds a `<release>` for every publish to the public copy (`ci/metainfo-release.py`).
+- **Screenshots** for the software center: `cloud/site/screenshots/{library,player,editor,settings}.png` (deployed with the website).
 
 ## Not done yet (Flatpak only)
 

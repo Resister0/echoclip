@@ -154,8 +154,12 @@ pub struct Settings {
     /// with several clouds: where new uploads go. "" = the one with the most free space (old behaviour),
     /// "echocloud" = Echo Cloud while it has room (Discord share links), or a cloud account id ("3")
     pub cloud_target: String,
-    /// copy the share link after uploading a clip by hand
+    /// copy the share link after uploading a clip by hand. OFF by default (chat 27, William): a link puts a copy in
+    /// Echo Cloud, and Echo Cloud should only fill up when the user asks for it
     pub auto_copy_link: bool,
+    /// 0 = file from when auto_copy_link was on by default (switched off once in load())
+    #[serde(default)]
+    pub link_v: u32,
     /// renamed / merged game folders: game (or old folder) name -> folder name ("" = main folder)
     pub folder_alias: std::collections::BTreeMap<String, String>,
     /// apps the user removed from "Your games" and never wants treated as a game
@@ -290,7 +294,8 @@ impl Default for Settings {
             cloud_free_after: false,
             link_days: 0,
             cloud_target: String::new(),
-            auto_copy_link: true,
+            auto_copy_link: false,
+            link_v: 1,
             cloud: String::new(),
             cloud_accounts: Vec::new(),
             ec_token: String::new(),
@@ -353,6 +358,13 @@ impl Settings {
         }
         // Linux: the old default screenshot key Shift+F10 (= "open context menu" in Linux apps) becomes Alt+F12.
         // Only the untouched default changes; a key someone picked himself stays.
+        // "Copy the link after uploading" was on by default and quietly filled Echo Cloud with share copies:
+        // off once for everyone (switch it on again in Settings › Sharing)
+        if s.link_v < 1 {
+            s.auto_copy_link = false;
+            s.link_v = 1;
+            let _ = s.save();
+        }
         if s.shot_key_v < 1 {
             if cfg!(target_os = "linux") && s.screenshot_key == "Shift+F10" {
                 s.screenshot_key = "Alt+F12".into();

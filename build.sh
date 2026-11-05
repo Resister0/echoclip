@@ -23,8 +23,8 @@ for id in dk.volkan.clipper echo; do
   cat > ~/.local/share/applications/$id.desktop <<EOF
 [Desktop Entry]
 Type=Application
-Name=Echo
-Comment=Game clip recorder
+Name=Echo (dev)
+Comment=Your own build from this folder
 Exec=$PWD/Echo
 Path=$PWD
 Icon=echo-clips
