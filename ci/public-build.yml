@@ -172,11 +172,11 @@ jobs:
         run: |
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update
-          sudo apt-get $APT install -y flatpak ostree rclone gnupg
+          sudo apt-get $APT install -y flatpak flatpak-builder elfutils appstream ostree rclone gnupg
           # Ubuntu 24.04 blocks the user namespaces flatpak-builder's sandbox needs
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+          flatpak-builder --version
       - name: Build cache
         # finished modules (ffmpeg, gpu-screen-recorder, whisper.cpp...) are reused until the manifest changes them
         if: steps.ok.outputs.go
@@ -233,6 +233,8 @@ jobs:
         run: |
           [ -n "$DISCORD_WEBHOOK" ] || { echo "DISCORD_WEBHOOK not set - skipping"; exit 0; }
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); msg=$(git log -1 --pretty=%s)
+          # "#..." = internal build (also hidden in Echo's What's new): no announcement
+          case "$msg" in "#"*) echo "internal build - no Discord post"; exit 0 ;; esac
           jq -n --arg v "$V" --arg m "$msg" '{username: "Echo", embeds: [{title: ("Echo " + $v + " is out"), url: "https://echoclip.link/changelog", color: 9133302,
             description: ($m + "\n\nEcho updates itself (or press Check for updates in Settings). New here? https://echoclip.link")}]}' > discord.json
           curl -sS -f -X POST -H "Content-Type: application/json" --data @discord.json "$DISCORD_WEBHOOK" || echo "::warning::Discord post failed"

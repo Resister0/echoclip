@@ -41,8 +41,12 @@ $RC sync "r2:$BUCKET/repo" "$REPO" || echo "no repo yet - starting a new one"
 # ---- build (same manifest as the local test build; the "echo" module builds this checkout) ----
 sed -i -E "s/(ECHO_VERSION: )0\.1\.0 /\1$V /" flatpak/$APP.yml
 grep -q "ECHO_VERSION: $V " flatpak/$APP.yml || { echo "couldn't set ECHO_VERSION in the manifest"; exit 1; }
-flatpak run --filesystem="$T" --filesystem="$PWD" org.flatpak.Builder \
-  --user --force-clean --disable-rofiles-fuse --install-deps-from=flathub \
+# The system's flatpak-builder, not the org.flatpak.Builder Flatpak: that one installs the SDK through the host's
+# D-Bus session, which a CI runner doesn't have ("Cannot autolaunch D-Bus without X11 $DISPLAY", run #34).
+# SDK + runtime + Rust first, straight from Flathub.
+flatpak install --user -y --noninteractive flathub org.gnome.Sdk//50 org.gnome.Platform//50 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08
+flatpak-builder --user --force-clean --disable-rofiles-fuse --install-deps-from=flathub \
   --default-branch=stable --state-dir="$T/state" --repo="$REPO" \
   --subject="Echo $V" "$T/build" flatpak/$APP.yml
 
