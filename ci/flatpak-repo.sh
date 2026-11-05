@@ -37,6 +37,8 @@ RC="rclone --fast-list --transfers 32 --checkers 32 --retries 5 --stats-one-line
 mkdir -p "$REPO"
 $RC sync "r2:$BUCKET/repo" "$REPO" || echo "no repo yet - starting a new one"
 [ -f "$REPO/config" ] || ostree init --mode=archive-z2 --repo="$REPO"
+# R2 has no empty folders: ostree needs these even when empty ("opendir(refs/remotes): No such file", run after #35)
+mkdir -p "$REPO"/refs/heads "$REPO"/refs/remotes "$REPO"/refs/mirrors "$REPO"/objects "$REPO"/tmp "$REPO"/state "$REPO"/extensions
 
 # ---- build (same manifest as the local test build; the "echo" module builds this checkout) ----
 sed -i -E "s/(ECHO_VERSION: )0\.1\.0 /\1$V /" flatpak/$APP.yml
@@ -88,6 +90,14 @@ Icon=$BASE/echo.png
 GPGKey=$PUB
 EOF
 
+# ---- single-file bundle (echo.flatpak): Bazaar (Bazzite/Bluefin) only opens a .flatpakref when the repo is
+# already added (it reads just Name=), but it, Discover and GNOME Software all open a bundle on double-click.
+# The bundle carries the repo URL + key, so the install keeps getting updates from this repo. ----
+gpg --batch --export "$KEY" > "$T/key.gpg"
+flatpak build-bundle --repo-url="$BASE/repo/" --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+  --gpg-keys="$T/key.gpg" "$REPO" "$T/echo.flatpak" $APP stable
+ls -l "$T/echo.flatpak"
+
 # ---- upload: objects + deltas first, then refs/summary (clients never see a version whose files aren't there yet),
 # then drop what the prune removed ----
 $RC copy "$REPO/objects" "r2:$BUCKET/repo/objects"
@@ -96,4 +106,6 @@ $RC sync "$REPO" "r2:$BUCKET/repo" --exclude "/tmp/**" --exclude "/state/**" --e
 $RC copyto "$T/echo.flatpakref" "r2:$BUCKET/echo.flatpakref" --header-upload "Content-Type: application/vnd.flatpak.ref" --header-upload "Cache-Control: no-cache"
 $RC copyto "$T/echo.flatpakrepo" "r2:$BUCKET/echo.flatpakrepo" --header-upload "Content-Type: application/vnd.flatpak.repo" --header-upload "Cache-Control: no-cache"
 $RC copyto flatpak/$APP.png "r2:$BUCKET/echo.png"
+$RC copyto "$T/echo.flatpak" "r2:$BUCKET/echo.flatpak" --header-upload "Content-Type: application/vnd.flatpak" \
+  --header-upload "Content-Disposition: attachment; filename=Echo.flatpak" --header-upload "Cache-Control: no-cache"
 echo "Flatpak repo updated: Echo $V -> $BASE/echo.flatpakref"

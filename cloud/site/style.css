@@ -283,8 +283,8 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 /* homepage app preview: try the buttons (nothing really happens - a note points to the download) */
 .app .mcopy i, .app .mstar, .app .mx, .app .abtn, .app .mmenu button { cursor:pointer; }
 .mact i:hover, .mcopy i:hover { background:var(--panel2); color:var(--text); }
-.mact .mx { max-width:0; opacity:0; overflow:hidden; transition:max-width .2s, opacity .2s; }
-.mclip:hover .mact .mx, .mclip.menu .mact .mx { max-width:22px; opacity:1; }
+.mact .mx { max-width:0; opacity:0; overflow:hidden; margin-right:-4px; transition:max-width .2s, opacity .2s, margin .2s; }   /* -4px: hidden ones take no gap */
+.mclip:hover .mact .mx, .mclip.menu .mact .mx { max-width:22px; opacity:1; margin-right:0; }
 .mclip:hover .mmeta strong { text-overflow:clip; }
 .mx.del:hover { color:#fb5c7c; }
 .abtn:hover { border-color:var(--muted); } .abtn.pri:hover { filter:brightness(1.1); }
@@ -344,3 +344,16 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .wtbtns{display:flex;gap:8px;align-items:center}.wtn{flex:1;color:var(--muted,#a0a0ab);font-size:12.5px}
 .wtbtns button{border:1px solid var(--line,#26262c);border-radius:10px;height:36px;padding:0 14px;font:inherit;font-weight:600;cursor:pointer;background:var(--panel2,#1e1e23);color:inherit}
 .wtbtns .wtnext{background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);border-color:transparent;color:#fff}
+
+/* hero: switch between the interactive preview and a real screenshot */
+.viewsw { display:inline-flex; gap:4px; margin:48px auto 0; padding:4px; background:var(--panel); border:1px solid var(--line); border-radius:999px; }
+.viewsw button { font:inherit; font-size:13px; color:var(--muted); background:none; border:0; padding:6px 14px; border-radius:999px; cursor:pointer; }
+.viewsw button[aria-selected="true"] { background:rgba(var(--accent-rgb),.16); color:var(--text); }
+.viewsw + .realshot, .viewsw ~ .app { margin-top:14px; }
+.realshot { display:block; width:100%; max-width:960px; height:auto; margin:14px auto 0; border:1px solid var(--line); border-radius:16px; box-shadow:0 30px 80px #00000080; }
+.realshot[hidden], .app[hidden] { display:none; }
+
+/* preview status card + toolbar like the app (chat 28) */
+.astat .abar { display:block; height:4px; border-radius:2px; background:var(--panel2); overflow:hidden; margin-top:3px; }
+.astat .abar i { display:block; width:6%; height:100%; background:var(--accent); }
+.abtn.aico { padding-left:7px; padding-right:7px; }

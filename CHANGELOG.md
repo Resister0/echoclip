@@ -4,6 +4,7 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- Library and Settings are back at the top of the sidebar - clicking Library always takes you back to All clips
 - Echo tidies the cloud by itself: empty folders in your own cloud go once a week, unused share copies in Echo Cloud are cleaned up daily
 - "Copy the link after uploading" is now off by default (switch it on in Settings › Sharing) - uploads no longer make Echo Cloud share copies unless you ask
 - "Upload to the cloud" puts the clip in the cloud you chose (e.g. Google Drive) even when it also copies a share link - it used to land in Echo Cloud instead

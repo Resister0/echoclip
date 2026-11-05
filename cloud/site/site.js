@@ -143,10 +143,10 @@
   const closeMenu = () => { menu.hidden = true; if (owner) owner.classList.remove("menu"); owner = null; };
   app.querySelectorAll(".mclip").forEach((c) => {
     const act = c.querySelector(".mact"); if (!act) return;
-    const star = act.querySelector(".mstar");
+    const copy = act.querySelector(".mcopy");   // like the app: the extra buttons slide in left of Copy
     for (const k of ["edit", "link", "folder", "del"]) {
       const i = document.createElement("i"); i.className = "mx" + (k === "del" ? " del" : ""); i.dataset.k = k; i.title = k === "link" ? "Share link" : k[0].toUpperCase() + k.slice(1);
-      i.innerHTML = ICON[k]; act.insertBefore(i, star);
+      i.innerHTML = ICON[k]; act.insertBefore(i, copy);
     }
   });
   app.addEventListener("click", (e) => {
