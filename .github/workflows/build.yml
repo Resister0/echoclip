@@ -86,8 +86,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: System libraries
         # a slow Ubuntu mirror once hung here for 40+ minutes (chat 21): give up a stuck download after 30 s
-        # and retry it, and stop the step after 15 min
-        timeout-minutes: 15
+        # and retry it, and stop the step after 30 min (15 wasn't enough on 6 Nov: the Azure Ubuntu mirror crawled, 1.0.60 had no Linux build)
+        timeout-minutes: 30
         run: |
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update

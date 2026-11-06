@@ -2362,7 +2362,7 @@
       toast(`Deleted ${n} file${n === 1 ? "" : "s"} from Echo Cloud - ${fmtSize(bytes)} freed`);
       try { localStorage.removeItem("echo_ecfull"); } catch { }
     } catch (e) { toast(String(e)); }
-    finally { ecm.busy = false; listKey = ""; refresh().catch(() => {}); if ($("ecm").classList.contains("on")) openEcm(); drawCloud(true); }
+    finally { ecm.busy = false; cloudUse.at = 0; listKey = ""; refresh().catch(() => {}); if ($("ecm").classList.contains("on")) openEcm(); drawCloud(true); }
   }
   $("ecmx").onclick = () => $("ecm").classList.remove("on");
   $("ecm").addEventListener("pointerdown", e => { if (e.target.id === "ecm") $("ecm").classList.remove("on"); });
@@ -5475,6 +5475,7 @@
       try {
         const i = await invoke("cloud_info");
         show(i);
+        cloudUse.i = i; cloudUse.at = Date.now();   // the sidebar's "☁ … in the cloud" line shows the same fresh numbers
         if (!(i.accounts || []).some(a => a.error)) try { localStorage.setItem("echo_cloudinfo", JSON.stringify({ key, info: i })); } catch { }
       } catch (e) { if (on) $("cloudsub").textContent = String(e); }
     }

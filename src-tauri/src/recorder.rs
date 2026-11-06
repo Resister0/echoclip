@@ -6471,6 +6471,10 @@ const GDRIVE_CLIENT_ID: &str = "38239043070-6q95iidaueoc8bij14u1fpj8g1qdjs9p.app
 /// Its secret comes in at build time (build.rs: env ECHO_GDRIVE_SECRET or src-tauri/gdrive.secret.txt), so it isn't in
 /// the public code - GitHub's push protection blocks Google client secrets (chat 29). Empty = rclone's own Google login.
 const GDRIVE_CLIENT_SECRET: &str = env!("ECHO_GDRIVE_SECRET");
+/// The page the browser shows after signing in to Google Drive / pCloud (rclone's own is a bare "Success! All done.
+/// Please go back to rclone."). Passed as rclone's config_template key (Go template: .OK .Name .Description .Code);
+/// it isn't saved in rclone.conf - tested with rclone 1.75.2 (chat 29). ONE line: rclone refuses values with \n.
+const OAUTH_PAGE: &str = r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ if .OK }}Connected to Echo{{ else }}Echo couldn't connect{{ end }}</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(900px 500px at 50% -10%,#2a2150 0%,#0e0f13 60%);color:#eceef2;font:15px/1.55 system-ui,"Segoe UI",Roboto,Arial,sans-serif;padding:24px}.c{width:100%;max-width:440px;background:#16181d;border:1px solid #262a31;border-radius:18px;padding:34px 30px 28px;text-align:center;box-shadow:0 30px 80px #0008}.logo{width:56px;height:56px;border-radius:15px;margin:0 auto 18px;display:grid;place-items:center;background:linear-gradient(135deg,#8b7cf6,#6d5ce8);box-shadow:0 10px 30px #7c5cff55}.st{width:44px;height:44px;border-radius:50%;margin:-4px auto 14px;display:grid;place-items:center;font-size:22px;font-weight:700}.ok{background:#3fb27f22;color:#3fb27f}.bad{background:#e5534b22;color:#e5534b}h1{font-size:22px;margin:0 0 8px}p{color:#a0a6b1;margin:0 0 6px}.small{font-size:12.5px;color:#6b7280;margin-top:18px}.err{margin-top:14px;text-align:left;background:#0e0f13;border:1px solid #262a31;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#c9ccd3;word-break:break-word}</style></head><body><div class="c"><div class="logo"><svg viewBox="0 0 256 256" width="30" height="30" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></div>{{ if .OK }}<div class="st ok">&#10003;</div><h1>You're connected</h1><p>Your cloud is now linked to Echo.</p><p>You can close this tab and go back to Echo - it finishes setting up by itself.</p>{{ else }}<div class="st bad">!</div><h1>That didn't work</h1><p>Echo couldn't connect to your cloud. Close this tab, go back to Echo and try again.</p><div class="err">{{ .Name }}{{ if .Description }}<br>{{ .Description }}{{ end }}{{ if .Code }}<br>Code: {{ .Code }}{{ end }}</div>{{ end }}<p class="small">Echo · echoclip.link</p></div></body></html>"##;
 /// a clip was uploaded since "rclone serve" listed the folders: restart it before the next stream (chat 28)
 static SERVE_STALE: AtomicBool = AtomicBool::new(false);
 /// port of the last streaming server (reused, the player keeps the address)
@@ -6721,7 +6725,7 @@ impl Recorder {
         let (mut label, mut root) = (user.trim().to_string(), String::new());
         let mut ec_exp = 0u64;
         let made = match provider {
-            "pcloud" => rclone_out(&["config", "create", &name, "pcloud"]),
+            "pcloud" => rclone_out(&["config", "create", &name, "pcloud", "config_template", OAUTH_PAGE]),
             // drive.file: Echo only sees the files it made itself, not the rest of the Drive.
             // Echo's own Google login (project "Echo" in Google Cloud, owner w@volkan.dk, desktop client "Echo app
             // (rclone)", chat 28) instead of rclone's shared one, which Google is retiring. A desktop app's
@@ -6730,10 +6734,10 @@ impl Recorder {
             // their clips.
             "gdrive" if GDRIVE_CLIENT_SECRET.is_empty() => {
                 log_line("cloud: this build has no Google login of its own - using rclone's");
-                rclone_out(&["config", "create", &name, "drive", "scope", "drive.file"])
+                rclone_out(&["config", "create", &name, "drive", "scope", "drive.file", "config_template", OAUTH_PAGE])
             }
             "gdrive" => rclone_out(&["config", "create", &name, "drive", "scope", "drive.file",
-                "client_id", GDRIVE_CLIENT_ID, "client_secret", GDRIVE_CLIENT_SECRET]),
+                "client_id", GDRIVE_CLIENT_ID, "client_secret", GDRIVE_CLIENT_SECRET, "config_template", OAUTH_PAGE]),
             "mega" => {
                 need(user, "MEGA email")?; need(pass, "MEGA password")?;
                 rclone_out(&["config", "create", &name, "mega", "user", user.trim(), "pass", pass, "--obscure"])
@@ -6823,6 +6827,12 @@ impl Recorder {
             let mut c = self.cfg.lock().unwrap();
             c.cloud = if all.len() > 1 { "multi".into() } else { provider.into() };
             c.cloud_accounts = all;
+            // an own cloud was (re)connected: new clips go there, not on into Echo Cloud ("Echo Cloud first" or a
+            // removed account's id was left over - chat 29: after reconnecting Google Drive, uploads kept filling Echo Cloud)
+            if !echo_cloud && !c.cloud_target.is_empty() {
+                log_line(&format!("cloud: uploads now go to your own clouds (was \"{}\")", c.cloud_target));
+                c.cloud_target.clear();
+            }
             if c.cloud_since == 0 {
                 c.cloud_since = now_unix();
             }
@@ -6861,6 +6871,8 @@ impl Recorder {
         rebuild_echo_remote(&all)?;
         let mut c = self.cfg.lock().unwrap();
         c.cloud = match all.len() { 0 => String::new(), 1 => all[0].provider.clone(), _ => "multi".into() };
+        // the upload target was that account (or only one cloud is left): back to the default
+        if c.cloud_target == id.to_string() || all.len() < 2 { c.cloud_target.clear(); }
         c.cloud_accounts = all;
         let _ = c.save();
         ec_sync_state(&c, 0);

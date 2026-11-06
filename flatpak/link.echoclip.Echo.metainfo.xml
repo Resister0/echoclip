@@ -86,6 +86,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="1.0.61" date="2026-11-06">
+      <description>
+        <p>Nicer page after signing in to Google Drive or pCloud, New clips go to your own cloud after reconnecting it, Cloud usage in the sidebar updates right after freeing up Echo Cloud space.</p>
+      </description>
+    </release>
     <release version="1.0.60" date="2026-11-06">
       <description>
         <p>Security fixes, Linux: captions work in the AppImage, Google Drive now connects as Echo, Cloud clips keep their date after Free up space and play right away, Your chosen thumbnail now shows in share link and Discord previews, Manage your Echo Cloud space (Settings &gt; Cloud &gt; Manage space), Popup when Echo Cloud is almost full.</p>
