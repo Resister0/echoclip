@@ -6,6 +6,29 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::OnceLock;
 
 static BASE: OnceLock<String> = OnceLock::new();
+/// folders (and single files the user picked) the server may hand out - nothing else on the PC (chat 28)
+static ROOTS: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+static FILES: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn canon(p: &str) -> Option<std::path::PathBuf> { std::fs::canonicalize(p).ok() }
+
+pub fn allow_root(dir: &str) {
+    if let Some(c) = canon(dir) { let mut r = ROOTS.lock().unwrap(); if !r.contains(&c) { r.push(c); } }
+}
+pub fn allow_file(file: &str) {
+    if let Some(c) = canon(file) { let mut f = FILES.lock().unwrap(); if !f.contains(&c) { f.push(c); } }
+}
+fn allowed(file: &str) -> bool {
+    let Some(c) = canon(file) else { return false };
+    FILES.lock().unwrap().contains(&c) || ROOTS.lock().unwrap().iter().any(|r| c.starts_with(r))
+}
+/// only Echo's own window may read the bytes from a page (canvas / fetch); other web pages get no CORS header
+fn cors(origin: &Option<String>) -> String {
+    match origin.as_deref() {
+        Some(o @ ("tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost")) => format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\n"),
+        _ => String::new(),
+    }
+}
 
 /// "http://127.0.0.1:PORT/TOKEN/" or "" if the server is not running.
 pub fn base() -> String {
@@ -59,10 +82,12 @@ fn handle(s: TcpStream, token: &str) -> std::io::Result<()> {
     r.read_line(&mut line)?;
     let mut range: Option<(u64, Option<u64>)> = None;
     let mut raw_range: Option<String> = None;
+    let mut origin: Option<String> = None;
     loop {
         let mut h = String::new();
         if r.read_line(&mut h)? == 0 || h.trim().is_empty() { break; }
         let lh = h.to_ascii_lowercase();
+        if lh.starts_with("origin:") { origin = Some(h[7..].trim().to_string()); }
         if lh.starts_with("range:") { raw_range = Some(h[6..].trim().to_string()); }
         if let Some(v) = lh.strip_prefix("range:") {
             if let Some(v) = v.trim().strip_prefix("bytes=") {
@@ -82,10 +107,16 @@ fn handle(s: TcpStream, token: &str) -> std::io::Result<()> {
     let file = match path.strip_prefix(&want) { Some(p) => unescape(p), None => String::new() };
     // a cloud clip: passed through from the cloud streaming server (rclone serve http on this PC)
     if file.starts_with("http://127.0.0.1:") {
-        return proxy(&file, raw_range, method == "HEAD", w);
+        // only to rclone's cloud streaming server (its secret path), never to other programs on this PC
+        let rest = &file["http://127.0.0.1:".len()..];
+        let port_ok = rest.split('/').next().map_or(false, |p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+        if !port_ok || !rest.contains(&format!("/{}/", crate::recorder::serve_token_pub())) {
+            return w.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+        return proxy(&file, raw_range, method == "HEAD", w, &cors(&origin));
     }
     let ct = mime(&file);
-    let f = if !file.is_empty() && ct.is_some() { std::fs::File::open(&file).ok() } else { None };
+    let f = if !file.is_empty() && ct.is_some() && allowed(&file) { std::fs::File::open(&file).ok() } else { None };
     let Some(mut f) = f else {
         return w.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     };
@@ -97,7 +128,7 @@ fn handle(s: TcpStream, token: &str) -> std::io::Result<()> {
         None => (0, len.saturating_sub(1), "200 OK"),
     };
     let n = if len == 0 { 0 } else { end - start + 1 };
-    let mut head = format!("HTTP/1.1 {status}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {n}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n", ct.unwrap());
+    let mut head = format!("HTTP/1.1 {status}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {n}\r\n{}Cache-Control: no-cache\r\nConnection: close\r\n", ct.unwrap(), cors(&origin));
     if range.is_some() { head += &format!("Content-Range: bytes {start}-{end}/{len}\r\n"); }
     head += "\r\n";
     w.write_all(head.as_bytes())?;
@@ -185,7 +216,7 @@ fn btrt_fix(path: &str, f: &mut std::fs::File, len: u64) -> Vec<(u64, [u8; 4])> 
 /// Linux cloud clips: WebKitGTK plays them from here instead of straight from rclone's server (streaming straight
 /// from there froze the whole window, chat 23). Ranges are passed through; the start of the file gets the same
 /// average-bitrate fix as local clips (btrt avg 0 -> max, see btrt_fix).
-fn proxy(url: &str, range: Option<String>, head: bool, mut w: TcpStream) -> std::io::Result<()> {
+fn proxy(url: &str, range: Option<String>, head: bool, mut w: TcpStream, cors: &str) -> std::io::Result<()> {
     let rest = url.trim_start_matches("http://");
     let (host, path) = match rest.find('/') { Some(i) => (&rest[..i], &rest[i..]), None => (rest, "/") };
     let t0 = std::time::Instant::now();
@@ -218,7 +249,7 @@ fn proxy(url: &str, range: Option<String>, head: bool, mut w: TcpStream) -> std:
     if code != "200" && code != "206" {
         crate::recorder::log_line(&format!("media: cloud stream answered {code} {reason}"));
     }
-    w.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: video/mp4\r\n{keep}Access-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").as_bytes())?;
+    w.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: video/mp4\r\n{keep}{cors}Cache-Control: no-cache\r\nConnection: close\r\n\r\n").as_bytes())?;
     if head { return Ok(()); }
     // the first MB (the header of a faststart MP4 sits there): fix a 0 average bitrate, then pass the rest through
     let mut first = Vec::with_capacity(1 << 20);

@@ -21,20 +21,35 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' asset: http://asset.localhost data: blob: https://echoclip.link http://127.0.0.1:*",
+        "media-src": "'self' asset: http://asset.localhost data: blob: http://127.0.0.1:*",
+        "connect-src": "ipc: http://ipc.localhost 'self' asset: http://asset.localhost http://127.0.0.1:*",
+        "font-src": "'self' data:",
+        "worker-src": "'self' blob:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "'none'"
+      },
       "assetProtocol": {
         "enable": true,
         "scope": {
           "allow": [
             "$VIDEO/**",
-            "$VIDEO/**/.thumbs/**",
-            "$HOME/**",
             "$APPDATA/**",
-            "$CONFIG/**"
+            "$CONFIG/**",
+            "$TEMP/**"
           ],
           "requireLiteralLeadingDot": false
         }
-      }
+      },
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
   "bundle": {

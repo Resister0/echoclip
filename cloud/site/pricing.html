@@ -66,29 +66,6 @@
   </div>
 </section>
 
-<script>
-(() => {
-  let interval = "month";
-  const money = (n, cur) => new Intl.NumberFormat("en-IE", { style: "currency", currency: (cur || "eur").toUpperCase(),
-    minimumFractionDigits: n % 1 ? 2 : 0 }).format(n);
-  const show = () => {
-    document.querySelectorAll(".toggle button").forEach((b) => b.classList.toggle("on", b.dataset.int === interval));
-    document.querySelectorAll(".plan .price[data-month]").forEach((p) => {
-      p.innerHTML = `${p.dataset[interval]} <small>/ ${interval}</small>`;
-    });
-  };
-  document.querySelectorAll(".toggle button").forEach((b) => b.onclick = () => { interval = b.dataset.int; show(); });
-  // live prices from Polar (same list Echo shows)
-  fetch("/plans").then((r) => r.ok ? r.json() : null).then((j) => {
-    if (!j || !j.plans) return;
-    for (const p of j.plans) {
-      const card = document.querySelector(`.plan[data-gb="${p.gb >= 1000 ? 1000 : p.gb}"] .price`);
-      if (card && (p.interval === "month" || p.interval === "year")) card.dataset[p.interval] = money(p.price, p.currency);
-    }
-    show();
-  }).catch(() => {});
-})();
-</script>
 </main>
 <footer><div class="wrap">
   <span>© 2026 Echo · Made in Denmark · <a href="https://github.com/Resister0/echoclip">Open source (GPL-3.0)</a></span>

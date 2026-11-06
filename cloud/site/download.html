@@ -52,18 +52,21 @@
 <section>
   <div class="wrap">
     <h2>All downloads</h2>
-    <p class="sub">The installer is the easy choice. The others are for when you can't or don't want to install.</p>
+    <p class="sub" id="dlsub">The installer is the easy choice. The others are for when you can't or don't want to install.</p>
     <div class="grid dlgrid">
-      <div class="card"><h3>Windows installer</h3><p>Echo-Setup.exe. Adds Echo to the Start menu and updates itself. <b>Recommended.</b></p>
+      <div class="card" data-os="windows"><h3>Windows installer</h3><p>Echo-Setup.exe. Adds Echo to the Start menu and updates itself. <b class="rec">Recommended.</b></p>
         <a class="btn small primary" href="/download/windows">Download</a></div>
-      <div class="card"><h3>Windows, no install</h3><p>Echo.exe on its own - put it anywhere and run it. Handy on a PC where you can't install apps.</p>
+      <div class="card" data-os="windows"><h3>Windows, no install</h3><p>Echo.exe on its own - put it anywhere and run it. Handy on a PC where you can't install apps.</p>
         <a class="btn small" href="/download/windows-portable">Download</a></div>
-      <div class="card"><h3>Linux AppImage</h3><p>One file that runs on most distributions. Updates itself like on Windows.</p>
+      <div class="card" data-os="linux" data-main><h3>Linux AppImage</h3><p>One file that runs on most distributions. Updates itself like on Windows.</p>
         <a class="btn small" href="/download/linux">Download</a></div>
-      <div class="card"><h3>Linux Flatpak</h3><p>Opens in Discover or GNOME Software and updates from there. Brings everything it needs - <b>best for Steam Deck and Bazzite</b>.</p>
+      <div class="card" data-os="linux"><h3>Linux Flatpak</h3><p>Opens in Discover, GNOME Software or Bazaar and updates from there. Brings everything it needs - <b>best for Steam Deck and Bazzite</b>.</p>
         <a class="btn small" href="/download/flatpak">Install with Flatpak</a></div>
     </div>
     <p class="sub" style="margin-top:18px">Packaging Echo or no AppImages on your system? There's also a <a href="/download/linux-tar">plain .tar.gz build</a>.</p>
+    <p class="sub" style="margin-top:8px">Code signing: Echo's Windows files are built from the public source by GitHub Actions and signed through the
+      <a href="https://signpath.org">SignPath Foundation</a> - free code signing provided by <a href="https://signpath.io">SignPath.io</a>, certificate by SignPath Foundation
+      (application in progress). See the <a href="/code-signing">Code signing policy</a>.</p>
   </div>
 </section>
 
@@ -72,7 +75,7 @@
     <h2>Installing</h2>
     <div class="steps">
       <div class="card"><h3>Windows</h3><p>Run Echo-Setup.exe. If Windows says "Windows protected your PC", click <b>More info</b> → <b>Run anyway</b> - Echo isn't code-signed yet, so SmartScreen doesn't know it.</p></div>
-      <div class="card"><h3>Linux</h3><p>Make the AppImage runnable (right-click → Properties → "Allow executing", or <code>chmod +x Echo-x86_64.AppImage</code>) and open it. Echo uses gpu-screen-recorder and ffmpeg from your system. Flatpak: click "Install with Flatpak" and confirm in your software center.</p></div>
+      <div class="card"><h3>Linux</h3><p>Make the AppImage runnable (right-click → Properties → "Allow executing", or <code>chmod +x Echo-x86_64.AppImage</code>) and open it. Echo uses gpu-screen-recorder and ffmpeg from your system. Flatpak: click "Install with Flatpak", then open the downloaded Echo.flatpak - Discover, GNOME Software or Bazaar installs it and keeps it updated.</p></div>
       <div class="card"><h3>First start</h3><p>A short setup picks your hotkey and where clips go. Then play - press the key whenever something happens worth keeping.</p></div>
     </div>
   </div>
@@ -98,7 +101,7 @@
     <a href="https://discord.gg/JPVewEfUQs">Discord</a>
     <a href="/terms">Terms</a>
     <a href="/privacy">Privacy</a>
-    <a href="/code-signing">Code signing</a>
+    <a href="/code-signing">Code signing policy</a>
     <a href="mailto:support@echoclip.link">support@echoclip.link</a>
   </nav>
 </div></footer>

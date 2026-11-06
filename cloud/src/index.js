@@ -1,3 +1,4 @@
+import { DISPOSABLE } from "./disposable.js";
 // Echo Cloud server: sign in with an email code, usage / quota, and short-lived R2 keys that only
 // reach the user's own folder (u/<id>/) in the bucket. Echo then talks to R2 directly (rclone s3).
 //
@@ -46,6 +47,30 @@ function sixDigits() {
   const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
   return String(n).padStart(6, "0");
 }
+// ----- sign-up checks (chat 28): no throwaway addresses, and Gmail aliases are one account -----
+const GMAIL = new Set(["gmail.com", "googlemail.com"]);
+/// Gmail ignores dots and everything after "+" (and googlemail.com = gmail.com): "a.b.c+x@gmail.com" is abc@gmail.com.
+/// "Gmail generator" sites hand out such variants of one inbox to make endless "new" accounts.
+function canonEmail(e) {
+  const [local, dom] = String(e).split("@");
+  if (!GMAIL.has(dom)) return e;
+  return local.split("+")[0].replace(/\./g, "") + "@gmail.com";
+}
+/// why a NEW account can't use this address, or "" (existing accounts can always sign in)
+function emailProblem(e) {
+  const dom = String(e).split("@")[1] || "";
+  // the domain itself or any parent (x.mailinator.com) on the throwaway list
+  const parts = dom.split(".");
+  for (let i = 0; i < parts.length - 1; i++) if (DISPOSABLE.has(parts.slice(i).join("."))) return "Throwaway email addresses can't be used for Echo Cloud - please use your normal email";
+  if (GMAIL.has(dom)) {
+    // real Gmail names: 6-30 letters/digits (dots don't count), nothing else - "a_b-c!x@gmail.com" can't exist
+    const name = String(e).split("@")[0].split("+")[0];
+    if (!/^[a-z0-9.]+$/.test(name) || !/^[a-z0-9]{6,30}$/.test(name.replace(/\./g, "")) || /^\.|\.$|\.\./.test(name))
+      return "That isn't a valid Gmail address";
+  }
+  return "";
+}
+
 function cleanEmail(e) {
   e = String(e || "").trim().toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 200 ? e : "";
@@ -125,7 +150,8 @@ function me(user, used) {
 }
 
 async function authStart(req, env) {
-  const email = cleanEmail((await body(req)).email);
+  const b0 = await body(req);
+  const email = cleanEmail(b0.email);
   if (!email) return fail("Enter a valid email address");
   // stop guessing (new code = 5 new tries) and email spam / using up the Resend quota
   if (!(await allow(env, `ip:${ipOf(req)}`, 10, 3600)) || !(await allow(env, `mail:${email}`, 5, 3600)))
@@ -134,12 +160,30 @@ async function authStart(req, env) {
     return fail("Echo Cloud can't send more sign-in emails today - try again tomorrow", 429);
   const old = await env.DB.prepare("SELECT sent FROM codes WHERE email = ?").bind(email).first();
   if (old && now() - old.sent < 45) return fail("A code was just sent - wait a moment before asking again", 429);
+  // new accounts only: throwaway domains / impossible Gmail names (people who already have an account still get in)
+  // echoclip.link/mod: only moderators get a code (others get the same "sent" answer, so the page doesn't tell who is one)
+  if (b0.mod) {
+    const acc = await accountFor(env, email);
+    const isMod = acc && (await env.DB.prepare("SELECT 1 AS x FROM mods WHERE user_id = ?").bind(acc.id).first());
+    if (!isMod) return json({ ok: true });
+  }
+  const problem = emailProblem(email);
+  if (problem && !(await accountFor(env, email))) return fail(problem);
   const code = sixDigits();
   await env.DB.prepare(
     "INSERT OR REPLACE INTO codes (email, code_hash, expires, tries, sent) VALUES (?, ?, ?, 0, ?)"
   ).bind(email, await sha256(`${email}:${code}`), now() + CODE_MINUTES * 60, now()).run();
   if (!(await sendCode(env, email, code))) return fail("Couldn't send the email - try again later", 502);
   return json({ ok: true });
+}
+
+/// The existing account for an email: exact match, or for Gmail the same inbox in another spelling.
+async function accountFor(env, email) {
+  const exact = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+  if (exact || !GMAIL.has(email.split("@")[1])) return exact;
+  const want = canonEmail(email);
+  const rows = (await env.DB.prepare("SELECT * FROM users WHERE email LIKE '%@gmail.com' OR email LIKE '%@googlemail.com' ORDER BY created LIMIT 20000").all()).results || [];
+  return rows.find((u) => canonEmail(u.email) === want) || null;
 }
 
 async function authVerify(req, env) {
@@ -157,7 +201,10 @@ async function authVerify(req, env) {
     return fail("Wrong code");
   }
   await env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(email).run();
-  let user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+  // the account of this address - for Gmail also of the same inbox written differently (dots / +tag / googlemail)
+  let user = await accountFor(env, email);
+  if (!user && emailProblem(email)) return fail(emailProblem(email));
+  if (!user && b.mod) return fail("Wrong code");   // the /mod page never makes accounts
   if (!user) {
     // one person making lots of free accounts: at most 3 new accounts per network per day
     if (!(await allow(env, `newacc:${ipOf(req)}`, Number(env.NEW_ACCOUNTS_PER_DAY || 3), 86400)))
@@ -299,6 +346,15 @@ async function upload(req, user, env) {
   });
   await env.DB.prepare("INSERT OR REPLACE INTO uploads (key, user_id, size, expires) VALUES (?, ?, ?, ?)")
     .bind(key, user.id, size, now() + UPLOAD_SECONDS).run();
+  // chat 28: many /upload calls at the same moment (a self-built client) could all pass the check above before
+  // any of them was recorded. Now that this one is recorded, count all open uploads again; if together they're
+  // over the plan, this one is taken back (in a tie both may be refused - the app simply retries later).
+  const again = await env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS n FROM uploads WHERE user_id = ? AND expires > ? AND key != ?")
+    .bind(user.id, now(), key).first();
+  if (used - (old ? old.size : 0) + Number((again && again.n) || 0) + size > user.quota_bytes) {
+    await env.DB.prepare("DELETE FROM uploads WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+    return json({ error: "Echo Cloud is full - other uploads are already using the space left", full: true, used, quota: user.quota_bytes }, 413);
+  }
   return json({ url, size, expires: now() + UPLOAD_SECONDS });
 }
 
@@ -423,6 +479,12 @@ async function logUpload(req, env, origin) {
     customMetadata: { v: String(b.version || "").slice(0, 20), os: String(b.os || "").slice(0, 20) },
   });
   console.log("log uploaded", id, text.length, b.version || "");
+  // stats page (chat 28): sent logs + logs that contain an Echo crash, per OS and version
+  try {
+    const v = String(b.version || "").replace(/[^0-9.]/g, "").slice(0, 12) || "?", os = /win/i.test(String(b.os)) ? "windows" : /linux/i.test(String(b.os)) ? "linux" : "other";
+    await bump(env, `logs:${os}:${v}`);
+    if (text.includes("APP CRASH")) await bump(env, `crash:${os}:${v}`);
+  } catch { /* counting must never fail the upload */ }
   return json({ id, url: `${origin}/log/${id}` });
 }
 async function logRead(req, env, id) {
@@ -700,6 +762,36 @@ async function countDownload(req, env, what) {
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, "dl:" + what);
   } catch (e) { console.log("download count error", e && e.message); }
 }
+// Echo apps checking for updates (chat 28): every installed Echo (Windows, AppImage, tar.gz - not the Flatpak, which
+// updates through flatpak) asks /update/<os>/<arch>/<version> every few hours. Counted once per computer per day:
+// a scrambled code of day + IP + OS goes into uv (kept 2 days, like the website's), never the IP itself.
+// Keys: app:<os> (copies that checked in that day) and appv:<os>:<version>.
+async function countApp(req, env, os, version) {
+  try {
+    if (!UPDATE_FILES[os] || !/^\d{1,3}\.\d{1,3}\.\d{1,4}$/.test(version)) return;
+    const h = "a" + (await sha256(`${utcDay()}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) { await bump(env, "app:" + os); await bump(env, `appv:${os}:${version}`); }
+    // country (Cloudflare's guess from the connection, e.g. "DK") - only the country is kept, chat 28. Its own
+    // once-a-day mark, so a computer already counted today (before this existed) still gets its country
+    const cc = String((req.cf && req.cf.country) || "").toUpperCase();
+    if (/^[A-Z]{2}$/.test(cc)) {
+      const hc = "c" + (await sha256(`${utcDay()}|${ipOf(req)}|appc:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+      const rc = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), hc).run();
+      if (((rc && rc.meta) ? rc.meta.changes : rc && rc.changes) > 0) await bump(env, `appc:${os}:${version}:${cc}`);
+    }
+  } catch (e) { console.log("app count error", e && e.message); }
+}
+// what the update check answered, once per computer per day and answer: upd:offered (got an update offer) or
+// upd:<reason> for "no update" although they're not on the newest (stale = the server's GitHub lookup was behind,
+// paused / hidden / internal = William's choice, no-signature / no-release = a broken release)
+async function countUpdAnswer(req, env, os, why) {
+  try {
+    const h = "u" + (await sha256(`${utcDay()}|${ipOf(req)}|upd:${os}:${why}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, `upd:${why}`);
+  } catch (e) { console.log("update answer count error", e && e.message); }
+}
 async function cleanupStats(env) {
   await env.DB.prepare("DELETE FROM uv WHERE day < ?").bind(utcDay(now() - 2 * 86400)).run();
   // pins of share links that were removed or expired
@@ -908,7 +1000,7 @@ ${p.bio ? `<p class="bio">${esc(p.bio)}</p>` : ""}
 ${cards ? `<div class="grid">${cards}</div>` : `<p class="empty">No pinned clips yet.</p>`}
 </main>
 <div class="note" id="note"><b>@${esc(p.handle)} copied.</b> To follow, open Echo → Settings → Profile and paste it under Following · <a href="/download">Get Echo</a></div>
-<footer>Echo profile · <a href="/terms">Terms</a> · Report this profile: <a href="mailto:support@echoclip.link?subject=Report%20profile%20${esc(p.handle)}">support@echoclip.link</a></footer>
+<footer>Echo profile · <a href="/terms">Terms</a> · <a href="/report?u=${esc(p.handle)}">Report this profile</a></footer>
 <script src="/profile.js" defer></script>
 </body></html>`;
   return new Response(req.method === "HEAD" ? null : html, { headers: {
@@ -949,6 +1041,8 @@ async function adminStats(req, env) {
   const newest = await all("SELECT email, plan, created FROM users ORDER BY created DESC LIMIT 10");
   const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 ORDER BY over_since LIMIT 20");
   const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
+  const topShares = await all(`SELECT s.id, s.key, s.views, s.created, u.email FROM shares s LEFT JOIN users u ON u.id = s.user_id
+      WHERE (s.expires = 0 OR s.expires > ?) AND s.views > 0 ORDER BY s.views DESC LIMIT 10`, t);
   const profs = await one("SELECT COUNT(*) AS n, SUM(created > ?) AS d7 FROM profiles", t - 7 * d);
   const fl = await one("SELECT COUNT(*) AS n FROM follows");
   const profList = await all(`SELECT p.handle, p.name, p.created, u.email, (SELECT COUNT(*) FROM follows f WHERE f.followee = p.user_id) AS followers,
@@ -978,84 +1072,108 @@ async function adminStats(req, env) {
     plans: byPlan,
     storage: { used_bytes: users.used || 0 },
     money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
-    shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0 },
+    shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0, top: topShares },
     logs, backup, top, newest, over,
     profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0, list: profList },
     site: await siteStats(env),
+    apps: await appStats(env),
+    releases: await releaseList(env),
   });
 }
 
+/// Remove a profile (William or a moderator): the page, picture, pins and follows go (clips and share links stay);
+/// block = the @name can't be used again. Returns {handle, removed, blocked, owner} or {error, status}.
+async function profileRemove(env, handle, block) {
+  const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
+  if (block && HANDLE_RE.test(handle)) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(handle, now()).run();
+  if (!p) return block && HANDLE_RE.test(handle) ? { handle, removed: false, blocked: true, owner: null } : { error: "No profile with that @name", status: 404 };
+  const owner = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(p.user_id).first();
+  await profileDelete({ id: p.user_id }, env);
+  console.log("profile takedown", handle, block ? "(blocked)" : "");
+  return { handle, removed: true, blocked: !!block, owner: owner ? owner.email : null };
+}
 /// William removes a reported profile: POST /admin/profile-takedown {handle, block?} with header x-admin-key.
-/// Removes the page, picture, pins and follows (clips and share links stay); block = the @name can't be used again.
 async function profileTakedown(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
-  const handle = String(b.handle || "").trim().toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/\/.*$/, "");
-  const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
-  if (b.block && HANDLE_RE.test(handle)) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(handle, now()).run();
-  if (!p) return b.block ? json({ ok: true, handle, removed: false, blocked: true }) : fail("No profile with that @name", 404);
-  const owner = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(p.user_id).first();
-  await profileDelete({ id: p.user_id }, env);
-  console.log("profile takedown", handle, b.block ? "(blocked)" : "");
-  return json({ ok: true, handle, removed: true, blocked: !!b.block, owner: owner ? owner.email : null });
+  const r = await profileRemove(env, handleOf(b.handle), !!b.block);
+  if (r.error) return fail(r.error, r.status);
+  await closeReports(env, "u", r.handle, "admin");
+  await modLog(env, "admin", "removed profile" + (r.blocked ? " (+ blocked @name)" : ""), "@" + r.handle);
+  return json({ ok: true, ...r });
 }
 
-/// William changes someone's @name: POST /admin/profile-handle {who, to, block_old?} with header x-admin-key.
-/// who = their @name, /u/ link or account email; to = the new @name (reserved names allowed, e.g. "echo" for
-/// William himself) or "" = a random one (user_123456) they can change later. An account without a profile gets
-/// one when `to` is given. block_old = nobody can take the old @name again (inappropriate names).
-async function profileHandle(req, env) {
-  const denied = await adminDenied(req, env); if (denied) return denied;
-  const b = await body(req);
-  const who = String(b.who || "").trim();
+/// Change someone's @name (William or a moderator). who = their @name, /u/ link or account email (email: William only,
+/// the moderator route refuses it); to = the new @name or "" = a random one (user_123456) they can change later.
+/// An account without a profile gets one when `to` is given. blockOld = nobody can take the old @name again.
+async function handleChange(env, who, toIn, blockOld) {
+  who = String(who || "").trim();
   let p = null, userId = null;
   if (who.includes("@") && who.indexOf("@") > 0) {
     const u = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(who.toLowerCase()).first();
-    if (!u) return fail("No account with that email", 404);
+    if (!u) return { error: "No account with that email", status: 404 };
     userId = u.id; p = await profileOf(env, u.id);
   } else {
-    const h = who.toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/\/.*$/, "");
-    p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(h).first();
-    if (!p) return fail("No profile with that @name", 404);
+    p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handleOf(who)).first();
+    if (!p) return { error: "No profile with that @name", status: 404 };
     userId = p.user_id;
   }
-  let to = String(b.to || "").trim().toLowerCase().replace(/^@/, "");
+  let to = String(toIn || "").trim().toLowerCase().replace(/^@/, "");
   if (to) {
-    if (!HANDLE_RE.test(to)) return fail("The new @name needs 3-20 letters, numbers or _");
+    if (!HANDLE_RE.test(to)) return { error: "The new @name needs 3-20 letters, numbers or _", status: 400 };
     const taken = await env.DB.prepare("SELECT user_id FROM profiles WHERE handle = ?").bind(to).first();
-    if (taken && taken.user_id !== userId) return fail(`@${to} belongs to someone else - change theirs first`, 409);
+    if (taken && taken.user_id !== userId) return { error: `@${to} belongs to someone else - change theirs first`, status: 409 };
   } else {
-    if (!p) return fail("That account has no profile - give a new @name to make one");
+    if (!p) return { error: "That account has no profile - give a new @name to make one", status: 400 };
     for (let i = 0; i < 20 && !to; i++) {
       const c = "user_" + String(100000 + Math.floor(Math.random() * 900000));
       if (!(await env.DB.prepare("SELECT 1 AS x FROM profiles WHERE handle = ?").bind(c).first())) to = c;
     }
-    if (!to) return fail("Couldn't find a free random @name - try again", 500);
+    if (!to) return { error: "Couldn't find a free random @name - try again", status: 500 };
   }
   const t = now(), from = p ? p.handle : null;
   // random name (usually an inappropriate one): the display name goes too; otherwise it only follows when it was the @name
-  const resetName = !String(b.to || "").trim() ? 1 : 0;
+  const resetName = !String(toIn || "").trim() ? 1 : 0;
   if (p) await env.DB.prepare("UPDATE profiles SET handle = ?, name = CASE WHEN name = handle OR ? = 1 THEN ? ELSE name END, updated = ? WHERE user_id = ?").bind(to, resetName, to, t, userId).run();
   else await env.DB.prepare("INSERT INTO profiles (user_id, handle, name, bio, color, avatar, created, updated) VALUES (?, ?, ?, '', '#7c5cff', 0, ?, ?)").bind(userId, to, to, t, t).run();
-  if (b.block_old && from && from !== to) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(from, t).run();
+  const blocked = !!(blockOld && from && from !== to);
+  if (blocked) await env.DB.prepare("INSERT OR IGNORE INTO banned_handles (handle, at) VALUES (?, ?)").bind(from, t).run();
   const owner = await env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first();
-  console.log("profile handle", from, "->", to, b.block_old ? "(old blocked)" : "");
-  return json({ ok: true, from, to, blocked: !!(b.block_old && from), owner: owner ? owner.email : null });
+  console.log("profile handle", from, "->", to, blocked ? "(old blocked)" : "");
+  return { from, to, blocked, owner: owner ? owner.email : null };
+}
+/// William changes someone's @name: POST /admin/profile-handle {who, to, block_old?} with header x-admin-key
+/// (reserved names allowed, e.g. "echo" for William himself).
+async function profileHandle(req, env) {
+  const denied = await adminDenied(req, env); if (denied) return denied;
+  const b = await body(req);
+  const r = await handleChange(env, b.who, b.to, !!b.block_old);
+  if (r.error) return fail(r.error, r.status);
+  if (r.from) await closeReports(env, "u", r.from, "admin");
+  await modLog(env, "admin", "changed @name" + (r.blocked ? " (+ blocked old)" : ""), "@" + (r.from || "?") + " -> @" + r.to);
+  return json({ ok: true, ...r });
 }
 
+/// Remove a share link (William or a moderator); deleteClip (William only) also deletes the clip in Echo Cloud.
+async function shareTakedown(env, id, deleteClip) {
+  const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
+  if (!row) return { error: "No share link with that id", status: 404 };
+  const owner = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(row.user_id).first();
+  await env.BUCKET.delete(`thumbs/${id}.jpg`);
+  await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
+  if (deleteClip) { await env.BUCKET.delete(row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
+  console.log("takedown", id, row.key, deleteClip ? "(clip deleted)" : "");
+  return { id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!deleteClip };
+}
 /// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
 async function takedown(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
-  const id = String(b.id || "").replace(/^.*\/s\//, "").replace(/\.(mp4|jpg)$/, "").trim();
-  const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
-  if (!row) return fail("No share link with that id", 404);
-  const owner = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(row.user_id).first();
-  await env.BUCKET.delete(`thumbs/${id}.jpg`);
-  await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
-  if (b.delete_clip) { await env.BUCKET.delete(row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
-  console.log("takedown", id, row.key, b.delete_clip ? "(clip deleted)" : "");
-  return json({ ok: true, id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!b.delete_clip });
+  const r = await shareTakedown(env, shareIdOf(b.id), !!b.delete_clip);
+  if (r.error) return fail(r.error, r.status);
+  await closeReports(env, "s", r.id, "admin");
+  await modLog(env, "admin", r.clip_deleted ? "removed share link + clip" : "removed share link", "/s/" + r.id);
+  return json({ ok: true, ...r });
 }
 
 // ----- share links: /s/<id> streams a clip straight from R2 (plays in Discord / any browser) -----
@@ -1097,6 +1215,7 @@ async function migrate(env) {
     ["views", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
   }
+  await modTables(env);
   migrated = true;
 }
 
@@ -1174,7 +1293,7 @@ async function shareView(req, env, id) {
     const h = (await sha256(`${utcDay()}|${ipOf(req)}|${req.headers.get("user-agent")}|v:${id}|${env.ADMIN_KEY || "echo"}`)).slice(0, 24);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0)
-      await env.DB.prepare("UPDATE shares SET views = views + 1 WHERE id = ? AND (expires = 0 OR expires > ?)").bind(id, now()).run();
+    { await env.DB.prepare("UPDATE shares SET views = views + 1 WHERE id = ? AND (expires = 0 OR expires > ?)").bind(id, now()).run(); await bump(env, "sview"); }
   } catch (e) { console.log("view count error", e && e.message); }
   return done;
 }
@@ -1301,7 +1420,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 <div class="pts"><span>No ads</span><span>No account needed</span><span>Copy straight into Discord</span><span>Windows &amp; Linux</span></div></div>
 <a class="btn p" href="https://echoclip.link/download">Get Echo, it's free</a></div>
 </main>
-<footer>Shared with <a href="https://echoclip.link/">Echo</a> · <a href="https://echoclip.link/terms">Terms</a> · Report this clip: <a href="mailto:support@echoclip.link?subject=Report%20${id}">support@echoclip.link</a></footer>
+<footer>Shared with <a href="https://echoclip.link/">Echo</a> · <a href="https://echoclip.link/terms">Terms</a> · <a href="https://echoclip.link/report?s=${id}">Report this clip</a></footer>
 <script src="/player.js" defer></script>
 </body></html>`;
   return new Response(req.method === "HEAD" ? null : html, { headers: {
@@ -1599,10 +1718,15 @@ async function assetLink(env, rel, asset) {
 }
 
 async function download(env, what, from) {
-  // Linux Flatpak: the one-click install file of Echo's own Flatpak repo (ci/flatpak-repo.sh in the public repo
-  // writes it to the R2 bucket echo-flatpak, served on flatpak.echoclip.link). Discover / GNOME Software open it.
+  // Linux Flatpak: the single-file bundle echo.flatpak from Echo's own Flatpak repo (ci/flatpak-repo.sh in the public
+  // repo writes it to the R2 bucket echo-flatpak, served on flatpak.echoclip.link). Chat 28: the bundle, not the
+  // .flatpakref - Bazaar (Bazzite / Bluefin) only opens a .flatpakref for apps it already knows; Bazaar, Discover and
+  // GNOME Software all install the bundle and keep it updated from the repo. /download/flatpakref = the old file.
   if (what === "flatpak") {
-    return new Response(null, { status: 302, headers: { location: env.FLATPAK_REF || "https://flatpak.echoclip.link/echo.flatpakref", "cache-control": "no-store" } });
+    return new Response(null, { status: 302, headers: { location: env.FLATPAK_REF || "https://flatpak.echoclip.link/echo.flatpak", "cache-control": "no-store" } });
+  }
+  if (what === "flatpakref") {
+    return new Response(null, { status: 302, headers: { location: "https://flatpak.echoclip.link/echo.flatpakref", "cache-control": "no-store" } });
   }
   const file = DOWNLOADS[what];
   if (!file) return null;
@@ -1614,6 +1738,50 @@ async function download(env, what, from) {
   const to = await assetLink(env, rel, rel.assets.find((a) => a.name === file));
   if (!to) return page("Download not available", "Try again in a few minutes.");
   return new Response(null, { status: 302, headers: { location: to, "cache-control": "no-store" } });
+}
+
+/// Releases for the stats page: every version with its text (also hidden ones) + whether updates to it are paused.
+async function releaseList(env) {
+  try {
+    await releaseCols(env);
+    // pick up a just-published version (its commit) even if nobody opened the changelog yet - so it can be paused
+    // while GitHub is still building it
+    if (now() - changesSynced > 60) { changesSynced = now(); try { await syncReleases(env); } catch { /* GitHub down */ } }
+    const out = ((await env.DB.prepare("SELECT version, notes, at, paused FROM releases ORDER BY at DESC LIMIT 40").all()).results) || [];
+    // newest version that really came out (signed files on GitHub); newer rows = still building, or the build failed
+    const latest = relVersion(await releaseOf(env, publicRepo(env), true).catch(() => null));
+    for (const r of out) r.out = !latest || !newer(r.version, latest);
+    return out;
+  } catch { return []; }
+}
+/// William edits a release: POST /admin/release {version, notes?, paused?} with header x-admin-key.
+/// notes "" = hidden (changelog, What's new, not offered as an update); paused 1 = not offered as an update.
+async function adminRelease(req, env) {
+  const denied = await adminDenied(req, env); if (denied) return denied;
+  const b = await body(req);
+  const v = String(b.version || "");
+  if (!/^\d+\.\d+\.\d+$/.test(v)) return fail("Which version?");
+  await releaseCols(env);
+  const row = await env.DB.prepare("SELECT version FROM releases WHERE version = ?").bind(v).first();
+  if (!row) return fail("Version not found", 404);
+  if (typeof b.notes === "string") await env.DB.prepare("UPDATE releases SET notes = ? WHERE version = ?").bind(b.notes.trim().slice(0, 600), v).run();
+  if (b.paused !== undefined) await env.DB.prepare("UPDATE releases SET paused = ? WHERE version = ?").bind(b.paused ? 1 : 0, v).run();
+  changesSynced = 0;
+  return json({ ok: true });
+}
+
+/// Echo apps for the stats page: per day (UTC, last 14 days) how many copies checked in, per OS and version, plus
+/// the newest real release (a "#" internal build isn't offered as an update, so it doesn't count as "newest").
+async function appStats(env) {
+  const from = utcDay(now() - 13 * 86400);
+  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ? AND (k LIKE 'app:%' OR k LIKE 'appv:%' OR k LIKE 'appc:%')").bind(from).all()).results) || [];
+  let latest = null;
+  try {
+    const r = ((await env.DB.prepare("SELECT version, notes FROM releases ORDER BY at DESC LIMIT 30").all()).results) || [];
+    const real = r.find((x) => !String(x.notes || "").trim().startsWith("#")) || r[0];
+    latest = real ? String(real.version).replace(/[^0-9.]/g, "") : null;
+  } catch { /* table not there yet */ }
+  return { rows, latest, today: utcDay() };
 }
 
 // ----- updates for Echo (Tauri updater): GET /update/<windows|linux>/<arch>/<current version> -----
@@ -1629,25 +1797,44 @@ function newer(a, b) {
 const sigCache = new Map();
 async function update(env, target, current) {
   const what = UPDATE_FILES[target];
-  const none = () => new Response(null, { status: 204 });
-  if (!what) return none();
+  // chat 28: every "no update" says why (header x-echo-why) so the stats page can show people who were told
+  // "up to date" while a newer version exists
+  const none = (why) => new Response(null, { status: 204, headers: { "x-echo-why": why || "current" } });
+  if (!what) return none("unknown-os");
   const file = DOWNLOADS[what];
   const rel = await release(env, file, true);   // still building / unsigned build -> not offered
   const version = relVersion(rel);
-  if (!version || !newer(version, current)) return none();
+  if (!version || !newer(version, current)) {
+    // is there a newer real release in the changelog table than what GitHub's lookup gave us? = stale answer
+    let why = !version ? "no-release" : "current";
+    try {
+      const r = ((await env.DB.prepare("SELECT version, notes, paused FROM releases ORDER BY at DESC LIMIT 10").all()).results) || [];
+      const real = r.find((x) => !x.paused && x.notes && !String(x.notes).trim().startsWith("#"));
+      if (real && newer(real.version, current) && (!version || newer(real.version, version))) why = "stale";
+    } catch { /* table missing */ }
+    return none(why);
+  }
   const sig = rel.assets.find((a) => a.name === `${file}.sig`);
   let signature = sig.sig_text || sigCache.get(sig.id);
   if (!signature) {
     const to = await assetLink(env, rel, sig);
     const r = to && (await fetch(to));
-    if (!r || !r.ok) return none();
+    if (!r || !r.ok) return none("no-signature");
     signature = (await r.text()).trim();
     sigCache.set(sig.id, signature);
   }
-  const notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
+  let notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
+  // chat 28: William can fix the text, hide or pause a release on echoclip.link/admin - the database row wins
+  let row = null;
+  try { await releaseCols(env); row = await env.DB.prepare("SELECT notes, paused FROM releases WHERE version = ?").bind(version).first(); } catch { /* table missing */ }
+  if (row) { if (row.paused) return none("paused"); notes = row.notes || ""; if (!notes.trim()) return none("hidden"); }
   // "#…" publish text = internal build (e.g. a CI fix): not offered as an update - people get it with the next
   // real release (downloads from the website still are the newest build)
-  if (notes.trim().startsWith("#")) return none();
+  if (notes.trim().startsWith("#")) return none("internal");
+  // optional: a new release waits UPDATE_HOLD_MIN minutes before it's offered. OFF by default (William tests new
+  // builds with friends through auto-update right away, chat 28) - "Pause updates" on /admin is the brake instead
+  const hold = Number(env.UPDATE_HOLD_MIN || 0), pub = Math.floor(Date.parse(rel.published_at || rel.created_at || "") / 1000) || 0;
+  if (hold > 0 && pub && now() - pub < 60 * hold) return none("hold");
   // the installer from the SAME release as the signature
   const url = rel.public ? rel.assets.find((a) => a.name === file).browser_download_url : `https://echoclip.link/download/${what}?from=private`;
   return json({ version, notes, pub_date: rel.published_at || rel.created_at, url, signature });
@@ -1658,6 +1845,13 @@ async function update(env, target, current) {
 // "What changed?" text. Read from GitHub (no extra keys), kept in D1 table releases. Used by Echo's "What's new"
 // card (earlier updates you skipped) and echoclip.link/changelog.
 let changesSynced = 0;
+let releaseColsOk = false;
+async function releaseCols(env) {
+  if (releaseColsOk) return;
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, notes TEXT NOT NULL, at INTEGER NOT NULL, sha TEXT)").run();
+  try { await env.DB.prepare("ALTER TABLE releases ADD COLUMN paused INTEGER NOT NULL DEFAULT 0").run(); } catch { /* already there */ }
+  releaseColsOk = true;
+}
 async function syncReleases(env) {
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, notes TEXT NOT NULL, at INTEGER NOT NULL, sha TEXT)").run();
   const repo = publicRepo(env);
@@ -1730,6 +1924,8 @@ async function serveShare(req, env, id, ext) {
   // the bare link: a page for browsers and link previews (Discord, …); video players get the file as before
   if (!ext) {
     const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";
+    // stats page (chat 28): a link pasted into Discord & co = the chat app fetching its preview
+    if (BOTS.test(ua)) { try { await bump(env, /discordbot/i.test(ua) ? "sembed:discord" : "sembed:other"); } catch { /* ignore */ } }
     if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id, await profileOf(env, row.user_id));
   }
   const name = row.key.split("/").pop();
@@ -1775,7 +1971,7 @@ const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avata
   "POST /upload", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "") || "/"}`;
     try {
@@ -1798,7 +1994,13 @@ export default {
       const om = url.pathname.match(/^\/oembed\/([a-z0-9]{6,20})\/?$/);
       if (om && req.method === "GET") return await shareOembed(req, env, om[1]);
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
-      if (um && req.method === "GET") return await update(env, um[1], um[3]);
+      if (um && req.method === "GET") {
+        if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
+        const res = await update(env, um[1], um[3]);
+        const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
+        if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
+        return res;
+      }
       if (route === "GET /thanks") return page("Thanks for upgrading!", "Your Echo Cloud space goes up within a minute. You can close this tab and go back to Echo.");
       if (route === "GET /changes") {
         const since = (url.searchParams.get("since") || "").match(/^\d+\.\d+\.\d+$/);
@@ -1810,8 +2012,13 @@ export default {
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /release/push") return await releasePush(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
+      if (route === "POST /admin/release") return await adminRelease(req, env);
       if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);
       if (route === "POST /admin/profile-handle") return await profileHandle(req, env);
+      if (route === "GET /admin/mods" || route === "POST /admin/mods") { const r = await adminMods(req, env); r.headers.set("cache-control", "no-store"); return r; }
+      if (route === "GET /report") return await reportPage(req, env);
+      if (route === "POST /report") return await reportSend(req, env);
+      if (route.startsWith("GET /mod/") || route.startsWith("POST /mod/")) { const r = await modApi(req, env, route); r.headers.set("cache-control", "no-store"); return r; }
       if (route === "GET /admin/stats") { const r = await adminStats(req, env); r.headers.set("cache-control", "no-store"); return r; }
       if (route === "POST /log") return await logUpload(req, env, url.origin);
       const lm = url.pathname.match(/^\/log\/([a-z2-9]{14})\/?$/);
@@ -1858,3 +2065,181 @@ export default {
   },
 };
 
+
+// ----- moderators + reports (chat 29) -----
+// William adds moderators in /admin (by the email of an existing Echo Cloud account). They sign in at echoclip.link/mod
+// with the normal Echo sign-in code (no account is made there) and can: see reports people sent from share pages and
+// profiles, remove share links (not the clip itself), remove profiles, change @names (not to reserved names).
+// Everything a moderator does is written to mod_log (shown in /admin). Moderators never see account emails.
+const REPORT_REASONS = { stolen: "Not theirs / copyright", hate: "Hate or harassment", sexual: "Sexual content", gore: "Violence or gore",
+  spam: "Spam or scam", other: "Something else" };
+
+async function modTables(env) {
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS mods (user_id TEXT PRIMARY KEY, email TEXT NOT NULL, added INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS mod_log (at INTEGER NOT NULL, who TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, target TEXT NOT NULL, reason TEXT NOT NULL, "
+      + "details TEXT, contact TEXT, created INTEGER NOT NULL, h TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', handled_by TEXT, handled_at INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS reports_open ON reports (status, kind, target)"),
+  ]);
+}
+
+async function modLog(env, who, action, target, detail = "") {
+  await env.DB.prepare("INSERT INTO mod_log (at, who, action, target, detail) VALUES (?, ?, ?, ?, ?)").bind(now(), who, action, target, String(detail).slice(0, 300)).run();
+}
+/// open reports about something are closed when a moderator / William acts on it
+async function closeReports(env, kind, target, who, status = "done") {
+  await env.DB.prepare("UPDATE reports SET status = ?, handled_by = ?, handled_at = ? WHERE kind = ? AND target = ? AND status = 'open'")
+    .bind(status, who, now(), kind, target).run();
+}
+const shareIdOf = (v) => String(v || "").replace(/^.*\/s\//, "").replace(/\.(mp4|jpg)$/, "").replace(/[/?#].*$/, "").trim().toLowerCase();
+const handleOf = (v) => String(v || "").trim().toLowerCase().replace(/^.*\/u\//, "").replace(/^@/, "").replace(/[/?#].*$/, "");
+
+/// The moderator behind this request (session token from /mod), or null.
+async function modFrom(req, env) {
+  const user = await userFromToken(req, env).catch(() => null);
+  if (!user) return null;
+  const m = await env.DB.prepare("SELECT * FROM mods WHERE user_id = ?").bind(user.id).first();
+  return m ? { user, label: user.email.split("@")[0] } : null;
+}
+
+// --- the report page: /report?s=<share id> or /report?u=<@name>, plain HTML form (works without JavaScript) ---
+function reportHtml(title, inner) {
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>${esc(title)} - Echo</title><style>
+:root{--bg:#0e0f13;--card:#16181d;--line:#2a2d35;--text:#e8e8ee;--muted:#a0a3ad;--accent:#8b7cf6;--bad:#e5534b}
+@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--card:#fff;--line:#e3e6eb;--text:#16181d;--muted:#5b6270;--accent:#6d5ce8;--bad:#c93a32}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif;padding:16px}
+.box{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13.5px}label.r{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:9px;margin-top:8px;cursor:pointer}
+textarea,input[type=email]{width:100%;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 11px;margin-top:6px}
+textarea{min-height:80px;resize:vertical}.f{margin-top:14px;font-size:13.5px;color:var(--muted)}
+button{margin-top:16px;width:100%;font:inherit;font-weight:600;color:#fff;background:var(--accent);border:0;border-radius:9px;padding:10px;cursor:pointer}
+a{color:var(--accent)}.err{color:var(--bad);margin-top:10px}</style></head><body><div class="box">${inner}</div></body></html>`,
+    { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "x-content-type-options": "nosniff", "referrer-policy": "same-origin" } });
+}
+async function reportTarget(env, kind, target) {
+  if (kind === "s") {
+    if (!/^[a-z0-9]{6,20}$/.test(target)) return null;
+    const r = await env.DB.prepare("SELECT id, title FROM shares WHERE id = ?").bind(target).first();
+    return r ? { what: "this clip", name: r.title || "a shared clip", back: `/s/${r.id}` } : null;
+  }
+  if (!HANDLE_RE.test(target)) return null;
+  const p = await env.DB.prepare("SELECT handle, name FROM profiles WHERE handle = ?").bind(target).first();
+  return p ? { what: "this profile", name: `${p.name || p.handle} (@${p.handle})`, back: `/u/${p.handle}` } : null;
+}
+async function reportPage(req, env) {
+  const u = new URL(req.url);
+  const kind = u.searchParams.get("s") ? "s" : "u";
+  const target = kind === "s" ? shareIdOf(u.searchParams.get("s")) : handleOf(u.searchParams.get("u"));
+  const t = await reportTarget(env, kind, target);
+  if (!t) return reportHtml("Not found", `<h1>Nothing to report here</h1><p class="sub">This link or profile doesn't exist anymore.</p><p><a href="/">echoclip.link</a></p>`);
+  const reasons = Object.entries(REPORT_REASONS).map(([k, v], i) => `<label class="r"><input type="radio" name="reason" value="${k}"${i ? "" : " required"}> ${esc(v)}</label>`).join("");
+  return reportHtml("Report", `<h1>Report ${t.what}</h1><div class="sub">${esc(t.name)}</div>
+<form method="post" action="/report"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="target" value="${esc(target)}">
+<div class="f">What's wrong?</div>${reasons}
+<div class="f">More details (optional)</div><textarea name="details" maxlength="1000" placeholder="e.g. this is my clip, posted without asking"></textarea>
+<div class="f">Your email (optional - only if you want an answer)</div><input type="email" name="contact" maxlength="200" autocomplete="email">
+<button type="submit">Send report</button></form>
+<p class="sub" style="margin-top:14px">Reports go to Echo's moderators. <a href="${t.back}">Back</a></p>`);
+}
+async function reportSend(req, env) {
+  let f;
+  try { f = await req.formData(); } catch { return reportHtml("Report", `<h1>Something went wrong</h1><p class="sub">Please try again.</p>`); }
+  const kind = f.get("kind") === "s" ? "s" : "u";
+  const target = kind === "s" ? shareIdOf(f.get("target")) : handleOf(f.get("target"));
+  const reason = REPORT_REASONS[f.get("reason")] ? String(f.get("reason")) : "";
+  const t = await reportTarget(env, kind, target);
+  if (!t || !reason) return reportHtml("Report", `<h1>Couldn't send that</h1><p class="sub">Pick what's wrong and try again.</p><p class="sub">Go back and try again.</p>`);
+  const thanks = reportHtml("Thanks", `<h1>Thanks - report sent</h1><p class="sub">Echo's moderators will look at ${t.what}.</p><p><a href="${t.back}">Back</a></p>`);
+  // one report per person (network) per thing per day; limited per network and in total so nobody can flood the list
+  const h = await sha256(`${new Date().toISOString().slice(0, 10)}:${ipOf(req)}:${kind}:${target}`);
+  if (await env.DB.prepare("SELECT 1 AS x FROM reports WHERE h = ?").bind(h).first()) return thanks;
+  if (!(await allow(env, `rep:${ipOf(req)}`, 10, 3600)) || !(await allow(env, "rep:day", 300, 86400)))
+    return reportHtml("Report", `<h1>Too many reports</h1><p class="sub">Try again later, or email support@echoclip.link.</p>`);
+  await env.DB.prepare("INSERT INTO reports (kind, target, reason, details, contact, created, h) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(kind, target, reason, String(f.get("details") || "").replace(/\r/g, "").trim().slice(0, 1000), cleanEmail(f.get("contact")), now(), h).run();
+  return thanks;
+}
+
+// --- moderator API (/mod/*, session token of a moderator's account) ---
+async function modReports(env, withContact) {
+  const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
+  const open = await all(`SELECT kind, target, COUNT(*) AS n, MIN(created) AS first, MAX(created) AS last FROM reports WHERE status = 'open'
+      GROUP BY kind, target ORDER BY n DESC, last DESC LIMIT 100`);
+  for (const o of open) {
+    o.items = (await all("SELECT reason, details, created" + (withContact ? ", contact" : "") + " FROM reports WHERE status = 'open' AND kind = ? AND target = ? ORDER BY created DESC LIMIT 10", o.kind, o.target))
+      .map((x) => ({ ...x, reason: REPORT_REASONS[x.reason] || x.reason }));
+    if (o.kind === "s") {
+      const s = await env.DB.prepare("SELECT title, views, created FROM shares WHERE id = ?").bind(o.target).first();
+      o.exists = !!s; if (s) { o.title = s.title || ""; o.views = s.views || 0; }
+    } else {
+      const p = await env.DB.prepare("SELECT name, bio FROM profiles WHERE handle = ?").bind(o.target).first();
+      o.exists = !!p; if (p) { o.title = p.name || ""; o.bio = p.bio || ""; }
+    }
+  }
+  const log = await all("SELECT at, who, action, target, detail FROM mod_log ORDER BY at DESC LIMIT 40");
+  return { open, log };
+}
+async function modApi(req, env, route) {
+  const mod = await modFrom(req, env);
+  if (!mod) return fail(req.headers.has("authorization") ? "This account isn't a moderator (anymore)" : "Sign in first", 403);
+  if (!(await allow(env, `modact:${mod.user.id}`, 300, 3600))) return fail("Slow down a little", 429);
+  const who = mod.label;
+  if (route === "GET /mod/me") return json({ name: who, ...(await modReports(env, false)) });
+  const b = await body(req);
+  if (route === "POST /mod/dismiss") {
+    const kind = b.kind === "s" ? "s" : "u", target = kind === "s" ? shareIdOf(b.target) : handleOf(b.target);
+    await closeReports(env, kind, target, who, "dismissed");
+    await modLog(env, who, "dismissed reports", (kind === "s" ? "/s/" : "@") + target, b.note || "");
+    return json({ ok: true });
+  }
+  if (route === "POST /mod/takedown") {
+    const r = await shareTakedown(env, shareIdOf(b.id), false);
+    if (r.error) return fail(r.error, r.status);
+    await closeReports(env, "s", r.id, who);
+    await modLog(env, who, "removed share link", "/s/" + r.id, b.note || "");
+    return json({ ok: true, id: r.id });
+  }
+  if (route === "POST /mod/profile-takedown") {
+    const r = await profileRemove(env, handleOf(b.handle), !!b.block);
+    if (r.error) return fail(r.error, r.status);
+    await closeReports(env, "u", r.handle, who);
+    await modLog(env, who, "removed profile" + (r.blocked ? " (+ blocked @name)" : ""), "@" + r.handle, b.note || "");
+    return json({ ok: true, handle: r.handle, blocked: r.blocked });
+  }
+  if (route === "POST /mod/profile-handle") {
+    if (String(b.who || "").includes("@") && String(b.who).indexOf("@") > 0) return fail("Use their @name or /u/ link");
+    const to = String(b.to || "").trim().toLowerCase().replace(/^@/, "");
+    if (to && RESERVED.has(to)) return fail("That @name is reserved");
+    const r = await handleChange(env, String(b.who || ""), to, !!b.block_old);
+    if (r.error) return fail(r.error, r.status);
+    if (r.from) await closeReports(env, "u", r.from, who);
+    await modLog(env, who, "changed @name" + (r.blocked ? " (+ blocked old)" : ""), "@" + (r.from || "?") + " -> @" + r.to, b.note || "");
+    return json({ ok: true, from: r.from, to: r.to, blocked: r.blocked });
+  }
+  return fail("Unknown", 404);
+}
+
+// --- William: moderators list + reports in /admin ---
+async function adminMods(req, env) {
+  const denied = await adminDenied(req, env); if (denied) return denied;
+  if (req.method === "POST") {
+    const b = await body(req);
+    const email = cleanEmail(b.email);
+    if (!email) return fail("Enter the email of their Echo Cloud account");
+    if (b.remove) {
+      await env.DB.prepare("DELETE FROM mods WHERE email = ? OR user_id = (SELECT id FROM users WHERE email = ?)").bind(email, email).run();
+      await modLog(env, "admin", "removed moderator", email);
+    } else {
+      const u = await accountFor(env, email);
+      if (!u) return fail("No Echo Cloud account with that email - they need to sign in to Echo Cloud once first", 404);
+      await env.DB.prepare("INSERT OR REPLACE INTO mods (user_id, email, added) VALUES (?, ?, ?)").bind(u.id, u.email, now()).run();
+      await modLog(env, "admin", "added moderator", u.email);
+    }
+  }
+  const mods = ((await env.DB.prepare("SELECT m.email, m.added, (SELECT MAX(last_seen) FROM sessions s WHERE s.user_id = m.user_id) AS seen FROM mods m ORDER BY m.added").all()).results) || [];
+  return json({ mods, ...(await modReports(env, true)) });
+}

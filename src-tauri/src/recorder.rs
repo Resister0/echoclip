@@ -718,6 +718,7 @@ fn max_key_gap(clip: &str) -> f64 {
     gap
 }
 
+pub fn app_dir_pub() -> PathBuf { app_dir() }
 fn app_dir() -> PathBuf {
     std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
 }
@@ -911,9 +912,10 @@ pub fn ensure_ffmpeg() {
     let _ = fs::create_dir_all(&dir);
     let zip = dir.join("ffmpeg.zip");
     let mut res = Err(String::new());
-    for u in ["https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-              "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip"] {
-        res = download(u, &zip);
+    // one pinned build, checked by fingerprint (chat 28 - the floating "release-essentials" link can't be checked)
+    for _ in 0..2 {
+        res = download_checked("https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip", &zip,
+            "sha256:60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba");
         if res.is_ok() {
             break;
         }
@@ -933,6 +935,30 @@ pub fn ensure_ffmpeg() {
         }
         _ => log_line("ffmpeg: couldn't unpack the download"),
     }
+}
+
+/// Downloads like download(), then checks the file's fingerprint ("sha256:<hex>" or "sha1:<hex>") before it's used -
+/// a hacked or broken download is deleted instead of being run (chat 28 security pass). "" = no check possible.
+fn download_checked(url: &str, to: &Path, want: &str) -> Result<(), String> {
+    download(url, to)?;
+    if want.is_empty() { return Ok(()); }
+    let (alg, hex) = want.split_once(':').ok_or("bad checksum")?;
+    let algo = match alg { "sha256" => &ring::digest::SHA256, "sha1" => &ring::digest::SHA1_FOR_LEGACY_USE_ONLY, _ => return Err("bad checksum".into()) };
+    let mut ctx = ring::digest::Context::new(algo);
+    let mut f = fs::File::open(to).map_err(err)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf).map_err(err)?;
+        if n == 0 { break; }
+        ctx.update(&buf[..n]);
+    }
+    let got: String = ctx.finish().as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    if !got.eq_ignore_ascii_case(hex) {
+        let _ = fs::remove_file(to);
+        log_line(&format!("download: fingerprint mismatch for {url} (got {got}) - file deleted"));
+        return Err(format!("the download of {} didn't match its fingerprint", url.rsplit('/').next().unwrap_or(url)));
+    }
+    Ok(())
 }
 
 fn download(url: &str, to: &Path) -> Result<(), String> {
@@ -981,12 +1007,13 @@ fn whisper_cli() -> Result<PathBuf, String> {
     }
     #[cfg(not(windows))]
     {
-        // Linux: no ready-made download - use the system package (Fedora/Nobara: `sudo dnf install whisper-cpp`)
+        // Linux: a whisper-cli already on the system (or downloaded before), else Echo's own build from the
+        // echoclip release (Fedora's whisper-cpp package has only the library, no command-line tool - chat 28)
         if let Some(p) = linux_whisper() {
             return Ok(p);
         }
         if crate::linuxutil::in_flatpak() { return Err("Speech recognition is missing from this Echo build".into()); }
-        return Err("Speech recognition isn't installed - run: sudo dnf install whisper-cpp".into());
+        return linux_whisper_download();
     }
     #[allow(unreachable_code)]
     let dir = whisper_dir();
@@ -997,13 +1024,11 @@ fn whisper_cli() -> Result<PathBuf, String> {
     }
     fs::create_dir_all(&dir).map_err(err)?;
     let zip = dir.join("whisper.zip");
-    let urls = [
-        "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip",
-        "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip",
-    ];
+    // pinned + fingerprint-checked (chat 28; "latest" can't be checked)
+    let urls = ["https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip"];
     let mut last = String::new();
     for u in urls {
-        match download(u, &zip) {
+        match download_checked(u, &zip, "sha256:49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a") {
             Ok(()) => {
                 log_line(&format!("captions: downloaded {u}"));
                 last.clear();
@@ -1023,6 +1048,34 @@ fn whisper_cli() -> Result<PathBuf, String> {
     find(&dir).ok_or_else(|| "speech tool not found after download".into())
 }
 
+/// Download Echo's whisper-cli (built by the public repo's Linux job, release file whisper-cli-x86_64-linux) into
+/// the whisper folder, checked against GitHub's SHA-256 of the file.
+#[cfg(not(windows))]
+fn linux_whisper_download() -> Result<PathBuf, String> {
+    if !cfg!(target_arch = "x86_64") { return Err("Speech recognition isn't available for this processor yet".into()); }
+    let dir = whisper_dir();
+    fs::create_dir_all(&dir).map_err(err)?;
+    let exe = dir.join("whisper-cli");
+    log_line("captions: downloading whisper-cli (Echo's Linux build)");
+    let v = crate::net::get_json("https://api.github.com/repos/Resister0/echoclip/releases/latest")
+        .map_err(|e| { log_line(&format!("captions: {e}")); "Couldn't reach GitHub to get the speech tool".to_string() })?;
+    let asset = v["assets"].as_array().into_iter().flatten()
+        .find(|a| a["name"].as_str() == Some("whisper-cli-x86_64-linux"))
+        .ok_or("The speech tool isn't in the newest Echo release yet - try again after the next update")?;
+    let url = asset["browser_download_url"].as_str().unwrap_or_default().to_string();
+    let digest = asset["digest"].as_str().unwrap_or_default().to_string();
+    if digest.is_empty() { return Err("GitHub gave no fingerprint for the speech tool - try again later".into()); }
+    let tmp = dir.join("whisper-cli.download");
+    download_checked(&url, &tmp, &digest).map_err(|e| format!("Couldn't download the speech tool ({e})"))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).map_err(err)?;
+    }
+    fs::rename(&tmp, &exe).map_err(err)?;
+    log_line(&format!("captions: downloaded {url}"));
+    Ok(exe)
+}
+
 fn whisper_model(name: &str) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CLIPPER_WHISPER_MODEL") {
         return Ok(PathBuf::from(p));
@@ -1032,7 +1085,9 @@ fn whisper_model(name: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(&dir).map_err(err)?;
     let f = dir.join(format!("ggml-{name}.bin"));
     if !f.exists() {
-        download(&format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin"), &f)
+        // checksums (SHA-1) as published in whisper.cpp's models/README.md
+        let want = if name == "small" { "sha1:55356645c2b361a969dfd0ef2c5a50d530afd8d5" } else { "sha1:465707469ff3a37a2b9b8d8f89f2f99de7299dac" };
+        download_checked(&format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin"), &f, want)
             .map_err(|e| format!("Couldn't download the speech model ({e})"))?;
         log_line(&format!("captions: downloaded model {name}"));
     }
@@ -1205,18 +1260,26 @@ pub fn log_line(msg: &str) {
 
 /// 128 random bits as hex (OS-seeded; for secret localhost addresses).
 pub fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..2u64).map(|i| {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(i ^ now_unix());
-        format!("{:016x}", h.finish())
-    }).collect()
+    // the operating system's secure random generator (chat 28; was a hash of the clock with random keys)
+    use ring::rand::SecureRandom;
+    let mut b = [0u8; 16];
+    if ring::rand::SystemRandom::new().fill(&mut b).is_err() {
+        use std::hash::{BuildHasher, Hasher};
+        for (i, x) in b.iter_mut().enumerate() {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u64(i as u64 ^ now_unix());
+            *x = h.finish() as u8;
+        }
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 /// secret path of the cloud streaming server (rclone serve --baseurl)
 static SERVE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 fn serve_token() -> &'static str {
     SERVE_TOKEN.get_or_init(random_token)
 }
+/// for the local video server: it only passes requests on to the cloud streaming server (chat 28)
+pub fn serve_token_pub() -> &'static str { serve_token() }
 
 /// A Command for a program from the system. Inside the AppImage, Echo's own bundled
 /// libraries (LD_LIBRARY_PATH, GIO/GTK/GStreamer paths pointing into the mount) are
@@ -2157,7 +2220,8 @@ fn denoise_model() -> Option<PathBuf> {
         return Some(p);
     }
     let _ = fs::create_dir_all(app_dir());
-    match download("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/somnolent-hogwash-2018-09-01/sh.rnnn", &p) {
+    match download_checked("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/somnolent-hogwash-2018-09-01/sh.rnnn", &p,
+        "sha256:70bb6685eb0c2a1d18e2918dca3fbfbd39317010b1802eb1b6ea73a92f3fdec0") {
         Ok(()) => Some(p),
         Err(e) => { log_line(&format!("audio: noise model download failed ({e}), using afftdn")); None }
     }
@@ -3169,8 +3233,9 @@ impl Recorder {
         let img = dir.join(format!("{stem}.jpg"));
         let dur_file = dir.join(format!("{stem}.dur"));
         if !img.exists() {
+            let at = self.thumb_time(&stem).map_or("0.5".to_string(), |t| format!("{t:.3}"));
             let _ = ffmpeg()
-                .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i"])
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &at, "-i"])
                 .arg(&clip)
                 .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
                 .arg(&img)
@@ -3873,6 +3938,7 @@ impl Recorder {
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.jpg")));
             let _ = self.set_favorite(&stem, false);
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.dur")));
+            let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.thumbt")));
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip.jpg")));
             let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.strip3.jpg")));
             for t in 0..6 {
@@ -5071,7 +5137,14 @@ impl Recorder {
         if !ok {
             return Err("could not grab that frame".into());
         }
+        // remember the moment: share links / Discord previews and a re-made thumbnail (cloud-only clip, new cache)
+        // use the same frame instead of the default one (chat 28)
+        let _ = fs::write(self.thumbs_dir().join(format!("{stem}.thumbt")), format!("{:.3}", t.max(0.0)));
         Ok(img.to_string_lossy().into())
+    }
+    /// The moment picked with "Use as thumbnail" (seconds), if any.
+    fn thumb_time(&self, stem: &str) -> Option<f64> {
+        fs::read_to_string(self.thumbs_dir().join(format!("{stem}.thumbt"))).ok()?.trim().parse().ok()
     }
     /// Auto-cleanup: send clips older than `days` to the Recycle Bin (favourites are kept). Returns how many.
     pub fn cleanup_old(&self, days: u32) -> u32 {
@@ -5813,7 +5886,9 @@ fn ensure_rclone() -> Result<PathBuf, String> {
         fs::create_dir_all(&dir).map_err(err)?;
         let zip = dir.join("rclone.zip");
         log_line("cloud: downloading rclone (linux)");
-        download("https://downloads.rclone.org/rclone-current-linux-amd64.zip", &zip)?;
+        // pinned version + fingerprint (from rclone's SHA256SUMS), chat 28
+        download_checked("https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-amd64.zip", &zip,
+            "sha256:349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702")?;
         let ok = unzip_to(&zip, &dir).map_err(|e| log_line(&format!("cloud: unpack failed: {e}"))).is_ok();
         let _ = fs::remove_file(&zip);
         let p = find_file(&dir, &["rclone"]).filter(|p| p.is_file());
@@ -5833,7 +5908,8 @@ fn ensure_rclone() -> Result<PathBuf, String> {
     fs::create_dir_all(&dir).map_err(err)?;
     let zip = dir.join("rclone.zip");
     log_line("share: downloading rclone");
-    download("https://downloads.rclone.org/rclone-current-windows-amd64.zip", &zip)?;
+    download_checked("https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-windows-amd64.zip", &zip,
+        "sha256:8a9db2bad1dc79a65b3348fd857069598e2aab7cf4d118b77b1df23055aff818")?;
     let ok = unzip_to(&zip, &dir).map_err(|e| log_line(&format!("unpack failed: {e}"))).is_ok();
     let _ = fs::remove_file(&zip);
     if !ok {
@@ -5951,6 +6027,45 @@ struct CloudState {
     files: Vec<CloudFile>,
     /// clips you chose to keep only in the cloud / deleted from this PC only: never auto-download them
     keep_remote: std::collections::BTreeSet<String>,
+    /// clips whose cloud copy you deleted while keeping them on this PC: never auto-upload them again
+    /// (uploading one by hand takes it off this list) - chat 29, "Manage Echo Cloud space"
+    no_upload: std::collections::BTreeSet<String>,
+}
+
+/// One file in Echo Cloud for Settings → Cloud → "Manage Echo Cloud space" (chat 29).
+#[derive(Serialize, Clone, Default)]
+pub struct EcFile {
+    /// where it is under Echo/ in Echo Cloud ("2026/11 - November/06 - Friday/Valorant/x.mp4")
+    pub path: String,
+    /// path as on the PC ("Valorant/x.mp4")
+    pub rel: String,
+    pub name: String,
+    pub folder: String,
+    pub size: u64,
+    pub modified: u64,
+    /// the same clip (same size) is on this PC
+    pub local: bool,
+    /// a share copy (Echo/.shared/…) that only exists for a link - deleting it ends that link
+    pub copy: bool,
+}
+
+/// Free bytes on the drive that holds `dir` (None = couldn't tell).
+pub fn free_space(dir: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let w: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut avail: u64 = 0;
+        let ok = unsafe {
+            windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(windows::core::PCWSTR(w.as_ptr()), Some(&mut avail as *mut u64), None, None)
+        };
+        return ok.is_ok().then_some(avail);
+    }
+    #[cfg(not(windows))]
+    {
+        let o = sys_cmd("df").args(["-B1", "--output=avail", "--"]).arg(dir).output().ok()?;
+        String::from_utf8_lossy(&o.stdout).lines().last()?.trim().parse().ok()
+    }
 }
 
 #[derive(Serialize)]
@@ -6095,12 +6210,15 @@ fn filen_api_key(email: &str, pass: &str, code: &str) -> Result<String, String> 
         let v = crate::net::get_json("https://api.github.com/repos/FilenCloudDienste/filen-cli-releases/releases/latest")
             .map_err(|e| { log_line(&format!("filen: {e}")); "Couldn't reach GitHub to get the Filen tool".to_string() })?;
         let want_os = if cfg!(windows) { "windows" } else { "linux-gnu" };
-        let url = v["assets"].as_array().into_iter().flatten()
-            .filter_map(|a| a["browser_download_url"].as_str())
-            .find(|u| { let l = u.to_lowercase(); l.contains("x86_64") && l.contains(want_os) })
-            .ok_or("No Filen tool for this system in the latest release")?.to_string();
+        let asset = v["assets"].as_array().into_iter().flatten()
+            .find(|a| a["browser_download_url"].as_str().map_or(false, |u| { let l = u.to_lowercase(); l.contains("x86_64") && l.contains(want_os) }))
+            .ok_or("No Filen tool for this system in the latest release")?;
+        let url = asset["browser_download_url"].as_str().unwrap_or_default().to_string();
+        // GitHub's own SHA-256 of the file ("digest": "sha256:…") - checked before it's run (chat 28)
+        let digest = asset["digest"].as_str().unwrap_or_default().to_string();
+        if digest.is_empty() { log_line("filen: no fingerprint from GitHub for this file - downloading without a check"); }
         let tmp = dir.join(url.rsplit('/').next().unwrap_or("filen.bin"));
-        download(&url, &tmp)?;
+        download_checked(&url, &tmp, &digest)?;
         let low = tmp.to_string_lossy().to_lowercase();
         if low.ends_with(".zip") || low.ends_with(".tar.gz") || low.ends_with(".tgz") {
             if low.ends_with(".zip") {
@@ -6348,6 +6466,13 @@ struct EcState {
 static EC: Mutex<Option<EcState>> = Mutex::new(None);
 /// new keys were written: the streaming server must restart to use them
 static EC_NEW_KEYS: AtomicBool = AtomicBool::new(false);
+/// Echo's Google Drive login (see cloud_connect "gdrive")
+const GDRIVE_CLIENT_ID: &str = "38239043070-6q95iidaueoc8bij14u1fpj8g1qdjs9p.apps.googleusercontent.com";
+/// Its secret comes in at build time (build.rs: env ECHO_GDRIVE_SECRET or src-tauri/gdrive.secret.txt), so it isn't in
+/// the public code - GitHub's push protection blocks Google client secrets (chat 29). Empty = rclone's own Google login.
+const GDRIVE_CLIENT_SECRET: &str = env!("ECHO_GDRIVE_SECRET");
+/// a clip was uploaded since "rclone serve" listed the folders: restart it before the next stream (chat 28)
+static SERVE_STALE: AtomicBool = AtomicBool::new(false);
 /// port of the last streaming server (reused, the player keeps the address)
 static SERVE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 /// last time the window asked for the streaming server (unix s)
@@ -6597,8 +6722,18 @@ impl Recorder {
         let mut ec_exp = 0u64;
         let made = match provider {
             "pcloud" => rclone_out(&["config", "create", &name, "pcloud"]),
-            // drive.file: Echo only sees the files it made itself, not the rest of the Drive
-            "gdrive" => rclone_out(&["config", "create", &name, "drive", "scope", "drive.file"]),
+            // drive.file: Echo only sees the files it made itself, not the rest of the Drive.
+            // Echo's own Google login (project "Echo" in Google Cloud, owner w@volkan.dk, desktop client "Echo app
+            // (rclone)", chat 28) instead of rclone's shared one, which Google is retiring. A desktop app's
+            // "secret" isn't secret (Google says so - it ships inside every copy). Accounts connected before keep
+            // rclone's login: drive.file only shows files made with the SAME login, so switching them would hide
+            // their clips.
+            "gdrive" if GDRIVE_CLIENT_SECRET.is_empty() => {
+                log_line("cloud: this build has no Google login of its own - using rclone's");
+                rclone_out(&["config", "create", &name, "drive", "scope", "drive.file"])
+            }
+            "gdrive" => rclone_out(&["config", "create", &name, "drive", "scope", "drive.file",
+                "client_id", GDRIVE_CLIENT_ID, "client_secret", GDRIVE_CLIENT_SECRET]),
             "mega" => {
                 need(user, "MEGA email")?; need(pass, "MEGA password")?;
                 rclone_out(&["config", "create", &name, "mega", "user", user.trim(), "pass", pass, "--obscure"])
@@ -7022,6 +7157,10 @@ impl Recorder {
             }
         }
         let t0 = Instant::now();
+        // the clip's own date: the cloud entry keeps it (now_unix() made a "freed up" clip jump to the top of the
+        // library as if it were brand new until the next cloud listing - chat 28)
+        let made = fs::metadata(path).ok().and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or_else(now_unix, |d| d.as_secs());
         // AV1 clips go up as H.264, so share links play on every phone and browser
         let up = self.shareable(path)?;
         let path = up.as_str();
@@ -7100,10 +7239,14 @@ impl Recorder {
         }
         r?;
         ec_add_used(fsize);
+        // the streaming server's folder listing is from before this upload: it couldn't find the new file
+        // (player stuck at 0 s for ~15 s, then "Couldn't stream this clip" - chat 28) -> fresh start on next use
+        if self.cloud_serve.lock().unwrap().is_some() { SERVE_STALE.store(true, Ordering::Relaxed); }
         log_line(&format!("cloud: uploaded {rel} to {dest} in {:.0}s ({})", t0.elapsed().as_secs_f32(),
             if via_server { "Echo Cloud, size-checked upload link" } else if to_ec { "Echo Cloud, keys" } else { "rclone" }));
         let mut st = self.cloud_state();
         st.keep_remote.remove(&rel);
+        st.no_upload.remove(&rel);
         let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         st.files.retain(|f| f.rel != rel);
         let p = Path::new(&rel);
@@ -7112,7 +7255,7 @@ impl Recorder {
             path: cp,
             name: p.file_stem().unwrap_or_default().to_string_lossy().into(),
             folder: p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default(),
-            size, modified: now_unix(), local: true,
+            size, modified: made, local: true,
         });
         self.save_cloud_state(&st);
         Ok(())
@@ -7274,9 +7417,99 @@ impl Recorder {
         let mut st = self.cloud_state();
         st.files.retain(|f| f.rel != rel);
         st.keep_remote.remove(rel);
+        // still on this PC: the background sync must not upload it straight back
+        if self.clips_dir().join(rel).exists() { st.no_upload.insert(rel.to_string()); }
         self.save_cloud_state(&st);
         log_line(&format!("cloud: deleted {rel}"));
         Ok(())
+    }
+
+    /// The Echo Cloud account (signed in) or an error for the UI.
+    fn ec_account(&self) -> Result<crate::settings::CloudAccount, String> {
+        let cfg = self.settings();
+        match cfg.cloud_accounts.iter().find(|a| a.provider == "echocloud") {
+            Some(a) if !cfg.ec_token.is_empty() => Ok(a.clone()),
+            _ => Err("Sign in to Echo Cloud first".into()),
+        }
+    }
+
+    /// Everything in Echo Cloud (clips + share copies), newest first, with the account's use and plan.
+    pub fn echocloud_files(&self) -> Result<serde_json::Value, String> {
+        let acc = self.ec_account()?;
+        ec_ensure();
+        let j = match rclone_out(&["lsjson", "-R", "--files-only", &acc_path(&acc, "Echo")]) {
+            Ok(j) => j,
+            Err(e) if e.contains("not found") => "[]".into(),
+            Err(e) => return Err(format!("Couldn't list Echo Cloud: {e}")),
+        };
+        let v: Vec<serde_json::Value> = serde_json::from_str(&j).map_err(err)?;
+        let root = self.clips_dir();
+        let mut files: Vec<EcFile> = v.iter().filter_map(|f| {
+            let path = f["Path"].as_str()?.to_string();
+            let copy = path.split('/').any(|p| p.starts_with('.'));
+            let rel = strip_date(&path);
+            let p = Path::new(&rel);
+            let size = f["Size"].as_u64().unwrap_or(0);
+            let modified = f["ModTime"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.timestamp().max(0) as u64).unwrap_or(0);
+            Some(EcFile {
+                name: p.file_stem()?.to_string_lossy().to_string(),
+                folder: if copy { String::new() } else { p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default() },
+                local: !copy && fs::metadata(root.join(&rel)).map_or(false, |m| m.len() == size),
+                size, modified, copy, rel, path,
+            })
+        }).collect();
+        files.sort_by(|a, b| b.modified.cmp(&a.modified));
+        // the library's listing should know every Echo Cloud clip (downloads look their path up there)
+        let mut st = self.cloud_state();
+        let mut added = false;
+        for f in files.iter().filter(|f| !f.copy && f.rel.to_lowercase().ends_with(".mp4")) {
+            if !st.files.iter().any(|x| x.rel == f.rel) {
+                st.files.push(CloudFile { rel: f.rel.clone(), path: f.path.clone(), name: f.name.clone(), folder: f.folder.clone(), size: f.size, modified: f.modified, local: f.local });
+                added = true;
+            }
+        }
+        if added { self.save_cloud_state(&st); }
+        let me = self.echocloud_me().unwrap_or(serde_json::Value::Null);
+        let used: u64 = files.iter().map(|f| f.size).sum();
+        log_line(&format!("echo cloud: space manager listed {} files ({:.2} GB)", files.len(), used as f64 / 1e9));
+        Ok(serde_json::json!({
+            "files": files,
+            "used": me["used"].as_u64().unwrap_or(used),
+            "quota": me["quota"].as_u64().unwrap_or(0),
+            "free_pc": free_space(&root).unwrap_or(0),
+        }))
+    }
+
+    /// Delete these files (paths under Echo/ from echocloud_files) from Echo Cloud. Clips that are still on this PC
+    /// stay there and aren't uploaded again by the background sync. Returns how many were deleted.
+    pub fn echocloud_delete_files(&self, paths: &[String]) -> Result<u64, String> {
+        self.ec_account()?;
+        let cfg = self.settings();
+        let paths: Vec<String> = paths.iter().map(|p| p.trim_start_matches('/').to_string())
+            .filter(|p| !p.is_empty() && !p.split('/').any(|s| s.is_empty() || s == "..")).collect();
+        let mut done: u64 = 0;
+        for chunk in paths.chunks(500) {
+            let keys: Vec<String> = chunk.iter().map(|p| format!("Echo/{p}")).collect();
+            ec_call(&ec_api(&cfg), "POST", "/delete", &cfg.ec_token, Some(serde_json::json!({ "paths": keys })))
+                .map_err(|e| if done > 0 { format!("{e} (after {done} were deleted)") } else { e })?;
+            done += chunk.len() as u64;
+            let root = self.clips_dir();
+            let mut st = self.cloud_state();
+            for p in chunk {
+                let rel = strip_date(p);
+                if p.split('/').any(|s| s.starts_with('.')) { continue; }
+                // the share link of that clip ended with it (unless it plays a share copy)
+                if !self.links().get(&rel).map_or(false, |e| e.key.contains("/.shared/")) { self.forget_link(&rel); }
+                let only_ec = cfg.cloud_accounts.len() == 1;
+                if only_ec { st.files.retain(|f| f.rel != rel); }
+                st.keep_remote.remove(&rel);
+                if root.join(&rel).exists() { st.no_upload.insert(rel); }
+            }
+            self.save_cloud_state(&st);
+        }
+        if let Ok(mut g) = EC.lock() { if let Some(s) = g.as_mut() { s.exp = 0; } } // fresh keys/usage next time (may not be full anymore)
+        log_line(&format!("echo cloud: space manager deleted {done} files"));
+        Ok(done)
     }
 
     /// Settings → About → "Send feedback": the message (+ the end of Echo's log if the user ticked it) goes to
@@ -7428,6 +7661,10 @@ impl Recorder {
     pub fn cloud_stream_base(&self) -> Result<String, String> {
         SERVE_USED.store(now_unix(), Ordering::Relaxed);
         ec_ensure();
+        if SERVE_STALE.swap(false, Ordering::Relaxed) {
+            log_line("cloud: restarting the streaming server (new uploads since it listed the folders)");
+            self.stop_serve();
+        }
         if EC_NEW_KEYS.swap(false, Ordering::Relaxed) {
             self.stop_serve(); // restart with the new Echo Cloud keys (same port: the player keeps its address)
         }
@@ -7464,7 +7701,8 @@ impl Recorder {
         }
         let url = format!("{}/{}", self.cloud_stream_base()?, self.cpath(rel).split('/').map(url_part).collect::<Vec<_>>().join("/"));
         fs::create_dir_all(self.thumbs_dir()).map_err(err)?;
-        let _ = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i", &url, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
+        let at = self.thumb_time(&stem).map_or("0.5".to_string(), |t| format!("{t:.3}"));
+        let _ = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &at, "-i", &url, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"])
             .arg(&img).stdout(Stdio::null()).stderr(Stdio::null()).status();
         let o = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", &url]).output().map_err(err)?;
         let d: f64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0.0);
@@ -7640,9 +7878,11 @@ impl Recorder {
                 }
             }
             let tmp = std::env::temp_dir().join(format!("echo_share_{}.jpg", std::process::id()));
+            // the clip's own thumbnail moment ("Use as thumbnail" in the player), else 1 s in
+            let share_at = self.thumb_time(&stem).map_or("1".to_string(), |t| format!("{t:.3}"));
             let still = |graph: Option<String>| -> bool {
                 let mut c = ffmpeg();
-                c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i"]).arg(&local).args(["-frames:v", "1"]);
+                c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &share_at, "-i"]).arg(&local).args(["-frames:v", "1"]);
                 match graph {
                     Some(g) => { c.args(["-filter_complex", &g]); }
                     None => { c.args(["-vf", "scale='min(1280,iw)':-2"]); }
@@ -7855,6 +8095,7 @@ impl Recorder {
         // 1) uploads
         if cfg.cloud_upload != "off" {
             let favs = self.favorites();
+            let no_up = self.cloud_state().no_upload;
             // "game": like "all", but only once the game is closed (no upload traffic while playing)
             let game_running = self.last_game.lock().unwrap().as_ref().map_or(false, |(_, t)| t.elapsed().as_secs() < 15);
             let every = cfg.cloud_upload == "all" || (cfg.cloud_upload == "game" && !game_running);
@@ -7862,6 +8103,7 @@ impl Recorder {
                 let rel = if c.folder.is_empty() { format!("{}.mp4", c.name) } else { format!("{}/{}.mp4", c.folder, c.name) };
                 !in_cloud.contains(&rel) && (favs.contains(&c.name) || (every && c.modified >= cfg.cloud_since))
                     && !UP_SKIPPED.lock().unwrap().contains(&rel) // cancelled by hand: not again on its own
+                    && !no_up.contains(&rel) // its cloud copy was deleted on purpose (cloud space manager)
                     && now_unix().saturating_sub(c.modified) > 20 // not still being written
             }).collect();
             for (i, c) in todo.iter().enumerate() {
@@ -7994,13 +8236,9 @@ pub fn presentmon_exe() -> Result<PathBuf, String> {
         return Ok(exe);
     }
     fs::create_dir_all(&dir).map_err(err)?;
-    let v = crate::net::get_json("https://api.github.com/repos/GameTechDev/PresentMon/releases/latest")
-        .map_err(|e| format!("couldn't reach GitHub: {e}"))?;
-    let url = v["assets"].as_array().and_then(|a| a.iter().find_map(|x| {
-        let n = x["name"].as_str()?.to_lowercase();
-        (n.starts_with("presentmon") && n.ends_with("-x64.exe") && !n.contains("service")).then(|| x["browser_download_url"].as_str().map(String::from)).flatten()
-    })).ok_or("PresentMon download not found")?;
-    download(&url, &exe)?;
+    // pinned version + fingerprint (chat 28)
+    let url = "https://github.com/GameTechDev/PresentMon/releases/download/v2.4.1/PresentMon-2.4.1-x64.exe";
+    download_checked(url, &exe, "sha256:d74183e7ae630f72cd3690be0373ecbfdc6cbb86578148aab8fa2a7166068f34")?;
     log_line(&format!("fps: downloaded {url}"));
     Ok(exe)
 }

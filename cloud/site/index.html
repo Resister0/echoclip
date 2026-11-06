@@ -59,7 +59,7 @@
       <button type="button" role="tab" aria-selected="true" data-view="demo">Try it here</button>
       <button type="button" role="tab" aria-selected="false" data-view="shot">Real screenshot</button>
     </div>
-    <img class="realshot" src="/screenshots/library.png" width="1920" height="1034" loading="lazy" hidden
+    <img class="realshot" src="/screenshots/library.png" width="1920" height="1021" loading="lazy" hidden
       alt="The real Echo app on Linux: the clip library with game folders, filters and the recording status">
     <div class="app" aria-label="Preview of the Echo app - try the buttons">
       <aside class="arail">
@@ -260,8 +260,7 @@
     <details><summary>Where do I get help or suggest something?</summary><p>In the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a>: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → <b>Send log</b> gives you a link to paste there, so problems are found quickly.</p></details>
     <details><summary>Is Echo open source?</summary><p>Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on <a href="https://github.com/Resister0/echoclip">GitHub</a>, so you can check what it does, build it yourself or suggest changes.</p></details>
     <details><summary>Why is Echo so small?</summary><p>Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo is built in Rust with Tauri and borrows the web view your system already has, so the app itself is only about 12 MB.</p></details>
-    <details><summary>Which Linux distributions work?</summary><p>Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the <b>Flatpak</b> brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover or GNOME Software. The <b>AppImage</b> is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the <a href="/download">download page</a>.</p></details>
-    <details><summary>The Flatpak button opens Bazaar and says it can't find Echo</summary><p>Bazaar (the app store on Bazzite and Bluefin) can't add new app sources from an install link yet. Run this once in a terminal instead: <code>flatpak install --user https://flatpak.echoclip.link/echo.flatpakref</code> - after that, Echo's updates show up as usual.</p></details>
+    <details><summary>Which Linux distributions work?</summary><p>Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the <b>Flatpak</b> brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The <b>AppImage</b> is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the <a href="/download">download page</a>.</p></details>
   </div>
 </section>
 </main>
@@ -273,15 +272,10 @@
     <a href="https://discord.gg/JPVewEfUQs">Discord</a>
     <a href="/terms">Terms</a>
     <a href="/privacy">Privacy</a>
-    <a href="/code-signing">Code signing</a>
+    <a href="/code-signing">Code signing policy</a>
     <a href="mailto:support@echoclip.link">support@echoclip.link</a>
   </nav>
 </div></footer>
 <script src="/site.js"></script>
-<script>
-(function(){var sw=document.querySelector('.viewsw');if(!sw)return;var app=document.querySelector('.hero .app'),img=document.querySelector('.realshot');
-sw.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var shot=b.dataset.view==='shot';
-img.hidden=!shot;app.hidden=shot;sw.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-selected',x===b)});});})();
-</script>
 </body>
 </html>

@@ -173,6 +173,31 @@
   #tidy .tn small { color:var(--muted); font-size:12px; } #tidy .keep { color:#3ddc97; font-size:11px; font-weight:700; margin-left:6px; }
   #tidy .tf { padding:12px 22px; border-top:1px solid var(--line); display:flex; align-items:center; gap:12px; }
   #tidy .tf .spacer { flex:1; } #tidy .empty2 { color:var(--muted); padding:26px 4px; text-align:center; }
+  #ecm { position:fixed; inset:0; z-index:120; background:#000a; display:none; place-items:center; padding:28px; }
+  #ecm.on { display:grid; }
+  #ecm .tp { width:min(860px,100%); max-height:100%; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 30px 80px #000c; overflow:hidden; }
+  #ecm .th { padding:18px 22px 12px; border-bottom:1px solid var(--line); display:flex; align-items:flex-start; gap:12px; }
+  #ecm .th h3 { font-size:19px; } #ecm .th p { color:var(--muted); font-size:13px; margin-top:2px; }
+  #ecm .tdb { overflow:auto; padding:6px 22px 16px; flex:1; display:block; }
+  #ecm .ts { margin-top:14px; } #ecm .ts h4 { font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--dim); margin-bottom:6px; display:flex; gap:8px; }
+  #ecm .ts h4 small { text-transform:none; letter-spacing:0; font-weight:500; color:var(--muted); }
+  #ecm .tg { border:1px solid var(--line); border-radius:12px; padding:4px; margin-bottom:8px; }
+  #ecm .tr { display:flex; align-items:center; gap:12px; padding:6px 8px; border-radius:9px; }
+  #ecm .tr:hover { background:var(--panel2); }
+  #ecm .tr input { width:17px; height:17px; accent-color:var(--accent); flex:none; }
+  #ecm .tt { width:96px; height:54px; border-radius:7px; background:#000 center/cover; flex:none; cursor:pointer; }
+  #ecm .tn { flex:1; min-width:0; } #ecm .tn b { display:block; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #ecm .tn small { color:var(--muted); font-size:12px; } #ecm .keep { color:#3ddc97; font-size:11px; font-weight:700; margin-left:6px; }
+  #ecm .tf { padding:12px 22px; border-top:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  #ecm .tf .spacer { flex:1; } #ecm .empty2 { color:var(--muted); padding:26px 4px; text-align:center; }
+  /* Echo Cloud space manager (chat 29) */
+  #ecm .ebar { height:6px; border-radius:3px; background:var(--panel2); margin-top:8px; overflow:hidden; } #ecm .ebar i { display:block; height:100%; background:var(--accent); border-radius:3px; }
+  #ecm .ebar i.full { background:var(--bad); }
+  #ecm .etools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 22px; border-bottom:1px solid var(--line); }
+  #ecm .etools .spacer { flex:1; } #ecm .etools select { height:30px; }
+  #ecm .tt.cp { display:grid; place-items:center; background:var(--panel2); color:var(--muted); font-size:11px; cursor:default; }
+  #ecm .st { font-size:11px; font-weight:700; margin-left:6px; } #ecm .st.pc { color:#3ddc97; } #ecm .st.only { color:#f5b84a; } #ecm .st.cp { color:var(--muted); }
+  #ecm .tf { flex-wrap:wrap; } #ecm .tf .chk { white-space:nowrap; }
   #fmenu .fnone { color:var(--dim); font-size:12.5px; padding:4px 2px; }
   .searchbox { position:relative; }
   .searchbox svg { position:absolute; left:11px; top:10px; width:16px; height:16px; color:var(--dim); pointer-events:none; }
@@ -728,7 +753,7 @@
   #tour .tbub { position:fixed; width:300px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow:0 18px 50px #000a; transition:top .25s, left .25s; }
   #tour .tbub b { font-size:14.5px; } #tour .tbub p { color:var(--muted); font-size:13px; margin:5px 0 12px; line-height:1.45; }
   #tour .tbtns { display:flex; gap:8px; align-items:center; } #tour .tn { flex:1; color:var(--dim); font-size:12px; }
-  #confirm { position:fixed; inset:0; background:#000000d0; backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; z-index:30; }
+  #confirm { position:fixed; inset:0; background:#000000d0; backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; z-index:400; /* above Tidy up / Echo Cloud space (z 120), which ask before deleting */ }
   #confirm.open { display:flex; }
   #setup { position:fixed; inset:0; background:#000000d0; backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center; z-index:29; }
   #setup.open { display:flex; }
@@ -756,7 +781,7 @@
   .delb { background:var(--bad); border-color:var(--bad); color:#fff; font-weight:600; }
   .delb:hover { background:#ff7590; border-color:#ff7590; }
   /* messages + progress boxes stack at the bottom (newest at the bottom) instead of covering each other */
-  #notes { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:20; display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none; transition:bottom .2s; max-width:min(560px, 92vw); }
+  #notes { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:140; display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none; transition:bottom .2s; max-width:min(560px, 92vw); }
   body:has(.pickbar.on) #notes { bottom:84px; }
   #notes .note { background:var(--panel2); border:1px solid var(--line); border-radius:11px; box-shadow:0 10px 30px #0008; pointer-events:auto; opacity:0; transform:translateY(14px); transition:opacity .2s, transform .2s; }
   #notes .note.on { opacity:1; transform:none; }
@@ -870,7 +895,7 @@
     <div class="chips" id="chips"></div>
     <div class="spacer"></div>
     <button class="btn" id="longbtn" title="Record until you press it again - saved as a clip"><span class="rdot"></span><span id="longtxt">Record</span></button>
-    <button class="btn primary" onclick="saveClip()"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Save clip</button>
+    <button class="btn primary" data-act="0"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Save clip</button>
   </header>
 
   <!-- LIBRARY -->
@@ -894,7 +919,7 @@
       <select id="sort"><option value="new">Newest</option><option value="old">Oldest</option><option value="big">Largest</option><option value="long">Longest</option><option value="name">Name</option></select>
       <button class="btn vbtn" id="viewbtn" title="Grid / list view"></button>
       <button class="btn" id="tidybtn" title="Find clips saved twice, very short clips and the biggest ones"><svg viewBox="0 0 24 24"><path d="M4 20h16M7 20l2-9h6l2 9M12 11V4"/></svg>Tidy up</button>
-      <button class="btn" onclick="invoke('open_in_folder',{path:status.clips_dir})"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open folder</button>
+      <button class="btn" data-act="1"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open folder</button>
     </div>
     <div id="grid"></div>
   </section>
@@ -915,7 +940,7 @@
         <h4>APP</h4>
         <a data-sec="profile">Profile</a>
         <a data-sec="app">App Settings</a>
-        <button class="dccard" onclick="invoke('open_echo_link',{what:'discord'}).catch(()=>{})" title="discord.gg/JPVewEfUQs">
+        <button class="dccard" data-act="2" title="discord.gg/JPVewEfUQs">
           <span class="dci"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M19 9h1a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v3l-4-3h-3"/></svg></span>
           <span class="dct"><b>Join the Discord</b><small>Help, ideas and new versions</small></span><span class="dca">→</span>
         </button>
@@ -925,10 +950,10 @@
           <h2>Capture Hotkeys</h2>
           <p>Each hotkey saves a different amount of the moments you just played. Click a hotkey to change it.</p>
           <p id="hkportal" style="display:none;color:#fbbf24">Your keys go through KDE's shortcut system: KDE asks once to confirm them. To change a key later, use System Settings → Keyboard → Shortcuts → Echo (picking keys here only sets the suggestion).</p>
-          <div class="box"><h3>Hotkeys<span class="spacer"></span><button class="btn" onclick="addHotkey()">+ Add hotkey</button></h3><div id="hklist"></div></div>
+          <div class="box"><h3>Hotkeys<span class="spacer"></span><button class="btn" data-act="3">+ Add hotkey</button></h3><div id="hklist"></div></div>
           <div class="box"><h3>Controller</h3>
             <div class="row"><div class="lbl"><b>Save with a controller</b><small>A button combo on an Xbox-style (XInput) controller saves a clip. PlayStation pads work through Steam Input or DS4Windows.</small></div>
-              <span class="val padnames" style="width:auto;margin-right:8px" id="padnames">Off</span><button class="btn" onclick="padSet(this)">Set…</button><button class="btn" onclick="padOff()">Off</button></div>
+              <span class="val padnames" style="width:auto;margin-right:8px" id="padnames">Off</span><button class="btn" data-act="4">Set…</button><button class="btn" data-act="5">Off</button></div>
             <div class="row"><div class="lbl"><b>Controller clip length</b></div>
               <select data-k="pad_seconds" data-num><option value="0">Same as the first hotkey</option><option value="30">30 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="180">3 min</option><option value="300">5 min</option><option value="600">10 min</option></select></div>
           </div>
@@ -1052,7 +1077,7 @@
             <div class="row"><div class="lbl"><b>Watermark on share links</b><small>The share page shows the Echo logo over the video, and it's on the preview picture in Discord (style under Clips &amp; Storage). The clip itself is uploaded as it is, so links are quick.</small></div><label class="switch"><input type="checkbox" data-k="share_watermark"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Copy the link after uploading</b><small>When you upload a clip yourself, its share link lands on your clipboard</small></div><label class="switch"><input type="checkbox" data-k="auto_copy_link"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Get clips from my other PCs</b><small>New clips uploaded by Echo on another PC (or Linux) download here by themselves</small></div><label class="switch"><input type="checkbox" data-k="cloud_download"><span></span></label></div>
-            <div class="row"><div class="lbl"><b>Sync now</b><small id="cloudbusy">Syncs every 5 minutes and right after you save a clip</small></div><button class="btn" onclick="invoke('cloud_sync_now');toast('Syncing…')">Sync now</button></div>
+            <div class="row"><div class="lbl"><b>Sync now</b><small id="cloudbusy">Syncs every 5 minutes and right after you save a clip</small></div><button class="btn" data-act="6">Sync now</button></div>
           </div>
           <div class="note">"Remove from PC" on a clip keeps it only in the cloud: it stays in your library with a ☁ badge, plays straight from the cloud, and downloads again when you edit it.</div>
         </div>
@@ -1064,18 +1089,18 @@
             <h3>Storage</h3>
             <div class="row"><div class="lbl" style="flex:none;width:150px"><b>Clips folder</b></div>
               <input class="path" data-k="clips_dir" data-lazy>
-              <button class="btn" onclick="invoke('open_in_folder',{path:cfg.clips_dir})">Open</button></div>
+              <button class="btn" data-act="7">Open</button></div>
             <div class="row"><div class="lbl"><b>Storage limit</b><small>When full, the oldest clips go to the Recycle Bin</small></div>
               <select data-k="max_storage_gb" data-num><option value="0">Unlimited</option><option>25</option><option>50</option><option>100</option><option>250</option><option>500</option><option>1000</option></select></div>
             <div class="row"><div class="lbl"><b>Auto-delete old clips</b><small>Clips older than this go to the Recycle Bin (checked at start and every few hours). Favourites are always kept.</small></div>
               <select data-k="cleanup_days" data-num><option value="0">Never</option><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option><option value="60">After 60 days</option><option value="90">After 90 days</option><option value="180">After 6 months</option></select>
-              <button class="btn" id="cleannow" onclick="cleanNow()">Clean up now</button></div>
+              <button class="btn" id="cleannow" data-act="8">Clean up now</button></div>
             <div class="row"><div class="lbl"><b>Shrink old clips</b><small>While the PC is idle and no game runs, clips older than this are re-encoded at a steady quality: calm clips shrink a lot, busy ones less, and clips that wouldn't get at least 15% smaller are left alone. Each clip once; favourites stay as they are.</small></div>
               <select data-k="shrink_days" data-num><option value="7">After 7 days</option><option value="14">After 14 days</option><option value="30">After 30 days</option><option value="60">After 60 days</option><option value="90">After 90 days</option></select><label class="switch"><input type="checkbox" data-k="shrink_old"><span></span></label></div>
             <div class="row" id="av1row" style="display:none"><div class="lbl"><b>Shrink with AV1</b><small>Your graphics card can make AV1 files: the same quality at about half the size. Copies, share links and cloud uploads still go out as H.264, so they play on every phone and PC.</small></div><label class="switch"><input type="checkbox" data-k="shrink_av1"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Name clips after the game</b><small>"Valorant 2026-10-31 …" instead of "Clip 2026-10-31 …", based on the window in front when you press the hotkey</small></div><label class="switch"><input type="checkbox" data-k="name_by_game"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Game folders</b><small>Save each game's clips in its own folder (…\Valorant\…). Clips outside a game stay in the main folder.</small></div><label class="switch"><input type="checkbox" data-k="game_folders"><span></span></label></div>
-            <div class="row"><div class="lbl"><b>Sort older clips into game folders</b><small>Moves clips with a game in their name ("FiveM 2026-…", "fivem_chase.mp4", "GTA V - Moments") from the main folder and "Exported Clips" into that game's folder. Imports do this by themselves.</small></div><button class="btn" id="sortfold" onclick="sortFolders()">Sort clips</button></div>
+            <div class="row"><div class="lbl"><b>Sort older clips into game folders</b><small>Moves clips with a game in their name ("FiveM 2026-…", "fivem_chase.mp4", "GTA V - Moments") from the main folder and "Exported Clips" into that game's folder. Imports do this by themselves.</small></div><button class="btn" id="sortfold" data-act="9">Sort clips</button></div>
             <div class="row"><div class="lbl"><b>Copy button copies</b><small>Clips bigger than the size are shrunk (cached copy, the original is kept). The small arrow next to Copy, or Ctrl+click, lets you pick each time.</small></div>
               <select data-k="copy_default"><option value="full">Full size</option><option value="free">Discord Free</option><option value="basic">Nitro Basic</option><option value="nitro">Nitro</option><option value="custom">Custom</option></select></div>
             <div class="row"><div class="lbl"><b>Watermark</b><small>An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs, and on share link pages. Your recorded clips and full-size copies stay clean.</small></div><select data-k="watermark_style"><option value="kimbo">Echo · By Kimbo</option><option value="link">Echo · echoclip.link</option><option value="echo">Echo</option><option value="off">Off</option></select></div>
@@ -1086,7 +1111,7 @@
           <div class="box">
             <h3>Bring in clips from other apps</h3>
             <div class="row"><div class="lbl"><b>Import old clips</b><small>Copies clips from Medal, SteelSeries Moments, Outplayed or any folder. Game folders and the original dates are kept, so they sort in by date. Your old app's files aren't touched, and running it again only adds new clips.</small></div>
-              <button class="btn" onclick="importPick()">Choose folder…</button></div>
+              <button class="btn" data-act="10">Choose folder…</button></div>
             <div id="impsrc"></div>
             <div class="row" id="improw" style="display:none"><div class="lbl"><b id="impmsg">Importing…</b><small>You can keep using Echo meanwhile</small></div><span class="val" style="width:auto" id="impprog"></span></div>
           </div>
@@ -1103,19 +1128,19 @@
           <div class="box">
             <h3>About</h3>
             <div class="row"><div class="lbl"><b id="appver">Echo</b><small id="updstate">Echo checks for updates by itself every few hours.</small></div>
-              <button class="btn" id="updnow" onclick="updManual()">Check for updates</button></div>
+              <button class="btn" id="updnow" data-act="11">Check for updates</button></div>
             <div class="row"><div class="lbl"><b>New to Echo?</b><small>A quick walk past the most useful buttons.</small></div>
-              <button class="btn" onclick="startTour()">Show me around</button></div>
+              <button class="btn" data-act="12">Show me around</button></div>
             <div class="row"><div class="lbl"><b>Something wrong, or an idea?</b><small>Goes straight to the person who makes Echo. You can attach Echo's log so problems are easier to find.</small></div>
-              <button class="btn" onclick="sendFeedback()">Send feedback</button></div>
+              <button class="btn" data-act="13">Send feedback</button></div>
             <div class="row"><div class="lbl"><b>Echo community</b><small>Help, clips, ideas and news about new versions - on Discord. Or read every change since the first version.</small></div>
-              <div style="display:flex;gap:6px"><button class="btn" onclick="invoke('open_echo_link',{what:'changelog'}).catch(()=>{})">Changelog</button><button class="btn primary" onclick="invoke('open_echo_link',{what:'discord'}).catch(()=>{})">Join the Discord</button></div></div>
+              <div style="display:flex;gap:6px"><button class="btn" data-act="14">Changelog</button><button class="btn primary" data-act="15">Join the Discord</button></div></div>
           </div>
           <div class="box">
             <h3>Appearance</h3>
             <div class="themegrid" id="themegrid"></div>
             <div class="row" id="custrow" hidden><div class="lbl"><b>Your own colours</b><small>Pick two colours, Echo works out the rest. Dark backgrounds read best.</small></div>
-              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><label title="Progress bars, trim handles, favourites, editor selection"><input type="color" id="th-hi"> Highlight</label><button class="btn" onclick="themeReset()">Reset</button></div></div>
+              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><label title="Progress bars, trim handles, favourites, editor selection"><input type="color" id="th-hi"> Highlight</label><button class="btn" data-act="16">Reset</button></div></div>
           </div>
           <div class="box">
             <h3>Behaviour</h3>
@@ -1130,15 +1155,15 @@
           <div class="box">
             <h3>Sounds</h3>
             <div class="row"><div class="lbl"><b>Clip saved</b><small>Short chime, also while you're in a fullscreen game</small></div>
-              <button class="btn" onclick="invoke('test_sound',{kind:'saved'})">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_save"><span></span></label></div>
+              <button class="btn" data-act="17">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_save"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Saving failed</b><small>Low buzz if a clip couldn't be saved</small></div>
-              <button class="btn" onclick="invoke('test_sound',{kind:'fail'})">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_fail"><span></span></label></div>
+              <button class="btn" data-act="18">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_fail"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Bookmark</b><small>Tick when you drop a bookmark or start / stop recording</small></div>
-              <button class="btn" onclick="invoke('test_sound',{kind:'mark'})">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_mark"><span></span></label></div>
+              <button class="btn" data-act="19">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_mark"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Screenshot</b><small>Camera-style double chime</small></div>
-              <button class="btn" onclick="invoke('test_sound',{kind:'shot'})">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_shot"><span></span></label></div>
+              <button class="btn" data-act="20">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_shot"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Recorder stopped</b><small>Falling tones if recording stops by itself (Echo then tries to restart it)</small></div>
-              <button class="btn" onclick="invoke('test_sound',{kind:'stopped'})">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_stop"><span></span></label></div>
+              <button class="btn" data-act="21">Preview</button><label class="switch"><input type="checkbox" data-k="sound_on_stop"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Your own sounds</b><small>Use a .wav file instead of a built-in sound (custom sounds ignore the volume slider)</small></div><div id="sndfiles" style="display:flex;flex-direction:column;gap:6px;align-items:flex-end"></div></div>
             <div class="row"><div class="lbl"><b>Volume</b></div>
               <input type="range" min="0" max="1" step="0.05" data-k="sound_volume" data-num><span class="val" id="v-sv"></span></div>
@@ -1149,13 +1174,13 @@
               <select data-k="caption_model"><option value="base">Fast (~150 MB)</option><option value="small">Accurate (~470 MB)</option></select></div>
           </div>
           <div class="box"><h3>Troubleshooting</h3>
-            <div class="row"><div class="lbl"><b>Self-test</b><small>Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.</small></div><button class="btn" id="stbtn" onclick="selfTest()">Run self-test</button></div>
+            <div class="row"><div class="lbl"><b>Self-test</b><small>Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.</small></div><button class="btn" id="stbtn" data-act="22">Run self-test</button></div>
             <div id="stres"></div>
-            <div class="row"><div class="lbl"><b>Send log</b><small>Uploads Echo's log and settings (passwords, keys and email addresses left out) and copies a private link - paste it into Discord for whoever helps you. Links stop working after 14 days. Without internet the log file is copied instead.</small></div><button class="btn" onclick="sendLog()">Send log</button></div>
-            <div class="row winonly"><div class="lbl"><b>FPS test</b><small>How much does recording cost in your game? Open the game first, click Start, allow the Windows prompt, then switch to the game within 15 s and play normally for about a minute. Recording is paused for the first half.</small></div><button class="btn" id="fpsbtn" onclick="fpsTest()">Start</button></div>
+            <div class="row"><div class="lbl"><b>Send log</b><small>Uploads Echo's log and settings (passwords, keys and email addresses left out) and copies a private link - paste it into Discord for whoever helps you. Links stop working after 14 days. Without internet the log file is copied instead.</small></div><button class="btn" data-act="23">Send log</button></div>
+            <div class="row winonly"><div class="lbl"><b>FPS test</b><small>How much does recording cost in your game? Open the game first, click Start, allow the Windows prompt, then switch to the game within 15 s and play normally for about a minute. Recording is paused for the first half.</small></div><button class="btn" id="fpsbtn" data-act="24">Start</button></div>
             <div class="note" id="fpsres" style="display:none;margin:4px 0 8px"></div>
-            <div class="row"><div class="lbl"><b>Welcome setup</b><small>The quick setup shown on the first start</small></div><button class="btn" onclick="openSetup()">Show again</button></div>
-            <div class="row"><div class="lbl"><b>Restart recorder</b><small id="lognote"></small></div><button class="btn" onclick="restart()">Restart</button></div>
+            <div class="row"><div class="lbl"><b>Welcome setup</b><small>The quick setup shown on the first start</small></div><button class="btn" data-act="25">Show again</button></div>
+            <div class="row"><div class="lbl"><b>Restart recorder</b><small id="lognote"></small></div><button class="btn" data-act="26">Restart</button></div>
             
           </div>
         </div>
@@ -1169,7 +1194,7 @@
     <span class="pg"><span style="display:inline-flex"><button class="btn" id="pcopy" title="Copy (Ctrl+click: choose size)"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button><button class="btn cpm" id="pcopym" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="btn" id="pshare" title="Upload and copy a link that plays in Discord"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9"/><path d="M12 12v9M9 15l3-3 3 3"/></svg>Share</button><button class="btn ic" id="pcloud" title="Cloud: upload, free up space, download, delete" aria-label="Cloud: upload, free up space, download, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button></span>
     <span class="pg"><button class="btn" id="ptrim" title="Trim (T)"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Trim</button><button class="btn" id="pedit" title="Open in editor (E)"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>Edit</button><button class="btn ic" id="pframe" title="Save this frame as a picture + copy it (P)" aria-label="Save this frame as a picture + copy it (P)"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg></button><button class="btn ic" id="pthumb" title="Use this frame as the clip's thumbnail" aria-label="Use this frame as the clip's thumbnail"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg></button><button class="btn ic" id="pmp3" title="Save the sound as MP3 or WAV + copy it" aria-label="Save the sound as MP3 or WAV + copy it"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></button></span>
     <span class="pg"><button class="btn ic" id="pshow" title="Show in folder" aria-label="Show in folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button><button class="btn ic danger" id="pdel" title="Delete (Del)" aria-label="Delete (Del)"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></span>
-    <button class="btn" onclick="closePlayer()">Close</button>
+    <button class="btn" data-act="27">Close</button>
   </div>
   <div id="pside">
     <label class="dl">Title</label><textarea id="sname" class="din" rows="2" spellcheck="false"></textarea>
@@ -1253,14 +1278,20 @@
   <div class="srow"><b>1 · Save key</b><small>Press <span id="suhk"></span> in a game to save what just happened. More keys and lengths: Settings › Capture Hotkeys.</small></div>
   <div class="srow"><b>2 · Microphone</b><div class="sline"><select data-k="mic_device" id="sumic" style="flex:1;max-width:360px"></select><label class="switch" title="Record my mic"><input type="checkbox" data-k="mic"><span></span></label></div></div>
   <div class="srow"><b>3 · Quality</b><div class="presets" id="supresets"></div></div>
-  <div class="srow"><b>4 · Controller <i>(optional)</i></b><div class="sline"><small style="flex:1">Save with a button combo: <span class="padnames" id="supad">off</span></small><button class="btn" onclick="padSet(this)">Set…</button></div></div>
+  <div class="srow"><b>4 · Controller <i>(optional)</i></b><div class="sline"><small style="flex:1">Save with a button combo: <span class="padnames" id="supad">off</span></small><button class="btn" data-act="28">Set…</button></div></div>
   <div class="srow"><b>5 · Save disk space <i>(optional)</i></b><div class="sline"><small style="flex:1">Shrink clips older than 30 days to about half their size while the PC is idle. Favourites stay as they are.</small><label class="switch"><input type="checkbox" data-k="shrink_old"><span></span></label></div></div>
-  <div class="srow"><b>6 · Test it</b><div class="sline"><small style="flex:1">Play some sound and say something while it runs.</small><button class="btn" onclick="setupTest(this)">Run self-test</button></div><div id="sutest" style="font-size:12.5px;margin-top:6px"></div></div>
+  <div class="srow"><b>6 · Test it</b><div class="sline"><small style="flex:1">Play some sound and say something while it runs.</small><button class="btn" data-act="29">Run self-test</button></div><div id="sutest" style="font-size:12.5px;margin-top:6px"></div></div>
   <div class="srow"><b>7 · Clips from another app <i>(optional)</i></b><small>Used Medal, SteelSeries Moments, Outplayed or something else? Echo copies your old clips in, with their dates and game folders. The old app's files aren't touched.</small><div id="suimp"></div></div>
-  <div class="dbtn" style="margin-top:14px"><button class="btn primary" onclick="finishSetup()">Done</button></div></div></div>
+  <div class="dbtn" style="margin-top:14px"><button class="btn primary" data-act="30">Done</button></div></div></div>
 <div id="tidy"><div class="tp"><div class="th"><div style="flex:1"><h3>Tidy up</h3><p>Clips saved twice, very short clips and the biggest ones. Favourites are never listed, and deleted clips go to the Recycle Bin.</p></div><button class="x" id="tidyx" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
   <div class="tdb" id="tidyb"></div>
   <div class="tf"><label class="chk" id="tidycl"><input type="checkbox" id="tidycloud" checked>Also delete their cloud copies</label><span class="spacer"></span><span id="tidysum" style="color:var(--muted);font-size:13px"></span><button class="btn danger" id="tidydel">Delete selected</button></div></div></div>
+<div id="ecm"><div class="tp"><div class="th"><div style="flex:1"><h3>Echo Cloud space</h3><p id="ecmsub">Everything you have in Echo Cloud. Delete what you don't need there - clips that are also on this PC stay on this PC.</p><div class="ebar"><i id="ecmbar" style="width:0"></i></div></div><button class="x" id="ecmx" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+  <div class="etools"><label class="chk"><input type="checkbox" id="ecmall">Select all shown</label><span class="spacer"></span>
+    <select id="ecmshow"><option value="all">Everything</option><option value="pc">Also on this PC</option><option value="only">Only in the cloud</option><option value="cp">Share copies</option></select>
+    <select id="ecmsort"><option value="new">Newest first</option><option value="old">Oldest first</option><option value="big">Biggest first</option></select></div>
+  <div class="tdb" id="ecmb"></div>
+  <div class="tf"><label class="chk" id="ecmdlw"><input type="checkbox" id="ecmdl" checked>Download cloud-only clips to this PC first</label><span class="spacer"></span><span id="ecmsum" style="color:var(--muted);font-size:13px"></span><button class="btn" id="ecmget">Download</button><button class="btn delb" id="ecmdel">Delete from Echo Cloud</button></div></div></div>
 <div id="confirm"><div class="dlg"><h3 id="ctitle">Delete clip?</h3><p id="cmsg"></p>
   <div class="dbtn"><button class="btn" id="cno">Cancel</button><button class="btn delb" id="cyes">Delete</button></div></div></div>
 <div id="details"><div class="dlg" style="width:460px"><h3>Clip details</h3><p id="dinfo" style="margin-bottom:14px;font-size:12.5px"></p>
@@ -1330,7 +1361,7 @@
       // up to 8 shown; more than that (someone who skipped a lot) -> the newest 6 + a link to the full list
       const show = earlier.length > 8 ? earlier.slice(0, 6) : earlier;
       const rest = earlier.length - show.length;
-      more.insertAdjacentHTML("beforeend", show.map(x => `<div class="updold"><b>${esc(x.version)}</b>${esc(x.notes)}</div>`).join("")
+      more.insertAdjacentHTML("beforeend", show.map(x => `<div class="updold"><b>${escH(x.version)}</b>${escH(x.notes)}</div>`).join("")
         + `<button class="updlink" id="updall">${rest ? `+ ${rest} older update${rest > 1 ? "s" : ""} on echoclip.link` : "All changes on echoclip.link"}</button>`);
       $("updall").onclick = () => invoke("open_echo_link", { what: "changelog" }).catch(() => {});
     };
@@ -1998,7 +2029,7 @@
       b.dataset.folder = g; if (depth) b.style.paddingLeft = 12 + depth * 16 + "px";
       const leaf = g.split("/").pop();
       const icon = !depth && (gameIcons[g] || gameIcons[Object.keys((cfg && cfg.folder_alias) || {}).find(k => cfg.folder_alias[k] === g) || ""]);
-      if (icon) b.querySelector(".gi").innerHTML = `<img src="${icon}">`;
+      if (icon) b.querySelector(".gi").innerHTML = `<img src="${escH(icon)}">`;
       else if (depth) b.querySelector(".gi").innerHTML = '<svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
       else b.querySelector(".gi").textContent = leaf[0].toUpperCase();
       b.querySelector(".gn").textContent = leaf; b.title = g;
@@ -2135,7 +2166,7 @@
       sec.innerHTML = `<div class="fh">${FGROUPS[g].head}</div><div class="fchips"></div>`;
       for (const [key, label, img, n] of opts) {
         const b = document.createElement("button"); b.className = "fchip" + (fsel[g].includes(key) ? " on" : ""); b.title = label;
-        b.innerHTML = `${img ? `<img src="${img}">` : ""}<span class="fl"></span><small>${n}</small>`; b.querySelector(".fl").textContent = label;
+        b.innerHTML = `${img ? `<img src="${escH(img)}">` : ""}<span class="fl"></span><small>${n}</small>`; b.querySelector(".fl").textContent = label;
         b.onclick = () => { const i = fsel[g].indexOf(key); i < 0 ? fsel[g].push(key) : fsel[g].splice(i, 1); fsave(); renderGrid(); };
         sec.querySelector(".fchips").appendChild(b);
       }
@@ -2239,6 +2270,128 @@
     }
     toast(`${n} clip${n === 1 ? "" : "s"} deleted`); listKey = ""; await refresh(); openTidy();
   };
+  // ----- Echo Cloud space manager (chat 29): Settings → Cloud → "Manage space". Lists everything in Echo Cloud,
+  // downloads clips that are only there (after checking this PC has room), then deletes them from Echo Cloud. -----
+  let ecm = { files: [], used: 0, quota: 0, freePc: 0, busy: false };
+  let ecmIO = null;
+  const ecmState = f => f.copy ? "cp" : f.local ? "pc" : "only";
+  async function openEcm() {
+    $("ecm").classList.add("on"); $("ecmb").innerHTML = `<div class="empty2">Looking through Echo Cloud…</div>`; $("ecmsum").textContent = "";
+    try {
+      const r = await invoke("echocloud_files");
+      ecm = { ...ecm, files: r.files || [], used: r.used || 0, quota: r.quota || 0, freePc: r.free_pc || 0 };
+    } catch (e) { $("ecmb").innerHTML = `<div class="empty2">${escH(String(e))}</div>`; return; }
+    const p = ecm.quota ? ecm.used / ecm.quota : 0;
+    $("ecmsub").textContent = `${fmtSize(ecm.used)}${ecm.quota ? " of " + fmtSize(ecm.quota) : ""} used · ${ecm.files.length} file${ecm.files.length === 1 ? "" : "s"}. Clips that are also on this PC stay on this PC when you delete them here.`;
+    $("ecmbar").style.width = Math.min(100, p * 100).toFixed(1) + "%"; $("ecmbar").classList.toggle("full", p > .95);
+    ecmDraw();
+  }
+  function ecmDraw() {
+    const box = $("ecmb"), show = $("ecmshow").value, sort = $("ecmsort").value;
+    const keep = new Set([...box.querySelectorAll("input:checked")].map(x => x._f && x._f.path));
+    let list = ecm.files.filter(f => show === "all" || ecmState(f) === show);
+    list = [...list].sort((a, b) => sort === "big" ? b.size - a.size : sort === "old" ? a.modified - b.modified : b.modified - a.modified);
+    box.innerHTML = "";
+    if (ecmIO) ecmIO.disconnect();
+    ecmIO = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting && e.target._load) { const f = e.target._load; e.target._load = null; ecmIO.unobserve(e.target); f(); } }), { root: box, rootMargin: "300px" });
+    if (!list.length) box.innerHTML = `<div class="empty2">${ecm.files.length ? "Nothing here with this filter." : "Echo Cloud is empty."}</div>`;
+    const g = document.createElement("div"); g.className = "tg"; if (list.length) box.appendChild(g);
+    for (const f of list) {
+      const r = document.createElement("label"); r.className = "tr"; const st = ecmState(f);
+      r.innerHTML = `<input type="checkbox"><span class="tt${f.copy ? " cp" : ""}">${f.copy ? "link copy" : ""}</span><span class="tn"><b></b><small></small></span>`;
+      r.querySelector("b").textContent = f.copy ? `Share copy of “${f.name}”` : f.name;
+      r.querySelector("b").insertAdjacentHTML("beforeend", st === "pc" ? `<span class="st pc">ON THIS PC</span>` : st === "only" ? `<span class="st only">ONLY IN THE CLOUD</span>` : `<span class="st cp">ITS SHARE LINK STOPS</span>`);
+      r.querySelector("small").textContent = [fmtSize(f.size), f.modified ? ago(f.modified) : "", f.folder || ""].filter(Boolean).join(" · ");
+      const cb = r.querySelector("input"); cb._f = f; cb.checked = keep.has(f.path); cb.onchange = ecmSum;
+      if (!f.copy) { const tt = r.querySelector(".tt"); tt._load = () => invoke("cloud_thumb", { rel: f.rel }).then(x => tt.style.backgroundImage = `url("${convertFileSrc(x.thumb)}?${f.size}${thumbVer(f.name)}")`).catch(() => {}); ecmIO.observe(tt); }
+      g.appendChild(r);
+    }
+    ecmSum();
+  }
+  const ecmSel = () => [...$("ecmb").querySelectorAll("input:checked")].map(x => x._f);
+  function ecmSum() {
+    const sel = ecmSel(), all = [...$("ecmb").querySelectorAll("input")];
+    const only = sel.filter(f => ecmState(f) === "only");
+    $("ecmsum").textContent = sel.length ? `${sel.length} selected · ${fmtSize(sel.reduce((n, f) => n + f.size, 0))}` + (only.length ? ` · ${only.length} only in the cloud` : "") : `${fmtSize(ecm.freePc)} free on this PC`;
+    $("ecmall").checked = all.length > 0 && all.every(x => x.checked);
+    $("ecmdel").disabled = $("ecmget").disabled = !sel.length || ecm.busy;
+    $("ecmdlw").style.display = only.length || !sel.length ? "" : "none";
+  }
+  // download the clips that are only in Echo Cloud (in order); true = all arrived. Checks this PC's free space first.
+  async function ecmDownload(list) {
+    if (!list.length) return true;
+    const need = list.reduce((n, f) => n + f.size, 0);
+    let free = 0; try { free = await invoke("free_space_pc"); } catch { }
+    // 1 GB left over, so the recorder still has room to save new clips
+    if (free && need + 1e9 > free) {
+      await choiceBox("Not enough space on this PC", `Downloading these clips needs ${fmtSize(need)} plus 1 GB to spare, but your clips folder's drive only has ${fmtSize(free)} free. Pick fewer clips, untick "Download cloud-only clips" to delete them without keeping a copy, or free up space on this PC first.`, [["OK", null, "primary"]]);
+      return false;
+    }
+    let stop = false, doneBytes = 0;
+    const box = progBox(`Downloading ${list.length} clip${list.length === 1 ? "" : "s"}…`).btn("Cancel", x => { stop = true; x.textContent = "Stopping…"; });
+    for (let i = 0; i < list.length && !stop; i++) {
+      const f = list[i];
+      box.text(`${i + 1} of ${list.length} · ${f.name}`);
+      const tick = setInterval(async () => { try { const [got] = await invoke("cloud_dl_progress", { rel: f.rel }); box.pct((doneBytes + got) / need * 100); } catch { } }, 500);
+      try { await invoke("cloud_download", { rel: f.rel }); f.local = true; doneBytes += f.size; box.pct(doneBytes / need * 100); }
+      catch (e) { clearInterval(tick); box.done(); toast(`Couldn't download ${f.name}: ${e}`); return false; }
+      clearInterval(tick);
+    }
+    box.done(stop ? 0 : 800);
+    if (stop) { toast("Download stopped - nothing was deleted"); return false; }
+    return true;
+  }
+  async function ecmRun(del) {
+    const sel = ecmSel(); if (!sel.length || ecm.busy) return;
+    const only = sel.filter(f => ecmState(f) === "only"), copies = sel.filter(f => f.copy);
+    const dlFirst = !del || $("ecmdl").checked;
+    const bytes = sel.reduce((n, f) => n + f.size, 0);
+    if (del) {
+      const parts = [`${fmtSize(bytes)} of Echo Cloud space is freed.`];
+      if (only.length) parts.push(dlFirst ? `${only.length} clip${only.length === 1 ? " is" : "s are"} only in the cloud - ${only.length === 1 ? "it's" : "they're"} downloaded to this PC first (${fmtSize(only.reduce((n, f) => n + f.size, 0))}).`
+        : `${only.length} clip${only.length === 1 ? " is" : "s are"} only in the cloud and will be gone for good.`);
+      if (sel.length > only.length + copies.length) parts.push("Clips that are also on this PC stay there and aren't uploaded again by themselves.");
+      if (copies.length) parts.push(`${copies.length} share link${copies.length === 1 ? "" : "s"} stop${copies.length === 1 ? "s" : ""} working.`);
+      if (!(await confirmBox(`Delete ${sel.length} file${sel.length === 1 ? "" : "s"} from Echo Cloud?`, parts.join(" "), "Delete"))) return;
+    }
+    ecm.busy = true; ecmSum();
+    try {
+      if (dlFirst && !(await ecmDownload(only))) return;
+      if (!del) { toast(`${only.length ? only.length + " clip" + (only.length === 1 ? "" : "s") + " downloaded" : "Already on this PC"}`); return; }
+      const n = await invoke("echocloud_delete_files", { paths: sel.map(f => f.path) });
+      toast(`Deleted ${n} file${n === 1 ? "" : "s"} from Echo Cloud - ${fmtSize(bytes)} freed`);
+      try { localStorage.removeItem("echo_ecfull"); } catch { }
+    } catch (e) { toast(String(e)); }
+    finally { ecm.busy = false; listKey = ""; refresh().catch(() => {}); if ($("ecm").classList.contains("on")) openEcm(); drawCloud(true); }
+  }
+  $("ecmx").onclick = () => $("ecm").classList.remove("on");
+  $("ecm").addEventListener("pointerdown", e => { if (e.target.id === "ecm") $("ecm").classList.remove("on"); });
+  addEventListener("keydown", e => { if (e.key === "Escape" && $("ecm").classList.contains("on") && !$("confirm").classList.contains("open")) { e.preventDefault(); $("ecm").classList.remove("on"); } });
+  $("ecmshow").onchange = ecmDraw; $("ecmsort").onchange = ecmDraw;
+  $("ecmall").onchange = () => { $("ecmb").querySelectorAll("input").forEach(x => x.checked = $("ecmall").checked); ecmSum(); };
+  $("ecmdel").onclick = () => ecmRun(true);
+  $("ecmget").onclick = () => ecmRun(false);
+  // almost full (90 %) or full: one popup that leads to the manager - again only when it gets fuller, or after 3 days
+  // (full: after 1 day). Only while Echo is in front and nothing else is open.
+  async function ecFullCheck() {
+    const ec = cfg && (cfg.cloud_accounts || []).find(a => a.provider === "echocloud");
+    if (!ec || isAway() || !document.hasFocus()) return;
+    if (["player", "editor"].some(id => $(id) && $(id).classList.contains("open")) || $("confirm").classList.contains("open") || $("ecm").classList.contains("on")) return;
+    let me; try { me = await invoke("echocloud_me"); } catch { return; }
+    if (!me || !me.quota) return;
+    const p = me.used / me.quota, level = p >= 1 ? 2 : p >= 0.9 ? 1 : 0;
+    let seen = null; try { seen = JSON.parse(localStorage.getItem("echo_ecfull") || "null"); } catch { }
+    if (!level) { if (seen) try { localStorage.removeItem("echo_ecfull"); } catch { } return; }
+    const wait = (level === 2 ? 1 : 3) * 86400000;
+    if (seen && seen.level >= level && Date.now() - seen.at < wait) return;
+    try { localStorage.setItem("echo_ecfull", JSON.stringify({ level, at: Date.now() })); } catch { }
+    const full = level === 2;
+    const go = await choiceBox(full ? "Echo Cloud is full" : "Echo Cloud is almost full",
+      `${fmtSize(me.used)} of ${fmtSize(me.quota)} used. ${full ? "New clips can't be uploaded until you make room." : "New uploads stop once it's full."} See everything in Echo Cloud, download what you want to keep to this PC, and delete the rest from the cloud.`,
+      [["Not now", null, ""], ["Manage space", "go", "primary"]]);
+    if (go === "go") { openSettings("cloud"); openEcm(); }
+  }
+  setTimeout(ecFullCheck, 25000); setInterval(ecFullCheck, 15 * 60000);
   // small text question (reuses the confirm dialog): resolves to the text, or null on Cancel
   // ----- feedback: a message (+ optional log) to support@echoclip.link through Echo Cloud's server -----
   async function sendFeedback() {
@@ -2378,7 +2531,7 @@
     const jobs = [];
     for (const gr of groups) {
       const sec = document.createElement("div"); sec.className = "group";
-      sec.innerHTML = `<h2>${gr.name}<small>${gr.items.length}</small></h2><div class="grid${libView === "list" ? " list" : ""}"></div>`;
+      sec.innerHTML = `<h2>${escH(gr.name)}<small>${gr.items.length}</small></h2><div class="grid${libView === "list" ? " list" : ""}"></div>`;
       const grid = sec.querySelector(".grid"); g.appendChild(sec);
       for (const c of gr.items) jobs.push([grid, c]);
     }
@@ -2404,7 +2557,7 @@
     for (const c of list) { const name = groupName(c.modified); if (!groups.length || groups[groups.length - 1].name !== name) groups.push({ name, items: [] }); groups[groups.length - 1].items.push(c); }
     for (const gr of groups) {
       const sec = document.createElement("div"); sec.className = "group";
-      sec.innerHTML = `<h2>${gr.name}<small>${gr.items.length}</small></h2><div class="grid${libView === "list" ? " list" : ""}"></div>`;
+      sec.innerHTML = `<h2>${escH(gr.name)}<small>${gr.items.length}</small></h2><div class="grid${libView === "list" ? " list" : ""}"></div>`;
       g.appendChild(sec);
       for (const c of gr.items) {
         const el = document.createElement("div"); el.className = "card";
@@ -2467,7 +2620,7 @@
   function openShot(c) {   // full-size view, click or Esc to close; mouse wheel zooms, drag moves around
     const o = document.createElement("div");
     o.style.cssText = "position:fixed;inset:0;z-index:150;background:#000e;display:grid;place-items:center;cursor:zoom-out;padding:24px;overflow:hidden";
-    o.innerHTML = `<img draggable="false" style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 20px 60px #000" src="${convertFileSrc(c.path)}?${c.size}">`;
+    o.innerHTML = `<img draggable="false" style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 20px 60px #000" src="${escH(convertFileSrc(c.path))}?${+c.size || 0}">`;
     const close = () => { o.remove(); removeEventListener("keydown", esc, true); };
     const esc = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
     const z = wheelZoom(o, o.firstChild, false);
@@ -2640,7 +2793,7 @@
   function makeCard(c) {
     const el = document.createElement("div"); el.className = "card"; el.dataset.rel = relOf(c); el.dataset.path = c.path;
     const gi = gameIcons[gameOf(c)];
-    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${gi}">` : ""}<span class="tbadges">${shared.has(c.name) ? (shareViews[c.name] ? `<span class="shr" title="Shared - watched ${shareViews[c.name]} time${shareViews[c.name] === 1 ? "" : "s"} on its share page">Shared · ${shareViews[c.name]} view${shareViews[c.name] === 1 ? "" : "s"}</span>` : '<span class="shr" title="Shared - link copied before">Shared</span>') : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg>Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span>' : ""}</span></div>
+    el.innerHTML = `<div class="thumb"><span class="dur" hidden></span>${isEdited(c) ? '<span class="tag">Edited</span>' : ""}${gi ? `<img class="gico" src="${escH(gi)}">` : ""}<span class="tbadges">${shared.has(c.name) ? (shareViews[c.name] ? `<span class="shr" title="Shared - watched ${shareViews[c.name]} time${shareViews[c.name] === 1 ? "" : "s"} on its share page">Shared · ${shareViews[c.name]} view${shareViews[c.name] === 1 ? "" : "s"}</span>` : '<span class="shr" title="Shared - link copied before">Shared</span>') : ""}${c.cloud ? '<span class="cld only" title="Only in the cloud - plays from there"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg>Cloud only</span>' : inCloud(c) ? '<span class="cld" title="Also in the cloud"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span>' : ""}</span></div>
       <div class="info"><div class="txt"><div class="name"></div><div class="meta"><span>${ago(c.modified)}</span><i></i><span>${fmtSize(c.size)}</span></div></div>
         <div class="ovl"><span class="more"><button class="ib" data-a="edit" title="Edit">${ICON_EDIT}</button><button class="ib" data-a="cloud" title="Cloud: upload, free up space, delete"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></button><button class="ib" data-a="folder" title="Show in folder">${ICON.folder}</button><button class="ib del" data-a="del" title="Delete">${ICON.del}</button></span><span class="cgrp"><button class="ib" data-a="copy" title="Copy to clipboard (Ctrl+click: choose size)">${ICON.copy}</button><button class="ib cpm" data-a="copymenu" title="Copy smaller for Discord"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></span><button class="ib star${favs.has(c.name) ? " on" : ""}" data-a="fav" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button></div></div>`;
     const nm = el.querySelector(".name"); nm.textContent = shownName(c); nm.title = "Click to rename";
@@ -3077,7 +3230,7 @@
   function drawSide(c) {
     sideClip = c; const m = meta[c.name] || { tags: [], note: "" }; sideTags = [...(m.tags || [])];
     $("sname").value = shownName(c); $("snote").value = m.note || ""; $("stagin").value = "";
-    $("sinfo").innerHTML = [c.folder || "Main folder", fmtSize(c.size), new Date(c.modified * 1000).toLocaleString()].map(x => `<div>${String(x).replace(/</g, "&lt;")}</div>`).join("");
+    $("sinfo").innerHTML = [c.folder || "Main folder", fmtSize(c.size), new Date(c.modified * 1000).toLocaleString()].map(x => `<div>${escH(x)}</div>`).join("");
     const all = new Set(); Object.values(meta).forEach(x => (x.tags || []).forEach(t => all.add(t)));
     $("staglist").innerHTML = [...all].map(t => `<option value="${t.replace(/"/g, "&quot;")}">`).join("");
     drawSideTags(); $("pside").classList.remove("hide"); requestAnimationFrame(sideFit);
@@ -3898,7 +4051,7 @@
   }
   const LP = 104;   // timeline left gutter (track names)
   function trackLabel(el, name, icon) {
-    const d = document.createElement("div"); d.className = "tlab"; d.innerHTML = icon + `<span>${name}</span>`;
+    const d = document.createElement("div"); d.className = "tlab"; d.innerHTML = icon + `<span>${escH(name)}</span>`;
     d.onpointerdown = e => e.stopPropagation(); el.appendChild(d);
   }
   function renderTL() {
@@ -5146,7 +5299,7 @@
       if (!cloudUse.at || Date.now() - cloudUse.at > 600000) { cloudUse.at = Date.now(); invoke("cloud_info").then(i => { cloudUse.i = i; }).catch(() => {}); }
       if (cloudUse.i && cloudUse.i.provider) out.push([cloudUse.i.total && cloudUse.i.used / cloudUse.i.total > 0.9 ? "warn" : "ok", `☁ ${fmtSize(cloudUse.i.used)}${cloudUse.i.total ? " of " + fmtSize(cloudUse.i.total) : ""} in the cloud`]);
     }
-    el.innerHTML = (out.length ? out : [["ok", "✓ Healthy" + (status.disk_free ? ` · ${fmtSize(status.disk_free)} free` : "")]]).map(([k, t]) => `<div class="${k}">${t}</div>`).join("");
+    el.innerHTML = (out.length ? out : [["ok", "✓ Healthy" + (status.disk_free ? ` · ${fmtSize(status.disk_free)} free` : "")]]).map(([k, t]) => `<div class="${escH(k)}">${escH(t)}</div>`).join("");
   }
   // ----- self-test (Settings → App) -----
   async function selfTest() {
@@ -5155,9 +5308,9 @@
     try {
       const rows = await invoke("self_test");
       const bad = rows.filter(r => !r[1]).length;
-      $("stres").innerHTML = rows.map(([n, ok, d]) => `<div class="str"><i style="color:${ok ? "#3ddc97" : "#ff5c7a"}">${ok ? "✓" : "✗"}</i><b>${n}</b><span>${String(d).replace(/</g, "&lt;")}</span></div>`).join("")
+      $("stres").innerHTML = rows.map(([n, ok, d]) => `<div class="str"><i style="color:${ok ? "#3ddc97" : "#ff5c7a"}">${ok ? "✓" : "✗"}</i><b>${escH(n)}</b><span>${escH(d)}</span></div>`).join("")
         + `<div class="str"><i></i><span>${bad ? `${bad} problem${bad === 1 ? "" : "s"} found - details are in the log too.` : "Everything works."}</span></div>`;
-    } catch (e) { $("stres").innerHTML = `<div class="str"><i style="color:#ff5c7a">✗</i><span>${String(e)}</span></div>`; }
+    } catch (e) { $("stres").innerHTML = `<div class="str"><i style="color:#ff5c7a">✗</i><span>${escH(e)}</span></div>`; }
     b.disabled = false; b.textContent = "Run self-test";
   }
   // ----- controller -----
@@ -5277,7 +5430,7 @@
     btn.disabled = true; btn.textContent = "Testing… (6 s)"; $("sutest").textContent = "";
     try {
       const rows = await invoke("self_test"), bad = rows.filter(x => !x[1]);
-      $("sutest").innerHTML = bad.length ? bad.map(([n, , d]) => `<div style="color:#ff5c7a">✗ ${n}: ${String(d).replace(/</g, "&lt;")}</div>`).join("") : '<div style="color:#3ddc97">✓ Everything works - you\'re ready to clip.</div>';
+      $("sutest").innerHTML = bad.length ? bad.map(([n, , d]) => `<div style="color:#ff5c7a">✗ ${escH(n)}: ${escH(d)}</div>`).join("") : '<div style="color:#3ddc97">✓ Everything works - you\'re ready to clip.</div>';
     } catch (e) { $("sutest").textContent = String(e); }
     btn.disabled = false; btn.textContent = "Run self-test";
   }
@@ -5333,14 +5486,14 @@
     use.innerHTML = "";
     if (acc) {
       $("ectitle").textContent = `Signed in · ${acc.label || cfg.ec_email || ""}`;
-      if (info && info.error) $("ecsub").innerHTML = `<span style="color:#f87171">${esc(info.error)}</span>`;
+      if (info && info.error) $("ecsub").innerHTML = `<span style="color:#f87171">${escH(info.error)}</span>`;
       else if (info && info.total) {
         const p = info.used / info.total;
         $("ecsub").textContent = `${fmtSize(info.used)} of ${fmtSize(info.total)} used${p > .9 ? " - almost full" : ""}`;
         use.innerHTML = `<div class="ecbar"><i class="${p > .95 ? "full" : ""}" style="width:${Math.min(100, p * 100).toFixed(1)}%"></i></div>`;
       } else $("ecsub").textContent = info ? "Clips you upload go here" : "Checking space…";
       const paid = info && info.total > 10.5e9;
-      f.innerHTML = `<button class="btn primary" id="ecup">${paid ? "Manage plan" : "Upgrade"}</button><button class="btn" id="ecout">Sign out</button><button class="btn sm" id="ecdel" style="margin-left:auto;color:var(--muted)">Delete account…</button>`;
+      f.innerHTML = `<button class="btn primary" id="ecup">${paid ? "Manage plan" : "Upgrade"}</button><button class="btn" id="ecman">Manage space</button><button class="btn" id="ecout">Sign out</button><button class="btn sm" id="ecdel" style="margin-left:auto;color:var(--muted)">Delete account…</button>`;
       $("ecdel").onclick = async () => {
         const email = (cfg.ec_email || "").trim();
         const v = await askText("Delete your Echo Cloud account?", `Everything in Echo Cloud is deleted for good: all clips, share links and the account itself. Clips on this PC stay. ${paid ? "Cancel your plan under Manage plan first. " : ""}Type your email address to confirm.`, email || "you@example.com", "Delete account");
@@ -5351,11 +5504,12 @@
         drawCloud(true);
       };
       $("ecup").onclick = () => paid ? ecManage() : ecPlans();
+      $("ecman").onclick = openEcm;
       // over the plan (e.g. a paid plan ended): the server removes the oldest clips on delete_at
       invoke("echocloud_me").then(me => {
         if (!me || !me.delete_at || !use.isConnected || use.querySelector(".ecwarn")) return;
         const d = new Date(me.delete_at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" });
-        use.insertAdjacentHTML("beforeend", `<div class="ecwarn" style="color:#f87171;font-size:12.5px;margin-top:6px;line-height:1.45">Over your ${esc(fmtSize(me.quota))} plan: on ${esc(d)} Echo Cloud removes your oldest clips until you're under it. Delete or download clips, or pick a plan, to keep them.</div>`);
+        use.insertAdjacentHTML("beforeend", `<div class="ecwarn" style="color:#f87171;font-size:12.5px;margin-top:6px;line-height:1.45">Over your ${escH(fmtSize(me.quota))} plan: on ${escH(d)} Echo Cloud removes your oldest clips until you're under it. Delete or download clips, or pick a plan, to keep them.</div>`);
       }).catch(() => { });
       $("ecout").onclick = async () => {
         if (!(await confirmBox("Sign out of Echo Cloud?", "Your clips stay in Echo Cloud - sign in again with the same email to get them back.", "Sign out"))) return;
@@ -5453,8 +5607,8 @@
     const box = $("cloudaccs");
     box.innerHTML = list.map(a => {
       const f = a.total ? a.used / a.total : 0;
-      const use = a.error ? `<span style="color:#f87171" title="${esc(a.error)}">Not reachable</span>` : a.wait ? "Checking…" : a.total ? `${fmtSize(a.used)} of ${fmtSize(a.total)}<div class="bar"><i class="${f > .95 ? "full" : ""}" style="width:${(f * 100).toFixed(1)}%"></i></div>` : `${fmtSize(a.used)} used`;
-      return `<div class="cacc"><div class="nm"><b>${esc(CLOUD_NAMES[a.provider] || a.provider)}</b><small>${esc(a.label || "")}</small></div><div class="use">${use}</div><button class="btn" data-rm="${a.id}">Remove</button></div>`;
+      const use = a.error ? `<span style="color:#f87171" title="${escH(a.error)}">Not reachable</span>` : a.wait ? "Checking…" : a.total ? `${fmtSize(a.used)} of ${fmtSize(a.total)}<div class="bar"><i class="${f > .95 ? "full" : ""}" style="width:${(f * 100).toFixed(1)}%"></i></div>` : `${fmtSize(a.used)} used`;
+      return `<div class="cacc"><div class="nm"><b>${escH(CLOUD_NAMES[a.provider] || a.provider)}</b><small>${escH(a.label || "")}</small></div><div class="use">${use}</div><button class="btn" data-rm="${a.id}">Remove</button></div>`;
     }).join("");
     box.querySelectorAll("[data-rm]").forEach(x => x.onclick = async () => {
       if (!(await confirmBox("Remove this cloud?", "Clips already in it stay there, but Echo stops showing and syncing them. New clips go to your other clouds.", "Remove"))) return;
@@ -5656,7 +5810,7 @@
       const m = await invoke("list_mics"), sel = $("micdev");
       const names = [...m.names]; if (cfg.mic_device && !names.includes(cfg.mic_device)) names.push(cfg.mic_device);
       const sysName = /Linux/.test(navigator.userAgent) ? "System default" : "Windows default";
-      sel.innerHTML = `<option value="">${sysName}${m.default ? " (" + m.default.replace(/[<>&]/g, "") + ")" : ""}</option>`;
+      sel.innerHTML = `<option value="">${escH(sysName)}${m.default ? " (" + escH(m.default) + ")" : ""}</option>`;
       for (const n of names) { const o = document.createElement("option"); o.value = n; const li = m.names.indexOf(n); o.textContent = ((m.labels && li >= 0 && m.labels[li]) || n.replace(/^sysdefault:CARD=/, "")) + (m.names.includes(n) ? "" : " (not connected)"); sel.appendChild(o); }
     } catch {}
   }
@@ -5735,7 +5889,7 @@
     const opts = [["", accs.filter(a => a.provider !== "echocloud").length > 1 ? "Your own clouds (the one with the most free space)" : "Your own cloud (Echo Cloud only for share links)"]]
       .concat(accs.map(a => a.provider === "echocloud" ? ["echocloud", "Echo Cloud first (then the others when it's full)"] : [String(a.id), (CLOUD_NAMES[a.provider] || a.provider) + (a.label ? " · " + a.label : "")]));
     const key = JSON.stringify(opts); if (sel.dataset.key === key) return; sel.dataset.key = key;
-    sel.innerHTML = opts.map(([v, n]) => `<option value="${v}">${esc(n)}</option>`).join("");
+    sel.innerHTML = opts.map(([v, n]) => `<option value="${v}">${escH(n)}</option>`).join("");
   }
   // select.segsrc -> segmented buttons right after it (the hidden select keeps the data-k saving)
   // switching smart bitrate keeps the average where it was (runs before or after the generic data-k handler: uses .checked)
@@ -5853,7 +6007,7 @@
     box.innerHTML = games.length ? "" : '<div class="note" style="margin:0">No games yet - play something with Echo running.</div>';
     games.forEach(g => {
       const r = rule(g.name), row = document.createElement("div"); row.className = "grow";
-      row.innerHTML = (g.icon ? `<img src="${g.icon}">` : `<span class="gl">${g.name[0].toUpperCase()}</span>`) + `<b></b>
+      row.innerHTML = (g.icon ? `<img src="${escH(g.icon)}">` : `<span class="gl">${escH(g.name[0].toUpperCase())}</span>`) + `<b></b>
         <label class="chk" title="Off = Echo pauses recording while this game runs"><input type="checkbox" data-r="record" ${r.record ? "checked" : ""}>Record</label>
         <label class="chk" title="Off = its clips go in the main folder"><input type="checkbox" data-r="folder" ${r.folder ? "checked" : ""}>Own folder</label>
         <button class="btn sm" data-x title="Not a game? Remove it">Remove</button>`;
@@ -6044,7 +6198,7 @@
   if (IS_LINUX) { setTimeout(loadKdeKeys, 4000); addEventListener("focus", loadKdeKeys); setInterval(() => { if (document.hasFocus()) loadKdeKeys(); }, 15000); }
   function renderHotkeys() {
     const box = $("hklist"); box.innerHTML = "";
-    if (kdeKeys) { const n = document.createElement("div"); n.className = "row"; n.innerHTML = `<div class="lbl"><b>Keys are set in KDE</b><small>${kdeTip}. Echo shows the keys KDE uses.</small></div>`; box.appendChild(n); }
+    if (kdeKeys) { const n = document.createElement("div"); n.className = "row"; n.innerHTML = `<div class="lbl"><b>Keys are set in KDE</b><small>${escH(kdeTip)}. Echo shows the keys KDE uses.</small></div>`; box.appendChild(n); }
     cfg.hotkeys.forEach((h, i) => {
       const row = document.createElement("div"); row.className = "row";
       row.innerHTML = `<div class="lbl"><b>Clip</b><small>Save the previous moments of gameplay</small></div>
@@ -6169,7 +6323,11 @@
         const restarted = await invoke("set_settings", { settings: cfg });
         if (!quiet || restarted) toast(restarted ? "Saved · recorder restarting with new settings" : "Settings saved");
         listKey = ""; refresh();
-      } catch (e) { toast("Could not save: " + e); }
+      } catch (e) {
+        toast("Could not save: " + e);
+        // a refused clips folder (drive / system folder): back to the saved one, so other settings still save
+        if (/clips folder/.test(String(e))) { const s = await invoke("get_settings").catch(() => null); if (s) { cfg.clips_dir = s.clips_dir; renderSettings(); } }
+      }
     }, 450);
   }
 
@@ -6181,6 +6339,42 @@
     if (!cfg.setup_done) openSetup();
     refresh().then(() => invoke("ui_ready", { clips: clips.length })).catch(() => {}); setInterval(() => refresh("tick").catch(() => {}), 4000);
   })();
+
+  // chat 28: no inline onclick="…" (a strict Content-Security-Policy blocks those) - the same code runs from here
+  const ACTS = [
+    function (event) { saveClip() },
+    function (event) { invoke('open_in_folder',{path:status.clips_dir}) },
+    function (event) { invoke('open_echo_link',{what:'discord'}).catch(()=>{}) },
+    function (event) { addHotkey() },
+    function (event) { padSet(this) },
+    function (event) { padOff() },
+    function (event) { invoke('cloud_sync_now');toast('Syncing…') },
+    function (event) { invoke('open_in_folder',{path:cfg.clips_dir}) },
+    function (event) { cleanNow() },
+    function (event) { sortFolders() },
+    function (event) { importPick() },
+    function (event) { updManual() },
+    function (event) { startTour() },
+    function (event) { sendFeedback() },
+    function (event) { invoke('open_echo_link',{what:'changelog'}).catch(()=>{}) },
+    function (event) { invoke('open_echo_link',{what:'discord'}).catch(()=>{}) },
+    function (event) { themeReset() },
+    function (event) { invoke('test_sound',{kind:'saved'}) },
+    function (event) { invoke('test_sound',{kind:'fail'}) },
+    function (event) { invoke('test_sound',{kind:'mark'}) },
+    function (event) { invoke('test_sound',{kind:'shot'}) },
+    function (event) { invoke('test_sound',{kind:'stopped'}) },
+    function (event) { selfTest() },
+    function (event) { sendLog() },
+    function (event) { fpsTest() },
+    function (event) { openSetup() },
+    function (event) { restart() },
+    function (event) { closePlayer() },
+    function (event) { padSet(this) },
+    function (event) { setupTest(this) },
+    function (event) { finishSetup() },
+  ];
+  document.querySelectorAll("[data-act]").forEach(el => el.addEventListener("click", ev => ACTS[+el.dataset.act].call(el, ev)));
 </script>
 </body>
 </html>

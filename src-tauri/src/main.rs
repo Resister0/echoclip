@@ -493,8 +493,32 @@ async fn save_project(rec: State<'_, Recorder>, path: String, data: String) -> R
     rec.save_project(&path, &data)
 }
 #[tauri::command]
-async fn load_project(rec: State<'_, Recorder>, path: String) -> Result<Option<String>, String> {
-    Ok(rec.load_project(&path))
+async fn load_project(app: AppHandle, rec: State<'_, Recorder>, path: String) -> Result<Option<String>, String> {
+    let data = rec.load_project(&path);
+    // videos / sounds / pictures the user added to this edit from elsewhere on the PC (picked in an earlier
+    // session): the window may load them again (chat 28 - it may only load Echo's folders + picked files)
+    if let Some(v) = data.as_deref().and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok()) {
+        fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::String(s) if s.len() < 1024 && std::path::Path::new(s).is_absolute() => out.push(s.clone()),
+                serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
+        let mut files = Vec::new();
+        walk(&v, &mut files);
+        const MEDIA: [&str; 19] = ["mp4", "mov", "mkv", "webm", "avi", "m4v", "wav", "mp3", "ogg", "flac", "m4a", "aac", "opus", "png", "jpg", "jpeg", "webp", "gif", "bmp"];
+        for f in files.iter().take(200) {
+            let p = std::path::Path::new(f);
+            let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            if MEDIA.contains(&ext.as_str()) && p.is_file() {
+                let _ = app.asset_protocol_scope().allow_file(f);
+                mediaserve::allow_file(f);
+            }
+        }
+    }
+    Ok(data)
 }
 #[tauri::command]
 async fn probe_media(rec: State<'_, Recorder>, path: String) -> Result<(u32, u32, bool, f64), String> {
@@ -511,6 +535,21 @@ async fn cloud_remove_local(rec: State<'_, Recorder>, path: String) -> Result<()
 #[tauri::command]
 async fn cloud_delete(rec: State<'_, Recorder>, rel: String) -> Result<(), String> {
     rec.cloud_delete(&rel)
+}
+/// Settings → Cloud → "Manage Echo Cloud space" (chat 29)
+#[tauri::command]
+async fn echocloud_files(rec: State<'_, Recorder>) -> Result<serde_json::Value, String> {
+    rec.echocloud_files()
+}
+#[tauri::command]
+async fn echocloud_delete_files(rec: State<'_, Recorder>, paths: Vec<String>) -> Result<u64, String> {
+    let n = rec.echocloud_delete_files(&paths)?;
+    SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(n)
+}
+#[tauri::command]
+fn free_space_pc(rec: State<Recorder>) -> u64 {
+    recorder::free_space(&rec.clips_dir()).unwrap_or(0)
 }
 #[tauri::command]
 fn cloud_forget_local(rec: State<Recorder>, path: String) {
@@ -1064,14 +1103,20 @@ async fn import_folder(app: AppHandle, rec: State<'_, Recorder>, path: String) -
 }
 
 #[tauri::command]
-async fn pick_media() -> String {
+async fn pick_media(app: AppHandle) -> String {
     #[cfg(any(windows, target_os = "linux"))]
     {
-        return picker::pick_path("Add a video or sound to the timeline",
+        let p = picker::pick_path("Add a video or sound to the timeline",
             Some(("Videos and sounds", "*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v;*.wav;*.mp3;*.ogg;*.flac;*.m4a;*.aac;*.opus")), false).unwrap_or_default();
+        // the window may only load files from Echo's folders; a file the user picked here is allowed too
+        if !p.is_empty() {
+            let _ = app.asset_protocol_scope().allow_file(&p);
+            mediaserve::allow_file(&p);
+        }
+        return p;
     }
     #[allow(unreachable_code)]
-    String::new()
+    { let _ = app; String::new() }
 }
 
 #[tauri::command]
@@ -1254,6 +1299,12 @@ async fn set_settings(app: AppHandle, rec: State<'_, Recorder>, settings: Settin
     settings.not_games = cur.not_games;
     settings.ec_token = cur.ec_token;
     settings.rclone_pass = cur.rclone_pass;
+    // the Echo Cloud server address can't be changed from the window: a page that could set it would get Echo
+    // to send the sign-in token elsewhere (chat 28 security pass)
+    settings.ec_api = cur.ec_api;
+    if settings.clips_dir != cur.clips_dir {
+        if let Some(why) = risky_clips_dir(&settings.clips_dir) { return Err(why.into()); }
+    }
     settings.save()?;
     SYNC_SOON.store(true, std::sync::atomic::Ordering::Relaxed);
     allow_clips_dir(&app, &settings.clips_dir);
@@ -1302,6 +1353,28 @@ fn open_in_folder(path: String) {
 /// Let the webview load videos/previews from the clips folder (also when the user changes it).
 fn allow_clips_dir(app: &AppHandle, dir: &str) {
     let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    // the local video server (Linux player) serves the same folders, nothing else (chat 28)
+    mediaserve::allow_root(dir);
+}
+
+/// A clips folder that would open up far more than clips (a drive, the home folder itself, system folders) is
+/// refused - the folder also becomes readable for the window (chat 28 security pass).
+fn risky_clips_dir(dir: &str) -> Option<&'static str> {
+    let p = std::path::Path::new(dir.trim());
+    if dir.trim().is_empty() || !p.is_absolute() { return Some("Pick a full folder path for your clips"); }
+    // "C:\\" or "/" have no named part at all
+    if !p.components().any(|c| matches!(c, std::path::Component::Normal(_))) {
+        return Some("A whole drive can't be the clips folder - pick a folder on it");
+    }
+    let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
+    let norm = |s: &str| s.trim_end_matches(['/', '\\']).to_lowercase();
+    if !home.is_empty() && norm(dir) == norm(&home) { return Some("Your whole user folder can't be the clips folder - pick a folder in it"); }
+    let low = norm(dir).replace('\\', "/");
+    let sys: &[&str] = if cfg!(windows) { &[":/windows", ":/program files", ":/programdata"] } else { &["/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys", "/dev", "/var", "/root"] };
+    if sys.iter().any(|s| if cfg!(windows) { low.get(1..).map_or(false, |r| r.starts_with(s)) } else { low == *s || low.starts_with(&format!("{s}/")) }) {
+        return Some("A system folder can't be the clips folder");
+    }
+    None
 }
 
 fn register_hotkeys(app: &AppHandle, cfg: &Settings) {
@@ -1613,6 +1686,9 @@ fn main() {
             }
             let _ = std::fs::create_dir_all(stickers_dir());
             allow_clips_dir(&handle, &stickers_dir().to_string_lossy());
+            // Echo's own temp / app files (previews, frames, extracted audio) for the local video server
+            mediaserve::allow_root(&std::env::temp_dir().to_string_lossy());
+            mediaserve::allow_root(&recorder::app_dir_pub().to_string_lossy());
             register_hotkeys(&handle, &cfg);
             if cfg.start_with_windows {
                 set_autostart(true); // keeps the Run entry pointing at this exe (Echo.exe)
@@ -2076,6 +2152,9 @@ fn main() {
             cloud_download,
             cloud_remove_local,
             cloud_delete,
+            echocloud_files,
+            echocloud_delete_files,
+            free_space_pc,
             cloud_forget_local,
             cloud_stream_base,
             cloud_thumb,

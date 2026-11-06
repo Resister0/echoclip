@@ -22,6 +22,18 @@
   const ua = navigator.userAgent || "", linux = /Linux|X11/.test(ua) && !/Android/.test(ua);
   const dl = document.querySelector(".dl"), win = dl && dl.querySelector('[data-os="windows"]'), lin = dl && dl.querySelector('[data-os="linux"]');
   if (linux && win && lin) { dl.insertBefore(lin, win); lin.classList.add("primary"); win.classList.remove("primary"); }
+  // /download "All downloads": on Linux the Linux cards come first and the AppImage (= the big Linux button) is the
+  // purple, recommended one (chat 28)
+  const grid = document.querySelector(".dlgrid");
+  if (linux && grid) {
+    const cards = [...grid.querySelectorAll(".card[data-os]")];
+    cards.filter((c) => c.dataset.os === "linux").reverse().forEach((c) => grid.prepend(c));
+    const main = grid.querySelector('.card[data-os="linux"][data-main]'), rec = grid.querySelector(".rec");
+    grid.querySelectorAll(".btn.primary").forEach((b) => b.classList.remove("primary"));
+    if (main) { main.querySelector(".btn").classList.add("primary"); if (rec) main.querySelector("p").append(" ", rec); }
+    const sub = document.getElementById("dlsub");
+    if (sub) sub.textContent = "The AppImage is the easy choice. The Flatpak brings everything it needs - best for Steam Deck and Bazzite.";
+  }
   // /download: the latest version under the buttons
   const dv = document.getElementById("dlver");
   if (dv) fetch("/changes").then((r) => r.json()).then((j) => {
@@ -29,14 +41,48 @@
     const d = new Date(x.at * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
     dv.innerHTML = `Echo ${String(x.version).replace(/[^0-9.]/g, "")} · ${d} · Windows 10/11 and Linux · <a href="/changelog">What's new</a>`;
   }).catch(() => {});
-  // /changelog: every published version (from the server's list of releases)
+  // /changelog (chat 28): newest version as a big card, the rest grouped by day; each "What changed?" text is split
+  // into its parts (commas) and every part gets a tag (New / Fix / Linux / Windows) that the filter buttons use
   const box = document.getElementById("changes");
   if (box) fetch("/changes").then((r) => r.json()).then((j) => {
     const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-    const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    const day = (t) => new Date(t * 1000).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const short = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
     const list = j.releases || [];
-    box.innerHTML = list.length ? list.map((x, i) => `<div class="chg"><b>${esc(x.version)}${i === 0 ? ' <span class="new">Latest</span>' : ""}</b><p>${esc(x.notes)}</p><time>${day(x.at)}</time></div>`).join("")
-      : '<p class="sub">No versions listed yet.</p>';
+    if (!list.length) { box.innerHTML = '<p class="sub">No versions listed yet.</p>'; return; }
+    // split on commas that aren't inside quotes; first letter up
+    const parts = (n) => { const out = []; let cur = "", q = false;
+      for (const ch of String(n)) { if (ch === '"') q = !q; if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; }
+      out.push(cur); return out.map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1)); };
+    const tags = (t) => { const g = [];
+      if (/\b(fix|fixed|fixes|no longer|crash|bug|broken|stuck|works again|instead of)\b/i.test(t)) g.push("fix"); else g.push("new");
+      if (/linux|appimage|flatpak|kde|wayland|nobara|steam deck|bazzite/i.test(t)) g.push("linux");
+      if (/windows|installer|echo\.exe|smartscreen/i.test(t)) g.push("windows");
+      return g; };
+    const NAME = { new: "New", fix: "Fix", linux: "Linux", windows: "Windows" };
+    const items = (n) => `<ul>${parts(n).map((p) => { const g = tags(p);
+      return `<li data-t="${g.join(" ")}">${g.map((x) => `<span class="tg ${x}">${NAME[x]}</span>`).join("")}<span>${esc(p)}</span></li>`; }).join("")}</ul>`;
+    const [first, ...rest] = list;
+    let html = `<div class="cfilter" role="group" aria-label="Show">${["all", "new", "fix", "linux", "windows"].map((f, i) =>
+      `<button type="button" data-f="${f}"${i ? "" : ' class="on"'}>${f === "all" ? "Everything" : f === "fix" ? "Fixes" : NAME[f]}</button>`).join("")}</div>
+      <article class="clatest"><div class="chead"><b>Echo ${esc(first.version)}</b><span class="new">Latest</span><time>${short(first.at)}</time></div>${items(first.notes)}</article>`;
+    let lastDay = "";
+    for (const x of rest) {
+      const d = day(x.at);
+      if (d !== lastDay) { html += `<h3 class="cday">${esc(d)}</h3>`; lastDay = d; }
+      html += `<article class="crel"><div class="chead"><b>${esc(x.version)}</b></div>${items(x.notes)}</article>`;
+    }
+    html += `<p class="sub cnote">Missing version numbers were internal test builds that never went out.</p>`;
+    box.innerHTML = html;
+    box.querySelector(".cfilter").addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      box.querySelectorAll(".cfilter button").forEach((x) => x.classList.toggle("on", x === b));
+      const f = b.dataset.f;
+      box.querySelectorAll("li[data-t]").forEach((li) => { li.hidden = f !== "all" && !li.dataset.t.split(" ").includes(f); });
+      box.querySelectorAll("article").forEach((a) => { a.hidden = ![...a.querySelectorAll("li")].some((li) => !li.hidden); });
+      box.querySelectorAll(".cday").forEach((h) => { let n = h.nextElementSibling, any = false;
+        while (n && n.tagName === "ARTICLE") { if (!n.hidden) any = true; n = n.nextElementSibling; } h.hidden = !any; });
+    });
   }).catch(() => { box.innerHTML = '<p class="sub">Couldn\'t load the changelog - try again in a moment.</p>'; });
 })();
 
@@ -232,4 +278,33 @@
     inv.querySelector(".wtgo").onclick = () => { close(); start(); };
     inv.querySelector(".wtno").onclick = () => { close(); try { localStorage.setItem("echo_tour", "1"); } catch {} };
   }, 2500);
+})();
+
+// chat 28: these used to be inline <script>s on index.html / pricing.html - the site's Content-Security-Policy
+// (cloud/site/_headers) only runs scripts from files
+// index: "Try it here / Real screenshot" switch
+(function(){var sw=document.querySelector('.viewsw');if(!sw)return;var app=document.querySelector('.hero .app'),img=document.querySelector('.realshot');
+sw.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var shot=b.dataset.view==='shot';
+img.hidden=!shot;app.hidden=shot;sw.querySelectorAll('button').forEach(function(x){x.setAttribute('aria-selected',x===b)});});})();
+// pricing: month / year toggle + live prices from Polar
+if (document.querySelector(".plan .price[data-month]")) (() => {
+  let interval = "month";
+  const money = (n, cur) => new Intl.NumberFormat("en-IE", { style: "currency", currency: (cur || "eur").toUpperCase(),
+    minimumFractionDigits: n % 1 ? 2 : 0 }).format(n);
+  const show = () => {
+    document.querySelectorAll(".toggle button").forEach((b) => b.classList.toggle("on", b.dataset.int === interval));
+    document.querySelectorAll(".plan .price[data-month]").forEach((p) => {
+      p.innerHTML = `${p.dataset[interval]} <small>/ ${interval}</small>`;
+    });
+  };
+  document.querySelectorAll(".toggle button").forEach((b) => b.onclick = () => { interval = b.dataset.int; show(); });
+  // live prices from Polar (same list Echo shows)
+  fetch("/plans").then((r) => r.ok ? r.json() : null).then((j) => {
+    if (!j || !j.plans) return;
+    for (const p of j.plans) {
+      const card = document.querySelector(`.plan[data-gb="${p.gb >= 1000 ? 1000 : p.gb}"] .price`);
+      if (card && (p.interval === "month" || p.interval === "year")) card.dataset[p.interval] = money(p.price, p.currency);
+    }
+    show();
+  }).catch(() => {});
 })();

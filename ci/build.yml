@@ -20,7 +20,7 @@ jobs:
     if: github.repository == 'Resister0/echo'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Copy to the public repo
         env:
           PUBLIC_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
@@ -34,7 +34,7 @@ jobs:
           rsync -a --delete --exclude-from=ci/public-exclude.txt ./ /tmp/pub/
           cd /tmp/pub
           # last check: never publish something that looks like a key
-          if grep -rIlE 'polar_oat_[A-Za-z0-9]|whsec_[A-Za-z0-9]{10}|github_pat_[A-Za-z0-9]{20}|cfut_[A-Za-z0-9]{10}|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{10}|BEGIN [A-Z ]*PRIVATE KEY|IHJzaWduIGVuY3J5cHRlZ[C]BzZWNyZXQga2V5' --exclude-dir=.git . ; then
+          if grep -rIlE 'polar_oat_[A-Za-z0-9]|whsec_[A-Za-z0-9]{10}|github_pat_[A-Za-z0-9]{20}|cfut_[A-Za-z0-9]{10}|re_[A-Za-z0-9]{8}_[A-Za-z0-9]{10}|GOCSPX-[A-Za-z0-9_-]{20}|BEGIN [A-Z ]*PRIVATE KEY|IHJzaWduIGVuY3J5cHRlZ[C]BzZWNyZXQga2V5' --exclude-dir=.git . ; then
             echo "Something that looks like a key is in the files above - not publishing"; exit 1
           fi
           # the public repo builds the releases itself: its workflow + the version number of this build

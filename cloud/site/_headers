@@ -1,0 +1,18 @@
+# Security headers for the static website (Cloudflare Workers static assets read this file). Chat 28 security pass.
+# Pages run only script FILES from echoclip.link; the one inline line (theme) is allowed by its hash - if that line
+# ever changes on the pages, its new hash must go here (it's printed by: echo -n '<line>' | openssl dgst -sha256 -binary | base64).
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-ixmgL8FRSqbaZ57vH9PG6ncXs4GVVUtMnUxtOdfhEv4='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000
+
+/admin*
+  Cache-Control: no-store
+  X-Robots-Tag: noindex
+
+/mod*
+  Cache-Control: no-store
+  X-Robots-Tag: noindex
