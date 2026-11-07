@@ -46,6 +46,8 @@
     t.classList.remove("on"); void t.offsetWidth; t.classList.add("on");
     clearTimeout(h); h = setTimeout(() => t.classList.remove("on"), 2300);
   };
+  // the window is made for its first popup (chat 31): Echo hands that message in with the page
+  if (Array.isArray(window.__first)) show.apply(null, window.__first);
 </script>
 </body>
 </html>

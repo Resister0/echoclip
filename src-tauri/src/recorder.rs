@@ -806,7 +806,7 @@ fn game_name_raw(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
         "steamwebhelper", "epicgameslauncher", "code", "devenv", "obs64", "medal", "claude", "cmd", "powershell", "windowsterminal",
         "wt", "notepad", "textinputhost", "systemsettings", "battle.net", "riotclientux", "riotclientservices", "eadesktop",
         "ubisoftconnect", "upc", "galaxyclient", "vlc", "mpc-hc64", "photos", "whatsapp", "telegram", "teams", "ms-teams",
-        "echo", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
+        "echo", "echoclip", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
         "sharex", "greenshot", "nvidia app", "radeonsoftware", "amdrsserv", "msiafterburner", "rtss", "outlook", "winword",
         "excel", "powerpnt", "onenote", "slack", "zoom", "notion", "obsidian", "signal", "thunderbird", "mspaint", "notepad++",
         // Linux desktop programs that showed up as "games" (chat 30: xalia = KDE's gamepad accessibility helper)
@@ -870,7 +870,7 @@ fn whisper_dir() -> PathBuf {
     base.join("Clipper").join("whisper")
 }
 
-/// Tools shipped with the installer (Echo-Setup.exe puts ffmpeg / rclone in "tools" next to Echo.exe):
+/// Tools shipped with the installer (Echo-Setup.exe puts ffmpeg / rclone in "tools" next to EchoClip.exe):
 /// used first, so an installed Echo doesn't download and run programs by itself.
 fn bundled(names: &[&str]) -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.join("tools");
@@ -4765,6 +4765,17 @@ impl Recorder {
             return Err(if ok { "It's already about as small as it gets".into() } else { "Couldn't re-encode the clip - see the log".into() });
         }
         fs::rename(&tmp, &src).map_err(err)?;
+        // Linux GPU AV1 (av1_vaapi) writes split frame headers that the AppImage's player can't read - merge them now
+        // (chat 31), and mark the clip so av1_repack doesn't look at it again
+        if cfg!(target_os = "linux") && enc.is_some() {
+            match av1_merge_headers(&src) {
+                Ok((m, l)) => { if m > 0 || l > 0 { log_line(&format!("compress: AV1 frame headers merged ({m} frames, {l} left)")); } }
+                Err(e) => log_line(&format!("compress: merging AV1 frame headers failed ({e})")),
+            }
+            if let (Some(stem), Ok(n)) = (src.file_stem(), fs::metadata(&src).map(|m| m.len())) {
+                let _ = fs::write(self.thumbs_dir().join(format!("{}.av1fix.{n}", stem.to_string_lossy())), b"");
+            }
+        }
         // keep its date so it stays in place in the library
         if let (Some(t), Ok(f)) = (mtime, fs::File::options().write(true).open(&src)) {
             let _ = f.set_modified(t);
@@ -4809,24 +4820,25 @@ impl Recorder {
     /// Re-pack an AV1 clip made before AV1_PACK (no re-encoding, a second or two), once - marker next to the
     /// thumbnails. true = it was re-packed now. The clip keeps its date.
     pub fn av1_repack(&self, clip: &str) -> Result<bool, String> {
+        // chat 31: the chat 30 re-pack (stripping temporal delimiters) changed nothing - the real problem is the split
+        // FRAME_HEADER + TILE_GROUP OBUs of GPU AV1 encoders, merged here in place (same size, seconds or less).
+        // New marker name, so clips "re-packed" before get this fix too.
         let src = PathBuf::from(clip);
+        // it writes into the file: only Echo's own clips (same check as compress_clip)
+        if !self.is_clip(&src) { return Err("not an Echo clip".into()); }
         let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
         let size = fs::metadata(&src).map_err(err)?.len();
-        let mark = |n: u64| self.thumbs_dir().join(format!("{stem}.av1pack.{n}"));
-        if mark(size).exists() || !is_av1(clip) { return Ok(false); }
+        let mark = self.thumbs_dir().join(format!("{stem}.av1fix.{size}"));
+        if mark.exists() || !is_av1(clip) { return Ok(false); }
         let mtime = fs::metadata(&src).and_then(|m| m.modified()).ok();
-        let tmp = src.with_extension("repack.tmp");
-        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
-            .args(["-map", "0", "-c", "copy", "-bsf:v", AV1_PACK, "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
-            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
-            && fs::metadata(&tmp).map_or(false, |m| m.len() > 0);
-        if !ok { let _ = fs::remove_file(&tmp); return Err("couldn't re-pack the AV1 clip".into()); }
-        fs::rename(&tmp, &src).map_err(err)?;
+        let t0 = Instant::now();
+        let r = av1_merge_headers(&src);
         if let (Some(t), Ok(f)) = (mtime, fs::File::options().write(true).open(&src)) { let _ = f.set_modified(t); }
-        let n = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
-        let _ = fs::write(mark(n), b"");
-        log_line(&format!("player: re-packed AV1 clip {stem} ({} -> {} bytes)", size, n));
-        Ok(true)
+        let (m, l) = r.map_err(|e| { log_line(&format!("player: merging AV1 frame headers of {stem} failed ({e})")); format!("couldn't fix the AV1 clip ({e})") })?;
+        let _ = fs::write(&mark, b"");
+        let _ = fs::remove_file(self.thumbs_dir().join(format!("{stem}.av1pack.{size}")));
+        log_line(&format!("player: AV1 clip {stem} - {m} frame headers merged, {l} left as they were, in {} ms", t0.elapsed().as_millis()));
+        Ok(m > 0)
     }
 
     /// An H.264 copy of an AV1 clip just for Echo's player, when the player can't decode AV1 (chat 30: the AppImage's
@@ -8418,7 +8430,7 @@ pub fn fps_stats(csv: &Path, from: f64, to: f64) -> Option<(String, f64, f64, us
     let col = |names: &[&str]| head.iter().position(|h| names.contains(&h.as_str()));
     let (ca, cms) = (col(&["application"])?, col(&["msbetweenpresents"])?);
     let ct = col(&["timeinseconds", "cpustarttime"]);
-    let skip = ["dwm.exe", "echo.exe", "msedgewebview2.exe", "presentmon.exe", "<error>", "explorer.exe"];
+    let skip = ["dwm.exe", "echo.exe", "echoclip.exe", "msedgewebview2.exe", "presentmon.exe", "<error>", "explorer.exe"];
     let mut per: std::collections::HashMap<String, Vec<(f64, f64)>> = Default::default();
     let mut clock: std::collections::HashMap<String, f64> = Default::default();
     for l in lines {
@@ -8528,3 +8540,190 @@ fn run_import_ffmpeg(c: &mut Command, on_time: &dyn Fn(f64)) -> bool {
 
 /// AV1 in MP4 without temporal delimiter (2) and padding (15) OBUs - older GStreamer (AppImage) choked on them (chat 30)
 const AV1_PACK: &str = "filter_units=remove_types=2|15";
+
+// ===== AV1 frame-header merge (chat 31) =====
+/// Linux GPU encoders (mesa av1_vaapi) write every AV1 frame as a FRAME_HEADER OBU + a TILE_GROUP OBU. The older
+/// GStreamer in the AppImage (1.20) can't parse that ("already seen a frame header") and shows the clip black.
+/// This rewrites each pair into one FRAME OBU (what software encoders write) INSIDE the MP4: every sample keeps its
+/// exact length (the size field of the new OBU is padded to fill the bytes saved), so nothing else in the file moves,
+/// and a stop half-way leaves a valid clip. Returns (frames merged, frames left as they were).
+pub fn av1_merge_headers(path: &std::path::Path) -> Result<(u32, u32), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let e = |x: std::io::Error| x.to_string();
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path).map_err(e)?;
+    let len = f.metadata().map_err(e)?.len();
+    // top-level boxes -> moov
+    let mut pos = 0u64;
+    let mut moov: Option<Vec<u8>> = None;
+    while pos + 8 <= len {
+        let mut h = [0u8; 16];
+        f.seek(SeekFrom::Start(pos)).map_err(e)?;
+        f.read_exact(&mut h[..8]).map_err(e)?;
+        let mut size = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let mut hl = 8u64;
+        if size == 1 { f.read_exact(&mut h[8..16]).map_err(e)?; size = u64::from_be_bytes(h[8..16].try_into().unwrap()); hl = 16; }
+        if size == 0 { size = len - pos; }
+        if size < hl { return Err("broken mp4 box".into()); }
+        if &h[4..8] == b"moov" {
+            if size > 64 << 20 { return Err("moov too big".into()); }
+            let mut b = vec![0u8; (size - hl) as usize];
+            f.read_exact(&mut b).map_err(e)?;
+            moov = Some(b);
+            break;
+        }
+        pos = match pos.checked_add(size) { Some(p) => p, None => break };
+    }
+    let moov = moov.ok_or("no moov box")?;
+    fn boxes(b: &[u8]) -> Vec<([u8; 4], &[u8])> {
+        let mut v = Vec::new();
+        let mut i = 0usize;
+        while i + 8 <= b.len() {
+            let mut size = u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+            let t: [u8; 4] = b[i + 4..i + 8].try_into().unwrap();
+            let mut hl = 8;
+            if size == 1 && i + 16 <= b.len() { size = u64::from_be_bytes(b[i + 8..i + 16].try_into().unwrap()) as usize; hl = 16; }
+            if size == 0 { size = b.len() - i; }
+            if size < hl || size > b.len() - i { break; }
+            v.push((t, &b[i + hl..i + size]));
+            i += size;
+        }
+        v
+    }
+    fn child<'a>(b: &'a [u8], t: &[u8; 4]) -> Option<&'a [u8]> { boxes(b).into_iter().find(|(x, _)| x == t).map(|(_, c)| c) }
+    let be32 = |b: &[u8], i: usize| -> Option<u64> { b.get(i..i + 4).map(|x| u32::from_be_bytes(x.try_into().unwrap()) as u64) };
+    let mut samples: Vec<(u64, u64)> = Vec::new();   // (offset, size) of every AV1 video sample
+    for (t, trak) in boxes(&moov) {
+        if &t != b"trak" { continue; }
+        let Some(stbl) = child(trak, b"mdia").and_then(|m| child(m, b"minf")).and_then(|m| child(m, b"stbl")) else { continue };
+        // first sample entry must be av01 (stsd: version/flags 4, count 4, then entries)
+        let Some(stsd) = child(stbl, b"stsd") else { continue };
+        if stsd.get(12..16) != Some(b"av01") { continue; }
+        let stsz = child(stbl, b"stsz").ok_or("no stsz")?;
+        let fixed = be32(stsz, 4).ok_or("bad stsz")?;
+        let count = be32(stsz, 8).ok_or("bad stsz")? as usize;
+        let sizes: Vec<u64> = if fixed != 0 { vec![fixed; count] } else {
+            (0..count).map(|i| be32(stsz, 12 + 4 * i)).collect::<Option<_>>().ok_or("bad stsz")?
+        };
+        let chunks: Vec<u64> = if let Some(c) = child(stbl, b"stco") {
+            let n = be32(c, 4).ok_or("bad stco")? as usize;
+            (0..n).map(|i| be32(c, 8 + 4 * i)).collect::<Option<_>>().ok_or("bad stco")?
+        } else if let Some(c) = child(stbl, b"co64") {
+            let n = be32(c, 4).ok_or("bad co64")? as usize;
+            (0..n).map(|i| c.get(8 + 8 * i..16 + 8 * i).map(|x| u64::from_be_bytes(x.try_into().unwrap()))).collect::<Option<_>>().ok_or("bad co64")?
+        } else { return Err("no chunk offsets".into()) };
+        let stsc = child(stbl, b"stsc").ok_or("no stsc")?;
+        let n = be32(stsc, 4).ok_or("bad stsc")? as usize;
+        let runs: Vec<(u64, u64)> = (0..n).map(|i| Some((be32(stsc, 8 + 12 * i)?, be32(stsc, 12 + 12 * i)?))).collect::<Option<_>>().ok_or("bad stsc")?;
+        let mut s = 0usize;
+        for (ci, &off) in chunks.iter().enumerate() {
+            let c1 = ci as u64 + 1;
+            let per = runs.iter().rev().find(|(first, _)| *first <= c1).map(|r| r.1).unwrap_or(0);
+            let mut o = off;
+            for _ in 0..per {
+                if s >= sizes.len() { break; }
+                samples.push((o, sizes[s]));
+                o = o.saturating_add(sizes[s]);
+                s += 1;
+            }
+        }
+        if s != sizes.len() { return Err("sample table doesn't add up".into()); }
+        break;
+    }
+    if samples.is_empty() { return Err("no AV1 video track".into()); }
+    // check every sample first: a cut-off / broken file is left completely untouched
+    if samples.iter().any(|&(off, size)| size == 0 || size > 64 << 20 || off.checked_add(size).map_or(true, |end| end > len)) {
+        return Err("sample outside the file".into());
+    }
+    let (mut merged, mut left) = (0u32, 0u32);
+    let mut buf = Vec::new();
+    for (off, size) in samples {
+        if size == 0 || size > 64 << 20 || off.checked_add(size).map_or(true, |end| end > len) { return Err("sample outside the file".into()); }
+        buf.resize(size as usize, 0);
+        f.seek(SeekFrom::Start(off)).map_err(e)?;
+        f.read_exact(&mut buf).map_err(e)?;
+        let (m, l) = merge_sample(&mut buf);
+        if m > 0 {
+            f.seek(SeekFrom::Start(off)).map_err(e)?;
+            f.write_all(&buf).map_err(e)?;
+        }
+        merged += m;
+        left += l;
+    }
+    f.flush().map_err(e)?;
+    Ok((merged, left))
+}
+
+/// one OBU in a sample: (type, header byte, extension byte?, payload start, payload end)
+fn obu_list(b: &[u8]) -> Option<Vec<(u8, u8, Option<u8>, usize, usize)>> {
+    let mut v = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        let h = b[i];
+        let ext = h & 4 != 0;
+        if h & 2 == 0 || h & 0x80 != 0 { return None; }   // no size field / forbidden bit: leave this sample alone
+        let e = if ext { Some(*b.get(i + 1)?) } else { None };
+        let mut j = i + 1 + ext as usize;
+        let mut size = 0u64;
+        for k in 0..8 {
+            let x = *b.get(j)?;
+            j += 1;
+            size |= ((x & 0x7f) as u64) << (7 * k);
+            if x & 0x80 == 0 { break; }
+            if k == 7 { return None; }
+        }
+        let end = j.checked_add(size as usize)?;
+        if end > b.len() { return None; }
+        v.push(((h >> 3) & 15, h, e, j, end));
+        i = end;
+    }
+    Some(v)
+}
+
+/// rewrites FRAME_HEADER + TILE_GROUP pairs of one sample into FRAME OBUs, same total length. (merged, left)
+fn merge_sample(b: &mut Vec<u8>) -> (u32, u32) {
+    let Some(obus) = obu_list(b) else { return (0, 0) };
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let (mut merged, mut left) = (0u32, 0u32);
+    let mut start = 0usize;   // where the current OBU starts in b
+    let mut i = 0usize;
+    while i < obus.len() {
+        let (t, h, e, ps, pe) = obus[i];
+        if t == 3 && i + 1 < obus.len() && obus[i + 1].0 == 4 {
+            let (_, _, _, ts, te) = obus[i + 1];
+            let span = te - start;   // bytes the two OBUs take now
+            // frame header payload minus its trailing bits (a 1 bit + zeros) = header + byte_alignment
+            let mut fh = b[ps..pe].to_vec();
+            while fh.last() == Some(&0) { fh.pop(); }
+            if let Some(&last) = fh.last() {
+                let bit = last & last.wrapping_neg();
+                if last == 0x80 { fh.pop(); } else { *fh.last_mut().unwrap() = last & !bit; }
+            }
+            let body = fh.len() + (te - ts);
+            let hl = 1 + e.is_some() as usize;
+            let l = span as i64 - hl as i64 - body as i64;   // bytes left for the size field
+            if (1..=8).contains(&l) && (body as u64) < (1u64 << (7 * l as u32)) {
+                out.push((h & !(15 << 3)) | (6 << 3) | 2);
+                if let Some(x) = e { out.push(x); }
+                for k in 0..l {
+                    let x = ((body as u64 >> (7 * k)) & 0x7f) as u8;
+                    out.push(if k + 1 < l { x | 0x80 } else { x });
+                }
+                out.extend_from_slice(&fh);
+                out.extend_from_slice(&b[ts..te]);
+                merged += 1;
+            } else {
+                out.extend_from_slice(&b[start..te]);
+                left += 1;
+            }
+            start = te;
+            i += 2;
+            continue;
+        }
+        out.extend_from_slice(&b[start..pe]);
+        start = pe;
+        i += 1;
+    }
+    if out.len() != b.len() { return (0, merged + left); }   // never change a sample's length
+    *b = out;
+    (merged, left)
+}

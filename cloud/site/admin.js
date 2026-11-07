@@ -48,7 +48,7 @@ function tile(k, v, s, cls) { return `<div class="tile ${cls || ""}"><div class=
 // ----- website (counted without cookies; days are UTC) -----
 const CLICK_NAMES = { "click:plans": "See plans / Pricing", "click:storage": "Storage (menu)", "click:features": "Features (menu)",
   "click:download": "Download (jump to buttons)", "click:discord": "Discord", "click:changelog": "Changelog", "click:github": "GitHub",
-  "dl:windows": "Download: Windows installer", "dl:windows-portable": "Download: Echo.exe (no install)", "dl:linux": "Download: Linux AppImage", "dl:linux-tar": "Download: Linux tar.gz", "dl:flatpak": "Download: Linux Flatpak" };
+  "dl:windows": "Download: Windows installer", "dl:windows-portable": "Download: EchoClip.exe (no install)", "dl:linux": "Download: Linux AppImage", "dl:linux-tar": "Download: Linux tar.gz", "dl:flatpak": "Download: Linux Flatpak" };
 // crashes: logs people sent with "Send log", and how many of them contain an Echo crash (last 30 days)
 function crashes(k) {
   const vers = {};

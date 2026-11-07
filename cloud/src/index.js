@@ -1576,7 +1576,7 @@ const page = (title, text) => new Response(
 // Secret GITHUB_TOKEN = fine-grained token, only repo Resister0/echo, permission "Contents: Read-only".
 const DOWNLOADS = {
   "windows": "Echo-Setup.exe",
-  "windows-portable": "Echo.exe",
+  "windows-portable": "EchoClip.exe",   // was Echo.exe until chat 31 (Discord showed "Playing ECHO")
   "linux": "Echo-x86_64.AppImage",
   "linux-tar": "Echo-linux-x86_64.tar.gz",
 };
@@ -1660,7 +1660,7 @@ async function releaseFromWeb(repo) {
   const updated = ((entry.match(/<updated>([^<]+)<\/updated>/) || [])[1] || "").trim();
   const v = (name.match(/\d+\.\d+\.\d+/) || [])[0];
   const names = [];
-  for (const f of Object.values(DOWNLOADS)) names.push(f, `${f}.sig`);
+  for (const f of [...Object.values(DOWNLOADS), "Echo.exe"]) names.push(f, `${f}.sig`);
   const have = await Promise.all(names.map(async (n) => {
     try {
       const h = await fetch(`https://github.com/${repo}/releases/download/latest/${encodeURIComponent(n)}`, { method: "HEAD", redirect: "manual", headers: { "user-agent": "echo-cloud" } });
@@ -1749,9 +1749,11 @@ async function download(env, what, from) {
   if (what === "flatpakref") {
     return new Response(null, { status: 302, headers: { location: "https://flatpak.echoclip.link/echo.flatpakref", "cache-control": "no-store" } });
   }
-  const file = DOWNLOADS[what];
+  let file = DOWNLOADS[what];
   if (!file) return null;
-  const rel = await release(env, file, false, from);
+  let rel = await release(env, file, false, from);
+  // releases from before the rename only have Echo.exe
+  if (!rel && what === "windows-portable") { file = "Echo.exe"; rel = await release(env, file, false, from); }
   if (!rel) {
     releaseCache.clear();
     return page("Download not available", "This build isn't ready right now - a new version may be building. Try again in about 10 minutes.");
@@ -1856,7 +1858,19 @@ async function update(env, target, current) {
   if (row) { if (row.paused) return none("paused"); notes = row.notes || ""; if (!notes.trim()) return none("hidden"); }
   // "#…" publish text = internal build (e.g. a CI fix): not offered as an update - people get it with the next
   // real release (downloads from the website still are the newest build)
-  if (notes.trim().startsWith("#")) return none("internal");
+  // chat 31: but an internal build published right after a real one REPLACES "latest" (one release on GitHub), so
+  // 1.0.68 (light themes) was never offered once "# AppImage update info" (1.0.69) followed it. If a real release
+  // newer than this PC's version is part of this build, offer the build with that release's text.
+  if (notes.trim().startsWith("#")) {
+    let real = null;
+    try {
+      const r = ((await env.DB.prepare("SELECT version, notes, paused FROM releases ORDER BY at DESC LIMIT 20").all()).results) || [];
+      real = r.find((x) => !x.paused && x.notes && !String(x.notes).trim().startsWith("#")
+        && newer(x.version, current) && !newer(x.version, version));
+    } catch { /* table missing */ }
+    if (!real) return none("internal");
+    notes = String(real.notes).trim();
+  }
   // optional: a new release waits UPDATE_HOLD_MIN minutes before it's offered. OFF by default (William tests new
   // builds with friends through auto-update right away, chat 28) - "Pause updates" on /admin is the brake instead
   const hold = Number(env.UPDATE_HOLD_MIN || 0), pub = Math.floor(Date.parse(rel.published_at || rel.created_at || "") / 1000) || 0;
@@ -1920,7 +1934,17 @@ async function changes(env, since) {
   // or a "What changed?" text starting with "#" (internal builds, chat 26)
   let list = rows.filter((x) => x.notes && !String(x.notes).trim().startsWith("#") && (!latest || !newer(x.version, latest)));
   list.sort((a, b) => (newer(a.version, b.version) ? -1 : newer(b.version, a.version) ? 1 : 0));
-  if (since) list = list.filter((x) => newer(x.version, since));
+  // chat 31: the newest build is an internal "#" one (e.g. 1.0.69 right after 1.0.68) = the version people actually
+  // have and download, with the newest real release's changes in it -> show those changes under that number
+  // Only when every version in between is a "#" build (a hidden/emptied one in between = leave it alone), and the
+  // "since" filter (Echo's What's new) still uses the real number, so a PC already on 1.0.68 isn't shown it again.
+  if (latest && list.length && newer(latest, list[0].version)) {
+    const top = list[0];
+    const between = rows.filter((x) => newer(x.version, top.version) && !newer(x.version, latest));
+    if (between.length && between.every((x) => String(x.notes || "").trim().startsWith("#")))
+      list[0] = { ...top, version: latest, real: top.version };
+  }
+  if (since) list = list.filter((x) => newer(x.real || x.version, since));
   return new Response(JSON.stringify({ latest: latest || null, releases: list.slice(0, 60) }), {
     headers: { "content-type": "application/json", "cache-control": "public, max-age=60" },
   });

@@ -242,7 +242,16 @@ async fn get_status(rec: State<'_, Recorder>) -> Result<Status, String> {
 }
 
 /// In-game popup ("Clip saved") - a small always-on-top window that never takes focus.
+/// Chat 31: the popup is its own web view (~50 MB), so it only exists while it can be needed: toast_keeper makes it as
+/// soon as a game runs (so "Clip saved" still shows instantly) and closes it a minute after the game and the last popup
+/// are gone (it used to live hidden the whole time). Linux never had it: popups there are notifications.
+#[cfg(not(target_os = "linux"))]
 static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(not(target_os = "linux"))]
+static TOAST_MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// when the last popup was asked for (unix seconds)
+#[cfg(not(target_os = "linux"))]
+static TOAST_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn toast(app: &AppHandle, title: &str, sub: &str, ok: bool) {
     toast_icon(app, title, sub, ok, "");
 }
@@ -254,30 +263,64 @@ fn toast_icon(app: &AppHandle, title: &str, sub: &str, ok: bool, icon: &str) {
     #[cfg(target_os = "linux")]
     {
         linuxutil::notify(title, sub, ok);
-        return;
     }
-    #[allow(unreachable_code)]
-    let Some(w) = app.get_webview_window("toast") else { return };
-    let js = format!("window.show && show({}, {}, {}, {})",
-        serde_json::to_string(title).unwrap_or_default(), serde_json::to_string(sub).unwrap_or_default(), ok,
-        serde_json::to_string(icon).unwrap_or_default());
-    let _ = w.eval(&js);
-    #[cfg(windows)]
-    if let Ok(h) = w.hwnd() {
-        let hw = h.0 as isize;
-        winutil::overlay_visible(hw, true);
+    #[cfg(not(target_os = "linux"))]
+    {
+        // [title, sub, ok, icon] as JSON = arguments for show() in toast.html
+        let msg = serde_json::json!([title, sub, ok, icon]).to_string();
         let gen = TOAST_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        TOAST_AT.store(now_secs() as u64, std::sync::atomic::Ordering::Relaxed);
+        let app = app.clone();
+        // a thread: making a window waits for the main thread, and this can be called on it (hotkeys)
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(2600));
-            if TOAST_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
-                winutil::overlay_visible(hw, false);
+            let _making = TOAST_MAKING.lock().unwrap_or_else(|e| e.into_inner());
+            let w = match app.get_webview_window("toast") {
+                Some(w) => {
+                    let _ = w.eval(&format!("window.show && show.apply(null, {msg})"));
+                    w
+                }
+                // new window: the first message goes in with the page (show() doesn't exist before it loaded)
+                None => match make_toast(&app, &msg) { Some(w) => w, None => return },
+            };
+            drop(_making);
+            #[cfg(windows)]
+            if let Ok(h) = w.hwnd() {
+                let hw = h.0 as isize;
+                winutil::overlay_visible(hw, true);
+                std::thread::sleep(std::time::Duration::from_millis(2600));
+                if TOAST_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+                    winutil::overlay_visible(hw, false);
+                }
             }
+            #[cfg(not(windows))]
+            let _ = (w, gen);
         });
     }
 }
 
-fn setup_toast(app: &tauri::App) {
+/// Keeps the popup window ready while a game runs (or a popup was shown in the last minute), closes it otherwise.
+#[cfg(not(target_os = "linux"))]
+fn toast_keeper(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let rec = app.state::<Recorder>();
+        let game = rec.last_game.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(false, |(_, t)| t.elapsed().as_secs() < 30);
+        let recent = (now_secs() as u64).saturating_sub(TOAST_AT.load(std::sync::atomic::Ordering::Relaxed)) < 60;
+        let want = rec.settings().show_overlay && (game || recent);
+        let _making = TOAST_MAKING.lock().unwrap_or_else(|e| e.into_inner());
+        match (want, app.get_webview_window("toast")) {
+            (true, None) => { let _ = make_toast(&app, "null"); }
+            (false, Some(w)) => { let _ = w.destroy(); }
+            _ => {}
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn make_toast(app: &AppHandle, first: &str) -> Option<tauri::WebviewWindow> {
+    let init = format!("window.__first = {first};");
     let w = tauri::WebviewWindowBuilder::new(app, "toast", tauri::WebviewUrl::App("toast.html".into()))
+        .initialization_script(&init)
         .title("Echo popup")
         .decorations(false)
         .transparent(true)
@@ -302,8 +345,12 @@ fn setup_toast(app: &tauri::App) {
             if let Ok(h) = w.hwnd() {
                 winutil::make_overlay(h.0 as isize);
             }
+            Some(w)
         }
-        Err(e) => recorder::log_line(&format!("popup window: {e}")),
+        Err(e) => {
+            recorder::log_line(&format!("popup window: {e}"));
+            None
+        }
     }
 }
 
@@ -1531,15 +1578,56 @@ static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 
 /// Tell WebView2 whether the page is on screen. Hiding the window alone (tray) left the page running as if it were
 /// visible: timers kept polling and it kept its drawing resources. Hidden, the page slows its timers right down.
+/// Chat 31: hidden for 30 s (Echo in the tray while you play) -> WebView2's "low memory" target, so the interface gives
+/// back memory; set back to normal BEFORE the window is shown again (show_main calls this first), so it opens as usual.
+/// Scripts keep running in low mode (update checks, reminders) - it isn't a suspend.
+#[cfg(windows)]
+static HIDE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(windows)]
+static LOW_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn webview_visible(w: &tauri::WebviewWindow, on: bool) {
     #[cfg(windows)]
     {
+        use std::sync::atomic::Ordering;
+        let gen = HIDE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        let low_since = if on { LOW_SINCE.swap(0, Ordering::SeqCst) } else { 0 };
         let _ = w.with_webview(move |wv| unsafe {
-            let _ = wv.controller().SetIsVisible(on);
+            let c = wv.controller();
+            if on && low_since > 0 {
+                let ok = webview_memory(&c, false);
+                recorder::log_line(&format!("webview: memory back to normal after {} min hidden ({})",
+                    (now_secs() as u64).saturating_sub(low_since) / 60, if ok { "ok" } else { "not supported" }));
+            }
+            let _ = c.SetIsVisible(on);
         });
+        if !on {
+            let w = w.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                if HIDE_GEN.load(Ordering::SeqCst) != gen { return; }
+                let _ = w.with_webview(move |wv| unsafe {
+                    // still hidden (checked again on the main thread, where show_main runs)
+                    if HIDE_GEN.load(Ordering::SeqCst) != gen { return; }
+                    if webview_memory(&wv.controller(), true) {
+                        LOW_SINCE.store(now_secs() as u64, Ordering::SeqCst);
+                        recorder::log_line("webview: hidden for 30 s - interface set to low memory");
+                    }
+                });
+            });
+        }
     }
     #[cfg(not(windows))]
     let _ = (w, on);
+}
+
+/// WebView2 memory target: low (hidden) or normal. false = this WebView2 runtime is too old for it.
+#[cfg(windows)]
+unsafe fn webview_memory(c: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller, low: bool) -> bool {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    use wincore62::Interface;
+    let Ok(core) = c.CoreWebView2() else { return false };
+    let Ok(c19) = core.cast::<ICoreWebView2_19>() else { return false };
+    c19.SetMemoryUsageTargetLevel(if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL }).is_ok()
 }
 
 fn show_main(app: &AppHandle) {
@@ -1808,7 +1896,9 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-            setup_toast(app);
+            // the in-game popup window only exists while a game runs / a popup was just shown (toast_keeper)
+            #[cfg(not(target_os = "linux"))]
+            toast_keeper(handle.clone());
 
             // cloud sync: every 5 minutes, or soon after a clip is saved / settings change
             {

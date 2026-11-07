@@ -86,6 +86,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="1.0.70" date="2026-11-07">
+      <description>
+        <p>AV1 clips play in the Linux AppImage, Windows: Echo no longer shows as the game ECHO in Discord, Uses less memory while Echo waits in the tray, Security fixes.</p>
+      </description>
+    </release>
     <release version="1.0.69" date="2026-11-07">
       <description>
         <p>Bug fixes and improvements.</p>

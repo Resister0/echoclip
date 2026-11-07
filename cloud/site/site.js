@@ -50,10 +50,16 @@
     const short = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
     const list = j.releases || [];
     if (!list.length) { box.innerHTML = '<p class="sub">No versions listed yet.</p>'; return; }
-    // split on commas that aren't inside quotes; first letter up
-    const parts = (n) => { const out = []; let cur = "", q = false;
-      for (const ch of String(n)) { if (ch === '"') q = !q; if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; }
-      out.push(cur); return out.map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1)); };
+    // split on commas + sentence ends that aren't inside quotes or brackets; first letter up. A comma right after
+    // "Something: Word" is a list ("Light themes: Light, Paper and Match system") and doesn't split (chat 31)
+    const parts = (n) => { const out = []; let cur = "", q = false, br = 0; const t = String(n);
+      for (let i = 0; i < t.length; i++) { const ch = t[i];
+        if (ch === '"') q = !q; else if (ch === "(") br++; else if (ch === ")" && br) br--;
+        const top = !q && !br;
+        if (top && ch === "," && !/:\s*\S+$/.test(cur)) { out.push(cur); cur = ""; }
+        else if (top && ch === "." && /^\s+[A-Z0-9]/.test(t.slice(i + 1, i + 3))) { out.push(cur); cur = ""; }
+        else cur += ch; }
+      out.push(cur); return out.map((x) => x.trim().replace(/\.$/, "")).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1)); };
     const tags = (t) => { const g = [];
       if (/\b(fix|fixed|fixes|no longer|crash|bug|broken|stuck|works again|instead of)\b/i.test(t)) g.push("fix"); else g.push("new");
       if (/linux|appimage|flatpak|kde|wayland|nobara|steam deck|bazzite/i.test(t)) g.push("linux");

@@ -53,8 +53,8 @@ async function load() {
 }
 
 function report(o) {
-  const link = o.kind === "s" ? `/s/${o.target}` : `/u/${o.target}`;
-  const name = o.kind === "s" ? (o.title || "Shared clip") + ` <span class="sub">/s/${esc(o.target)}</span>` : `@${esc(o.target)}${o.title ? ` <span class="sub">${esc(o.title)}</span>` : ""}`;
+  const link = esc(o.kind === "s" ? `/s/${o.target}` : `/u/${o.target}`);
+  const name = o.kind === "s" ? esc(o.title || "Shared clip") + ` <span class="sub">/s/${esc(o.target)}</span>` : `@${esc(o.target)}${o.title ? ` <span class="sub">${esc(o.title)}</span>` : ""}`;
   const items = o.items.map((i) => `<li><b>${esc(i.reason)}</b> · ${ago(i.created)}${i.details ? ` - ${esc(i.details)}` : ""}</li>`).join("");
   const acts = !o.exists ? `<span class="gone">Already gone</span> <button data-a="dismiss">Close</button>`
     : o.kind === "s" ? `<button class="danger" data-a="rmshare">Remove link</button><button data-a="dismiss">Nothing wrong</button>`
