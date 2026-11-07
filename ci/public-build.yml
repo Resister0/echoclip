@@ -167,16 +167,46 @@ jobs:
           cp target/release/bundle/appimage/*.AppImage ../Echo-x86_64.AppImage
           cp target/release/bundle/appimage/*.AppImage.sig ../Echo-x86_64.AppImage.sig || echo "no update signature"
       - name: AppImage update info (.zsync)
-        # the .zsync must name the release file (Echo-x86_64.AppImage), so it is made here after the rename;
-        # the AppImage itself is not changed (its .sig stays valid)
+        # Tauri's AppImage tooling ignores LDAI_UPDATE_INFORMATION, so the AppImage is re-packed here with appimagetool -u
+        # (AppImageHub bot, chat 30). Built as Echo-new.AppImage, re-signed for Echo's own updater, and only then swapped in -
+        # if anything fails, the original AppImage + .sig are released unchanged.
         continue-on-error: true
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          INFO: gh-releases-zsync|Resister0|echoclip|latest|Echo-x86_64.AppImage.zsync
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          set -e
           [ -f Echo-x86_64.AppImage ] || { echo "no AppImage"; exit 0; }
           chmod +x Echo-x86_64.AppImage
           info=$(./Echo-x86_64.AppImage --appimage-updateinformation 2>/dev/null || true)
           echo "embedded update information: '$info'"
-          case "$info" in gh-releases-zsync*) ;; *) echo "::warning::AppImage has no update information - skipping .zsync"; exit 0;; esac
+          case "$info" in
+            gh-releases-zsync*) cp Echo-x86_64.AppImage Echo-new.AppImage ;;
+            *)
+              wget -q -O appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+              chmod +x appimagetool
+              rm -rf squashfs-root && ./Echo-x86_64.AppImage --appimage-extract >/dev/null
+              ARCH=x86_64 ./appimagetool --no-appstream -u "$INFO" squashfs-root Echo-new.AppImage
+              rm -rf squashfs-root
+              chmod +x Echo-new.AppImage
+              # the re-packed file must start and say where its updates are
+              ./Echo-new.AppImage --appimage-updateinformation | grep -q '^gh-releases-zsync' ;;
+          esac
+          rm -f Echo-new.AppImage.zsync
+          if [ "$info" = "${info#gh-releases-zsync}" ]; then
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli@2 signer sign Echo-new.AppImage
+              mv Echo-new.AppImage.sig Echo-x86_64.AppImage.sig
+            fi
+            mv Echo-new.AppImage Echo-x86_64.AppImage
+          else
+            rm -f Echo-new.AppImage
+          fi
+          # .zsync last, from the final file
           zsyncmake -u Echo-x86_64.AppImage -o Echo-x86_64.AppImage.zsync Echo-x86_64.AppImage
+          ./Echo-x86_64.AppImage --appimage-updateinformation
           head -c 400 Echo-x86_64.AppImage.zsync | sed -n '1,8p'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

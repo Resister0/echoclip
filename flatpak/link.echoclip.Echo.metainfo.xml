@@ -86,6 +86,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="1.0.69" date="2026-11-07">
+      <description>
+        <p>Bug fixes and improvements.</p>
+      </description>
+    </release>
     <release version="1.0.68" date="2026-11-07">
       <description>
         <p>Light themes: Light, Paper and Match system (follows your desktop; the default for new Linux installs). AV1 clips play again in the Linux AppImage instead of going black.</p>
