@@ -3,7 +3,8 @@
 const $ = (s) => document.querySelector(s);
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
-let token = ""; try { token = sessionStorage.getItem("echo_mod_token") || ""; } catch { }
+// signed in on /admin? that session works here too (chat 30)
+let token = ""; try { token = sessionStorage.getItem("echo_mod_token") || localStorage.getItem("echo_admin_token") || ""; } catch { }
 let email = "";
 
 async function api(method, path, b) {
@@ -41,7 +42,7 @@ function code(msg) {
   };
   $("#go").onclick = go; $("#cd").onkeydown = (e) => { if (e.key === "Enter") go(); }; $("#back").onclick = () => login(); $("#cd").focus();
 }
-function forget() { token = ""; try { sessionStorage.removeItem("echo_mod_token"); } catch { } }
+function forget() { if (token.startsWith("adm_")) { try { localStorage.removeItem("echo_admin_token"); } catch { } } token = ""; try { sessionStorage.removeItem("echo_mod_token"); } catch { } }
 
 async function load() {
   if (!token) return login();

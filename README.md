@@ -67,7 +67,7 @@ Packagers are welcome: if you'd like Echo in your distro's repository (AUR, COPR
 
 Echo is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 or (at your option) any later version**. See [LICENSE](LICENSE).
 
-Copyright (C) 2026 Kimbo.
+Copyright (C) 2026 William Volkan (Kimbo, [@Resister0](https://github.com/Resister0)).
 
 Echo uses or downloads these tools, each under its own licence: [FFmpeg](https://ffmpeg.org) (GPL), [rclone](https://rclone.org) (MIT), [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) (GPL-3.0, Linux), [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (MIT, auto captions), [RNNoise](https://github.com/xiph/rnnoise) (BSD, noise removal), [Tauri](https://tauri.app) (MIT / Apache-2.0).
 

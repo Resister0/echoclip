@@ -5,22 +5,40 @@ const gb = (b) => { b = b || 0; return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB"
 const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
 const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-";
 const money = (v, c) => (v || 0).toLocaleString(undefined, { style: "currency", currency: c || "EUR" });
-// key kept in localStorage (stays signed in after closing the page; "Sign out" removes it) - was sessionStorage, chat 30
-let key = ""; try { key = localStorage.getItem("echo_admin_key") || ""; } catch { }
+// signed in with the email code (w@volkan.dk only, chat 30): a session token like the app's, kept in this browser until
+// "Sign out" (ends the session on the server too) or 180 days unused. The old ADMIN_KEY is no longer stored anywhere.
+let key = ""; try { localStorage.removeItem("echo_admin_key"); sessionStorage.removeItem("echo_admin_key"); key = localStorage.getItem("echo_admin_token") || ""; } catch { }
+const auth = (extra) => ({ authorization: "Bearer " + key, ...(extra || {}) });
 
 function login(msg) {
-  $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Paste your ADMIN_KEY (Bitwarden). It's remembered in this browser only.</div>
-    <input id="k" type="password" placeholder="ADMIN_KEY" autocomplete="off"><button id="go">Open</button>${msg ? `<div class="err">${esc(msg)}</div>` : ""}</div>`;
-  $("#go").onclick = () => { key = $("#k").value.trim(); try { localStorage.setItem("echo_admin_key", key); } catch { } load(); };
-  $("#k").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
-  $("#k").focus();
+  $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Sign in with your admin email - we'll send you a code.</div>
+    <input id="em" type="email" placeholder="Email" autocomplete="email"><button id="go">Send code</button>
+    <div id="step2" style="display:none"><input id="cd" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code"><button id="ok">Sign in</button></div>
+    <div class="err" id="er">${msg ? esc(msg) : ""}</div></div>`;
+  const post = async (path, b) => { const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }); return [r, await r.json().catch(() => ({}))]; };
+  $("#go").onclick = async () => {
+    const email = $("#em").value.trim(); if (!email) return;
+    $("#go").disabled = true; $("#er").textContent = "";
+    try { const [r, j] = await post("/auth/start", { email, admin: true }); if (!r.ok) throw new Error(j.error || "Error " + r.status); } catch (e) { $("#er").textContent = e.message; $("#go").disabled = false; return; }
+    $("#step2").style.display = ""; $("#er").textContent = "If that's the admin email, a code is on its way."; $("#cd").focus();
+  };
+  $("#ok").onclick = async () => {
+    try {
+      const [r, j] = await post("/auth/verify", { email: $("#em").value.trim(), code: $("#cd").value, admin: true });
+      if (!r.ok || !j.token) throw new Error(j.error || "Error " + r.status);
+      key = j.token; try { localStorage.setItem("echo_admin_token", key); } catch { } load();
+    } catch (e) { $("#er").textContent = e.message; }
+  };
+  $("#em").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
+  $("#cd").onkeydown = (e) => { if (e.key === "Enter") $("#ok").click(); };
+  $("#em").focus();
 }
 
 async function load() {
   if (!key) return login();
   let r;
-  try { r = await fetch("/admin/stats", { headers: { "x-admin-key": key } }); } catch { return login("Couldn't reach echoclip.link"); }
-  if (r.status === 403) { try { localStorage.removeItem("echo_admin_key"); } catch { } return login("Wrong key"); }
+  try { r = await fetch("/admin/stats", { headers: auth() }); } catch { return login("Couldn't reach echoclip.link"); }
+  if (r.status === 403) { const j = await r.json().catch(() => ({})); try { localStorage.removeItem("echo_admin_token"); } catch { } const t = key.slice(0, 4); key = ""; return login((j.error || "Signed out - sign in again") + (t === "adm_" ? "" : " [old token]")); }
   if (!r.ok) return login("Error " + r.status);
   draw(await r.json());
 }
@@ -190,7 +208,7 @@ function draw(j) {
   const rows = (list, f) => list.length ? list.map(f).join("") : `<tr><td colspan="9" class="sub">None</td></tr>`;
   $("#app").innerHTML = `
     <div class="top"><h1>Echo stats</h1><span class="sub">updated ${new Date(j.at * 1000).toLocaleTimeString()}</span><span class="sp"></span>
-      <button id="re">Refresh</button><button id="out">Forget key</button></div>
+      <button id="re">Refresh</button><button id="out">Sign out</button></div>
 
     <h2>Money per month</h2>
     <div class="grid">
@@ -270,7 +288,7 @@ function draw(j) {
   const post = async (path, b, out) => {
     out.textContent = "…";
     try {
-      const r = await fetch(path, { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify(b) });
+      const r = await fetch(path, { method: "POST", headers: auth({ "content-type": "application/json" }), body: JSON.stringify(b) });
       const x = await r.json().catch(() => ({}));
       out.textContent = r.ok ? `Done${x.owner ? " · owner " + x.owner : ""}${x.blocked ? " · @name blocked" : ""}` : (x.error || "Error " + r.status);
     } catch { out.textContent = "Couldn't reach echoclip.link"; }
@@ -287,7 +305,7 @@ function draw(j) {
     if (!b) return;
     out.textContent = "…";
     try {
-      const r = await fetch("/admin/release", { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify(b) });
+      const r = await fetch("/admin/release", { method: "POST", headers: auth({ "content-type": "application/json" }), body: JSON.stringify(b) });
       const x = await r.json().catch(() => ({}));
       if (r.ok) load(); else out.textContent = x.error || "Error " + r.status;
     } catch { out.textContent = "Couldn't reach echoclip.link"; }
@@ -300,25 +318,25 @@ function draw(j) {
     if (!who || !confirm(to ? `Change ${who} to @${to.replace(/^@/, "")}?` : `Give ${who} a random @name?`)) return;
     out.textContent = "…";
     try {
-      const r = await fetch("/admin/profile-handle", { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify({ who, to, block_old: $("#hblock").checked }) });
+      const r = await fetch("/admin/profile-handle", { method: "POST", headers: auth({ "content-type": "application/json" }), body: JSON.stringify({ who, to, block_old: $("#hblock").checked }) });
       const x = await r.json().catch(() => ({}));
       out.textContent = r.ok ? `Done: ${x.from ? "@" + x.from + " → " : ""}@${x.to}${x.blocked ? " · old @name blocked" : ""}${x.owner ? " · " + x.owner : ""}` : (x.error || "Error " + r.status);
     } catch { out.textContent = "Couldn't reach echoclip.link"; }
   };
   document.querySelectorAll(".mkmod").forEach((b) => b.onclick = () => modsPost({ email: b.dataset.e }, `Make ${b.dataset.e} a moderator?`));
   loadMods();
-  $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
+  $("#out").onclick = () => { fetch("/auth/logout", { method: "POST", headers: auth() }).catch(() => { }); try { localStorage.removeItem("echo_admin_token"); } catch { } key = ""; login(); };
 }
 // ----- moderators (chat 29): they sign in at echoclip.link/mod with their Echo Cloud email -----
 async function loadMods() {
-  let r; try { r = await fetch("/admin/mods", { headers: { "x-admin-key": key } }); } catch { return; }
+  let r; try { r = await fetch("/admin/mods", { headers: auth() }); } catch { return; }
   if (r.ok) drawMods(await r.json());
 }
 async function modsPost(b, ask) {
   if (ask && !confirm(ask)) return;
   const out = $("#modmsg"); if (out) out.textContent = "…";
   try {
-    const r = await fetch("/admin/mods", { method: "POST", headers: { "x-admin-key": key, "content-type": "application/json" }, body: JSON.stringify(b) });
+    const r = await fetch("/admin/mods", { method: "POST", headers: auth({ "content-type": "application/json" }), body: JSON.stringify(b) });
     const x = await r.json().catch(() => ({}));
     if (r.ok) drawMods(x); else if (out) out.textContent = x.error || "Error " + r.status; else alert(x.error || "Error " + r.status);
   } catch { if (out) out.textContent = "Couldn't reach echoclip.link"; }

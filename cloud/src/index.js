@@ -10,6 +10,7 @@ import { DISPOSABLE } from "./disposable.js";
 //   POLAR_TOKEN            Polar organization access token (products:read, checkouts:write, customer_sessions:write)
 //   POLAR_WEBHOOK_SECRET   secret of the Polar webhook pointing at https://echoclip.link/polar/webhook
 //   RELEASE_KEY            (optional) long random string; the public build sends it with POST /release/push
+//   ADMIN_EMAIL            (optional) the one email that can sign in to echoclip.link/admin with an email code
 //   ADMIN_KEY              (optional) long random string for /admin/takedown (removing reported share links)
 // Var UPLOAD_KEYS: "rw" (default) = /creds hands out read-write keys like before; "ro" = read-only keys, and Echo
 // uploads / deletes / moves through /upload, /delete, /move (per-file, size-checked). Switch to "ro" once every
@@ -22,6 +23,9 @@ const CODE_MINUTES = 10;
 const CREDS_SECONDS = 3600;     // short: upload keys can't be taken back, so an account can only overshoot its plan this long
 const USAGE_CACHE_SECONDS = 300;
 const USAGE_FRESH_SECONDS = 20; // "fresh" usage is still cached this long (listing the bucket costs money)
+/// echoclip.link/admin signs in with the normal email code, only for secret ADMIN_EMAIL (chat 30; a secret, not in the
+/// code, because cloud/ is copied to the public repo). Not set = email sign-in for /admin is off. ADMIN_KEY header still works.
+const isAdminEmail = (env, e) => !!e && !!env.ADMIN_EMAIL && canonEmail(String(e).toLowerCase()) === canonEmail(env.ADMIN_EMAIL.trim().toLowerCase());
 const SESSION_DAYS = 180;       // signed out after this long without using Echo Cloud
 const OVER_GRACE_DAYS = 30;     // over the plan (e.g. a paid plan ended): clips above it are removed after this many days
 const OVER_REMIND_DAYS = 23;    // reminder email (7 days before)
@@ -162,6 +166,8 @@ async function authStart(req, env) {
   if (old && now() - old.sent < 45) return fail("A code was just sent - wait a moment before asking again", 429);
   // new accounts only: throwaway domains / impossible Gmail names (people who already have an account still get in)
   // echoclip.link/mod: only moderators get a code (others get the same "sent" answer, so the page doesn't tell who is one)
+  // echoclip.link/admin: only the admin address gets a code (same quiet "sent" answer for anyone else)
+  if (b0.admin && !isAdminEmail(env, email)) return json({ ok: true });
   if (b0.mod) {
     const acc = await accountFor(env, email);
     const isMod = acc && (await env.DB.prepare("SELECT 1 AS x FROM mods WHERE user_id = ?").bind(acc.id).first());
@@ -205,6 +211,7 @@ async function authVerify(req, env) {
   let user = await accountFor(env, email);
   if (!user && emailProblem(email)) return fail(emailProblem(email));
   if (!user && b.mod) return fail("Wrong code");   // the /mod page never makes accounts
+  if (b.admin && !isAdminEmail(env, email)) return fail("Wrong code");
   if (!user) {
     // one person making lots of free accounts: at most 3 new accounts per network per day
     if (!(await allow(env, `newacc:${ipOf(req)}`, Number(env.NEW_ACCOUNTS_PER_DAY || 3), 86400)))
@@ -216,7 +223,8 @@ async function authVerify(req, env) {
     ).bind(id, email, quota, now()).run();
     user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
   }
-  const token = randomHex(32);
+  // admin page sessions start with "adm_" (hash covers the prefix): an app sign-in token of the same account can't open /admin
+  const token = (b.admin ? "adm_" : "") + randomHex(32);
   await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, created, last_seen) VALUES (?, ?, ?, ?)")
     .bind(await sha256(token), user.id, now(), now()).run();
   return json({ token, ...me(user, await usage(env, user)) });
@@ -1016,6 +1024,11 @@ ${cards ? `<div class="grid">${cards}</div>` : `<p class="empty">No pinned clips
 async function adminDenied(req, env) {
   const key = req.headers.get("x-admin-key") || "", want = env.ADMIN_KEY || "";
   if (!(await allow(env, `admin:${ipOf(req)}`, 120, 3600))) return fail("slow down", 429);
+  if ((req.headers.get("authorization") || "").startsWith("Bearer adm_")) {
+    const u = await userFromToken(req, env);
+    if (u && isAdminEmail(env, u.email)) return null;
+    return fail(u ? "That account isn't the admin email" : "Signed out - sign in again (session not found)", 403);
+  }
   let diff = want.length < 20 || key.length !== want.length ? 1 : 0;
   for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
   if (!diff) return null;
