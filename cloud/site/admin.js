@@ -127,6 +127,7 @@ function apps(A, site) {
   for (const r of A.rows) {
     const p = per[r.day]; if (!p) continue;
     if (r.k === "app:windows") p.win += r.n; else if (r.k === "app:linux") p.lin += r.n;
+    else if (r.k.startsWith("appr:")) p.ret = (p.ret || 0) + r.n;
     else if (r.k.startsWith("appv:")) { const [, os, v] = r.k.split(":"); (p.v[v] = p.v[v] || { windows: 0, linux: 0 })[os] += r.n; }
     else if (r.k.startsWith("appc:")) { const [, , v, cc] = r.k.split(":"); const c = (p.c = p.c || {}); (c[v] = c[v] || {})[cc] = (c[v][cc] || 0) + r.n; }
   }
@@ -169,6 +170,7 @@ function apps(A, site) {
     <div class="grid">
       ${tile("Apps today", tot(today), `${per[today].win} Windows · ${per[today].lin} Linux`)}
       ${tile("Yesterday", tot(yest), `${per[yest].win} Windows · ${per[yest].lin} Linux`)}
+      ${tile("Returning today", per[today].ret || 0, `also here yesterday · ${per[yest].ret || 0} the day before`)}
       ${tile("Per day, last 7 days", (all7 / 7).toFixed(1), "average")}
       ${tile("On the newest version", onNew, `${pct(onNew)} · newest is ${esc(newest || "?")}`)}
       ${tile("Outdated", old, old ? `${pct(old)} haven't updated yet` : "everyone is up to date")}

@@ -780,7 +780,14 @@ async function countApp(req, env, os, version) {
     if (!UPDATE_FILES[os] || !/^\d{1,3}\.\d{1,3}\.\d{1,4}$/.test(version)) return;
     const h = "a" + (await sha256(`${utcDay()}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
-    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) { await bump(env, "app:" + os); await bump(env, `appv:${os}:${version}`); }
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) {
+      await bump(env, "app:" + os); await bump(env, `appv:${os}:${version}`);
+      // returning copies (chat 30): this computer was also counted YESTERDAY - checked with yesterday's own daily
+      // hash (uv keeps 2 days), so no lasting ID is stored. Sandboxes/one-off scans never show up here.
+      const yday = utcDay(now() - 86400);
+      const hy = "a" + (await sha256(`${yday}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+      if (await env.DB.prepare("SELECT 1 AS x FROM uv WHERE day = ? AND h = ?").bind(yday, hy).first()) await bump(env, "appr:" + os);
+    }
     // country (Cloudflare's guess from the connection, e.g. "DK") - only the country is kept, chat 28. Its own
     // once-a-day mark, so a computer already counted today (before this existed) still gets its country
     const cc = String((req.cf && req.cf.country) || "").toUpperCase();
@@ -1788,11 +1795,16 @@ async function adminRelease(req, env) {
 /// the newest real release (a "#" internal build isn't offered as an update, so it doesn't count as "newest").
 async function appStats(env) {
   const from = utcDay(now() - 13 * 86400);
-  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ? AND (k LIKE 'app:%' OR k LIKE 'appv:%' OR k LIKE 'appc:%')").bind(from).all()).results) || [];
+  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ? AND (k LIKE 'app:%' OR k LIKE 'appv:%' OR k LIKE 'appc:%' OR k LIKE 'appr:%')").bind(from).all()).results) || [];
   let latest = null;
   try {
-    const r = ((await env.DB.prepare("SELECT version, notes FROM releases ORDER BY at DESC LIMIT 30").all()).results) || [];
-    const real = r.find((x) => !String(x.notes || "").trim().startsWith("#")) || r[0];
+    const r = ((await env.DB.prepare("SELECT * FROM releases ORDER BY at DESC LIMIT 30").all()).results) || [];
+    // newest version users are actually OFFERED: skip "#" internal builds, hidden (empty text) and paused releases
+    // (chat 30: 1.0.63-66 were "#" builds and the page called everyone on 1.0.62 "outdated")
+    const offered = (x) => { const n = String(x.notes || "").trim(); return n && !n.startsWith("#") && !x.paused; };
+    // ...and only once it's really out (signed files released on GitHub), not while its build is still running
+    const out = relVersion(await releaseOf(env, publicRepo(env), true).catch(() => null));
+    const real = r.find((x) => offered(x) && (!out || !newer(String(x.version).replace(/[^0-9.]/g, ""), out)));
     latest = real ? String(real.version).replace(/[^0-9.]/g, "") : null;
   } catch { /* table not there yet */ }
   return { rows, latest, today: utcDay() };

@@ -571,8 +571,15 @@ async fn compress_clip(app: AppHandle, rec: State<'_, Recorder>, path: String, f
     rec.compress_clip(&path, factor, av1.unwrap_or(false), &|f: f64| {
         let pct = (f * 100.0) as i32;
         let mut l = last.lock().unwrap();
-        if pct != *l { *l = pct; let _ = app.emit("copy-progress", (path.clone(), f)); }
+        if pct != *l { *l = pct; *JOB_PROG.lock().unwrap() = (path.clone(), f); let _ = app.emit("copy-progress", (path.clone(), f)); }
     })
+}
+
+/// the running AV1 / shrink job's progress, polled by the UI (chat 30: the copy-progress events didn't arrive on Linux)
+static JOB_PROG: Mutex<(String, f64)> = Mutex::new((String::new(), 0.0));
+#[tauri::command]
+fn job_progress() -> (String, f64) {
+    JOB_PROG.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -593,6 +600,8 @@ async fn echocloud_delete_account(rec: State<'_, Recorder>, confirm: String) -> 
 #[tauri::command]
 async fn av1_support(plays: bool) -> String {
     recorder::AV1_PLAYS.store(plays, std::sync::atomic::Ordering::Relaxed);
+    // chat 30: on Linux nobody knows yet what WebKitGTK answers for AV1 - log it (the option needs both)
+    recorder::log_line(&format!("av1: player says AV1 1440p60 {} smooth + power-efficient", if plays { "IS" } else { "is NOT" }));
     if recorder::av1_ready() { recorder::av1_encoder().unwrap_or("").to_string() } else { String::new() }
 }
 
@@ -963,8 +972,36 @@ async fn trim_clip(rec: State<'_, Recorder>, path: String, start: f64, end: f64,
 }
 
 #[tauri::command]
-async fn import_clips(rec: State<'_, Recorder>, paths: Vec<String>) -> Result<(Vec<String>, Vec<String>), String> {
-    Ok(rec.import_clips(&paths))
+async fn hero_frame(rec: State<'_, Recorder>, path: String, width: u32) -> Result<String, String> {
+    rec.hero_frame(&path, width)
+}
+
+#[tauri::command]
+fn import_cancel(rec: State<Recorder>) {
+    rec.import_cancel();
+}
+
+#[tauri::command]
+async fn import_clips(app: AppHandle, rec: State<'_, Recorder>, paths: Vec<String>, folder: Option<String>) -> Result<(Vec<String>, Vec<String>), String> {
+    let folder = folder.unwrap_or_default();
+    // at most ~4 events a second (the bar), plus every new file
+    let last = std::sync::Mutex::new((usize::MAX, std::time::Instant::now()));
+    *IMPORT_PROG.lock().unwrap() = serde_json::Value::Null;
+    Ok(rec.import_clips(&paths, &folder, &|frac, done, total, name| {
+        let mut l = last.lock().unwrap();
+        if l.0 == done && l.1.elapsed().as_millis() < 240 && frac < 1.0 { return; }
+        *l = (done, std::time::Instant::now());
+        let v = serde_json::json!({ "done": done, "total": total, "name": name, "pct": (frac * 1000.0).round() / 10.0 });
+        *IMPORT_PROG.lock().unwrap() = v.clone();
+        let _ = app.emit("import-progress", v);
+    }))
+}
+
+/// the import box also polls this (chat 30: the import-progress events never reached the box on Linux)
+static IMPORT_PROG: Mutex<serde_json::Value> = Mutex::new(serde_json::Value::Null);
+#[tauri::command]
+fn import_status() -> serde_json::Value {
+    IMPORT_PROG.lock().unwrap().clone()
 }
 
 /// the watchdog leaves the recorder alone while the FPS test pauses it
@@ -1451,10 +1488,31 @@ fn set_autostart(on: bool) {
             let exe = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty())
                 .unwrap_or_else(|| std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default());
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(&f, format!("[Desktop Entry]\nType=Application\nName=Echo\nExec=\"{exe}\" --autostart\nIcon=echo-clips\nX-GNOME-Autostart-enabled=true\n"));
+            let _ = std::fs::write(&f, format!("[Desktop Entry]\nType=Application\nName=Echo\nExec=\"{exe}\" --autostart\nIcon=link.echoclip.Echo\nX-GNOME-Autostart-enabled=true\n"));
         } else {
             let _ = std::fs::remove_file(&f);
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_desktop_entry() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let data = std::env::var("XDG_DATA_HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| home.join(".local/share"));
+    let icon = data.join("icons/hicolor/256x256/apps/link.echoclip.Echo.png");
+    let png: &[u8] = include_bytes!("../icons/icon.png");
+    if std::fs::read(&icon).map_or(true, |b| b != png) {
+        let _ = std::fs::create_dir_all(icon.parent().unwrap());
+        let _ = std::fs::write(&icon, png);
+    }
+    let appimage = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty());
+    let exe = appimage.clone().unwrap_or_else(|| std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default());
+    let entry = format!("[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=link.echoclip.Echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n{}",
+        if appimage.is_some() { "" } else { "NoDisplay=true\n" });
+    let f = data.join("applications/link.echoclip.Echo.desktop");
+    if std::fs::read_to_string(&f).map_or(true, |s| s != entry) {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(&f, entry);
     }
 }
 
@@ -1553,6 +1611,13 @@ fn main() {
     if linuxutil::in_flatpak() {
         glib::set_prgname(Some("link.echoclip.Echo"));
         glib::set_application_name("Echo");
+    } else {
+        // AppImage / tar.gz / own build (chat 30): the window showed KDE's generic "W" icon - nothing on the system
+        // knew Echo's window id. Use the same id as the Flatpak and put a matching .desktop file + icon into the
+        // user's own folders (rewritten only when they change). Only the AppImage gets a visible menu entry.
+        glib::set_prgname(Some("link.echoclip.Echo"));
+        glib::set_application_name("Echo");
+        linux_desktop_entry();
     }
     STARTED.get_or_init(std::time::Instant::now);
     // Linux: map the Windows folders the code uses to their Linux homes
@@ -2172,7 +2237,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, cloud_strip, scrub_sheet, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_cancel, import_status, hero_frame, job_progress, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, cloud_strip, scrub_sheet, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

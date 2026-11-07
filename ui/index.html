@@ -510,7 +510,10 @@
   .settings { display:flex; height:100%; }
   .snav { width:230px; padding:18px 12px; border-right:1px solid var(--line); flex:none; }
   .snav h4 { font-size:11px; letter-spacing:.08em; color:var(--dim); margin:10px 10px 6px; }
-  .snav a { display:block; padding:8px 12px; border-radius:8px; color:var(--muted); cursor:pointer; }
+  .snav a { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; color:var(--muted); cursor:pointer; }
+  #bgfxc { position:fixed; inset:0; width:100vw; height:100vh; pointer-events:none; z-index:2; opacity:.55; }
+  body.fxoff #bgfxc { display:none; }
+  .snav a svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; opacity:.85; }
   .snav a:hover { color:var(--text); background:var(--panel); }
   .snav a.on { color:var(--text); background:var(--panel2); }
   /* settings search: every section shows, rows that don't match hide */
@@ -531,6 +534,11 @@
   .row .lbl b { display:block; font-weight:600; }
   .row .lbl small { color:var(--muted); font-size:12.5px; }
   .hk { min-width:150px; height:36px; border-radius:9px; border:1px solid var(--line); background:var(--bg); display:flex; align-items:center; justify-content:center; gap:5px; padding:0 12px; }
+  #byGame { padding:12px 0 14px; } .bgbar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--panel2); }
+  .bgbar i { display:block; height:100%; } .bgleg { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:12px; font-size:12.5px; color:var(--muted); }
+  .bgleg span { display:flex; align-items:center; gap:7px; } .bgleg i { width:10px; height:10px; border-radius:3px; display:block; } .bgleg b { color:var(--text); font-weight:600; }
+  .hk kbd { font-size:13px; padding:6px 10px; min-width:30px; text-align:center; border-bottom-width:3px; border-radius:7px; box-shadow:0 2px 0 rgba(0,0,0,.35); }
+  .hk { height:auto; min-height:40px; padding:4px 12px; }
   .hk.listen { border-color:var(--accent); color:var(--accent2); }
   .x { width:34px; height:34px; border-radius:8px; border:0; background:none; color:var(--muted); display:grid; place-items:center; }
   .x:hover { color:var(--bad); background:var(--panel2); }
@@ -572,7 +580,8 @@
   .dccard .dci svg { width:16px; height:16px; fill:none; stroke:var(--accent2); stroke-width:1.8; stroke-linejoin:round; }
   .dccard .dct { flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.25; } .dccard b { font-size:12.5px; font-weight:600; color:var(--text); } .dccard small { font-size:11px; color:var(--dim); }
   .dccard .dca { font-size:14px; color:var(--dim); transition:transform .15s; } .dccard:hover .dca { transform:translateX(3px); color:var(--accent2); }
-  .snav a.on::before { content:""; position:absolute; left:0; top:8px; bottom:8px; width:3px; border-radius:3px; background:var(--accent); }
+  .snav a::before { content:""; position:absolute; left:0; top:8px; bottom:8px; width:3px; border-radius:3px; background:var(--accent); opacity:0; }
+  .snav a.on::before { opacity:1; }   /* always there, only faded (Linux dots, chat 30) */
   .preset { text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:10px; padding:12px; transition:.15s; }
   .preset:hover { border-color:var(--hover); }
   .preset.on { border-color:var(--accent); background:rgba(var(--accent-rgb),0.08); }
@@ -791,6 +800,11 @@
   #notes .note.prog .bar i { display:block; height:100%; width:0; background:var(--hi); transition:width .2s; }
   #notes .note.prog .row2 { display:flex; justify-content:space-between; align-items:center; gap:10px; color:var(--muted); }
   #notes .note.prog .sub { display:block; margin-top:6px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #notes .note.prog .spn { flex:none; width:11px; height:11px; margin-right:8px; border:2px solid var(--line); border-top-color:var(--hi); border-radius:50%; animation:spin .8s linear infinite; align-self:center; }
+  #notes .note.prog.fin .spn { animation:none; border-color:var(--hi); }
+  #notes .note.prog .row2 .spn + b { margin-right:auto; margin-left:-10px; }
+  /* the same spinner in the "Uploading 40%" label on a clip's picture (cloud uploads) */
+  .uplbl::before { content:""; display:inline-block; width:8px; height:8px; margin-right:6px; vertical-align:-1px; border:2px solid #fff5; border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; }
   #notes .note.prog .pbx { flex:none; margin-left:auto; background:none; border:1px solid var(--line); color:var(--muted); border-radius:7px; padding:2px 9px; font:inherit; font-size:12px; cursor:pointer; }
   #notes .note.prog .pbx:hover:not(:disabled) { color:var(--text); border-color:var(--muted); }
   #notes .note.prog .pbx:disabled { opacity:.6; cursor:default; }
@@ -855,6 +869,59 @@
      on Linux the hints just stay visible, and the backdrop isn't blurred (also lighter to draw) */
   html.linux #player .phint { opacity:.85 !important; transition:none !important; }
   html.linux #player { backdrop-filter:none; background:#0b0b0fcc; }   /* Windows-only features (FPS test, game-window capture, smart bitrate) */
+
+  /* ----- Home (chat 30, mockup v6): latest clip big, one Get started line, quiet numbers, recent clips ----- */
+  #page-home { padding:0 28px 36px; }
+  /* chat 30: on wide windows Home stretched to 2000 px and the big clip got huge - keep it at a calm width like the mockup */
+  /* chat 30: aligned with the header (no centred column), the big clip sized by the window height, recent clips fill one row */
+  #page-home .hhero { grid-template-columns:min(62%, calc(48vh * 16 / 9)) minmax(280px, 460px); justify-content:start; }
+  #page-home .hside h2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  #page-home .hshot .card { border:0; background:none; box-shadow:none; }
+  /* the big clip: no hover preview / select circle (the preview fought the sharp still and flickered on Linux, chat 30) -
+     a click plays it, a play button shows on hover */
+  #page-home .hshot { position:relative; cursor:pointer; }
+  #page-home .hshot .card { pointer-events:none; }
+  #page-home .hshot::after { content:""; position:absolute; inset:0; margin:auto; width:64px; height:64px; border-radius:50%; background:rgba(255,255,255,.18) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M8 5l12 7-12 7z' fill='white'/></svg>") center/26px no-repeat; opacity:0; transition:opacity .15s; }
+  #page-home .hshot:hover::after { opacity:1; }
+  #page-home .hshot .card .thumb { border-radius:14px; }
+  #page-home #hrecent { grid-template-columns:repeat(var(--hcols,4),minmax(0,1fr)); gap:14px; }
+  #page-home .hhero { grid-template-columns:min(62%, calc(48vh * 16 / 9)) minmax(280px, 540px); }
+  .hhero { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(250px,1fr); gap:24px; align-items:start; margin-top:4px; }
+  .hhero .hshot .card { margin:0; }
+  .hhero .hshot .card .info { display:none; }
+  .hhero .hshot .card .thumb { border-radius:14px; }
+  /* sharp stills on Home (hero_frame) - beat the small library thumbnail that lazy-loads into the same element */
+  #page-home .thumb.hbig { background-image:var(--hbig) !important; }
+  .hside .hkick { font-size:11px; letter-spacing:.08em; color:var(--dim); font-weight:600; }
+  .hside h2 { font-size:22px; margin:6px 0 4px; line-height:1.2; word-break:break-word; }
+  .hside .hmeta { color:var(--muted); font-size:13px; }
+  .hacts { display:grid; gap:8px; margin-top:18px; }
+  .hacts .hb { display:flex; align-items:center; gap:10px; width:100%; padding:10px 14px; border-radius:10px; border:1px solid var(--line); background:var(--panel); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+  .hacts .hb:hover { border-color:var(--muted); }
+  .hacts .hb small { margin-left:auto; color:var(--dim); font-size:12px; }
+  .hsplit { display:flex; }
+  .hsplit .hb.pri { flex:1; border-radius:10px 0 0 10px; background:var(--accent); border-color:var(--accent); color:#fff; }
+  .hsplit .hb.pri small { color:#ffffffb0; }
+  .hsplit .harr { width:auto; border-radius:0 10px 10px 0; background:var(--accent); border:1px solid var(--accent); border-left-color:#ffffff40; color:#fff; padding:0 12px; cursor:pointer; }
+  .hempty { grid-column:1/-1; padding:40px 0; color:var(--muted); text-align:center; }
+  .hgs { display:flex; align-items:center; gap:14px; margin-top:18px; padding:12px 14px; border-radius:12px; background:rgba(124,92,255,.07); border:1px solid rgba(124,92,255,.22); }
+  .hgs[hidden] { display:none; }
+  .hgs .steps { display:flex; gap:6px; flex:none; } .hgs .steps i { width:22px; height:5px; border-radius:3px; background:var(--line); } .hgs .steps i.d { background:var(--accent); }
+  .hgs b, .hgs button { white-space:nowrap; } .hgs .t { color:var(--muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .hgs .t em { font-style:normal; color:var(--dim); }
+  .hgs .go { margin-left:auto; background:var(--accent); border:0; color:#fff; border-radius:8px; padding:6px 12px; font:inherit; font-size:12px; cursor:pointer; }
+  .hgs .lnk { background:none; border:0; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; } .hgs .lnk:hover { color:var(--text); }
+  .hstrip { display:flex; gap:28px; margin:22px 0 6px; padding:14px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); align-items:center; }
+  .hstrip b { font-size:18px; display:block; } .hstrip span { font-size:12px; color:var(--dim); }
+  .hstrip .spark[hidden] { display:none; } .hstrip .spark { margin-left:auto; display:flex; gap:4px; align-items:flex-end; height:30px; } .hstrip .spark i { display:block; width:8px; border-radius:3px; background:var(--accent); opacity:.5; } .hstrip .spark i:last-child { opacity:1; }
+  .hrow { display:flex; align-items:baseline; justify-content:space-between; margin:26px 0 12px; } .hrow h3 { margin:0; font-size:15px; }
+  .hrow a { color:var(--accent); font-size:12px; cursor:pointer; }
+  @media (max-width:980px) { .hhero { grid-template-columns:1fr; } }
+  /* sidebar: Echo account row in the status box */
+  .acctrow { display:flex; align-items:center; gap:10px; margin-top:10px; padding-top:10px; border-top:1px solid var(--line); cursor:pointer; }
+  .acctrow[hidden] { display:none; }
+  .acctrow .ph { width:26px; height:26px; border-radius:50%; background:var(--panel2); display:grid; place-items:center; font-size:13px; flex:none; overflow:hidden; }
+  .acctrow b { font-size:12px; display:block; color:var(--text); } .acctrow span { font-size:11px; color:var(--accent); }
+  .acctrow .ax { margin-left:auto; align-self:flex-start; background:none; border:0; color:var(--dim); cursor:pointer; font-size:13px; padding:0 2px; } .acctrow .ax:hover { color:var(--text); }
 </style>
 </head>
 <body>
@@ -862,7 +929,8 @@
   <div class="brandrow"><div class="logo"><svg viewBox="0 0 256 256" style="width:22px;height:22px;margin-left:0"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></div><span class="brand">Echo</span></div>
   <!-- chat 28: Library + Settings back at the top (chat 21 had hidden Library because it didn't always lead back to
        All clips - a real click on it now always does, see the .nav handler) -->
-  <button class="nav on" data-page="library" title="Library"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>Library</button>
+  <button class="nav on" data-page="home" title="Home"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v8a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/></svg>Home</button>
+  <button class="nav" data-page="library" title="Library"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>Library</button>
   <button class="nav" data-page="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
   <div class="navlbl">CLIPS</div>
   <button class="flt on" data-f="all"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>All clips<span class="n" id="n-all"></span></button>
@@ -885,12 +953,13 @@
     <small id="railhealth"></small>
     <div class="meter"><i id="meter"></i></div>
     <div class="meterrow"><span id="m-used">0 MB</span><span id="m-cap"></span></div>
+    <div class="acctrow" id="acctrow" hidden><span class="ph" id="acctph">👤</span><div><b>Echo account</b><span id="acctsub">Get started →</span></div><button class="ax" id="acctx" title="Hide - you can still sign in under Settings → Cloud">✕</button></div>
   </div>
 </aside>
 
 <main>
   <header>
-    <h1 id="ptitle-h">Library</h1>
+    <h1 id="ptitle-h">Home</h1>
     <div class="pill"><div class="dot" id="dot"></div><span id="state">Starting…</span><span id="micoff" title="Your mic is muted in recordings - click to unmute">· Mic muted</span></div>
     <div class="chips" id="chips"></div>
     <div class="spacer"></div>
@@ -898,8 +967,17 @@
     <button class="btn primary" data-act="0"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Save clip</button>
   </header>
 
+  <!-- HOME (chat 30) -->
+  <section class="page on" id="page-home">
+    <div class="hhero" id="hhero"></div>
+    <div class="hgs" id="hgs" hidden></div>
+    <div class="hstrip" id="hstrip"></div>
+    <div class="hrow"><h3>Recent</h3><a id="hopenlib">Open library →</a></div>
+    <div class="grid" id="hrecent"></div>
+  </section>
+
   <!-- LIBRARY -->
-  <section class="page on" id="page-library">
+  <section class="page" id="page-library">
     <div class="pickbar" id="pickbar"><b id="pickn"></b><span class="spacer"></span>
       <button class="btn" id="pickjoin" title="Join the selected clips into one video (oldest first)"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="8" height="12" rx="1"/><rect x="14" y="6" width="8" height="12" rx="1"/><path d="M10 12h4"/></svg>Combine</button>
       <button class="btn" id="pickmove" title="Move the selected clips into a folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13h6M13 10l3 3-3 3"/></svg>Move</button>
@@ -930,16 +1008,17 @@
       <nav class="snav">
         <input class="search" id="ssearch" placeholder="Search settings…  (Ctrl+F)" spellcheck="false" style="width:100%;margin:0 0 10px;height:34px;padding:0 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text)">
         <h4>RECORDING</h4>
-        <a data-sec="hotkeys" class="on">Capture Hotkeys</a>
-        <a data-sec="quality">Quality</a>
-        <a data-sec="audio">Audio</a>
-        <a data-sec="games">Games</a>
+        <a data-sec="hotkeys" class="on"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>Capture Hotkeys</a>
+        <a data-sec="quality"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Quality</a>
+        <a data-sec="audio"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg>Audio</a>
+        <a data-sec="games"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3"/><circle cx="16" cy="11.5" r=".8"/><circle cx="18" cy="13.5" r=".8"/></svg>Games</a>
         <h4>STORAGE</h4>
-        <a data-sec="storage">Clips & Storage</a>
-        <a data-sec="cloud">Cloud</a>
+        <a data-sec="storage"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>Clips & Storage</a>
+        <a data-sec="cloud"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg>Cloud</a>
         <h4>APP</h4>
-        <a data-sec="profile">Profile</a>
-        <a data-sec="app">App Settings</a>
+        <a data-sec="profile" title="Echo account: your profile page, share links and Echo Cloud"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Echo account</a>
+        <a data-sec="appearance"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/></svg>Appearance</a>
+        <a data-sec="app"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>App Settings</a>
         <button class="dccard" data-act="2" title="discord.gg/JPVewEfUQs">
           <span class="dci"><svg viewBox="0 0 24 24"><path d="M4 5h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M19 9h1a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-1v3l-4-3h-3"/></svg></span>
           <span class="dct"><b>Join the Discord</b><small>Help, ideas and new versions</small></span><span class="dca">→</span>
@@ -1085,6 +1164,7 @@
         <div class="sec" id="sec-storage">
           <h2>Clips & Storage</h2>
           <p>Where clips are saved and how much space they may use.</p>
+          <div class="box" id="byGameBox"><h3>What's using space</h3><div id="byGame"></div></div>
           <div class="box">
             <h3>Storage</h3>
             <div class="row"><div class="lbl" style="flex:none;width:150px"><b>Clips folder</b></div>
@@ -1118,9 +1198,24 @@
         </div>
 
         <div class="sec" id="sec-profile">
-          <h2>Profile</h2>
-          <p>Your own little page at echoclip.link/u/yourname: a name, picture, a few words and up to 6 clips you're proud of. Share links show who clipped them. Follow friends to keep their pages one click away. Optional, and no feeds.</p>
+          <h2>Echo account</h2>
+          <p>One free account for everything: your profile page, share links with view counts and 10 GB of Echo Cloud backup. Signing in here also signs you in under Cloud, and the other way round.</p>
+          <div id="acctslot"></div>
+          <p style="margin-top:18px">Your own little page at echoclip.link/u/yourname: a name, picture, a few words and up to 6 clips you're proud of. Share links show who clipped them. Follow friends to keep their pages one click away. Optional, and no feeds.</p>
           <div id="profbody"><div class="box"><div class="row"><div class="lbl"><small>Loading…</small></div></div></div></div>
+        </div>
+        <div class="sec" id="sec-appearance">
+          <h2>Appearance</h2>
+          <p>Pick a look for Echo - the cards show a tiny preview of the app in each theme. Seasonal themes are at the end.</p>
+          <div class="box">
+            <h3>Theme</h3>
+            <div class="themegrid" id="themegrid"></div>
+            <div class="row" id="custrow" hidden><div class="lbl"><b>Your own colours</b><small>Pick two colours, Echo works out the rest. Dark backgrounds read best.</small></div>
+              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><label title="Progress bars, trim handles, favourites, editor selection"><input type="color" id="th-hi"> Highlight</label><button class="btn" data-act="16">Reset</button></div></div>
+            <div class="row"><div class="lbl"><b>Background effect</b><small>A light animation behind Echo. It pauses while Echo isn't in front (so it never costs your game anything) and hides in the player and editor.</small></div>
+              <div style="display:flex;gap:8px;align-items:center"><select id="bgfx"><option value="">Off</option><option value="snow">Snow</option><option value="stars">Stars</option><option value="fireflies">Fireflies</option><option value="embers">Embers</option><option value="leaves">Leaves</option><option value="rain">Rain</option></select>
+              <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted)"><input type="checkbox" id="bgfxstill"> Still</label></div></div>
+          </div>
         </div>
         <div class="sec" id="sec-app">
           <h2>App Settings</h2>
@@ -1137,12 +1232,6 @@
               <div style="display:flex;gap:6px"><button class="btn" data-act="14">Changelog</button><button class="btn primary" data-act="15">Join the Discord</button></div></div>
           </div>
           <div class="box">
-            <h3>Appearance</h3>
-            <div class="themegrid" id="themegrid"></div>
-            <div class="row" id="custrow" hidden><div class="lbl"><b>Your own colours</b><small>Pick two colours, Echo works out the rest. Dark backgrounds read best.</small></div>
-              <div class="custrow"><label><input type="color" id="th-accent"> Accent</label><label><input type="color" id="th-bg"> Background</label><label title="Progress bars, trim handles, favourites, editor selection"><input type="color" id="th-hi"> Highlight</label><button class="btn" data-act="16">Reset</button></div></div>
-          </div>
-          <div class="box">
             <h3>Behaviour</h3>
             <div class="row"><div class="lbl"><b>Start with Windows</b><small>Starts quietly in the tray and begins buffering</small></div><label class="switch"><input type="checkbox" data-k="start_with_windows"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Start minimized</b><small>When Echo starts with your PC it stays in the tray (opening Echo yourself always shows the window)</small></div><label class="switch"><input type="checkbox" data-k="start_minimized"><span></span></label></div>
@@ -1153,6 +1242,7 @@
             <div class="row"><div class="lbl"><b>Close to tray</b><small>The X button hides Echo; it keeps recording. Quit from the tray icon.</small></div><label class="switch"><input type="checkbox" data-k="close_to_tray"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Show in Discord</b><small>Your Discord status shows "Playing Echo" and the game you're clipping, with a Get Echo button.</small></div><label class="switch"><input type="checkbox" data-k="discord_presence"><span></span></label></div>
             <div class="row"><div class="lbl"><b>Only while playing</b><small>Show the Discord status only while Echo sees a game running.</small></div><label class="switch"><input type="checkbox" data-k="discord_game_only"><span></span></label></div>
+            <div class="row"><div class="lbl"><b>Home tips</b><small>Bring back the "Get started" line on Home and the Echo account box in the sidebar after hiding them.</small></div><button class="btn" id="homeagain">Show again</button></div>
           </div>
           <div class="box">
             <h3>Sounds</h3>
@@ -1563,8 +1653,9 @@
   // a progress box (upload, download, shrink, export…): each job gets its own
   function progBox(title) {
     const el = document.createElement("div"); el.className = "note prog";
-    el.innerHTML = '<div class="row2"><b></b><span></span></div><div class="bar"><i></i></div>';
-    const b = el.querySelector("b"), sp = el.querySelector("span"), i = el.querySelector("i");
+    // spinner (chat 30): keeps turning while the job runs, so a slow step never looks frozen
+    el.innerHTML = '<div class="row2"><em class="spn"></em><b></b><span></span></div><div class="bar"><i></i></div>';
+    const b = el.querySelector("b"), sp = el.querySelector(".row2 > span"), i = el.querySelector(".bar i");
     b.textContent = title; $("notes").appendChild(el); requestAnimationFrame(() => el.classList.add("on"));
     let gone = false;
     return {
@@ -1581,7 +1672,7 @@
       pct(p) { i.style.width = Math.max(0, Math.min(100, p)).toFixed(1) + "%"; return this; },
       // hide / show again without closing (a download's box while the player shows that progress itself)
       hide(h) { el.style.display = h ? "none" : ""; return this; },
-      done(ms = 0) { if (gone) return; gone = true; setTimeout(() => noteOut(el), ms); },
+      done(ms = 0) { if (gone) return; gone = true; el.classList.add("fin"); setTimeout(() => noteOut(el), ms); },
     };
   }
   const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
@@ -1636,6 +1727,175 @@
     document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === "page-" + b.dataset.page));
     $("ptitle-h").textContent = b.title;
   });
+  const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { } };
+  // ----- Settings > Appearance: optional background effect (chat 30). Off by default; per PC (localStorage).
+  // Draws ~30 fps on a canvas over the app (pointer-events off, low opacity); stops while Echo isn't focused/visible
+  // (= while you play) and while the player or editor is open. "Still" draws one frame and never animates.
+  (function bgFx() {
+    const sel = $("bgfx"), still = $("bgfxstill"); if (!sel) return;
+    let kind = lsGet("echo_bgfx") || "", calm = lsGet("echo_bgfx_still") === "1", parts = [], cv = null, ctx = null, raf = 0, last = 0;
+    sel.value = kind; still.checked = calm;
+    const busy = () => document.hidden || !document.hasFocus() || $("player").classList.contains("open") || $("editor").classList.contains("open");
+    const R = (a, b) => a + Math.random() * (b - a);
+    function make() {
+      const W = innerWidth, H = innerHeight, n = kind === "stars" ? 90 : kind === "fireflies" ? 26 : kind === "leaves" ? 22 : kind === "rain" ? 110 : 70;
+      parts = [...Array(n)].map(() => ({ x: R(0, W), y: R(0, H), r: kind === "stars" ? R(.5, 1.6) : kind === "fireflies" ? R(1.5, 3) : kind === "leaves" ? R(4, 7) : R(1, 2.6),
+        vx: kind === "rain" ? -1.2 : R(-.3, .3), vy: kind === "embers" ? -R(.3, 1) : kind === "stars" ? 0 : kind === "fireflies" ? R(-.3, .3) : kind === "rain" ? R(9, 14) : R(.4, 1.2), p: R(0, 6.28), s: R(.01, .04) }));
+    }
+    function frame(t) {
+      raf = 0; if (!kind) return;
+      if (busy()) { if (ctx && cv) ctx.clearRect(0, 0, cv.width, cv.height); raf = setTimeout(() => frame(performance.now()), 500); return; }   // check twice a second, draw nothing
+      if (t - last < 33 && !calm) { raf = requestAnimationFrame(frame); return; }
+      last = t;
+      const W = cv.width = innerWidth, H = cv.height = innerHeight;
+      ctx.clearRect(0, 0, W, H);
+      const acc = getComputedStyle(document.documentElement).getPropertyValue("--accent2").trim() || "#a78bfa";
+      for (const q of parts) {
+        if (!calm) { q.x += q.vx; q.y += q.vy; q.p += q.s; if (kind === "fireflies") { q.vx += R(-.03, .03); q.vy += R(-.03, .03); q.vx *= .98; q.vy *= .98; } }
+        if (q.y > H + 10) q.y = -10; if (q.y < -10) q.y = H + 10; if (q.x > W + 10) q.x = -10; if (q.x < -10) q.x = W + 10;
+        ctx.beginPath();
+        if (kind === "snow") { ctx.fillStyle = "#ffffffcc"; ctx.arc(q.x + Math.sin(q.p) * 6, q.y, q.r, 0, 6.28); ctx.fill(); }
+        else if (kind === "stars") { ctx.fillStyle = `rgba(255,255,255,${.35 + .45 * Math.abs(Math.sin(q.p))})`; ctx.arc(q.x, q.y, q.r, 0, 6.28); ctx.fill(); }
+        else if (kind === "fireflies") { ctx.shadowColor = "#ffe48a"; ctx.shadowBlur = 10; ctx.fillStyle = `rgba(255,228,138,${.4 + .5 * Math.abs(Math.sin(q.p))})`; ctx.arc(q.x, q.y, q.r, 0, 6.28); ctx.fill(); ctx.shadowBlur = 0; }
+        else if (kind === "embers") { ctx.fillStyle = `rgba(255,${120 + (q.r * 30 | 0)},60,${.5 + .4 * Math.sin(q.p)})`; ctx.arc(q.x + Math.sin(q.p) * 4, q.y, q.r, 0, 6.28); ctx.fill(); }
+        else if (kind === "rain") { ctx.strokeStyle = "rgba(180,200,255,.35)"; ctx.lineWidth = 1; ctx.moveTo(q.x, q.y); ctx.lineTo(q.x + q.vx * 1.6, q.y - q.vy * 1.6); ctx.stroke(); }
+        else if (kind === "leaves") { ctx.save(); ctx.translate(q.x + Math.sin(q.p) * 14, q.y); ctx.rotate(q.p); ctx.fillStyle = acc; ctx.globalAlpha = .55; ctx.ellipse(0, 0, q.r, q.r / 2.2, 0, 0, 6.28); ctx.fill(); ctx.restore(); }
+      }
+      if (!calm) raf = requestAnimationFrame(frame);
+    }
+    function start() {
+      if (raf) { cancelAnimationFrame(raf); clearTimeout(raf); raf = 0; }
+      if (!kind) { if (cv) cv.remove(); cv = null; return; }
+      if (!cv) { cv = document.createElement("canvas"); cv.id = "bgfxc"; document.body.appendChild(cv); ctx = cv.getContext("2d"); }
+      make(); frame(performance.now());
+    }
+    sel.onchange = () => { kind = sel.value; lsSet("echo_bgfx", kind || null); start(); };
+    still.onchange = () => { calm = still.checked; lsSet("echo_bgfx_still", calm ? "1" : null); start(); };
+    addEventListener("resize", () => { if (kind) make(); });
+    addEventListener("focus", () => { if (kind && calm) start(); });
+    start();
+  })();
+  // ----- Settings > Echo account (chat 30): the Echo Cloud sign-in box moves here while this section is open, so
+  // there's ONE sign-in (same element, same code - it goes back to Cloud when that section opens)
+  {
+    const ecBox = document.querySelector(".ecloudbox"), home = ecBox && ecBox.parentNode, homeNext = ecBox && ecBox.nextSibling;
+    const toAcct = () => { const s = $("acctslot"); if (ecBox && s && ecBox.parentNode !== s) { s.appendChild(ecBox); ecBox.querySelector("h3").textContent = "Sign in"; } try { drawCloud(true); } catch (e) { } };
+    const toCloud = () => { if (ecBox && home && ecBox.parentNode !== home) { home.insertBefore(ecBox, homeNext); ecBox.querySelector("h3").textContent = "Echo Cloud"; } };
+    const pa = document.querySelector('.snav a[data-sec="profile"]'), ca = document.querySelector('.snav a[data-sec="cloud"]');
+    if (pa) pa.addEventListener("click", toAcct);
+    if (ca) ca.addEventListener("click", toCloud, true);
+  }
+  // ----- Settings > Clips & Storage: space per game (local clips), biggest first, top 6 + the rest
+  function drawByGame() {
+    const el = $("byGame"); if (!el) return;
+    const m = new Map(); let tot = 0;
+    for (const c of clips) { if (c.cloud || c.shot) continue; const g = gameOf(c) || "Other"; m.set(g, (m.get(g) || 0) + (c.size || 0)); tot += c.size || 0; }
+    if (!tot) { el.innerHTML = '<small style="color:var(--dim)">No clips on this PC yet.</small>'; return; }
+    let rows = [...m].sort((a, b) => b[1] - a[1]);
+    if (rows.length > 7) { const rest = rows.slice(6).reduce((a, r) => a + r[1], 0); rows = [...rows.slice(0, 6), ["Everything else", rest]]; }
+    const cols = ["var(--accent)", "#4cc3f0", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#6b7280"];
+    el.innerHTML = `<div class="bgbar">${rows.map((r, i) => `<i style="width:${(r[1] / tot * 100).toFixed(2)}%;background:${cols[i % cols.length]}" title="${escH(r[0])}: ${fmtSize(r[1])}"></i>`).join("")}</div>
+      <div class="bgleg">${rows.map((r, i) => `<span><i style="background:${cols[i % cols.length]}"></i>${escH(r[0])} <b>${fmtSize(r[1])}</b></span>`).join("")}</div>`;
+  }
+  { const sa = document.querySelector('.snav a[data-sec="storage"]'); if (sa) sa.addEventListener("click", () => drawByGame()); }
+  // ----- Home (chat 30): newest clip big + its usual next steps, Get started, numbers, recent clips -----
+  const signedIn = () => ((cfg && cfg.cloud_accounts) || []).find(a => a.provider === "echocloud") || null;
+  const goCloudSettings = () => { document.querySelector("[data-page=settings]").click(); const a = document.querySelector('.snav a[data-sec="cloud"]'); if (a) a.click(); };
+  function homeList() { return clips.filter(c => !c.shot).slice().sort((a, b) => b.modified - a.modified); }
+  function renderHome(force) {
+    const pg = $("page-home"); if (!pg || !pg.classList.contains("on")) return;
+    const list = homeList();
+    const key = list.slice(0, 5).map(c => c.path + c.modified + c.size + (favs.has(c.name) ? "f" : "")).join("|") + "|" + shared.size + "|" + JSON.stringify(shareViews);
+    drawGs(list); drawStrip(list);
+    if (!force && renderHome.k === key) return;
+    renderHome.k = key;
+    const hero = $("hhero"), rec = $("hrecent");
+    hero.innerHTML = ""; rec.innerHTML = "";
+    if (!list.length) {
+      const hk = (cfg && cfg.hotkeys && cfg.hotkeys[0] && cfg.hotkeys[0].keys) || "your clip hotkey";
+      hero.innerHTML = `<div class="hempty">No clips yet. Play a game and press <b>${escH(hk)}</b> - your clip shows up here.</div>`;
+      return;
+    }
+    const c = list[0];
+    const shot = document.createElement("div"); shot.className = "hshot"; shot.appendChild(makeCard(c));
+    shot.onclick = () => openPlayer(c);
+    const side = document.createElement("div"); side.className = "hside";
+    side.innerHTML = `<div class="hkick">YOUR LATEST CLIP</div><h2></h2><div class="hmeta"></div>
+      <div class="hacts"><div class="hsplit"><button class="hb pri" data-h="copy">Copy for Discord</button><button class="harr" data-h="copym" title="Choose the size">▾</button></div>
+      <button class="hb" data-h="edit">Trim / edit</button><button class="hb" data-h="link">Share a link</button><button class="hb" data-h="cap">Add captions</button></div>`;
+    side.querySelector("h2").textContent = shownName(c);
+    const g = gameOf(c);
+    side.querySelector(".hmeta").textContent = [ago(c.modified), fmtSize(c.size), g].filter(Boolean).join(" · ");
+    side.querySelectorAll("[data-h]").forEach(b => b.onclick = async () => {
+      const k = b.dataset.h;
+      if (k === "copy") { lsSet("echo_copied", "1"); return action("copy", c); }
+      if (k === "copym") { lsSet("echo_copied", "1"); return copyMenu(b, c); }
+      if (k === "edit") return action("edit", c);
+      if (k === "link") { try { await copyLink(c); } catch (e) { toast(String(e)); } return renderHome(true); }
+      if (k === "cap") { await openEditor(c); setTimeout(() => { const cb = $("ecap"); if (cb) cb.click(); }, 700); }
+    });
+    hero.append(shot, side);
+    // one row of recent clips, as many as fit (2 to 7) - the Library keeps its own 4 per row
+    const cols = Math.max(2, Math.min(7, Math.floor(((rec.clientWidth || pg.clientWidth - 56) + 14) / 264)));   // ~250 px cards: 6 at 1080p and 1440p
+    rec.style.setProperty("--hcols", cols);
+    for (const x of list.slice(1, 1 + cols)) rec.appendChild(makeCard(x));
+    const sharp = (el, clip, w) => { if (clip.cloud || !clip.path) return; const th = el.querySelector(".thumb"); if (!th) return;
+      invoke("hero_frame", { path: clip.path, width: w }).then(p => { th.style.setProperty("--hbig", `url("${convertFileSrc(p)}")`); th.classList.add("hbig"); }).catch(() => {}); };
+    sharp(shot, c, 1600); [...rec.children].forEach((el, i) => sharp(el, list[i + 1], 960));
+  }
+  function drawStrip(list) {
+    const now = Date.now() / 1000, wk = 7 * 86400;
+    const week = list.filter(c => now - c.modified < wk).length;
+    const local = list.filter(c => !c.cloud).reduce((a, c) => a + (c.size || 0), 0);
+    const games = new Set(list.map(gameOf).filter(Boolean)).size;
+    const bars = [5, 4, 3, 2, 1, 0].map(i => list.filter(c => now - c.modified >= i * wk && now - c.modified < (i + 1) * wk).length);
+    const mx = Math.max(1, ...bars);
+    $("hstrip").innerHTML = `<div><b>${week}</b><span>clips this week</span></div><div><b>${list.length}</b><span>clips in total</span></div>
+      <div><b>${fmtSize(local)}</b><span>on this PC</span></div><div><b>${games}</b><span>${games === 1 ? "game" : "games"}</span></div>
+      <div class="spark" title="Clips per week, last 6 weeks"${bars.filter(n => n).length < 3 ? " hidden" : ""}>${bars.map(n => `<i style="height:${n ? Math.max(10, n / mx * 100) : 0}%;${n ? "" : "visibility:hidden"}" title="${n}"></i>`).join("")}</div>`;
+  }
+  // Get started: steps tick themselves off; each can be skipped, the whole line hidden (Settings brings it back)
+  function drawGs(list) {
+    const el = $("hgs"); if (!el) return;
+    const skip = new Set(JSON.parse(lsGet("echo_gs_skip") || "[]"));
+    const steps = [
+      ["clip", "Save your first clip", "press your clip hotkey in a game", () => list.length > 0, null, null],
+      ["edit", "Trim or edit a clip", "cut it down to the good part", () => list.some(isEdited), "Open the editor", () => list[0] && action("edit", list[0])],
+      ["account", "Create a free Echo account", "<em>· profile page, link views, 10 GB backup</em>", () => !!signedIn(), "Create account", goCloudSettings],
+      ["share", "Share a clip", "copy one into Discord or make a link", () => shared.size > 0 || !!lsGet("echo_copied"), "Copy for Discord", () => { if (list[0]) { lsSet("echo_copied", "1"); action("copy", list[0]); } }],
+      ["backup", "Back up your clips", "to Echo Cloud or your own storage", () => !!(cfg && cfg.cloud), "Set up", goCloudSettings],
+    ];
+    const done = steps.map(s => s[3]() || skip.has(s[0]));
+    const next = steps.findIndex((s, i) => !done[i]);
+    if (lsGet("echo_gs_hide") || next < 0) { el.hidden = true; return; }
+    const s = steps[next];
+    el.hidden = false;
+    el.innerHTML = `<div class="steps">${done.map(d => `<i class="${d ? "d" : ""}"></i>`).join("")}</div><b>Next step:</b><span class="t">${escH(s[1].charAt(0).toLowerCase() + s[1].slice(1))} ${s[2].startsWith("<em>") ? s[2] : "<em>· " + escH(s[2]) + "</em>"}</span>
+      ${s[4] ? `<button class="go">${escH(s[4])}</button>` : '<span style="margin-left:auto"></span>'}<button class="lnk" data-x="skip">Skip</button><button class="lnk" data-x="hide">Hide</button>`;
+    const go = el.querySelector(".go"); if (go) go.onclick = () => s[5]();
+    el.querySelector('[data-x="skip"]').onclick = () => { skip.add(s[0]); lsSet("echo_gs_skip", JSON.stringify([...skip])); drawGs(list); };
+    el.querySelector('[data-x="hide"]').onclick = () => { lsSet("echo_gs_hide", "1"); drawGs(list); toast("Hidden - bring it back under Settings → App Settings"); };
+  }
+  // sidebar: Echo account row (one sign-in for everything; signing in also connects Echo Cloud)
+  function drawAcct() {
+    const row = $("acctrow"); if (!row) return;
+    const acc = signedIn();
+    if (!acc && lsGet("echo_acct_hide")) { row.hidden = true; return; }
+    row.hidden = false;
+    // never show the email here (chat 30) - the sidebar is visible in screenshots / streams
+    $("acctsub").textContent = acc ? "Signed in ✓" : "Get started →";
+    $("acctx").hidden = !!acc;
+  }
+  if ($("acctrow")) {
+    $("acctrow").onclick = e => { if (e.target.closest("#acctx")) return; goCloudSettings(); };
+    $("acctx").onclick = () => { lsSet("echo_acct_hide", "1"); drawAcct(); toast("Hidden - sign in any time under Settings → Cloud"); };
+  }
+  if ($("homeagain")) $("homeagain").onclick = () => { ["echo_gs_hide", "echo_gs_skip", "echo_acct_hide"].forEach(k => lsSet(k, null)); drawAcct(); renderHome.k = ""; toast("Get started and the Echo account box are back"); };
+  $("hopenlib").onclick = () => document.querySelector("[data-page=library]").click();
+  { const _rg = renderGrid0; renderGrid0 = function () { const r = _rg.apply(this, arguments); try { renderHome(); drawAcct(); } catch (e) { } return r; }; }
+  document.querySelector("[data-page=home]").addEventListener("click", () => setTimeout(() => renderHome(true), 0));
+  { let rt = 0; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => renderHome(true), 250); }); }
   document.querySelectorAll(".snav a").forEach(a => a.onclick = () => {
     document.querySelectorAll(".snav a").forEach(x => x.classList.toggle("on", x === a));
     document.querySelectorAll(".sec").forEach(s => s.classList.toggle("on", s.id === "sec-" + a.dataset.sec));
@@ -2457,19 +2717,42 @@
     if (added > 1) toast(`${added} clips queued - each one shows its progress`);
     runJobs();
   }
+  let jobBox = null, jobTotal = 0;
   async function runJobs() {
     if (jobRunning) return; jobRunning = true;
     let saved = 0, done = 0;
+    // one box for the whole queue (spinner, "2 of 9", Cancel = drop the clips still waiting) + polling, because the
+    // per-clip progress events didn't arrive on Linux (chat 30)
+    jobTotal = jobs.size;
+    const label0 = ([...jobs.values()][0] || {}).av1 ? "Converting to AV1" : "Making clips smaller";
+    jobBox = progBox(label0).text("Starting…").pct(0).btn("Cancel", x => {
+      let n = 0; for (const [p, j] of [...jobs]) if (j.state === "wait") { jobs.delete(p); drawJob(p); n++; }
+      x.textContent = "Finishing current…"; toast(n ? `Cancelled ${n} waiting clip${n === 1 ? "" : "s"} - the one in progress still finishes` : "The clip in progress still finishes");
+    });
+    // the box only shows when the running clip's own card isn't on screen (other page, filtered out, scrolled away)
+    const cardSeen = p => { const c = document.querySelector(`.page.on .card[data-path="${CSS.escape(p)}"]`); if (!c || document.hidden) return false;
+      const r = c.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight && r.width > 0; };
+    const boxVis = () => { const run = [...jobs].find(([, j]) => j.state === "run"); jobBox && jobBox.hide(!!run && cardSeen(run[0])); };
+    jobBox.hide(true); setTimeout(boxVis, 0);
+    const poll = setInterval(() => invoke("job_progress").then(([p, f]) => {
+      boxVis();
+      const j = jobs.get(p); if (!j || j.state !== "run") return;
+      j.pct = Math.round(f * 100); drawJob(p);
+      const idx = jobTotal - [...jobs.values()].filter(x => x.state === "wait").length;
+      jobBox.text(`${idx} of ${jobTotal}: ${j.name} · ${j.pct}%`).pct(((idx - 1) + f) / jobTotal * 100);
+    }).catch(() => {}), 500);
     try {
       for (;;) {
         const next = [...jobs].find(([, j]) => j.state === "wait"); if (!next) break;
         const [path, j] = next; j.state = "run"; drawJob(path);
+        jobTotal = Math.max(jobTotal, done + jobs.size);
+        jobBox.text(`${done + 1} of ${jobTotal}: ${j.name}`);
         try { const [a, b] = await invoke("compress_clip", { path, factor: j.factor, av1: !!j.av1 }); saved += a - b; done++;
           if (![...jobs.values()].some(x => x.state === "wait")) toast(done > 1 ? `${done} clips done · ${fmtSize(saved)} saved` : `${fmtSize(a)} → ${fmtSize(b)}`); }
         catch (err) { toast(`${j.name}: ${err}`); }
         jobs.delete(path); drawJob(path); listKey = ""; refresh();
       }
-    } finally { jobRunning = false; }
+    } finally { jobRunning = false; clearInterval(poll); if (jobBox) { jobBox.text("Done").pct(100); jobBox.done(1200); jobBox = null; } }
   }
   // "Saving clip…" card: stays at the top (through library redraws) until the new clip is in the list
   let savingPh = null;   // {secs, at, path, folder}
@@ -3375,7 +3658,20 @@
     ["timeupdate", "play", "pause", "loadedmetadata", "progress", "volumechange", "seeked"].forEach(e => v.addEventListener(e, sync));
     const loop = () => { if (!v.paused) { sync(); requestAnimationFrame(loop); } };
     v.addEventListener("play", () => requestAnimationFrame(loop));
-    const toggle = () => v.paused ? v.play() : v.pause();
+    // at the end: seek back to the start FIRST and play once the seek is done - WebKitGTK's play() on an ended video
+    // jumped to 0:00 but stayed paused, so it took 2-3 presses (chat 30)
+    const toggle = () => {
+      if (!v.paused) return v.pause();
+      const d = v.duration || 0;
+      if (v.ended || (d && v.currentTime >= d - 0.1)) {
+        let go = () => { go = null; v.play().catch(() => {}); };
+        v.addEventListener("seeked", () => go && go(), { once: true });
+        setTimeout(() => go && go(), 400);
+        v.currentTime = (typeof trim !== "undefined" && trim.on) ? trim.a : 0;
+        return;
+      }
+      v.play().catch(() => {});
+    };
     v.onclick = toggle; $("pplay").onclick = toggle;
     $("pmute").onclick = () => { v.muted = !v.muted; if (!v.muted && v.volume === 0) v.volume = 0.5; $("pvol").value = v.muted ? 0 : v.volume; sync(); };
     $("pvol").oninput = e => { v.volume = +e.target.value; v.muted = false; };
@@ -5759,13 +6055,36 @@
       for (const p of pics) await addSticker(p);
       return rest.length ? addFilesToEditor(rest) : undefined;
     }
-    toast(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}…`);
+    // chat 30: drop target folder = the sidebar folder under the mouse, else the folder being viewed, else none
+    let folder = "";
     try {
-      const [ok, bad] = await invoke("import_clips", { paths });
+      const pos = e.payload && e.payload.position, dpr = window.devicePixelRatio || 1;
+      const el = pos ? document.elementFromPoint(pos.x / dpr, pos.y / dpr) : null;
+      const fb = el && el.closest && el.closest(".flt[data-folder]");
+      folder = fb ? fb.dataset.folder : (typeof filter === "string" && filter.startsWith("game:") ? filter.slice(5) : "");
+    } catch {}
+    const ulog = msg => invoke("ui_log", { msg }).catch(() => {});
+    ulog(`drop: ${paths.length} file(s)${folder ? ` into "${folder}"` : ""}: ${paths.map(p => p.split(/[\\/]/).pop()).join(", ").slice(0, 400)}`);
+    toast(`Importing ${paths.length} file${paths.length === 1 ? "" : "s"}${folder ? ` into ${folder}` : ""}…`);
+    try {
+      // straight into the folder; a progress box, since converting a big video takes a while (chat 30)
+      const box = paths.length > 0 ? progBox("").title(`Adding ${paths.length} video${paths.length === 1 ? "" : "s"}${folder ? ` to ${folder}` : ""}`).text("Starting…").pct(0) : null;
+      if (box) box.btn("Cancel", x => { x.textContent = "Cancelling…"; invoke("import_cancel").catch(() => {}); });
+      // smooth: ffmpeg's position inside each file, not just one step per file (chat 30)
+      let seen = false;
+      const show = q => { if (!box || !q || !q.total) return; if (!seen) { seen = true; ulog("drop: progress reaches the box"); } box.text(q.done < q.total ? `${q.done + 1} of ${q.total}: ${q.name} · ${Math.floor(q.pct || 0)}%` : "Done").pct(q.pct != null ? q.pct : q.done / q.total * 100); };
+      const un = await listen("import-progress", ev => show(ev.payload));
+      // and ask for it twice a second, in case the events don't arrive (they didn't on Linux, chat 30)
+      const poll = setInterval(() => invoke("import_status").then(show).catch(() => {}), 500);
+      let ok, bad;
+      try { [ok, bad] = await invoke("import_clips", { paths, folder }); } finally { un(); clearInterval(poll); if (box) box.done(800); }
+      const cancelled = bad.includes("cancelled"); if (cancelled) bad = bad.filter(b => b !== "cancelled");
+      ulog(`drop: ${ok.length} added, ${bad.length} failed${cancelled ? ", cancelled" : ""}${bad.length ? ": " + bad.join(" | ").slice(0, 600) : ""}`);
+      if (cancelled) { listKey = ""; await refresh(); return toast(`Import cancelled${ok.length ? ` - ${ok.length} added` : ""}`); }
       listKey = ""; await refresh();
-      toast(ok.length ? `Added ${ok.length} clip${ok.length === 1 ? "" : "s"}` + (bad.length ? ` - ${bad.length} failed: ${bad[0]}` : "") : (bad[0] || "Nothing imported"));
+      toast(ok.length ? `Added ${ok.length} clip${ok.length === 1 ? "" : "s"}${folder ? ` to ${folder}` : ""}` + (bad.length ? ` - ${bad.length} failed: ${bad[0]}` : "") : (bad[0] || "Nothing imported"));
       if (ok.length === 1) { const c = clips.find(x => x.path === ok[0]); if (c) openPlayer(c); }
-    } catch (err) { toast(String(err)); }
+    } catch (err) { ulog(`drop: import failed (${err})`); toast(String(err)); }
   });
   listen("clips-changed", () => { listKey = ""; refresh(); });
   listen("cloud-changed", () => { listKey = ""; refresh(); });
@@ -5833,6 +6152,11 @@
     ["lime", "Lime", "#8fcf3c", "#b8e57e", ["#c5ef8a", "#8fcf3c", "#2fae6f"], "#0c0f0a"],
     ["gold", "Gold", "#e0a93a", "#f0cb7a", ["#f5d68a", "#e0a93a", "#c06a2a"], "#100e0a"],
     ["midnight", "Midnight", "#6a6ff0", "#a3a6fa", ["#a3a6fa", "#6a6ff0", "#3a3fb8"], "#08080f"],
+    // chat 30: seasonal themes
+    ["christmas", "Christmas", "#e0484a", "#f08a8a", ["#f08a8a", "#e0484a", "#2f9e5a"], "#0a100c"],
+    ["autumn", "Autumn", "#e07a2a", "#f0a868", ["#f5c27a", "#e07a2a", "#a8402a"], "#110d09"],
+    ["halloween", "Halloween", "#f08a1a", "#ffb15a", ["#ffb15a", "#f08a1a", "#8a3ae0"], "#0e0a12"],
+    ["winter", "Winter", "#7cc4ec", "#b8e2f8", ["#e2f4ff", "#7cc4ec", "#5a86d8"], "#0a0d12"],
     ["custom", "Custom"],
   ];
   const hexRgb = h => { h = String(h || "").replace("#", ""); if (h.length === 3) h = [...h].map(c => c + c).join(""); const n = parseInt(h, 16) || 0; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
@@ -6008,7 +6332,7 @@
     const box = $("gamerules"); if (!box) return;
     const rule = n => (cfg.games || []).find(g => g.name.toLowerCase() === n.toLowerCase()) || { name: n, record: true, folder: true };
     const set = (n, k, v) => { cfg.games = cfg.games || []; let r = cfg.games.find(g => g.name.toLowerCase() === n.toLowerCase()); if (!r) { r = { name: n, record: true, folder: true }; cfg.games.push(r); } r[k] = v; changed(); };
-    const games = gameList.filter(g => !g.name.includes("/"));   // sub-folders aren't games
+    const games = gameList.filter(g => !g.name.includes("/") && g.game !== false);   // sub-folders and your own folders ("Mixed") aren't games
     box.innerHTML = games.length ? "" : '<div class="note" style="margin:0">No games yet - play something with Echo running.</div>';
     games.forEach(g => {
       const r = rule(g.name), row = document.createElement("div"); row.className = "grow";
@@ -6106,8 +6430,8 @@
   async function renderProfile() {
     const box = $("profbody"); if (!box) return;
     if (!(cfg && (cfg.cloud_accounts || []).some(a => a.provider === "echocloud"))) {
-      box.innerHTML = `<div class="box"><div class="row"><div class="lbl"><b>Profiles use your free Echo Cloud account</b><small>Sign in with your email under Cloud (10 GB free, no card). Then come back here.</small></div><button class="btn primary" id="pfcloud">Set up Echo Cloud</button></div></div>`;
-      $("pfcloud").onclick = () => openSettings("cloud"); return;
+      box.innerHTML = `<div class="box"><div class="row"><div class="lbl"><b>Your profile appears here once you're signed in</b><small>Sign in above with your email - free, no card, no password.</small></div></div></div>`;
+      return;
     }
     try { pf = await pfCall("GET", "/profile/me"); }
     catch (e) { box.innerHTML = `<div class="box"><div class="row"><div class="lbl"><b>Couldn't load your profile</b><small>${escH(String(e))}</small></div><button class="btn" id="pfre">Try again</button></div></div>`; $("pfre").onclick = renderProfile; return; }

@@ -33,6 +33,7 @@ finish-args:
   - --talk-name=org.freedesktop.FileManager1       # "Show in folder"
   - --filesystem=xdg-run/discord-ipc-0             # Discord status ("Playing Echo"), Settings > App
   - --filesystem=xdg-run/app/com.discordapp.Discord     # same, for Flatpak Discord
+  - --filesystem=xdg-run/app/dev.vencord.Vesktop        # same, for Flatpak Vesktop
   # window stopped redrawing after Alt+Tab (WebKitGTK's dma-buf swap chain in the sandbox, chat 25): keep the GPU
   # compositor, hand finished frames over through shared memory. Test without: flatpak run --unset-env=WEBKIT_DMABUF_RENDERER_FORCE_SHM link.echoclip.Echo
   - --env=WEBKIT_DMABUF_RENDERER_FORCE_SHM=1
@@ -217,8 +218,10 @@ modules:
         --enable-static --disable-shared --enable-pic
         --enable-libx264 --enable-libmp3lame --enable-libass --enable-libfreetype --enable-libharfbuzz
         --enable-libfontconfig --enable-libfribidi --enable-libdrm --enable-vaapi
+        --enable-libdav1d
         $FFMPEG_NV
       - make -j$FLATPAK_BUILDER_N_JOBS
+      # libdav1d (from the runtime): AV1 decoding - thumbnails/strips of AV1 clips + the AV1 encoder test (chat 30)
       # only the two programs - its libraries in /app/lib would be picked up by other builds
       - install -Dm755 -t /app/bin ffmpeg ffprobe
     build-options:

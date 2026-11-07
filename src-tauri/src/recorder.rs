@@ -111,6 +111,8 @@ pub struct GameInfo {
     pub icon: String,
     /// its change time (cache-buster for the window)
     pub icon_v: u64,
+    /// false = only a folder you made (e.g. "Mixed") - shown in the sidebar, not in Settings > Games (chat 30)
+    pub game: bool,
 }
 
 #[derive(Serialize)]
@@ -807,6 +809,10 @@ fn game_name_raw(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
         "echo", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
         "sharex", "greenshot", "nvidia app", "radeonsoftware", "amdrsserv", "msiafterburner", "rtss", "outlook", "winword",
         "excel", "powerpnt", "onenote", "slack", "zoom", "notion", "obsidian", "signal", "thunderbird", "mspaint", "notepad++",
+        // Linux desktop programs that showed up as "games" (chat 30: xalia = KDE's gamepad accessibility helper)
+        "xalia", "plasmashell", "kwin_wayland", "kwin_x11", "krunner", "konsole", "dolphin", "kate", "gwenview", "okular",
+        "systemsettings5", "gnome-shell", "nautilus", "gnome-terminal-server", "kitty", "alacritty", "wezterm", "foot",
+        "vesktop", "webcord", "legcord", "lutris", "heroic", "bottles", "steam_webhelper", "xdg-desktop-portal-kde",
     ];
     if IGNORE.contains(&s.as_str()) {
         return None;
@@ -1374,13 +1380,22 @@ static AV1_ENC: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock:
 /// that Echo's own ffmpeg must also be able to read back (thumbnails, editor, exports). None on Linux for now.
 pub fn av1_encoder() -> Option<&'static str> {
     *AV1_ENC.get_or_init(|| {
-        if !cfg!(windows) {
-            return None;
-        }
         let tmp = std::env::temp_dir().join("echo_av1_test.mp4");
-        for enc in ["av1_amf", "av1_nvenc", "av1_qsv"] {
-            let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30",
-                    "-frames:v", "10", "-pix_fmt", "yuv420p", "-c:v", enc, "-b:v", "1M", "-f", "mp4"]).arg(&tmp)
+        // Windows: AMD AMF / NVIDIA NVENC / Intel QSV. Linux (chat 30): VA-API (AMD RX 7000+, Intel Arc) and NVENC.
+        // A real 10-frame test encode decides - cards without an AV1 encoder simply fail it and never see the option.
+        let list: &[&str] = if cfg!(windows) { &["av1_amf", "av1_nvenc", "av1_qsv"] }
+            else if cfg!(target_os = "linux") { &["av1_vaapi", "av1_nvenc"] } else { &[] };
+        let dev = vaapi_device();
+        for &enc in list {
+            let mut cmd = ffmpeg();
+            cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            if enc == "av1_vaapi" {
+                let Some(d) = dev.as_deref() else { continue };
+                cmd.args(["-vaapi_device", d]);
+            }
+            cmd.args(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-frames:v", "10"]);
+            if enc == "av1_vaapi" { cmd.args(["-vf", "format=nv12,hwupload"]); } else { cmd.args(["-pix_fmt", "yuv420p"]); }
+            let ok = cmd.args(["-c:v", enc, "-b:v", "1M", "-f", "mp4"]).arg(&tmp)
                 .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
                 && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
                 && ffmpeg().args(["-hide_banner", "-loglevel", "error", "-i"]).arg(&tmp).args(["-f", "null", "-"])
@@ -1394,6 +1409,15 @@ pub fn av1_encoder() -> Option<&'static str> {
         log_line("av1: no hardware AV1 encoder - shrinking stays H.264");
         None
     })
+}
+
+/// Linux: the GPU's VA-API render node (/dev/dri/renderD128 on most PCs; the first one that exists), or None
+pub fn vaapi_device() -> Option<String> {
+    if !cfg!(target_os = "linux") { return None; }
+    let mut nodes: Vec<String> = fs::read_dir("/dev/dri").ok()?.flatten()
+        .map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.contains("renderD")).collect();
+    nodes.sort();
+    nodes.into_iter().next()
 }
 
 /// AV1 is used only when the GPU encodes it AND the player decodes it in hardware.
@@ -3655,6 +3679,8 @@ impl Recorder {
         let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
             .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         names.extend(seen.keys().cloned());
+        let rules: Vec<String> = self.settings().games.iter().map(|g| g.name.to_lowercase()).collect();
+        let is_game = |n: &str| seen.keys().any(|k| k.eq_ignore_ascii_case(n)) || rules.contains(&n.to_lowercase());
         // top-level folders only: sub-folders you made ("FiveM/Evidence") aren't games (chat 21)
         names.extend(self.clip_dirs().into_iter().map(|d| d.0).filter(|n| !n.is_empty() && !n.contains('/')));
         names.extend(self.settings().games.iter().map(|g| g.name.clone()));
@@ -3668,7 +3694,8 @@ impl Recorder {
                 Ok(t) => (p.to_string_lossy().to_string(), t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)),
                 Err(_) => (String::new(), 0),
             };
-            GameInfo { name, icon, icon_v }
+            let game = is_game(&name) || !icon.is_empty();
+            GameInfo { name, icon, icon_v, game }
         }).collect()
     }
 
@@ -4093,11 +4120,27 @@ impl Recorder {
     }
 
     /// Import videos dropped onto the window: copy (or convert) them into the clips folder as .mp4.
-    pub fn import_clips(&self, paths: &[String]) -> (Vec<String>, Vec<String>) {
+    /// "Cancel" on the import box (chat 30): stops the running conversion and skips the files still waiting
+    pub fn import_cancel(&self) {
+        IMPORT_CANCEL.store(true, Ordering::Relaxed);
+        if let Ok(mut g) = IMPORT_CHILD.lock() { if let Some(c) = g.as_mut() { let _ = c.kill(); } }
+        log_line("import: cancelled");
+    }
+
+    /// `folder`: library folder the videos go into ("" = the main library; chat 30: dropping onto a sidebar folder).
+    /// `progress(fraction 0..1 of all files, file index, total, name)`, several times a second while a file is
+    /// converted (imports can take minutes - big videos are re-encoded when needed).
+    pub fn import_clips(&self, paths: &[String], folder: &str, progress: &dyn Fn(f64, usize, usize, &str)) -> (Vec<String>, Vec<String>) {
         let (mut ok, mut bad) = (Vec::new(), Vec::new());
-        let dir = self.clips_dir();
+        let safe = folder.split('/').filter(|x| !x.is_empty() && *x != "." && *x != "..").collect::<Vec<_>>().join("/");
+        let dir = if safe.is_empty() { self.clips_dir() } else { self.clips_dir().join(&safe) };
         let _ = fs::create_dir_all(&dir);
-        for p in paths {
+        let total = paths.len();
+        IMPORT_CANCEL.store(false, Ordering::Relaxed);
+        for (i, p) in paths.iter().enumerate() {
+            if IMPORT_CANCEL.load(Ordering::Relaxed) { bad.push("cancelled".into()); break; }
+            let name0 = Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            progress(i as f64 / total.max(1) as f64, i, total, &name0);
             let src = PathBuf::from(p);
             // a dropped folder (e.g. Medal's clips folder): import everything in it, game subfolders kept
             if src.is_dir() {
@@ -4122,11 +4165,13 @@ impl Recorder {
             if self.is_clip(&src) {
                 continue;
             }
-            match self.import_one(&src, &dir) {
+            let each = |f: f64| progress((i as f64 + f.clamp(0.0, 1.0)) / total.max(1) as f64, i, total, &name0);
+            match self.import_one(&src, &dir, &each) {
                 Ok(out) => ok.push(out.to_string_lossy().to_string()),
                 Err(e) => bad.push(format!("{name}: {e}")),
             }
         }
+        progress(1.0, total, total, "");
         (ok, bad)
     }
 
@@ -4164,7 +4209,7 @@ impl Recorder {
     }
 
     /// Converts / copies one video into `dir` as .mp4 and keeps its original date (the library sorts by it).
-    fn import_one(&self, src: &Path, dir: &Path) -> Result<PathBuf, String> {
+    fn import_one(&self, src: &Path, dir: &Path, prog: &dyn Fn(f64)) -> Result<PathBuf, String> {
         let _ = fs::create_dir_all(dir);
         let p = src.to_string_lossy().to_string();
         let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -4175,13 +4220,19 @@ impl Recorder {
             if !q.exists() { break q; }
             n += 1;
         };
-        let tmp = dir.join(format!("{stem}.importing.tmp"));
+        // unique per import: the same file dropped twice at once overwrote one shared .tmp (chat 30)
+        static IMPORT_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = dir.join(format!("{stem}.{}.importing.tmp", IMPORT_N.fetch_add(1, Ordering::Relaxed)));
         // codecs WebView2 can play without converting
         let probe = |sel: &str| -> String {
             hidden("ffprobe").args(["-v", "error", "-select_streams", sel, "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
                 .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()).unwrap_or_default()
         };
         let (vc, ac) = (probe("v:0"), probe("a:0"));
+        // length for the progress bar (ffmpeg reports out_time_us while converting)
+        let dur = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(src).output()
+            .ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok()).unwrap_or(0.0).max(0.1);
+        let tick = |t: f64| prog(t / dur);
         if vc.is_empty() {
             return Err("no video stream".into());
         }
@@ -4195,21 +4246,47 @@ impl Recorder {
         let run = |args: &[&str]| -> bool {
             if skip_enc(args) { return false; }
             let reenc = !args.contains(&"copy");
+            let vaapi = args.contains(&"h264_vaapi");
             let mut c = ffmpeg();
-            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src)
-                .args(["-map", "0:v:0", "-map", "0:a?"]).args(args);
-            if reenc {
-                c.args(["-vf", &vf]).args(TV_TAGS);
+            c.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            if vaapi {
+                let Some(d) = vaapi_device() else { return false };
+                c.args(["-vaapi_device", &d]);
             }
-            let st = c.args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
-                .stdout(Stdio::null()).stderr(Stdio::null()).status();
-            st.map_or(false, |s| s.success()) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+            c.arg("-i").arg(src).args(["-map", "0:v:0", "-map", "0:a?"]).args(args);
+            if reenc {
+                // Linux VA-API: same colour conversion on the CPU, then the frames go up to the GPU
+                let f = if vaapi { format!("{vf},format=nv12,hwupload") } else { vf.clone() };
+                c.args(["-vf", &f]).args(TV_TAGS);
+            }
+            c.args(["-progress", "pipe:1", "-nostats", "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp);
+            run_import_ffmpeg(&mut c, &tick) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
         };
         let aenc = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"];
+        // Linux, all on the GPU (chat 30): VA-API decode + scale_vaapi colour conversion + h264_vaapi - the CPU path
+        // above used ~3 cores just decoding/converting. Only when the range is known from the file's own tags: a clip
+        // that is full range WITHOUT saying so (found by full_range_share) keeps the CPU conversion, the GPU would
+        // treat it as TV range and the picture would come out washed out.
+        let tagged_full = vinfo.contains("pc") || vinfo.contains("yuvj");
+        let gpu_ok = cfg!(target_os = "linux") && (tagged_full || !full);
+        let run_gpu = || -> bool {
+            let Some(d) = vaapi_device() else { return false };
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-hwaccel", "vaapi", "-hwaccel_device", &d, "-hwaccel_output_format", "vaapi", "-i"])
+                .arg(src).args(["-map", "0:v:0", "-map", "0:a?", "-vf", "scale_vaapi=format=nv12:out_range=tv:out_color_matrix=bt709",
+                    "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "22"]).args(aenc).args(TV_TAGS)
+                .args(["-progress", "pipe:1", "-nostats", "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp);
+            let ok = run_import_ffmpeg(&mut c, &tick) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0);
+            if ok { log_line("import: converted fully on the GPU (VA-API decode + colour + encode)"); }
+            ok
+        };
         let done = (copy_ok && run(&["-c", "copy"]))
+            || (gpu_ok && run_gpu())
             || run(&[&["-c:v", "h264_amf", "-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", "22"][..], &aenc[..]].concat())
             || run(&[&["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "22"][..], &aenc[..]].concat())
             || run(&[&["-c:v", "h264_qsv", "-global_quality", "22"][..], &aenc[..]].concat())
+            // Linux: the GPU through VA-API (AMD/Intel) before the much slower CPU encoder (chat 30)
+            || (cfg!(target_os = "linux") && run(&[&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "22"][..], &aenc[..]].concat()))
             || run(&[&["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"][..], &aenc[..]].concat());
         if done && fs::rename(&tmp, &out).is_ok() {
             // keep the date the clip was recorded, not the import time
@@ -4314,7 +4391,7 @@ impl Recorder {
             let game = if game.is_empty() { game } else { self.guess_game(&game).unwrap_or(game) };
             let folder = if game.is_empty() || !c.game_folders { String::new() } else { c.game_folder(&game) };
             let dir = if folder.is_empty() { own.clone() } else { own.join(&folder) };
-            match self.import_one(f, &dir) {
+            match self.import_one(f, &dir, &|_| {}) {
                 Ok(out) => {
                     ok.push(out.to_string_lossy().to_string());
                     seen.insert(key);
@@ -4670,6 +4747,9 @@ impl Recorder {
         } else { match enc {
             Some("av1_amf") => run(&["-c:v", "av1_amf", "-quality", "quality", "-rc", "vbr_peak", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
             Some("av1_nvenc") => run(&["-c:v", "av1_nvenc", "-preset", "p5", "-rc", "vbr", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
+            // Linux VA-API: frames go up to the GPU (format=nv12,hwupload); peak-limited VBR like the others
+            Some("av1_vaapi") => { let dev = vaapi_device().unwrap_or_else(|| "/dev/dri/renderD128".into());
+                run(&["-vaapi_device", &dev, "-vf", "format=nv12,hwupload", "-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", &b, "-maxrate", &peak]) }
             Some(e) => run(&["-c:v", e, "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
             None => run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])
                 || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])
@@ -4704,6 +4784,24 @@ impl Recorder {
             }
         }
         Ok((before, after))
+    }
+
+    /// A sharp still of a clip for the Home page (chat 30: the library thumbnails are small and looked blurry when
+    /// shown big). `width` px wide, frame at 1 s (or a third in for very short clips), cached next to the thumbnails.
+    pub fn hero_frame(&self, clip: &str, width: u32) -> Result<String, String> {
+        let w = width.clamp(320, 2560);
+        let stem = Path::new(clip).file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let src = Path::new(clip);
+        let size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        let out = self.thumbs_dir().join(format!("{stem}.hero{w}.{size}.jpg"));
+        if out.exists() { return Ok(out.to_string_lossy().into()); }
+        let dur = self.thumb(clip).map(|t| t.duration).unwrap_or(0.0);
+        let t = if dur > 3.0 { 1.0 } else { dur / 3.0 };
+        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{t:.2}"), "-i"]).arg(src)
+            .args(["-frames:v", "1", "-vf", &format!("scale={w}:-2"), "-q:v", "3"]).arg(&out)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+            && fs::metadata(&out).map_or(false, |m| m.len() > 0);
+        if ok { Ok(out.to_string_lossy().into()) } else { let _ = fs::remove_file(&out); Err("couldn't read a frame".into()) }
     }
 
     /// A horizontal strip of N frames for the editor timeline.
@@ -8343,4 +8441,35 @@ fn drop_repeats(words: &mut Vec<Word>) {
     }
     let mut it = keep.iter();
     words.retain(|_| *it.next().unwrap());
+}
+
+/// import's ffmpeg, killable by "Cancel" (Recorder::import_cancel); false right away once cancelled
+static IMPORT_CANCEL: AtomicBool = AtomicBool::new(false);
+static IMPORT_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+fn run_import_ffmpeg(c: &mut Command, on_time: &dyn Fn(f64)) -> bool {
+    if IMPORT_CANCEL.load(Ordering::Relaxed) { return false; }
+    let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
+    // "-progress pipe:1" lines -> latest out_time_us (read on its own thread so the loop below can poll / cancel)
+    let pos = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    if let Some(out) = child.stdout.take() {
+        let pos = pos.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<u64>().ok()) { pos.store(v, Ordering::Relaxed); }
+            }
+        });
+    }
+    *IMPORT_CHILD.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        on_time(pos.load(Ordering::Relaxed) as f64 / 1e6);
+        let mut g = IMPORT_CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(ch) = g.as_mut() else { return false };
+        match ch.try_wait() {
+            Ok(Some(st)) => { *g = None; return st.success() && !IMPORT_CANCEL.load(Ordering::Relaxed); }
+            Ok(None) => {}
+            Err(_) => { *g = None; return false; }
+        }
+    }
 }
