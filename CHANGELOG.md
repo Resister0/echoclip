@@ -4,6 +4,60 @@ Everything that changed in Echo, newest first. Each section is one published ver
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
 ## Next release
+- The library uses less memory when you have lots of clips (pictures far off-screen are let go and come back before you scroll to them)
+
+## 1.0.70 - 7 Nov
+- AV1 clips play in the Linux AppImage
+- Windows: Echo no longer shows as the game ECHO in Discord (the program is now called EchoClip.exe)
+- Uses less memory while Echo waits in the tray
+- Security fixes
+
+## 1.0.68 - 7 Nov - Light themes
+- Light themes: Light, Paper and Match system (follows your desktop; the default for new Linux installs)
+- AV1 clips play again in the Linux AppImage instead of going black
+- (1.0.69 = internal build: AppImage update information)
+
+## 1.0.67 - 7 Nov - New Home page
+- New Home page with your latest clip
+- Settings refresh with seasonal themes and background effects
+- One Echo account for profile and cloud
+- Drag videos straight into a folder; faster imports with progress and cancel
+- AV1 conversion on Linux, progress for AV1 batches
+- Linux app icon, fewer false games, replay from the end with one press
+
+## 1.0.66 - 7 Nov
+- Choose when Echo shows in your Discord status
+- (1.0.63 - 1.0.65 = internal builds: README)
+
+## 1.0.62 - 7 Nov - Discord status
+- Discord status (Playing Echo / Clipping your game)
+- Cleaner captions
+- Linux: Space works in the editor
+- Google Drive and pCloud sign-in fixes
+
+## 1.0.61 - 6 Nov
+- Nicer page after signing in to Google Drive or pCloud
+- New clips go to your own cloud after reconnecting it
+- Cloud usage in the sidebar updates right after freeing up Echo Cloud space
+
+## 1.0.60 - 6 Nov - Manage your Echo Cloud space
+- Security fixes
+- Linux: captions work in the AppImage
+- Google Drive now connects as Echo
+- Cloud clips keep their date after Free up space and play right away
+- Your chosen thumbnail now shows in share link and Discord previews
+- Manage your Echo Cloud space (Settings > Cloud > Manage space)
+- Popup when Echo Cloud is almost full
+- Clips you delete from the cloud stay on this PC and aren't uploaded again; Tidy up's delete confirmation shows again
+
+## 1.0.56 - 1.0.59 - 5-6 Nov
+- Internal and Flatpak builds (Flatpak start fix and others)
+
+## 1.0.54 - 5 Nov - Linux Flatpak, fullscreen and update fixes
+- Linux Flatpak, fullscreen and update fixes, safer share links, less Echo Cloud space used
+- (1.0.55 = internal build: Flatpak build fix)
+
+## 1.0.51 - 1.0.53 - 5 Nov - Linux fixes, smoother clips
 - Library and Settings are back at the top of the sidebar - clicking Library always takes you back to All clips
 - Echo tidies the cloud by itself: empty folders in your own cloud go once a week, unused share copies in Echo Cloud are cleaned up daily
 - "Copy the link after uploading" is now off by default (switch it on in Settings › Sharing) - uploads no longer make Echo Cloud share copies unless you ask

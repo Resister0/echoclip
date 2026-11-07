@@ -25,3 +25,4 @@
 /src-tauri/Quit)
 /src-tauri/target/
 /src-tauri/gen/
+/prototype-native/

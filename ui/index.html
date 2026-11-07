@@ -1913,10 +1913,25 @@
   // thumbnails load when their card is about to scroll into view (big libraries open faster);
   // sorting by length needs every clip's duration, so then they all load right away
   const thumbIO = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
-    if (!e.isIntersecting) return; thumbIO.unobserve(e.target); const f = e.target._load; e.target._load = null; if (f) f();
+    if (!e.isIntersecting) return; thumbIO.unobserve(e.target); lazySet.delete(e.target); const f = e.target._load; e.target._load = null; if (f) f();
   }), { rootMargin: "900px 0px" }) : null;
   const thumbMem = new Map();   // clip -> {thumb, duration} already loaded this session
-  function lazyThumb(el, f) { if (!thumbIO || ($("sort") && $("sort").value === "long")) return f(); el._load = f; thumbIO.observe(el); }
+  // chat 31: big libraries kept every thumbnail picture they had ever shown in memory (all cards stay in the page).
+  // A card far away from the visible part (more than ~2 screens) drops its picture and gets it back well before it
+  // scrolls into view again (the file is on disk, so that's instant) - memory stays flat however long the library is.
+  const farIO = "IntersectionObserver" in window ? new IntersectionObserver(es => es.forEach(e => {
+    const t = e.target; if (!t._bg) return;
+    const want = e.isIntersecting ? t._bg : "";
+    if (t.style.backgroundImage !== want) t.style.backgroundImage = want;
+  }), { rootMargin: "2000px 0px" }) : null;
+  // cards of an older library view (it's rebuilt after renames, uploads…) must not stay observed (= kept in memory)
+  const farSet = new Set();
+  setInterval(() => {
+    for (const t of farSet) if (!t.isConnected) { farIO.unobserve(t); farSet.delete(t); }
+    for (const t of lazySet) if (!t.isConnected) { thumbIO.unobserve(t); lazySet.delete(t); t._load = null; }
+  }, 30000);
+  const lazySet = new Set();   // cards still waiting for their thumbnail (swept below when their view is gone)
+  function lazyThumb(el, f) { if (!thumbIO || ($("sort") && $("sort").value === "long")) return f(); el._load = f; lazySet.add(el); thumbIO.observe(el); }
 
   // while Echo is hidden (tray / minimised) the library isn't refreshed; it catches up the moment it's shown
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh().catch(() => {}); });
@@ -3164,7 +3179,9 @@
     // no blank cards flashing while they load again
     const tkey = (c.cloud ? "c:" + c.rel : c.path) + "|" + c.size + "|" + thumbVer(c.name);
     const showThumb = t => {
-      th.style.backgroundImage = `url("${convertFileSrc(t.thumb)}?${c.size}${thumbVer(c.name)}")`;
+      th._bg = `url("${convertFileSrc(t.thumb)}?${c.size}${thumbVer(c.name)}")`;
+      th.style.backgroundImage = th._bg;
+      if (farIO && !farSet.has(th)) { farSet.add(th); farIO.observe(th); }
       if (t.duration > 0) { const d = el.querySelector(".dur"); d.textContent = fmtDur(t.duration); d.hidden = false; }
     };
     if (thumbMem.has(tkey)) showThumb(thumbMem.get(tkey));
