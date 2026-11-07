@@ -5092,6 +5092,7 @@
     ctxMenu(e, [["Move playhead here", () => seekOut(t)], ["Add text here", () => { seekOut(t); addText(); }, "T"], ["Add blur box here", () => { seekOut(t); addBox(); }, "B"], ["Add zoom here", () => { seekOut(t); addBox("zoom"); }, "Z"]]);
   });
   $("etl").addEventListener("wheel", e => { if (e.ctrlKey) { e.preventDefault(); e.deltaY < 0 ? $("ezin").onclick() : $("ezout").onclick(); } }, { passive: false });
+  document.addEventListener("keyup", e => { if (e.code === "Space" && $("editor").classList.contains("open") && !e.target.matches("input,textarea,select,[contenteditable=true]")) e.preventDefault(); }, true);
   document.addEventListener("keydown", e => {
     if (!$("editor").classList.contains("open") || $("confirm").classList.contains("open")) return;
     const k = e.key.toLowerCase();
@@ -5100,7 +5101,8 @@
       (k === "y" || e.code === "KeyY" || e.shiftKey) ? redo() : undo(); return;
     }
     if (e.target.matches("textarea,input:not([type]),input[type=text]")) { if (e.key === "Escape") e.target.blur(); return; }
-    if (e.code === "Space") { e.preventDefault(); ed.playing ? edPause() : edPlay(); }
+    // WebKitGTK also "clicks" a focused button on Space keyup (e.g. Captions after clicking it) = play + that button again (chat 30)
+    if (e.code === "Space") { e.preventDefault(); if (e.repeat) return; const ae = document.activeElement; if (ae && ae !== document.body && ae.closest("#editor")) ae.blur(); const t0 = performance.now(); ed.playing ? edPause() : edPlay(); const ms = performance.now() - t0; if (ms > 300) invoke("ui_log", { msg: `editor: play/pause took ${Math.round(ms)} ms` }).catch(() => {}); }
     else if (e.code === "KeyS") split();
     // I / O again at the same spot takes the highlight away
     // I: highlight from the playhead to the end - or, when something is highlighted, take it away

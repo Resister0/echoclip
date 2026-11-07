@@ -5025,6 +5025,7 @@ impl Recorder {
                 }
             }
             let before = words.len();
+            log_line(&format!("captions: whisper said: {}", words.iter().map(|w| w.text.trim()).collect::<Vec<_>>().join("|").chars().take(300).collect::<String>()));
             drop_repeats(&mut words);
             if words.len() < before { log_line(&format!("captions: dropped {} repeated words (whisper loop)", before - words.len())); }
             log_line(&format!("captions: {label}: {} words in {:.1}s", words.len(), t0.elapsed().as_secs_f32()));
@@ -8304,45 +8305,42 @@ pub fn fps_stats(csv: &Path, from: f64, to: f64) -> Option<(String, f64, f64, us
 }
 
 
-/// whisper sometimes loops on music / silence ("4-4-4-4-4…" for 40 s, chat 30): a run of the same 1-4 word pattern
-/// repeated more than 3 times keeps only its first 2 repeats
+/// whisper sometimes makes up a loop over non-speech (typing, chat 30: "1-2-3-4-4-4-4…" for 38 s). It can come as one
+/// word, many tiny words ("-4", "-4-4") or anything between, so look at the words' text glued together: where a 1-6
+/// character piece repeats 6+ times in a row, everything after its first 2 repeats is the loop; words lying fully
+/// mostly inside it are dropped.
 fn drop_repeats(words: &mut Vec<Word>) {
-    // the loop can also come as ONE "word" without spaces ("1-2-3-4-4-4-4-…", -sow keeps it together): drop any word
-    // whose text has a 2-6 character piece repeated more than 3 times in a row
-    words.retain(|w| !looped(&w.text));
-    let norm = |w: &Word| w.text.trim().trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase();
-    let mut i = 0;
-    while i < words.len() {
-        let mut cut = None;
-        for p in 1..=4 {
-            if i + p * 4 > words.len() { break; }
-            let pat: Vec<String> = words[i..i + p].iter().map(norm).collect();
-            if pat.iter().all(|s| s.is_empty()) { continue; }
-            let mut reps = 1;
-            while i + (reps + 1) * p <= words.len() && (0..p).all(|k| norm(&words[i + reps * p + k]) == pat[k]) { reps += 1; }
-            if reps > 3 { cut = Some((p, reps)); break; }
-        }
-        if let Some((p, reps)) = cut {
-            words.drain(i + 2 * p..i + reps * p);
-            i += 2 * p;
-        } else {
-            i += 1;
-        }
+    let mut chars: Vec<char> = Vec::new();
+    let mut owner: Vec<usize> = Vec::new();
+    for (k, w) in words.iter().enumerate() {
+        for c in w.text.trim().chars() { chars.push(c); owner.push(k); }
     }
-}
-
-fn looped(text: &str) -> bool {
-    let c: Vec<char> = text.trim().chars().collect();
-    // units of 2-6 ("4-", "ab-"): a single repeated character ("1000000", "!!!!") is kept
-    for p in 2..=6 {
-        if c.len() < p * 4 { break; }
-        for i in 0..=c.len() - p * 4 {
-            if (1..4).all(|r| c[i + r * p..i + r * p + p] == c[i..i + p]) && c[i..i + p].iter().any(|ch| ch.is_alphanumeric()) {
-                // "loooool", "hahaha" stay: letters repeated as a unit of 1-2 are normal speech
-                if p <= 2 && c[i..i + p].iter().all(|ch| ch.is_alphabetic()) { continue; }
-                return true;
+    let mut marked = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        let mut jump = 1;
+        for p in 1..=6 {
+            if i + p * 6 > chars.len() { break; }
+            let unit = &chars[i..i + p];
+            if !unit.iter().any(|c| c.is_alphanumeric()) { continue; }
+            // "hahahaha", "loooooool" are speech
+            if p <= 2 && unit.iter().all(|c| c.is_alphabetic()) { continue; }
+            let mut reps = 1;
+            while i + (reps + 1) * p <= chars.len() && chars[i + reps * p..i + (reps + 1) * p] == *unit { reps += 1; }
+            // and at least 16 characters long ("1000000" stays)
+            if reps >= 6 && reps * p >= 16 {
+                for m in &mut marked[i + 2 * p..i + reps * p] { *m = true; }
+                jump = reps * p;
+                break;
             }
         }
+        i += jump;
     }
-    false
+    let mut keep = vec![true; words.len()];
+    for k in 0..words.len() {
+        let mine: Vec<bool> = owner.iter().zip(&marked).filter(|(o, _)| **o == k).map(|(_, m)| *m).collect();
+        if !mine.is_empty() && mine.iter().filter(|m| **m).count() * 2 > mine.len() { keep[k] = false; }
+    }
+    let mut it = keep.iter();
+    words.retain(|_| *it.next().unwrap());
 }

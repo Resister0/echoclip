@@ -11,7 +11,7 @@ let key = ""; try { localStorage.removeItem("echo_admin_key"); sessionStorage.re
 const auth = (extra) => ({ authorization: "Bearer " + key, ...(extra || {}) });
 
 function login(msg) {
-  $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Sign in with your admin email - we'll send you a code.</div>
+  $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Sign in with your email - we'll send you a code.</div>
     <input id="em" type="email" placeholder="Email" autocomplete="email"><button id="go">Send code</button>
     <div id="step2" style="display:none"><input id="cd" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code"><button id="ok">Sign in</button></div>
     <div class="err" id="er">${msg ? esc(msg) : ""}</div></div>`;
@@ -20,7 +20,7 @@ function login(msg) {
     const email = $("#em").value.trim(); if (!email) return;
     $("#go").disabled = true; $("#er").textContent = "";
     try { const [r, j] = await post("/auth/start", { email, admin: true }); if (!r.ok) throw new Error(j.error || "Error " + r.status); } catch (e) { $("#er").textContent = e.message; $("#go").disabled = false; return; }
-    $("#step2").style.display = ""; $("#er").textContent = "If that's the admin email, a code is on its way."; $("#cd").focus();
+    $("#step2").style.display = ""; $("#er").textContent = "Check your email for the code."; $("#cd").focus();
   };
   $("#ok").onclick = async () => {
     try {
@@ -38,7 +38,7 @@ async function load() {
   if (!key) return login();
   let r;
   try { r = await fetch("/admin/stats", { headers: auth() }); } catch { return login("Couldn't reach echoclip.link"); }
-  if (r.status === 403) { const j = await r.json().catch(() => ({})); try { localStorage.removeItem("echo_admin_token"); } catch { } const t = key.slice(0, 4); key = ""; return login((j.error || "Signed out - sign in again") + (t === "adm_" ? "" : " [old token]")); }
+  if (r.status === 403) { const j = await r.json().catch(() => ({})); try { localStorage.removeItem("echo_admin_token"); } catch { } key = ""; return login((j.error || "Signed out - sign in again")); }
   if (!r.ok) return login("Error " + r.status);
   draw(await r.json());
 }

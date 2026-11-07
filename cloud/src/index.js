@@ -170,7 +170,7 @@ async function authStart(req, env) {
   if (b0.admin && !isAdminEmail(env, email)) return json({ ok: true });
   if (b0.mod) {
     const acc = await accountFor(env, email);
-    const isMod = acc && (await env.DB.prepare("SELECT 1 AS x FROM mods WHERE user_id = ?").bind(acc.id).first());
+    const isMod = isAdminEmail(env, email) || (acc && (await env.DB.prepare("SELECT 1 AS x FROM mods WHERE user_id = ?").bind(acc.id).first()));
     if (!isMod) return json({ ok: true });
   }
   const problem = emailProblem(email);
@@ -224,7 +224,8 @@ async function authVerify(req, env) {
     user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
   }
   // admin page sessions start with "adm_" (hash covers the prefix): an app sign-in token of the same account can't open /admin
-  const token = (b.admin ? "adm_" : "") + randomHex(32);
+  // the admin signing in on /mod also gets an admin session (modFrom lets it in)
+  const token = (b.admin || (b.mod && isAdminEmail(env, email)) ? "adm_" : "") + randomHex(32);
   await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, created, last_seen) VALUES (?, ?, ?, ?)")
     .bind(await sha256(token), user.id, now(), now()).run();
   return json({ token, ...me(user, await usage(env, user)) });
@@ -1027,7 +1028,7 @@ async function adminDenied(req, env) {
   if ((req.headers.get("authorization") || "").startsWith("Bearer adm_")) {
     const u = await userFromToken(req, env);
     if (u && isAdminEmail(env, u.email)) return null;
-    return fail(u ? "That account isn't the admin email" : "Signed out - sign in again (session not found)", 403);
+    return fail("Signed out - sign in again", 403);
   }
   let diff = want.length < 20 || key.length !== want.length ? 1 : 0;
   for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ (key.charCodeAt(i) || 0);
@@ -2112,6 +2113,8 @@ const handleOf = (v) => String(v || "").trim().toLowerCase().replace(/^.*\/u\//,
 async function modFrom(req, env) {
   const user = await userFromToken(req, env).catch(() => null);
   if (!user) return null;
+  // the admin (admin session, chat 30) can use /mod too, logged as "admin"
+  if ((req.headers.get("authorization") || "").startsWith("Bearer adm_") && isAdminEmail(env, user.email)) return { user, label: "admin" };
   const m = await env.DB.prepare("SELECT * FROM mods WHERE user_id = ?").bind(user.id).first();
   return m ? { user, label: user.email.split("@")[0] } : null;
 }
