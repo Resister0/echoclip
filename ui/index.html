@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Echo</title>
-<script>try{const t=JSON.parse(localStorage.getItem("echo_theme")||"null");if(t&&t.vars)for(const k in t.vars)document.documentElement.style.setProperty(k,t.vars[k])}catch(e){}</script>
+<script>try{const t=JSON.parse(localStorage.getItem("echo_theme")||"null");if(t&&t.vars){for(const k in t.vars)document.documentElement.style.setProperty(k,t.vars[k]);if(t.vars["--light"]==="1")document.documentElement.classList.add("light")}}catch(e){}</script>
 <style>
   :root {
     --bg:#0d0d10; --rail:#0a0a0c; --panel:#16161a; --panel2:#1e1e23; --line:#26262c; --hover:#34343c;
@@ -511,6 +511,14 @@
   .snav { width:230px; padding:18px 12px; border-right:1px solid var(--line); flex:none; }
   .snav h4 { font-size:11px; letter-spacing:.08em; color:var(--dim); margin:10px 10px 6px; }
   .snav a { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; color:var(--muted); cursor:pointer; }
+  /* light themes (chat 30): the few places that hard-code "white on dark" */
+  html.light .row { border-bottom-color:#0000000f; }
+  html.light .card, html.light .box, html.light .statcard { box-shadow:0 1px 2px #0000000d; }
+  html.light ::-webkit-scrollbar-thumb { background:#0000002a; }
+  html.light .nav.on, html.light .flt.on { background:rgba(var(--accent-rgb),.10); }
+  html.light .btn.primary, html.light .hsplit .hb.pri, html.light .hgs .go { color:#fff; }
+  html.light #bgfxc { opacity:.35; filter:invert(1); }
+  html.light .thumb .dur, html.light .thumb .job, html.light .uplbl, html.light #player, html.light #player * { color:#fff; }
   #bgfxc { position:fixed; inset:0; width:100vw; height:100vh; pointer-events:none; z-index:2; opacity:.55; }
   body.fxoff #bgfxc { display:none; }
   .snav a svg { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; opacity:.85; }
@@ -3384,6 +3392,17 @@
   }
   // mouse wheel over the video zooms into it (drag to look around); back to normal for every clip / on close
   const pZoom = wheelZoom($("pvideo"), $("pvideo"), true);
+  let av1Smooth = null;   // can this player decode AV1 properly? (asked once)
+  async function av1Proxy(c) {
+    if (!av1Of.has(c.path)) av1Of.set(c.path, await invoke("clip_is_av1", { path: c.path }).catch(() => false));
+    if (!av1Of.get(c.path)) return false;
+    if (av1Smooth === null) {
+      try { const r = await navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: 'video/mp4; codecs="av01.0.09M.08"', width: 1920, height: 1080, bitrate: 12e6, framerate: 60 } });
+        av1Smooth = !!(r.supported && r.smooth); } catch { av1Smooth = false; }
+      invoke("ui_log", { msg: `player: AV1 decoding here is ${av1Smooth ? "fine" : "not smooth - AV1 clips play from an H.264 copy"}` }).catch(() => {});
+    }
+    return !av1Smooth;
+  }
   function openPlayer(c) {
     pZoom.reset();
     if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#pside")) document.activeElement.blur();
@@ -3430,6 +3449,20 @@
     // cloud clip: streamed, nothing kept on this PC (Linux: through Echo's own media server, see cloudSrc;
     // still not playing after 25 s -> cloudLoading downloads it instead)
     if (c.cloud) { v.removeAttribute("src"); cloudLoading(v, c); ensureBase().then(() => { if (trim.clip === c) { v.src = cloudSrc(c); pPlay(v); } }).catch(e => { $("pload").classList.remove("on"); toast(String(e)); }); }
+    else if (IS_LINUX) {
+      // AV1 clip and an older player engine (the AppImage's own GStreamer showed them black, chat 30) -> re-pack first
+      av1Proxy(c).then(need => {
+        if (trim.clip !== c) return;
+        if (!need) { v.src = vidSrc(c); return pPlay(v); }
+        // re-pack it once (seconds, no re-encoding) - the older engine then plays the clip itself
+        $("pload").classList.add("on");
+        invoke("av1_repack", { path: c.path }).catch(e => { toast(String(e)); return false; }).then(changed => {
+          if (trim.clip !== c) return; $("pload").classList.remove("on");
+          if (changed) { listKey = ""; refresh(); }
+          v.src = convertFileSrc(c.path) + "?r=" + Date.now(); pPlay(v);
+        });
+      });
+    }
     else { v.src = vidSrc(c); pPlay(v); }
     pHold(v);
     $("pcloud").onclick = () => cloudMenu($("pcloud"), c);
@@ -6157,13 +6190,22 @@
     ["autumn", "Autumn", "#e07a2a", "#f0a868", ["#f5c27a", "#e07a2a", "#a8402a"], "#110d09"],
     ["halloween", "Halloween", "#f08a1a", "#ffb15a", ["#ffb15a", "#f08a1a", "#8a3ae0"], "#0e0a12"],
     ["winter", "Winter", "#7cc4ec", "#b8e2f8", ["#e2f4ff", "#7cc4ec", "#5a86d8"], "#0a0d12"],
+    // chat 30: light themes (AppImageHub asked for light by default on light desktops) + "Match system"
+    ["rain", "Rain", "#6f9bd1", "#a3c2e8", ["#c4d8f0", "#6f9bd1", "#4a6a9a"], "#0d1015"],
+    ["light", "Light", "#6a4cf5", "#7c5cff", ["#9d85ff", "#6a4cf5", "#4f7bff"], "#f4f4f7"],
+    ["paper", "Paper", "#c0602a", "#d9844a", ["#e8a06a", "#c0602a", "#9a3f2a"], "#f6f2ea"],
+    ["system", "Match system"],
     ["custom", "Custom"],
   ];
+  // "Match system": Light when the desktop is light, Violet when it's dark (follows changes live)
+  const sysDark = () => { try { return matchMedia("(prefers-color-scheme: dark)").matches; } catch { return true; } };
+  try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (cfg && cfg.theme === "system") { applyTheme(); renderThemes(); } }); } catch { }
   const hexRgb = h => { h = String(h || "").replace("#", ""); if (h.length === 3) h = [...h].map(c => c + c).join(""); const n = parseInt(h, 16) || 0; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
   const rgbHex = c => "#" + c.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("");
   const mix = (a, b, t) => { const x = hexRgb(a), y = hexRgb(b); return rgbHex(x.map((v, i) => v + (y[i] - v) * t)); };
   const lum = h => { const [r, g, b] = hexRgb(h); return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255; };
   function themeVars(id, accent, bg, hiC) {
+    if (id === "system") id = sysDark() ? "" : "light";
     let t = THEMES.find(x => x[0] === id);
     if (!t || id === "custom") {
       const a = /^#[0-9a-f]{6}$/i.test(accent || "") ? accent : "#7c5cff";
@@ -6177,13 +6219,21 @@
       "--hi": hi, "--hi-rgb": hexRgb(hi).join(","),
       "--accent": a, "--accent2": a2, "--accent-rgb": hexRgb(a).join(","),
       "--grad": `linear-gradient(135deg,${g[0]} 0%,${g[1]} 55%,${g[2]} 100%)`,
-      "--bg": b, "--rail": mix(b, "#000000", 0.22), "--panel": mix(b, "#ffffff", 0.05), "--panel2": mix(b, "#ffffff", 0.085),
-      "--line": mix(b, "#ffffff", 0.13), "--hover": mix(b, "#ffffff", 0.2),
+      ...(lum(b) > 0.5 ? {   // light background: darker panels/lines and dark text
+        "--bg": b, "--rail": mix(b, "#000000", 0.035), "--panel": "#ffffff", "--panel2": mix(b, "#000000", 0.045),
+        "--line": mix(b, "#000000", 0.11), "--hover": mix(b, "#000000", 0.18),
+        "--text": "#16161c", "--muted": "#55555f", "--dim": "#86868f", "--light": "1",
+      } : {
+        "--bg": b, "--rail": mix(b, "#000000", 0.22), "--panel": mix(b, "#ffffff", 0.05), "--panel2": mix(b, "#ffffff", 0.085),
+        "--line": mix(b, "#ffffff", 0.13), "--hover": mix(b, "#ffffff", 0.2),
+        "--text": "#f5f5f7", "--muted": "#a0a0ab", "--dim": "#6b6b76", "--light": "0",
+      }),
     };
   }
   function applyTheme() {
     const vars = themeVars(cfg.theme || "", cfg.theme_accent, cfg.theme_bg, cfg.theme_hi);
     for (const k in vars) document.documentElement.style.setProperty(k, vars[k]);
+    document.documentElement.classList.toggle("light", vars["--light"] === "1");
     try { localStorage.setItem("echo_theme", JSON.stringify({ vars, grad: vars["--grad"] })); } catch (e) {}
   }
   function renderThemes() {

@@ -282,7 +282,8 @@ impl Default for Settings {
             pad_buttons: 0,
             pad_seconds: 0,
             watermark_style: "kimbo".into(),
-            theme: String::new(),
+            // chat 30: Linux follows the desktop's light/dark setting by default (AppImageHub); Windows stays Violet
+            theme: if cfg!(target_os = "linux") { "system".into() } else { String::new() },
             theme_accent: String::new(),
             theme_bg: String::new(),
             theme_hi: String::new(),

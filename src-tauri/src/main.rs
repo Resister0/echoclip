@@ -972,6 +972,16 @@ async fn trim_clip(rec: State<'_, Recorder>, path: String, start: f64, end: f64,
 }
 
 #[tauri::command]
+async fn av1_repack(rec: State<'_, Recorder>, path: String) -> Result<bool, String> {
+    rec.av1_repack(&path)
+}
+
+#[tauri::command]
+async fn play_copy(rec: State<'_, Recorder>, path: String) -> Result<String, String> {
+    rec.play_copy(&path)
+}
+
+#[tauri::command]
 async fn hero_frame(rec: State<'_, Recorder>, path: String, width: u32) -> Result<String, String> {
     rec.hero_frame(&path, width)
 }
@@ -2237,7 +2247,7 @@ fn main() {
             set_meta,
             set_thumb,
             cleanup_now,
-            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_cancel, import_status, hero_frame, job_progress, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, cloud_strip, scrub_sheet, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
+            get_status, save_clip, test_sound, take_screenshot, get_favorites, set_favorite, list_clips, thumb, delete_clip, rename_clip, move_clip, sort_into_folders, toggle_session, list_games, shared_clips, pick_wav, trim_clip, make_gif, combine_clips, import_clips, import_cancel, import_status, hero_frame, job_progress, play_copy, av1_repack, import_sources, import_folder, pick_folder, forget_game, audio_wav, send_log, release_notes, open_echo_link, ec_profile, profile_avatar, pad_capture, pad_names, fps_test, frame_png, audio_mp3, fix_dark_clips, audio_tracks, track_levels, extract_track, list_mics, transcribe, captions_ready, filmstrip, cached_strip, cloud_strip, scrub_sheet, clip_is_av1, share_views, render_edit, copy_clip, copy_clip_sized, list_shots, get_marks,
             restart_recorder, get_settings, set_settings, open_in_folder
         ])
         .build(tauri::generate_context!())

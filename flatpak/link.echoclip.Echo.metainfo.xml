@@ -86,6 +86,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="1.0.68" date="2026-11-07">
+      <description>
+        <p>Light themes: Light, Paper and Match system (follows your desktop; the default for new Linux installs). AV1 clips play again in the Linux AppImage instead of going black.</p>
+      </description>
+    </release>
     <release version="1.0.67" date="2026-11-07">
       <description>
         <p>New Home page with your latest clip, Settings refresh with seasonal themes and background effects, one Echo account for profile and cloud, drag videos straight into a folder, faster imports with progress and cancel, AV1 conversion on Linux, progress for AV1 batches, Linux app icon, fewer false games, replay from the end with one press.</p>

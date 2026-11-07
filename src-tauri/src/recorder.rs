@@ -4745,12 +4745,14 @@ impl Recorder {
                 || run(&["-c:v", "h264_qsv", "-global_quality", "27"])
                 || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-maxrate", &orig, "-bufsize", &orig2, "-pix_fmt", "yuv420p"])
         } else { match enc {
-            Some("av1_amf") => run(&["-c:v", "av1_amf", "-quality", "quality", "-rc", "vbr_peak", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
-            Some("av1_nvenc") => run(&["-c:v", "av1_nvenc", "-preset", "p5", "-rc", "vbr", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
+            // AV1_PACK: no temporal delimiters / padding OBUs in the MP4 (as the AV1-in-MP4 spec asks) - older GStreamer
+            // (the AppImage) showed such clips black (chat 30)
+            Some("av1_amf") => run(&["-c:v", "av1_amf", "-quality", "quality", "-rc", "vbr_peak", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p", "-bsf:v", AV1_PACK]),
+            Some("av1_nvenc") => run(&["-c:v", "av1_nvenc", "-preset", "p5", "-rc", "vbr", "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p", "-bsf:v", AV1_PACK]),
             // Linux VA-API: frames go up to the GPU (format=nv12,hwupload); peak-limited VBR like the others
             Some("av1_vaapi") => { let dev = vaapi_device().unwrap_or_else(|| "/dev/dri/renderD128".into());
-                run(&["-vaapi_device", &dev, "-vf", "format=nv12,hwupload", "-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", &b, "-maxrate", &peak]) }
-            Some(e) => run(&["-c:v", e, "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p"]),
+                run(&["-vaapi_device", &dev, "-vf", "format=nv12,hwupload", "-c:v", "av1_vaapi", "-rc_mode", "VBR", "-b:v", &b, "-maxrate", &peak, "-bsf:v", AV1_PACK]) }
+            Some(e) => run(&["-c:v", e, "-b:v", &b, "-maxrate", &peak, "-pix_fmt", "yuv420p", "-bsf:v", AV1_PACK]),
             None => run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])
                 || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])
                 || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])
@@ -4802,6 +4804,56 @@ impl Recorder {
             .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
             && fs::metadata(&out).map_or(false, |m| m.len() > 0);
         if ok { Ok(out.to_string_lossy().into()) } else { let _ = fs::remove_file(&out); Err("couldn't read a frame".into()) }
+    }
+
+    /// Re-pack an AV1 clip made before AV1_PACK (no re-encoding, a second or two), once - marker next to the
+    /// thumbnails. true = it was re-packed now. The clip keeps its date.
+    pub fn av1_repack(&self, clip: &str) -> Result<bool, String> {
+        let src = PathBuf::from(clip);
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let size = fs::metadata(&src).map_err(err)?.len();
+        let mark = |n: u64| self.thumbs_dir().join(format!("{stem}.av1pack.{n}"));
+        if mark(size).exists() || !is_av1(clip) { return Ok(false); }
+        let mtime = fs::metadata(&src).and_then(|m| m.modified()).ok();
+        let tmp = src.with_extension("repack.tmp");
+        let ok = ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
+            .args(["-map", "0", "-c", "copy", "-bsf:v", AV1_PACK, "-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+            && fs::metadata(&tmp).map_or(false, |m| m.len() > 0);
+        if !ok { let _ = fs::remove_file(&tmp); return Err("couldn't re-pack the AV1 clip".into()); }
+        fs::rename(&tmp, &src).map_err(err)?;
+        if let (Some(t), Ok(f)) = (mtime, fs::File::options().write(true).open(&src)) { let _ = f.set_modified(t); }
+        let n = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        let _ = fs::write(mark(n), b"");
+        log_line(&format!("player: re-packed AV1 clip {stem} ({} -> {} bytes)", size, n));
+        Ok(true)
+    }
+
+    /// An H.264 copy of an AV1 clip just for Echo's player, when the player can't decode AV1 (chat 30: the AppImage's
+    /// bundled GStreamer showed AV1 clips black / frozen). Cached next to the thumbnails; made on the GPU when it can.
+    pub fn play_copy(&self, clip: &str) -> Result<String, String> {
+        let src = Path::new(clip);
+        let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
+        let size = fs::metadata(src).map(|m| m.len()).unwrap_or(0);
+        let out = self.thumbs_dir().join(format!("{stem}.play.{size}.mp4"));
+        if out.exists() { return Ok(out.to_string_lossy().into()); }
+        let tmp = self.thumbs_dir().join(format!("{stem}.play.tmp.mp4"));
+        let t0 = Instant::now();
+        let run = |venc: &[&str], vaapi: bool| -> bool {
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            if vaapi { let Some(d) = vaapi_device() else { return false }; c.args(["-vaapi_device", &d]); }
+            c.arg("-i").arg(src).args(["-map", "0:v:0", "-map", "0:a?", "-c:a", "copy"]);
+            if vaapi { c.args(["-vf", "format=nv12,hwupload"]); }
+            c.args(venc).args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp);
+            c.stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success()) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+        };
+        let ok = (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "23"], true))
+            || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"], false);
+        if !ok { let _ = fs::remove_file(&tmp); return Err("couldn't make a playable copy".into()); }
+        fs::rename(&tmp, &out).map_err(err)?;
+        log_line(&format!("player: H.264 copy of AV1 clip {stem} for this player in {:.0}s", t0.elapsed().as_secs_f32()));
+        Ok(out.to_string_lossy().into())
     }
 
     /// A horizontal strip of N frames for the editor timeline.
@@ -8473,3 +8525,6 @@ fn run_import_ffmpeg(c: &mut Command, on_time: &dyn Fn(f64)) -> bool {
         }
     }
 }
+
+/// AV1 in MP4 without temporal delimiter (2) and padding (15) OBUs - older GStreamer (AppImage) choked on them (chat 30)
+const AV1_PACK: &str = "filter_units=remove_types=2|15";
