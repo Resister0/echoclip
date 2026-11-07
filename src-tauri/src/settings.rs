@@ -57,6 +57,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Discord status "Playing Echo / Clipping <game>" (discord.rs)
     pub discord_presence: bool,
+    /// only while a game is detected (off = all the time Echo runs, the default)
+    pub discord_game_only: bool,
     pub sound_on_save: bool,
     pub sound_on_fail: bool,
     /// 0..1
@@ -228,6 +230,7 @@ impl Default for Settings {
             start_minimized: false,
             close_to_tray: true,
             discord_presence: true,
+            discord_game_only: false,
             sound_on_save: true,
             sound_on_fail: true,
             sound_volume: 0.6,

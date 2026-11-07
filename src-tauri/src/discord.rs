@@ -127,9 +127,11 @@ pub fn start(app: AppHandle) {
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let rec = app.state::<crate::recorder::Recorder>();
-            let on = rec.settings().discord_presence;
+            let cfg = rec.settings();
             let game = rec.last_game.lock().unwrap().as_ref()
                 .filter(|(_, t)| t.elapsed().as_secs() < 20).map(|(g, _)| g.clone());
+            // Settings > App "Only while playing": hide the status when no game is detected
+            let on = cfg.discord_presence && (!cfg.discord_game_only || game.is_some());
             if game != cur_game {
                 game_since = if game.is_some() { now_ms() } else { started };
                 cur_game = game.clone();
