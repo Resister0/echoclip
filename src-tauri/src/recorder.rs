@@ -5004,7 +5004,7 @@ impl Recorder {
             let o = hidden(&cli.to_string_lossy())
                 .current_dir(cli.parent().unwrap_or(Path::new(".")))
                 .args(["-m"]).arg(&model).args(["-f"]).arg(&rw)
-                .args(["-l", "auto", "-ml", "1", "-sow", "-sns", "-mc", "64", "-oj", "-t", &threads, "-of"]).arg(&base)
+                .args(["-l", "auto", "-ml", "1", "-sow", "-sns", "-mc", "0", "-oj", "-t", &threads, "-of"]).arg(&base)
                 .stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(err)?;
             let _ = fs::remove_file(&rw);
             if !o.status.success() {
@@ -5024,6 +5024,9 @@ impl Recorder {
                     words.push(Word { text: w.text, start: s0, end: e0.max(s0 + 0.05) });
                 }
             }
+            let before = words.len();
+            drop_repeats(&mut words);
+            if words.len() < before { log_line(&format!("captions: dropped {} repeated words (whisper loop)", before - words.len())); }
             log_line(&format!("captions: {label}: {} words in {:.1}s", words.len(), t0.elapsed().as_secs_f32()));
             if !words.is_empty() {
                 // kept so the library search can find clips by what was said
@@ -8300,3 +8303,46 @@ pub fn fps_stats(csv: &Path, from: f64, to: f64) -> Option<(String, f64, f64, us
     Some((app, avg, low, ms.len()))
 }
 
+
+/// whisper sometimes loops on music / silence ("4-4-4-4-4…" for 40 s, chat 30): a run of the same 1-4 word pattern
+/// repeated more than 3 times keeps only its first 2 repeats
+fn drop_repeats(words: &mut Vec<Word>) {
+    // the loop can also come as ONE "word" without spaces ("1-2-3-4-4-4-4-…", -sow keeps it together): drop any word
+    // whose text has a 2-6 character piece repeated more than 3 times in a row
+    words.retain(|w| !looped(&w.text));
+    let norm = |w: &Word| w.text.trim().trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase();
+    let mut i = 0;
+    while i < words.len() {
+        let mut cut = None;
+        for p in 1..=4 {
+            if i + p * 4 > words.len() { break; }
+            let pat: Vec<String> = words[i..i + p].iter().map(norm).collect();
+            if pat.iter().all(|s| s.is_empty()) { continue; }
+            let mut reps = 1;
+            while i + (reps + 1) * p <= words.len() && (0..p).all(|k| norm(&words[i + reps * p + k]) == pat[k]) { reps += 1; }
+            if reps > 3 { cut = Some((p, reps)); break; }
+        }
+        if let Some((p, reps)) = cut {
+            words.drain(i + 2 * p..i + reps * p);
+            i += 2 * p;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn looped(text: &str) -> bool {
+    let c: Vec<char> = text.trim().chars().collect();
+    // units of 2-6 ("4-", "ab-"): a single repeated character ("1000000", "!!!!") is kept
+    for p in 2..=6 {
+        if c.len() < p * 4 { break; }
+        for i in 0..=c.len() - p * 4 {
+            if (1..4).all(|r| c[i + r * p..i + r * p + p] == c[i..i + p]) && c[i..i + p].iter().any(|ch| ch.is_alphanumeric()) {
+                // "loooool", "hahaha" stay: letters repeated as a unit of 1-2 are normal speech
+                if p <= 2 && c[i..i + p].iter().all(|ch| ch.is_alphabetic()) { continue; }
+                return true;
+            }
+        }
+    }
+    false
+}

@@ -55,6 +55,8 @@ pub struct Settings {
     pub start_with_windows: bool,
     pub start_minimized: bool,
     pub close_to_tray: bool,
+    /// Discord status "Playing Echo / Clipping <game>" (discord.rs)
+    pub discord_presence: bool,
     pub sound_on_save: bool,
     pub sound_on_fail: bool,
     /// 0..1
@@ -225,6 +227,7 @@ impl Default for Settings {
             start_with_windows: false,
             start_minimized: false,
             close_to_tray: true,
+            discord_presence: true,
             sound_on_save: true,
             sound_on_fail: true,
             sound_volume: 0.6,

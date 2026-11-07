@@ -31,6 +31,8 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications      # "Clip saved" popups (notify-send)
   - --talk-name=org.freedesktop.ScreenSaver        # idle time (pause recording when away)
   - --talk-name=org.freedesktop.FileManager1       # "Show in folder"
+  - --filesystem=xdg-run/discord-ipc-0             # Discord status ("Playing Echo"), Settings > App
+  - --filesystem=xdg-run/app/com.discordapp.Discord     # same, for Flatpak Discord
   # window stopped redrawing after Alt+Tab (WebKitGTK's dma-buf swap chain in the sandbox, chat 25): keep the GPU
   # compositor, hand finished frames over through shared memory. Test without: flatpak run --unset-env=WEBKIT_DMABUF_RENDERER_FORCE_SHM link.echoclip.Echo
   - --env=WEBKIT_DMABUF_RENDERER_FORCE_SHM=1

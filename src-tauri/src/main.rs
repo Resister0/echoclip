@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod net;
+mod discord;
 mod recorder;
 mod settings;
 #[cfg(target_os = "linux")]
@@ -764,6 +765,7 @@ fn do_save(app: &AppHandle, seconds: Option<u32>) -> Result<String, String> {
     let r = rec.save(seconds);
     match &r {
         Ok(p) => {
+            discord::CLIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // bookmarks that fall inside this clip -> seconds from its start
             let dur = rec.thumb(p).map(|t| t.duration).unwrap_or(secs as f64);
             let start = pressed - dur;
@@ -1620,6 +1622,7 @@ fn main() {
         .manage(Hotkeys(Mutex::new(Vec::new())))
         .manage(Recorder::new(cfg.clone()))
         .setup(move |app| {
+            discord::start(app.handle().clone());
             let handle = app.handle().clone();
             // Linux: WebKitGTK scrolls in hard steps per wheel notch unless smooth scrolling is on (choppy, chat 23)
             #[cfg(target_os = "linux")]

@@ -5,12 +5,13 @@ const gb = (b) => { b = b || 0; return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB"
 const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
 const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-";
 const money = (v, c) => (v || 0).toLocaleString(undefined, { style: "currency", currency: c || "EUR" });
-let key = ""; try { key = sessionStorage.getItem("echo_admin_key") || ""; } catch { }
+// key kept in localStorage (stays signed in after closing the page; "Sign out" removes it) - was sessionStorage, chat 30
+let key = ""; try { key = localStorage.getItem("echo_admin_key") || ""; } catch { }
 
 function login(msg) {
   $("#app").innerHTML = `<div class="login"><h1>Echo stats</h1><div class="sub">Paste your ADMIN_KEY (Bitwarden). It's remembered in this browser only.</div>
     <input id="k" type="password" placeholder="ADMIN_KEY" autocomplete="off"><button id="go">Open</button>${msg ? `<div class="err">${esc(msg)}</div>` : ""}</div>`;
-  $("#go").onclick = () => { key = $("#k").value.trim(); try { sessionStorage.setItem("echo_admin_key", key); } catch { } load(); };
+  $("#go").onclick = () => { key = $("#k").value.trim(); try { localStorage.setItem("echo_admin_key", key); } catch { } load(); };
   $("#k").onkeydown = (e) => { if (e.key === "Enter") $("#go").click(); };
   $("#k").focus();
 }
@@ -19,7 +20,7 @@ async function load() {
   if (!key) return login();
   let r;
   try { r = await fetch("/admin/stats", { headers: { "x-admin-key": key } }); } catch { return login("Couldn't reach echoclip.link"); }
-  if (r.status === 403) { try { sessionStorage.removeItem("echo_admin_key"); } catch { } return login("Wrong key"); }
+  if (r.status === 403) { try { localStorage.removeItem("echo_admin_key"); } catch { } return login("Wrong key"); }
   if (!r.ok) return login("Error " + r.status);
   draw(await r.json());
 }
@@ -306,7 +307,7 @@ function draw(j) {
   };
   document.querySelectorAll(".mkmod").forEach((b) => b.onclick = () => modsPost({ email: b.dataset.e }, `Make ${b.dataset.e} a moderator?`));
   loadMods();
-  $("#out").onclick = () => { try { sessionStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
+  $("#out").onclick = () => { try { localStorage.removeItem("echo_admin_key"); } catch { } key = ""; login(); };
 }
 // ----- moderators (chat 29): they sign in at echoclip.link/mod with their Echo Cloud email -----
 async function loadMods() {
