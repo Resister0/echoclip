@@ -1,0 +1,207 @@
+// Chat B (item 10): Echo's first-run setup (#setup "Welcome to Echo") and the "Show me around" tour.
+// The setup's steps are ordinary Settings rows (settings.rs section "setup"), drawn with the Settings page's RowView,
+// so every control writes settings.json the same way. The tour = Echo's spotlight: dark around one hole + a bubble.
+import { T, Btn } from "theme.slint";
+import { S, SBox, RowView } from "settings.slint";
+
+export global Su {
+    in-out property <bool> open;
+    in property <[SBox]> boxes;
+    callback done();
+}
+
+export global Tour {
+    in-out property <int> step: -1;   // -1 = not running
+    in property <int> count: 6;
+    in property <string> title;
+    in property <string> text;
+    callback next();
+    callback skip();
+}
+
+export component SetupLayer inherits Rectangle {
+    visible: Su.open;
+    background: #000000d0;
+    TouchArea { }   // clicks never reach the app behind
+    property <bool> lis: S.listening && Su.open;
+    changed lis => {
+        if (self.lis) {
+            keys.focus();
+        }
+    }
+    keys := FocusScope {
+        key-pressed(e) => {
+            if (S.listening) {
+                if (e.text == Key.Escape) {
+                    S.cancel-listen();
+                } else {
+                    S.key(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta);
+                }
+                return accept;
+            }
+            if (e.text == Key.Escape) {
+                Su.done();
+            }
+            accept
+        }
+    }
+    dlg := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(640px, root.width - 40px);
+        height: min(root.height * 0.9, col.preferred-height + 40px + 64px);
+        background: T.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: T.line;
+        clip: true;
+        fl := Flickable {
+            width: parent.width;
+            height: parent.height - 64px;
+            content-height: col.preferred-height + 40px;
+            col := VerticalLayout {
+                y: 0;
+                width: fl.width;
+                height: self.preferred-height;
+                padding: 22px;
+                spacing: 4px;
+                Text {
+                    text: "Welcome to Echo";
+                    font-size: 19px;
+                    font-weight: 700 + T.fw;
+                    color: T.text;
+                }
+                Text {
+                    text: "A one-minute setup. Everything can be changed later in Settings.";
+                    font-size: 13px;
+                    color: T.muted;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 8px; }
+                for b in Su.boxes: VerticalLayout {
+                    padding-top: 8px;
+                    Text {
+                        text: b.title;
+                        font-size: 11.5px;
+                        font-weight: 700 + T.fw;
+                        letter-spacing: 1px;
+                        color: T.dim;
+                    }
+                    for r[i] in b.rows: RowView {
+                        r: r;
+                        last: i == b.rows.length - 1;
+                    }
+                }
+            }
+        }
+        // footer: always visible
+        Rectangle {
+            y: parent.height - 64px;
+            height: 64px;
+            background: T.panel;
+            Rectangle { y: 0; height: 1px; background: T.line; }
+            HorizontalLayout {
+                padding-left: 22px;
+                padding-right: 22px;
+                padding-top: 14px;
+                padding-bottom: 14px;
+                alignment: end;
+                Btn {
+                    primary: true;
+                    text: "Done";
+                    clicked => { Su.done(); }
+                }
+            }
+        }
+    }
+}
+
+// Echo's #tour: everything dark except the hole (6 px around the thing), a 300 px bubble below it (above when
+// there's no room), "N of 6", Skip / Next (Done on the last). Enter / → = next, Esc = end.
+export component TourLayer inherits Rectangle {
+    in property <length> hx;
+    in property <length> hy;
+    in property <length> hw;
+    in property <length> hh;
+    visible: Tour.step >= 0;
+    property <length> x1: max(0px, hx - 6px);
+    property <length> y1: max(0px, hy - 6px);
+    property <length> x2: min(root.width, hx + hw + 6px);
+    property <length> y2: min(root.height, hy + hh + 6px);
+    TouchArea { }
+    Rectangle { x: 0; y: 0; width: root.width; height: root.y1; background: #000000b0; }
+    Rectangle { x: 0; y: root.y2; width: root.width; height: root.height - root.y2; background: #000000b0; }
+    Rectangle { x: 0; y: root.y1; width: root.x1; height: root.y2 - root.y1; background: #000000b0; }
+    Rectangle { x: root.x2; y: root.y1; width: root.width - root.x2; height: root.y2 - root.y1; background: #000000b0; }
+    Rectangle {
+        x: root.x1;
+        y: root.y1;
+        width: root.x2 - root.x1;
+        height: root.y2 - root.y1;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: T.accent;
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Tour.skip();
+            } else if (e.text == Key.Return || e.text == Key.RightArrow) {
+                Tour.next();
+            }
+            accept
+        }
+    }
+    public function take-focus() {
+        fs.focus();
+    }
+    property <bool> below: root.y2 + 14px + bub.height < root.height;
+    bub := Rectangle {
+        x: max(12px, min(root.width - 300px - 12px, root.hx));
+        y: root.below ? root.y2 + 14px : max(12px, root.y1 - self.height - 14px);
+        width: 300px;
+        height: bl.preferred-height;
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #0009;
+        bl := VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            Text {
+                text: Tour.title;
+                font-size: 15px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+            }
+            Text {
+                text: Tour.text;
+                font-size: 13px;
+                color: T.muted;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                padding-top: 6px;
+                spacing: 8px;
+                Text {
+                    text: (Tour.step + 1) + " of " + Tour.count;
+                    font-size: 12px;
+                    color: T.dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Btn {
+                    text: "Skip";
+                    clicked => { Tour.skip(); }
+                }
+                Btn {
+                    primary: true;
+                    text: Tour.step >= Tour.count - 1 ? "Done" : "Next";
+                    clicked => { Tour.next(); }
+                }
+            }
+        }
+    }
+}

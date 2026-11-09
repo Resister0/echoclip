@@ -1,0 +1,1366 @@
+// Player overlay, styled like Echo's #player: top bar with button groups, the video in a panel (.pwrap), the
+// filmstrip seek bar with yellow trim handles (.pstrip), controls (.ctl) and the key hints (.phint).
+// The Title / Tags / Note panel (#pside) sits on the RIGHT (William, chat 33).
+// Positions are absolute: Rust needs the exact video rectangle (Windows window mode puts its own video window there)
+// and the seek-preview rectangle (cut out of that window so the preview shows above the video).
+import { T, Ic, Icon, TipArea, IconBtn, Btn, Kbd, Toast, CopyMenuBody } from "theme.slint";
+
+export global Play {
+    in-out property <string> title;
+    in-out property <bool> paused;
+    in-out property <float> progress;      // 0..1, Rust sends where it will be at the NEXT poll (250 ms ahead)
+    in-out property <bool> snap;           // true = jump there now (open / seek / pause), false = glide
+    in-out property <float> duration;      // seconds
+    in-out property <string> time-text;
+    in-out property <string> dur-text;
+    in-out property <string> stats;
+    in-out property <bool> show-stats;     // the codec / decoder / frames line (ECHO_STATS=1; hidden for now)
+    in-out property <image> frame;
+    in-out property <image> poster;        // the clip's thumbnail, shown until the video's first picture
+    in-out property <bool> poster-on;
+    in-out property <bool> tick;           // flips on each new video frame (Slint repaints the borrowed texture)
+    in-out property <bool> fav;
+    in-out property <[string]> tags;
+    in-out property <string> note;
+    in-out property <string> info;         // details under the note
+    in-out property <string> size-text;
+    in-out property <bool> has-prev;
+    in-out property <bool> has-next;
+    in-out property <image> sheet;         // 60 pictures (10 x 6): filmstrip + seek preview
+    in-out property <bool> sheet-ok;
+    in-out property <int> sheet-tw;
+    in-out property <int> sheet-th;
+    // quick trim (the yellow ends of the strip)
+    in-out property <bool> trimming;
+    in-out property <float> t0: 0;         // fractions of the clip
+    in-out property <float> t1: 1;
+    in-out property <bool> exact;
+    in-out property <bool> busy;           // saving a trimmed copy
+    // William (9 Nov): cut out middle parts on the strip - Shift+drag highlights (h0..h1), X cuts it; cuts = flat
+    // [a0, b0, a1, b1, ...] fractions, skipped while playing, left out of Save copy, carried into the editor (E)
+    in-out property <float> h0: -1;
+    in-out property <float> h1: -1;
+    in-out property <[float]> cuts;
+    in-out property <float> cut-sum;       // how much of the clip the cuts take (a fraction; the trim bar's length)
+    callback cut();                       // cut the highlight
+    callback uncut(int);                   // put cut k back
+    // sound + fullscreen
+    in-out property <float> volume: 1;
+    in-out property <bool> muted;
+    in-out property <bool> full;
+    in-out property <bool> video-window;
+    in-out property <bool> overlay-ok: true;
+    in-out property <bool> pv-mpv;            // Windows flip model: mpv draws the seek preview over the video (normal view)
+    in-out property <bool> mpv-osd;           // fullscreen controls are drawn by mpv (Slint's stay invisible, for the mouse)  // controls may be drawn over the video (false: Windows window mode)    // Windows window mode: in fullscreen the video is a window BEHIND this one
+    in-out property <bool> ui-on: true;     // fullscreen: strip + controls visible (Rust cuts them out of the video window)
+    callback close();
+    callback toggle-pause();
+    callback seek(float, bool);            // fraction, still dragging
+    callback seek-rel(float);
+    callback prev();
+    callback next();
+    callback toggle-fav();
+    callback add-tag(string);
+    callback remove-tag(string);
+    callback note-edited(string);
+    callback act(string);                  // "folder" / "copy" / "copy:<size>" / "share" / "cloud" / "edit" / "frame" / "thumb" / "audio" / "delete" / "gif" / "replace"
+    callback trim-changed(bool);           // the selection moved (true = still dragging)
+    callback trim-cancel();
+    callback trim-save();
+    callback set-volume(float, bool);      // volume 0..1, muted
+    callback toggle-full();
+    // Chat A: wheel zoom + pan (pl_zoom.rs), bookmarks (seconds) from <stem>.marks.json
+    callback zoom(float, float, float);    // +1 in / -1 out, mouse x / y as 0..1 of the video
+    callback pan(float, float);
+    in-out property <bool> zoomed;
+    in-out property <[float]> marks;
+}
+
+// time formats (Slint 1.18 has no top-level functions: a global holds them)
+global Fmt {
+    // m:ss.d (trim times)
+    public pure function t1(s: float) -> string {
+        let t = round(max(0, s) * 10);
+        let m = floor(t / 600);
+        let sec = floor(mod(t, 600) / 10);
+        return m + ":" + (sec < 10 ? "0" : "") + sec + "." + mod(t, 10);
+    }
+    // m:ss
+    public pure function t0(s: float) -> string {
+        let t = round(max(0, s));
+        return floor(t / 60) + ":" + (mod(t, 60) < 10 ? "0" : "") + mod(t, 60);
+    }
+}
+
+// Echo's .tchip with an x (side panel)
+component TagChip inherits Rectangle {
+    in property <string> text;
+    callback remove();
+    height: 24px;
+    width: hl.preferred-width;
+    border-radius: 12px;
+    background: T.accent.with-alpha(0.15);
+    border-width: 1px;
+    border-color: T.accent.with-alpha(0.33);
+    hl := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 5px;
+        spacing: 3px;
+        Text {
+            text: "#" + root.text;
+            font-size: 12px;
+            color: T.accent2;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            y: 4px;
+            border-radius: 8px;
+            background: xta.has-hover ? #ffffff22 : transparent;
+            xta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.remove(); }
+            }
+            TipArea {
+                text: "Remove tag";
+                hover: xta.has-hover;
+            }
+            Icon {
+                width: 10px;
+                height: 10px;
+                commands: Ic.x;
+                stroke: T.accent2;
+                stroke-width: 2.4px;
+            }
+        }
+    }
+}
+
+// Echo's .pnav
+component NavArrow inherits Rectangle {
+    in property <string> icon;
+    in property <string> tip;
+    callback clicked;
+    width: 46px;
+    height: 46px;
+    border-radius: 23px;
+    border-width: 1px;
+    border-color: T.line;
+    background: ta.has-hover ? #26262e : #17171ccc;
+    animate background { duration: T.fade; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+    Icon {
+        width: 22px;
+        height: 22px;
+        commands: root.icon;
+        stroke: white;
+        transform-scale: ta.pressed ? 0.85 : 1;
+        animate transform-scale { duration: 90ms; }
+    }
+}
+
+// Echo's .pb (round-cornered control button, white icon)
+component Pb inherits Rectangle {
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> filled;
+    callback clicked;
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: ta.has-hover ? #ffffff1a : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+    Icon {
+        width: 20px;
+        height: 20px;
+        commands: root.icon;
+        stroke: white;
+        fill: root.filled ? white : transparent;
+        stroke-width: root.filled ? 0px : 1.8px;
+        transform-scale: ta.pressed ? 0.88 : 1;
+        animate transform-scale { duration: 90ms; }
+    }
+}
+
+// Echo's .din box with a text field inside (TextInput styled by hand: the std widgets look like Fluent, not Echo)
+component DinField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> multi;
+    in property <bool> read-only;
+    callback accepted(string);
+    callback edited(string);
+    background: T.panel2;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    height: multi ? 110px : 36px;
+    clip: true;
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { ti.focus(); }
+    }
+    if root.text == "" && !ti.has-focus: Text {
+        x: 11px;
+        y: 9px;
+        text: root.placeholder;
+        font-size: 13.5px;
+        color: T.dim;
+    }
+    ti := TextInput {
+        x: 11px;
+        y: 9px;
+        width: parent.width - 22px;
+        height: parent.height - 18px;
+        text <=> root.text;
+        read-only: root.read-only;
+        single-line: !root.multi;
+        wrap: root.multi ? word-wrap : no-wrap;
+        font-size: 13.5px;
+        color: T.text;
+        selection-background-color: T.accent.with-alpha(0.45);
+        selection-foreground-color: T.text;
+        vertical-alignment: top;
+        accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
+    }
+}
+
+// a small checkbox (Echo's label.chk)
+component Check inherits HorizontalLayout {
+    in-out property <bool> checked;
+    in property <string> text;
+    in property <string> tip;
+    spacing: 6px;
+    Rectangle {
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border-width: 1.5px;
+        border-color: root.checked ? T.accent : T.muted;
+        background: root.checked ? T.accent : transparent;
+        if root.checked: Icon {
+            width: 12px;
+            height: 12px;
+            commands: Ic.check;
+            stroke: white;
+            stroke-width: 3px;
+        }
+    }
+    Text {
+        text: root.text;
+        font-size: 12.5px;
+        color: T.muted;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.checked = !root.checked; }
+    }
+}
+
+export component PlayerView inherits Rectangle {
+    // the video rectangle (computed by the window, which also hands it to Rust)
+    in property <length> vx;
+    in property <length> vy;
+    in property <length> vw;
+    in property <length> vh;
+    // the side panel
+    in property <length> side-x;
+    in property <length> side-w;
+    in property <bool> side-on;
+    // the seek preview, for Rust (Windows window mode cuts it out of the video window)
+    out property <bool> preview-on: (sa.has-hover || seek.drag != "") && Play.sheet-ok;
+    // pv-in (Windows flip model, normal view): mpv draws the preview over the video and Slint the rest - two renderers
+    // with different timing, so a part sticking out below / beside the video lagged behind on fast mouse moves.
+    // Keep the whole preview INSIDE the video there (4 px higher, clamped to the video's sides) = only mpv's copy shows.
+    property <bool> pv-in: Play.pv-mpv && !Play.full;
+    out property <length> preview-x: pv-in
+        ? clamp(seek.x + seek.width * seek.hover - pw / 2, root.vx + 4px, max(root.vx + 4px, root.vx + root.vw - pw - 4px))
+        : clamp(seek.x + seek.width * seek.hover - pw / 2, 4px, root.width - pw - 4px);
+    out property <length> preview-y: pv-in ? root.vy + root.vh - ph - 4px : seek.y - ph - 10px;
+    out property <length> pw: 228px;
+    out property <length> ph: 132px;
+    // for the controls mpv draws: where the play head is (gliding) and which picture the preview shows
+    out property <float> shown-frac: seek.shown;
+    out property <float> hover-frac: seek.drag == "seek" ? seek.drag-frac : seek.drag == "t0" ? Play.t0 : seek.drag == "t1" ? Play.t1 : seek.hover;
+    property <length> strip-h: 66px;
+    property <length> ctl-h: 57px;
+    // top of the strip: under the video, or (fullscreen) over the bottom of the video
+    property <length> bar-y: Play.full && Play.overlay-ok ? root.vy + root.vh - strip-h - ctl-h : root.vy + root.vh;
+    // fullscreen: strip + controls show while the mouse moves and hide when it rests / leaves (YouTube-style)
+    property <bool> show-ui: !Play.full || !Play.overlay-ok || Play.ui-on;
+    // (showing / hiding them is decided in Rust from the window's own mouse events: Slint's hover only knows the
+    // topmost item, so moving onto the strip looked like "the mouse left" and made them blink)
+    // fullscreen + Windows window mode: clear, the video window sits behind Slint's window
+    background: Play.full ? (Play.video-window ? transparent : black) : #0b0b0fbb;
+
+    public function take-focus() {
+        fs.focus();
+    }
+
+    // click beside the video = close
+    TouchArea {
+        clicked => {
+            if (!Play.full) {
+                Play.close();
+            }
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                if (Play.h0 >= 0) {
+                    Play.h0 = -1;
+                    Play.h1 = -1;
+                } else if (Play.full) {
+                    Play.toggle-full();
+                } else {
+                    Play.close();
+                }
+                return accept;
+            }
+            if (e.text == " ") {
+                Play.toggle-pause();
+                return accept;
+            }
+            if (e.text == Key.LeftArrow) {
+                if (e.modifiers.shift) {
+                    Play.prev();
+                } else {
+                    Play.seek-rel(e.modifiers.control ? -2.5 : -5);
+                }
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                if (e.modifiers.shift) {
+                    Play.next();
+                } else {
+                    Play.seek-rel(e.modifiers.control ? 2.5 : 5);
+                }
+                return accept;
+            }
+            if (e.text == "j" || e.text == "J") {
+                Play.seek-rel(-10);
+                return accept;
+            }
+            if (e.text == "l" || e.text == "L") {
+                Play.seek-rel(10);
+                return accept;
+            }
+            if (e.text == "m" || e.text == "M") {
+                Play.muted = !Play.muted;
+                Play.set-volume(Play.volume, Play.muted);
+                return accept;
+            }
+            if (e.text == "t" || e.text == "T") {
+                if (Play.trimming) {
+                    Play.trim-cancel();
+                } else {
+                    Play.trimming = true;
+                    Play.trim-changed(false);
+                }
+                return accept;
+            }
+            // Chat A: I / O = trim start / end at the play head (starts trimming)
+            if (e.text == "i" || e.text == "I") {
+                Play.trimming = true;
+                Play.t0 = clamp(Play.progress, 0, Play.t1 - 0.01);
+                Play.trim-changed(false);
+                return accept;
+            }
+            if (e.text == "o" || e.text == "O") {
+                Play.trimming = true;
+                Play.t1 = clamp(Play.progress, Play.t0 + 0.01, 1);
+                Play.trim-changed(false);
+                return accept;
+            }
+            if (e.text == "f" || e.text == "F") {
+                Play.toggle-full();
+                return accept;
+            }
+            // William (9 Nov): S at two spots = cut out the part between (first S marks the play head, second cuts)
+            if (e.text == "s" || e.text == "S") {
+                if (Play.h0 < 0) {
+                    Play.h0 = Play.progress;
+                    Play.h1 = Play.progress;
+                } else {
+                    Play.h1 = Play.progress;
+                    Play.cut();
+                }
+                return accept;
+            }
+            if ((e.text == "x" || e.text == "X") && Play.h0 >= 0) {
+                Play.cut();
+                return accept;
+            }
+            if (e.text == "e" || e.text == "E") {
+                Play.act("edit");
+                return accept;
+            }
+            if (e.text == "p" || e.text == "P") {
+                Play.act("frame");
+                return accept;
+            }
+            if (e.text == Key.Delete) {
+                Play.act("delete");
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // ---- top bar (#player .bar): title, then groups: share · edit · file, Close ----
+    // clicks on the bar's empty space aren't "beside the video" (behind the row: inside it, this took a stretchy slot
+    // and pushed the clip name toward the middle - William, 9 Nov)
+    if !Play.full: TouchArea {
+        x: root.vx;
+        y: root.vy - 50px;
+        width: root.vw;
+        height: 36px;
+    }
+    if !Play.full: HorizontalLayout {
+        x: root.vx;
+        y: root.vy - 50px;
+        width: root.vw;
+        height: 36px;
+        spacing: 6px;
+        Text {
+            text: Play.title;
+            font-size: 15px;
+            font-weight: 600 + T.fw;
+            color: T.text;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 140px;
+        }
+        copy := HorizontalLayout {
+            spacing: 0;
+            Btn {
+                text: "Copy";
+                icon: Ic.copy;
+                left-half: true;
+                tip: "Copy (Ctrl+click: choose size)";
+                clicked => { Play.act("copy"); }
+            }
+            Btn {
+                icon: Ic.down;
+                right-half: true;
+                tip: "Copy smaller for Discord";
+                clicked => { cm.show(); }
+            }
+            cm := PopupWindow {
+                x: 0;
+                y: 42px;
+                // own size: Slint tests clicks against it (none = every click 'outside', fell through - William)
+                width: cmb.preferred-width;
+                height: cmb.preferred-height;
+                close-policy: close-on-click-outside;
+                cmb := CopyMenuBody {
+                    size-text: Play.size-text;
+                    picked(k) => {
+                        cm.close();
+                        Play.act("copy:" + k);
+                    }
+                }
+            }
+        }
+        Btn {
+            text: "Share";
+            icon: Ic.share;
+            tip: "Upload and copy a link that plays in Discord";
+            clicked => { Play.act("share"); }
+        }
+        Btn {
+            icon: Ic.cloud;
+            tip: "Cloud: upload, free up space, download, delete";
+            clicked => { Play.act("cloud"); }
+        }
+        // group divider
+        Rectangle {
+            width: 23px;
+            Rectangle {
+                x: 10px;
+                width: 1px;
+                y: 4px;
+                height: parent.height - 8px;
+                background: T.line;
+            }
+        }
+        Btn {
+            text: "Trim";
+            icon: Ic.trim;
+            active: Play.trimming;
+            tip: "Trim (T)";
+            clicked => {
+                if (Play.trimming) {
+                    Play.trim-cancel();
+                } else {
+                    Play.trimming = true;
+                    Play.trim-changed(false);
+                }
+            }
+        }
+        Btn {
+            text: "Edit";
+            icon: Ic.edit;
+            tip: "Open in editor (E)";
+            clicked => { Play.act("edit"); }
+        }
+        Btn {
+            icon: Ic.frame;
+            tip: "Save this frame as a picture + copy it (P)";
+            clicked => { Play.act("frame"); }
+        }
+        Btn {
+            icon: Ic.image;
+            tip: "Use this frame as the clip's thumbnail";
+            clicked => { Play.act("thumb"); }
+        }
+        Btn {
+            icon: Ic.music;
+            tip: "Save the sound as MP3 or WAV + copy it";
+            clicked => { Play.act("audio"); }
+        }
+        Rectangle {
+            width: 23px;
+            Rectangle {
+                x: 10px;
+                width: 1px;
+                y: 4px;
+                height: parent.height - 8px;
+                background: T.line;
+            }
+        }
+        Btn {
+            icon: Ic.folder;
+            tip: "Show in folder";
+            clicked => { Play.act("folder"); }
+        }
+        Btn {
+            icon: Ic.del;
+            red: true;
+            danger: true;
+            tip: "Delete (Del)";
+            clicked => { Play.act("delete"); }
+        }
+        Rectangle { width: 4px; }
+        Btn {
+            text: "Close";
+            clicked => { Play.close(); }
+        }
+    }
+    // ---- .pwrap: video + strip + controls in one panel ----
+    if !Play.full: Rectangle {
+        x: root.vx - (Play.full ? 0 : 1px);
+        y: root.vy - (Play.full ? 0 : 1px);
+        width: root.vw + (Play.full ? 0 : 2px);
+        height: root.vh + root.strip-h + root.ctl-h + (Play.full ? 0 : 2px);
+        background: T.panel;
+        border-width: Play.full ? 0 : 1px;
+        // William (like Medal): a faint white outline so the popup's edges read clearly against the dimmed library -
+        // one outline around video + strip + controls (no separate video / bar boxes)
+        border-color: #ffffff26;
+        border-radius: Play.full ? 0 : 12px;
+        drop-shadow-blur: Play.full ? 0 : 60px;
+        drop-shadow-offset-y: Play.full ? 0 : 20px;
+        drop-shadow-color: #000000cc;
+        TouchArea { } // inside the player panel: not "beside the video"
+    }
+    // the video
+    Rectangle {
+        x: root.vx;
+        y: root.vy;
+        width: root.vw;
+        height: root.vh;
+        background: Play.full && Play.video-window ? transparent : black;
+        // one radius for all corners: a per-corner radius + clip draws through a cached layer -> stale/black video
+        border-radius: Play.full ? 0 : 11px;
+        clip: true;
+        Image {
+            x: 0;
+            y: 0;
+            // same texture, new content: an invisible change makes Slint redraw it. (NOT opacity 1.0/0.999 like
+            // chat 32: opacity < 1 draws through a cached layer, so every other frame showed an old picture)
+            width: parent.width - (Play.tick ? 0px : 0.01px);
+            height: parent.height;
+            source: Play.frame;
+            image-fit: fill;
+        }
+        // opening a clip: its thumbnail instead of black / the previous clip's last picture
+        if Play.poster-on: Rectangle {
+            background: black;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: Play.poster;
+                image-fit: contain;
+            }
+        }
+        videota := TouchArea {
+            // Chat A: wheel = zoom toward the mouse (up to 8x), drag = pan while zoomed; a drag is never a click
+            property <bool> panned;
+            property <length> px0;
+            property <length> py0;
+            mouse-cursor: Play.full && !Play.ui-on ? MouseCursor.none : Play.zoomed ? (self.pressed ? MouseCursor.grabbing : MouseCursor.grab) : MouseCursor.default;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    self.panned = false;
+                    self.px0 = self.mouse-x;
+                    self.py0 = self.mouse-y;
+                }
+            }
+            moved => {
+                if (self.pressed && Play.zoomed && (self.panned || abs(self.mouse-x - self.px0) + abs(self.mouse-y - self.py0) > 4px)) {
+                    self.panned = true;
+                    Play.pan((self.mouse-x - self.px0) / max(1px, self.width), (self.mouse-y - self.py0) / max(1px, self.height));
+                    self.px0 = self.mouse-x;
+                    self.py0 = self.mouse-y;
+                }
+            }
+            scroll-event(e) => {
+                if (e.delta-y != 0 && !e.modifiers.control) {
+                    // the amount, in notches: main.rs hands one wheel notch out as many small glide steps (160 px in
+                    // all) - counting each step as a notch jumped to 8x at once
+                    Play.zoom(e.delta-y / 160px, self.mouse-x / max(1px, self.width), self.mouse-y / max(1px, self.height));
+                    return accept;
+                }
+                reject
+            }
+            clicked => {
+                if (!self.panned) {
+                    Play.toggle-pause();
+                }
+            }
+            double-clicked => { Play.toggle-full(); }
+        }
+    }
+    // William (9 Nov): a slightly brighter outline hugging the clip itself (top, sides AND where it meets the strip).
+    // Drawn 1 px OUTSIDE the picture: in window mode mpv's own window covers the picture, nothing Slint draws inside
+    // it would show. The panel's fainter border around everything stays.
+    if !Play.full: Rectangle {
+        z: 5; // above the strip (drawn later), else it hides the bottom line
+        x: root.vx - 1px;
+        y: root.vy - 1px;
+        width: root.vw + 2px;
+        height: root.vh + 2px;
+        border-width: 1px;
+        border-color: #ffffff30; // toned down (William: "a bit less on the actual player")
+        border-radius: 12px;
+    }
+    if Play.has-prev && !Play.full: NavArrow {
+        x: 18px;
+        y: (root.height - self.height) / 2;
+        icon: Ic.prev;
+        tip: "Previous clip (Shift+←)";
+        clicked => { Play.prev(); }
+    }
+    if Play.has-next && !Play.full: NavArrow {
+        x: root.width - self.width - 18px;
+        y: (root.height - self.height) / 2;
+        icon: Ic.next;
+        tip: "Next clip (Shift+→)";
+        clicked => { Play.next(); }
+    }
+
+    // strip + controls (fullscreen: over the video, fading out when the mouse rests)
+    chrome := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        // mpv draws them (fullscreen, Windows window mode): invisible here, but still there for the mouse
+        opacity: Play.mpv-osd ? 0 : root.show-ui ? 1 : 0;
+        animate opacity { duration: 250ms; }
+        visible: Play.mpv-osd ? root.show-ui : self.opacity > 0.01;
+        // fullscreen: a soft fade above the strip; the controls area counts as "on the controls"
+        if Play.full: Rectangle {
+            x: root.vx;
+            y: root.bar-y - 40px;
+            width: root.vw;
+            height: 40px;
+            background: @linear-gradient(180deg, #00000000 0%, #000000aa 100%);
+        }
+        cta := TouchArea {
+            x: root.vx;
+            y: root.bar-y;
+            width: root.vw;
+            height: root.strip-h + root.ctl-h;
+        }
+        // ---- .pstrip: the filmstrip seek bar ----
+        Rectangle {
+            x: root.vx;
+            y: root.bar-y;
+            width: root.vw;
+            height: root.strip-h;
+            background: Play.full ? #000000aa : @linear-gradient(180deg, #15151b 0%, #101014 100%);
+            Rectangle {
+                height: 1px;
+                y: 0;
+                background: #ffffff14;
+            }
+        }
+        seek := Rectangle {
+            x: root.vx + 18px;
+            y: root.bar-y + 14px;
+            width: root.vw - 36px;
+            height: 46px;
+            border-radius: 10px;
+            background: #2a2a32;
+            clip: true;
+            property <string> drag: "";   // "" / "seek" / "t0" / "t1"
+            property <float> drag-frac: 0;
+            property <float> hover: clamp(sa.mouse-x / max(1px, self.width), 0, 1);
+            // glides between Rust's 250 ms updates (Rust sends the position it expects at the next update)
+            property <float> glide: Play.progress;
+            animate glide {
+                duration: Play.snap ? 0ms : 250ms;
+                easing: linear;
+            }
+            property <float> shown: drag == "seek" ? drag-frac : glide;
+            property <int> n: max(1, round(self.width / (self.height * 16 / 9)));
+            property <float> min-gap: Play.duration > 0 ? 0.5 / Play.duration : 0.02;
+            // the frames
+            if Play.sheet-ok: HorizontalLayout {
+                spacing: 0;
+                for i in seek.n: Image {
+                    property <int> f: min(59, floor((i + 0.5) * 60 / seek.n));
+                    source: Play.sheet;
+                    image-fit: cover;
+                    source-clip-x: mod(f, 10) * Play.sheet-tw;
+                    source-clip-y: floor(f / 10) * Play.sheet-th;
+                    source-clip-width: Play.sheet-tw;
+                    source-clip-height: Play.sheet-th;
+                }
+            }
+            // dimmed so it reads as UI, brighter on hover
+            Rectangle {
+                background: sa.has-hover || seek.drag != "" ? #0000003b : #00000070;
+                animate background { duration: T.fade; }
+            }
+            // outside the trim selection
+            Rectangle {
+                x: 0;
+                width: parent.width * Play.t0;
+                background: #000000a0;
+            }
+            Rectangle {
+                x: parent.width * Play.t1;
+                width: parent.width * (1 - Play.t1);
+                background: #000000a0;
+            }
+            // cut-out parts: nearly black, striped, skipped while playing
+            for k in floor(Play.cuts.length / 2): Rectangle {
+                x: parent.width * Play.cuts[k * 2];
+                width: parent.width * (Play.cuts[k * 2 + 1] - Play.cuts[k * 2]);
+                background: #000000d8;
+                clip: true;
+                for s in ceil(self.width / 10px) + 6: Path {
+                    x: (s - 6) * 10px;
+                    width: 60px;
+                    height: parent.height;
+                    viewbox-width: 60;
+                    viewbox-height: 46;
+                    commands: "M0 46 L46 0";
+                    stroke: #ff5a5a40;
+                    stroke-width: 1.5px;
+                }
+                Rectangle { x: 0; width: 1.5px; background: #ff5a5acc; }
+                Rectangle { x: parent.width - 1.5px; width: 1.5px; background: #ff5a5acc; }
+            }
+            // the highlight (Shift+drag): X cuts it
+            if Play.h0 >= 0: Rectangle {
+                x: parent.width * min(Play.h0, Play.h1);
+                width: max(2px, parent.width * abs(Play.h1 - Play.h0));
+                background: T.hi.with-alpha(0.22);
+                Rectangle { y: 0; height: 2px; background: T.hi; }
+                Rectangle { y: parent.height - 2px; height: 2px; background: T.hi; }
+            }
+            // selection outline while trimming
+            if Play.trimming: Rectangle {
+                x: parent.width * Play.t0;
+                width: parent.width * (Play.t1 - Play.t0);
+                border-width: 2px;
+                border-color: T.hi;
+            }
+            // William (9 Nov): a light line along the top and bottom of the kept part, joining the two yellow ends
+            // (the ends are the sides) - not while trimming, the yellow outline is there then
+            if !Play.trimming: Rectangle {
+                x: parent.width * Play.t0 + 12px;
+                y: 0;
+                width: max(0px, parent.width * (Play.t1 - Play.t0) - 24px);
+                height: 2px;
+                background: #ffffff8c;
+            }
+            if !Play.trimming: Rectangle {
+                x: parent.width * Play.t0 + 12px;
+                y: parent.height - 2px;
+                width: max(0px, parent.width * (Play.t1 - Play.t0) - 24px);
+                height: 2px;
+                background: #ffffff8c;
+            }
+            // progress line at the bottom
+            Rectangle {
+                x: 0;
+                y: parent.height - 4px;
+                height: 4px;
+                width: parent.width * seek.shown;
+                background: T.accent;
+            }
+            // Chat A: bookmarks (Echo's yellow triangles at the top of the bar)
+            for m in Play.marks: Path {
+                x: parent.width * clamp(m / max(0.01, Play.duration), 0, 1) - 6px;
+                y: 0;
+                width: 12px;
+                height: 8px;
+                viewbox-width: 12;
+                viewbox-height: 8;
+                commands: "M0 0 L12 0 L6 8 Z";
+                fill: #ffd84d;
+                stroke: #00000088;
+                stroke-width: 1px;
+            }
+            // play head
+            Rectangle {
+                x: parent.width * seek.shown - 1.5px;
+                width: 3px;
+                border-radius: 2px;
+                background: white;
+                drop-shadow-blur: 6px;
+                drop-shadow-color: black;
+            }
+            // trim handles (always there - drag one to start trimming)
+            Rectangle {
+                x: parent.width * Play.t0;
+                width: 12px;
+                border-top-left-radius: 7px;
+                border-bottom-left-radius: 7px;
+                background: T.hi.with-alpha(0.8);
+                Rectangle {
+                    x: 5px;
+                    width: 2px;
+                    y: 14px;
+                    height: parent.height - 28px;
+                    border-radius: 1px;
+                    background: #00000077;
+                }
+            }
+            Rectangle {
+                x: parent.width * Play.t1 - 12px;
+                width: 12px;
+                border-top-right-radius: 7px;
+                border-bottom-right-radius: 7px;
+                background: T.hi.with-alpha(0.8);
+                Rectangle {
+                    x: 5px;
+                    width: 2px;
+                    y: 14px;
+                    height: parent.height - 28px;
+                    border-radius: 1px;
+                    background: #00000077;
+                }
+            }
+            // outline
+            Rectangle {
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #ffffff2e;
+            }
+            sa := TouchArea {
+                mouse-cursor: abs(self.mouse-x - parent.width * Play.t0 - 6px) < 12px || abs(self.mouse-x - parent.width * Play.t1 + 6px) < 12px ? MouseCursor.ew-resize : MouseCursor.pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                        let f = clamp(self.mouse-x / self.width, 0, 1);
+                        if (e.modifiers.shift) {
+                            // highlight a part (X cuts it, Esc clears)
+                            seek.drag = "hl";
+                            Play.h0 = f;
+                            Play.h1 = f;
+                        } else if (abs(self.mouse-x - parent.width * Play.t0 - 6px) < 14px) {
+                            seek.drag = "t0";
+                            Play.trimming = true;
+                        } else if (abs(self.mouse-x - parent.width * Play.t1 + 6px) < 14px) {
+                            seek.drag = "t1";
+                            Play.trimming = true;
+                        } else {
+                            seek.drag = "seek";
+                            seek.drag-frac = f;
+                            Play.seek(f, true);
+                        }
+                    }
+                    if (e.kind == PointerEventKind.up && seek.drag != "") {
+                        if (seek.drag == "hl") {
+                            if (abs(Play.h1 - Play.h0) < seek.min-gap) {
+                                Play.h0 = -1;
+                                Play.h1 = -1;
+                            } else {
+                                let lo = min(Play.h0, Play.h1);
+                                Play.h1 = max(Play.h0, Play.h1);
+                                Play.h0 = lo;
+                            }
+                        } else if (seek.drag == "seek") {
+                            Play.seek(clamp(self.mouse-x / self.width, 0, 1), false);
+                        } else {
+                            Play.trim-changed(false);
+                        }
+                        seek.drag = "";
+                    }
+                }
+                moved => {
+                    let f = clamp(self.mouse-x / self.width, 0, 1);
+                    if (seek.drag == "hl") {
+                        Play.h1 = f;
+                    }
+                    if (seek.drag == "seek") {
+                        seek.drag-frac = f;
+                        Play.seek(f, true);
+                    }
+                    if (seek.drag == "t0") {
+                        Play.t0 = clamp(f, 0, Play.t1 - seek.min-gap);
+                        Play.trim-changed(true);
+                    }
+                    if (seek.drag == "t1") {
+                        Play.t1 = clamp(f, Play.t0 + seek.min-gap, 1);
+                        Play.trim-changed(true);
+                    }
+                }
+            }
+            // a small x in the middle of each cut: click = put it back
+            for k in floor(Play.cuts.length / 2): Rectangle {
+                property <length> cx: parent.width * (Play.cuts[k * 2] + Play.cuts[k * 2 + 1]) / 2;
+                visible: parent.width * (Play.cuts[k * 2 + 1] - Play.cuts[k * 2]) > 24px;
+                x: self.cx - 10px;
+                y: (parent.height - 20px) / 2;
+                width: 20px;
+                height: 20px;
+                border-radius: 10px;
+                background: ub.has-hover ? #ff5a5a : #000000b0;
+                border-width: 1px;
+                border-color: #ff5a5acc;
+                Path {
+                    width: 8px;
+                    height: 8px;
+                    viewbox-width: 8;
+                    viewbox-height: 8;
+                    commands: "M0 0 L8 8 M8 0 L0 8";
+                    stroke: white;
+                    stroke-width: 1.5px;
+                }
+                ub := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Play.uncut(k); }
+                }
+            }
+        }
+        // hover / drag preview above the strip (#ptip)
+        if root.preview-on && !Play.mpv-osd: Rectangle {
+            x: root.preview-x;
+            y: root.preview-y;
+            width: root.pw;
+            height: root.ph;
+            border-radius: 9px;
+            border-width: 2px;
+            border-color: #ffffffd9;
+            background: black;
+            clip: true;
+            // pv-in: no shadow (it would fall on the strip below the video and lag behind mpv's copy)
+            drop-shadow-blur: root.pv-in ? 0px : 24px;
+            drop-shadow-offset-y: root.pv-in ? 0px : 8px;
+            drop-shadow-color: root.pv-in ? transparent : #000000cc;
+            property <float> f: seek.drag == "seek" ? seek.drag-frac : seek.drag == "t0" ? Play.t0 : seek.drag == "t1" ? Play.t1 : seek.hover;
+            property <int> n: min(59, floor(f * 60));
+            Image {
+                x: 2px;
+                y: 2px;
+                width: parent.width - 4px;
+                height: parent.height - 4px;
+                source: Play.sheet;
+                image-fit: fill;
+                source-clip-x: mod(n, 10) * Play.sheet-tw;
+                source-clip-y: floor(n / 10) * Play.sheet-th;
+                source-clip-width: Play.sheet-tw;
+                source-clip-height: Play.sheet-th;
+            }
+            Text {
+                y: parent.height - 24px;
+                text: Fmt.t0(f * Play.duration);
+                font-size: 12.5px;
+                font-weight: 600 + T.fw;
+                color: white;
+                horizontal-alignment: center;
+                width: parent.width;
+            }
+        }
+
+        // ---- .ctl ----
+        Rectangle {
+            x: root.vx;
+            y: root.bar-y + root.strip-h;
+            width: root.vw;
+            height: root.ctl-h;
+            background: Play.full ? #000000aa : T.panel2;
+            border-bottom-left-radius: Play.full ? 0 : 11px;
+            border-bottom-right-radius: Play.full ? 0 : 11px;
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: T.line;
+            }
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 12px;
+                Pb {
+                    icon: Play.paused ? Ic.play : Ic.pause;
+                    filled: true;
+                    tip: Play.paused ? "Play (Space)" : "Pause (Space)";
+                    clicked => { Play.toggle-pause(); }
+                }
+                Text {
+                    text: Play.time-text + " / " + Play.dur-text;
+                    font-size: 12.5px;
+                    color: #dddddd;
+                    vertical-alignment: center;
+                }
+                Text {
+                    // prototype stats (where Echo has nothing): codec, decoder, frames
+                    text: Play.trimming || !Play.show-stats ? "" : Play.stats;
+                    font-size: 11.5px;
+                    color: T.dim;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                // .tctl - shown while trimming
+                if Play.trimming && !Play.mpv-osd: HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: Fmt.t1(Play.t0 * Play.duration) + " – " + Fmt.t1(Play.t1 * Play.duration);
+                        font-size: 12.5px;
+                        font-weight: 600 + T.fw;
+                        color: T.text;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "· " + round(max(0, Play.t1 - Play.t0 - Play.cut-sum) * Play.duration * 10) / 10 + "s";
+                        font-size: 12.5px;
+                        color: T.muted;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { width: 4px; }
+                    Check {
+                        text: "Exact";
+                        checked <=> Play.exact;
+                    }
+                    TipArea {
+                        text: "Frame-exact start (re-encodes, a bit slower)";
+                    }
+                    Btn {
+                        y: 3px;
+                        small: true;
+                        text: "Cancel";
+                        tip: "Cancel (T)";
+                        clicked => { Play.trim-cancel(); }
+                    }
+                    Btn {
+                        y: 3px;
+                        small: true;
+                        text: "GIF";
+                        tip: "Make a GIF of the selection and copy it (max 30 s)";
+                        clicked => { Play.act("gif"); }
+                    }
+                    Btn {
+                        y: 3px;
+                        small: true;
+                        text: "Replace";
+                        clicked => { Play.act("replace"); }
+                    }
+                    Btn {
+                        y: 3px;
+                        small: true;
+                        primary: true;
+                        text: Play.busy ? "Saving…" : "Save copy";
+                        clicked => {
+                            if (!Play.busy) {
+                                Play.trim-save();
+                            }
+                        }
+                    }
+                }
+                Pb {
+                    icon: Play.muted || Play.volume == 0 ? Ic.mute : Ic.vol;
+                    tip: "Mute (M)";
+                    clicked => {
+                        Play.muted = !Play.muted;
+                        Play.set-volume(Play.volume, Play.muted);
+                    }
+                }
+                // volume (Echo's #pvol, 90 px)
+                vol := Rectangle {
+                    width: 90px;
+                    Rectangle {
+                        y: (parent.height - 4px) / 2;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: #ffffff26;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * (Play.muted ? 0 : Play.volume);
+                            border-radius: 2px;
+                            background: T.accent;
+                        }
+                    }
+                    Rectangle {
+                        x: (parent.width - 14px) * (Play.muted ? 0 : Play.volume);
+                        y: (parent.height - 14px) / 2;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 7px;
+                        background: T.accent;
+                        border-width: 2px;
+                        border-color: #ffffffdd;
+                    }
+                    vta := TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                Play.volume = clamp(self.mouse-x / self.width, 0, 1);
+                                Play.muted = false;
+                                Play.set-volume(Play.volume, false);
+                            }
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                Play.volume = clamp(self.mouse-x / self.width, 0, 1);
+                                Play.set-volume(Play.volume, false);
+                            }
+                        }
+                    }
+                }
+                Pb {
+                    icon: Play.full ? Ic.unfs : Ic.fs;
+                    tip: Play.full ? "Exit fullscreen (F)" : "Fullscreen (F)";
+                    clicked => { Play.toggle-full(); }
+                }
+            }
+        }
+    }
+
+    // ---- .phint ----
+    if !Play.full: HorizontalLayout {
+        width: self.preferred-width;
+        x: (root.width - self.preferred-width) / 2;
+        y: root.vy + root.vh + root.strip-h + root.ctl-h + 16px;
+        height: 20px;
+        spacing: 4px;
+        Kbd { text: "←"; }
+        Kbd { text: "→"; }
+        Text {
+            text: " skip 5 s (";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "Ctrl"; }
+        Text {
+            text: " 2.5 s) · ";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "J"; }
+        Kbd { text: "L"; }
+        Text {
+            text: " 10 s · ";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "M"; }
+        Text {
+            text: " mute · ";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "Shift"; }
+        Text {
+            text: "+";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "←"; }
+        Kbd { text: "→"; }
+        Text {
+            text: " previous / next clip · drag the yellow ends of the strip to trim · ";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        Kbd { text: "Esc"; }
+        Text {
+            text: " close";
+            font-size: 12px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+    }
+
+    // ---- side panel (#pside), on the right: Title, Tags, Note, details ----
+    if root.side-on && !Play.full: Rectangle {
+        x: root.side-x;
+        y: (root.height - sv.preferred-height) / 2;
+        width: root.side-w;
+        height: sv.preferred-height;
+        // clicks on the fields don't close the player - but the details text at the bottom (#sinfo) does, like any
+        // click beside the video (William kept hitting it when clicking off the clip)
+        TouchArea {
+            y: 0;
+            height: parent.height - sinfo.height - 12px;
+        }
+        // Esc while typing a tag / note still closes the player (the text fields keep every other key)
+        FocusScope {
+            focus-on-click: false;
+            capture-key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    Play.close();
+                    return accept;
+                }
+                reject
+            }
+            sv := VerticalLayout {
+                spacing: 0;
+                // .dl labels: 12 px muted, 10 px above, 5 px below
+                Text {
+                    text: "Title";
+                    font-size: 12px;
+                    color: T.muted;
+                    height: 22px;
+                    vertical-alignment: bottom;
+                }
+                Rectangle { height: 5px; }
+                // Echo's #sname: edit the name here - Enter or clicking away renames the clip (the player keeps
+                // playing from the same spot), Esc puts the old name back
+                Rectangle {
+                    background: T.panel2;
+                    border-radius: 9px;
+                    border-width: 1px;
+                    border-color: tt.has-focus ? T.accent : T.line;
+                    height: tt.preferred-height + 18px;
+                    TouchArea {
+                        mouse-cursor: MouseCursor.text;
+                        clicked => { tt.focus(); }
+                    }
+                    tt := TextInput {
+                        x: 11px;
+                        y: 9px;
+                        width: parent.width - 22px;
+                        text: Play.title;
+                        single-line: false;
+                        wrap: word-wrap;
+                        font-size: 13.5px;
+                        font-weight: 600 + T.fw;
+                        color: T.text;
+                        selection-background-color: T.accent.with-alpha(0.45);
+                        property <bool> cancel;
+                        // typing breaks the `text: Play.title` binding: put the name back for every new clip
+                        property <string> src: Play.title;
+                        changed src => {
+                            self.text = Play.title;
+                        }
+                        key-pressed(e) => {
+                            if (e.text == Key.Return) {
+                                self.clear-focus();
+                                return accept;
+                            }
+                            if (e.text == Key.Escape) {
+                                self.cancel = true;
+                                self.text = Play.title;
+                                self.clear-focus();
+                                return accept;
+                            }
+                            reject
+                        }
+                        changed has-focus => {
+                            if (!self.has-focus) {
+                                if (!self.cancel && self.text != Play.title) {
+                                    Play.act("rename:" + self.text);
+                                }
+                                self.cancel = false;
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: "Tags";
+                    font-size: 12px;
+                    color: T.muted;
+                    height: 27px;
+                    vertical-alignment: bottom;
+                }
+                Rectangle { height: 5px; }
+                // tags flow and wrap like Echo's (Slint 1.18 FlexboxLayout wraps by default), then the input
+                VerticalLayout {
+                    spacing: 6px;
+                    if Play.tags.length > 0: FlexboxLayout {
+                        spacing: 6px;
+                        for t in Play.tags: TagChip {
+                            text: t;
+                            remove => { Play.remove-tag(self.text); }
+                        }
+                    }
+                    tagin := DinField {
+                        placeholder: "Add a tag + Enter";
+                        accepted(t) => {
+                            Play.add-tag(t);
+                            self.text = "";
+                        }
+                    }
+                }
+                Text {
+                    text: "Note";
+                    font-size: 12px;
+                    color: T.muted;
+                    height: 27px;
+                    vertical-alignment: bottom;
+                }
+                Rectangle { height: 5px; }
+                DinField {
+                    multi: true;
+                    text <=> Play.note;
+                    placeholder: "Anything to remember…";
+                    edited(t) => { Play.note-edited(t); }
+                }
+                Rectangle { height: 12px; }
+                // #sinfo
+                sinfo := Text {
+                    text: Play.info;
+                    font-size: 11.5px;
+                    color: T.dim;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

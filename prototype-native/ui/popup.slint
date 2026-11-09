@@ -1,0 +1,103 @@
+// Chat A: the in-game "Clip saved" popup (Echo's toast.html): its own small always-on-top window that never takes
+// focus (Windows: WS_EX_NOACTIVATE via Echo's winutil::make_overlay, shown with SW_SHOWNOACTIVATE). src/popup.rs.
+export component PopupWin inherits Window {
+    in property <string> head;
+    in property <string> sub;
+    in property <bool> ok: true;
+    in property <image> game-icon;
+    in property <bool> has-icon;
+    in property <color> grad-a: #8b6cff;
+    in property <color> grad-b: #4f7bff;
+    // slide in from the right + fade (.t / .t.on in toast.html)
+    in-out property <bool> on;
+    title: "Echo popup";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 360px;
+    height: 84px;
+    card := Rectangle {
+        x: parent.width - self.width - 10px + (root.on ? 0px : 30px);
+        y: 10px;
+        width: min(max(hl.preferred-width, 220px), 340px);
+        height: 58px;
+        opacity: root.on ? 1 : 0;
+        animate x { duration: 250ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+        animate opacity { duration: 200ms; }
+        border-radius: 14px;
+        background: #141418f2;
+        border-width: 1px;
+        border-color: #ffffff1c;
+        hl := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 16px;
+            spacing: 12px;
+            alignment: start;
+            Rectangle {
+                y: 12px;
+                width: 34px;
+                height: 34px;
+                border-radius: 10px;
+                background: root.has-icon ? #ffffff14 : root.ok ? @linear-gradient(135deg, root.grad-a 0%, root.grad-b 100%) : #fb5c7c;
+                if root.has-icon: Image {
+                    width: 30px;
+                    height: 30px;
+                    source: root.game-icon;
+                    image-fit: contain;
+                }
+                if !root.has-icon: Path {
+                    width: 18px;
+                    height: 18px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: root.ok ? "M5 12.5l4.5 4.5L19 7.5" : "M7 7l10 10M17 7L7 17";
+                    stroke: white;
+                    stroke-width: 2.4px;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+                // the game's icon with a small tick on it
+                if root.has-icon: Rectangle {
+                    x: parent.width - 12px;
+                    y: parent.height - 12px;
+                    width: 17px;
+                    height: 17px;
+                    border-radius: 8.5px;
+                    border-width: 2px;
+                    border-color: #141418;
+                    background: @linear-gradient(135deg, root.grad-a 0%, root.grad-b 100%);
+                    Path {
+                        width: 10px;
+                        height: 10px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M5 12.5l4.5 4.5L19 7.5";
+                        stroke: white;
+                        stroke-width: 3.2px;
+                        stroke-line-cap: round;
+                        stroke-line-join: round;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+                Text {
+                    text: root.head;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: #f5f5f7;
+                    font-family: "Segoe UI Variable Text";
+                }
+                Text {
+                    text: root.sub;
+                    font-size: 12px;
+                    color: #a0a0ab;
+                    overflow: elide;
+                    max-width: 260px;
+                    font-family: "Segoe UI Variable Text";
+                }
+            }
+        }
+    }
+}

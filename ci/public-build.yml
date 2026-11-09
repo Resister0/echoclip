@@ -22,6 +22,9 @@ jobs:
     env:
       # Echo's Google Drive login (read by src-tauri/build.rs; not in the code - chat 29)
       ECHO_GDRIVE_SECRET: ${{ secrets.ECHO_GDRIVE_SECRET }}
+      # Certum code signing (9 Nov 2026): only WHETHER it's set up - the secrets themselves go to the signing step
+      # alone, never into the job (build scripts of dependencies must not be able to read them)
+      HAS_CERTUM: ${{ secrets.CERTUM_TOTP_SECRET != '' && secrets.CERTUM_USERNAME != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -29,7 +32,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            prototype-native
       - name: Version
         # same number as the private repo's build (ci/version.txt, written when the code is copied here)
         # Own builds (build.cmd / build.sh) stay 0.1.0 and never offer updates.
@@ -45,7 +50,43 @@ jobs:
       - name: Rename
         shell: pwsh
         # EchoClip.exe, not Echo.exe (chat 31): Discord's own game detection showed "Playing ECHO" (a 2017 game) for Echo.exe
+        # (the portable download stays this Tauri build for now: the native app needs libmpv-2.dll next to it)
         run: Copy-Item src-tauri/target/release/echo.exe EchoClip.exe
+      - name: Native app
+        # if this fails, the Installer step falls back to the old Tauri app (a release without Echo-Setup.exe would
+        # leave Windows users without updates and the website without a download)
+        continue-on-error: true
+        # 9 Nov 2026: the INSTALLER ships the native Echo (prototype-native: Slint + mpv, Echo's recorder via echo-core)
+        # as EchoClip.exe. The Installer step packs it with Tauri's NSIS bundler (tauri bundle = no rebuild), so the
+        # install folder, uninstaller, hooks.nsh and the /P /R /UPDATE handling are exactly what the old Echo's updater
+        # expects (tested on William's PC: update over 1.0.71 installed + relaunched it).
+        # libmpv-2.dll = shinchiro's mpv build 20261107 (git 9028187538), pinned + fingerprint: byte-identical to the
+        # DLL tested on William's PC. ECHO_VERSION (Version step) goes into the exe: its updater + version details.
+        shell: bash
+        run: |
+          mkdir -p dl
+          curl -fsSL --retry 3 -o dl/mpv.7z https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261107/mpv-dev-x86_64-20261107-git-9028187538.7z
+          echo "df7c433a2d481fdaf6163b201f26abbb0eff0c215c51368397088c6d8f7a001b  dl/mpv.7z" | sha256sum -c -
+          7z e -y -odl dl/mpv.7z libmpv-2.dll
+          echo "c91949577ae9cc2d500208da51f2c4a24cfa7a02d0ce6e130bf67ec738b450bb  dl/libmpv-2.dll" | sha256sum -c -
+          cp dl/libmpv-2.dll src-tauri/libmpv-2.dll
+          (cd prototype-native && cargo build --release)
+          cp prototype-native/target/release/echo-native-proto.exe src-tauri/target/release/EchoClip.exe
+          ls -la src-tauri/target/release/EchoClip.exe src-tauri/libmpv-2.dll
+      - name: Code signing login (Certum)
+        # Certum "Open Source Code Signing in the Cloud" (Open Source Developer, William Albrektsen): logs SimplySign
+        # Desktop in on this runner with the TOTP secret behind the SimplySign phone codes, then Windows sees the
+        # certificate like a smart card and signtool can use it. Action reviewed 9 Nov 2026 (its only download is
+        # SimplySign Desktop from files.certum.eu; the secret is masked, never printed) - pinned to that commit.
+        # Secrets in THIS repo: CERTUM_USERNAME (Certum account email) + CERTUM_TOTP_SECRET (Base32). Not set = unsigned
+        # build like before. A failed login doesn't stop the release (unsigned then, with a warning).
+        id: certum
+        if: env.HAS_CERTUM == 'true'
+        continue-on-error: true
+        uses: jay0lee/certum-cloud-code-sign@a3324503499c49090869856eeeecfe95fb613d87 # v1
+        with:
+          username: ${{ secrets.CERTUM_USERNAME }}
+          totp_secret: ${{ secrets.CERTUM_TOTP_SECRET }}
       - name: Installer
         # Echo-Setup.exe: installs for the current user (no admin), Start menu entry + uninstaller
         continue-on-error: true
@@ -55,8 +96,23 @@ jobs:
           # signs the update (Echo only installs updates signed with this key; public half is in tauri.conf.json)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Certum (step above): Tauri signs EchoClip.exe, the uninstaller and Echo-Setup.exe itself with it - before
+          # the update signature (.sig) is made, so that covers the signed file
+          SIGNTOOL: ${{ steps.certum.outputs.signtool-path }}
+          CERT_SHA1: ${{ steps.certum.outputs.cert-thumbprint }}
         run: |
           UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
+          SIGN=""
+          if [ -n "$SIGNTOOL" ] && [ -n "$CERT_SHA1" ]; then
+            # forward slashes: nothing to escape in JSON, and Windows takes them in paths (sed mangled the backslashes
+            # in Git Bash)
+            ST=$(printf '%s' "$SIGNTOOL" | tr '\\\\' '/')
+            # goes right after "windows":{ in the --config JSON below (hence the comma at the END)
+            SIGN='"signCommand":{"cmd":"'"$ST"'","args":["sign","/sha1","'"$CERT_SHA1"'","/tr","http://time.certum.pl","/td","SHA256","/fd","SHA256","%1"]},'
+            echo "Signing with Certum certificate $CERT_SHA1"
+          else
+            echo "::warning::Not code-signed (Certum secrets not set or the login failed)"
+          fi
           # ffmpeg + ffprobe + rclone go inside the installer (tools/ next to EchoClip.exe)
           # ffmpeg 9.0.2, NOT 8.0: with 8.0 every audio track came out empty on a friend's PC (chat 18)
           mkdir -p tools dl
@@ -69,10 +125,26 @@ jobs:
           cp dl/*/bin/ffmpeg.exe dl/*/bin/ffprobe.exe tools/
           cp dl/rclone-*/rclone.exe tools/
           ls -la tools
-          npx --yes @tauri-apps/cli@2 build --bundles nsis \
-            --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/"},"windows":{"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
+          if [ -f target/release/EchoClip.exe ] && [ -f libmpv-2.dll ]; then
+            # bundle (not build): packs the native EchoClip.exe the Native app step put in target/release, + libmpv-2.dll;
+            # no WebView2 install (the native app doesn't use it)
+            npx --yes @tauri-apps/cli@2 bundle --bundles nsis \
+              --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/","libmpv-2.dll":"libmpv-2.dll"},"windows":{'"$SIGN"'"webviewInstallMode":{"type":"skip"},"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
+          else
+            echo "::warning::Native app didn't build - Echo-Setup.exe has the OLD (Tauri) Echo this time"
+            npx --yes @tauri-apps/cli@2 build --bundles nsis \
+              --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/"},"windows":{'"$SIGN"'"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
+          fi
           cp target/release/bundle/nsis/*-setup.exe ../Echo-Setup.exe
           cp target/release/bundle/nsis/*-setup.exe.sig ../Echo-Setup.exe.sig || echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
+          # the portable download too
+          if [ -n "$SIGN" ]; then
+            "$ST" sign /sha1 "$CERT_SHA1" /tr http://time.certum.pl /td SHA256 /fd SHA256 ../EchoClip.exe || echo "::warning::portable EchoClip.exe not signed"
+            "$ST" verify /pa ../Echo-Setup.exe || echo "::warning::Echo-Setup.exe signature doesn't verify"
+          fi
+      - name: Code signing logout
+        if: always() && steps.certum.outcome == 'success'
+        uses: jay0lee/certum-cloud-code-sign/teardown@a3324503499c49090869856eeeecfe95fb613d87 # v1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows

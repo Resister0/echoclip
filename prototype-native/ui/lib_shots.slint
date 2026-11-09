@@ -1,0 +1,245 @@
+// Chat D - the Screenshots page: pictures in <clips>/Screenshots (Echo's P / screenshot hotkey / player Frame).
+// Click = open it in the system's picture viewer; hover = Show in folder / Delete. Rust: src/lib_shots.rs.
+import { T, Ic, Icon, IconBtn, Btn } from "theme.slint";
+
+export struct Shot {
+    name: string,
+    when: string,     // "5 min ago · 1.2 MB"
+    img: image,
+}
+
+export global Shots {
+    in-out property <[Shot]> items;
+    in-out property <string> count;    // "12 screenshots · 30 MB"
+    in-out property <int> cols: 4;
+    // William (9 Nov): Echo's openShot in the app (was: Windows' viewer / Paint) - Rust fills these
+    in-out property <bool> view-open;
+    in property <image> view-img;
+    in property <float> view-w;        // the picture's pixel size (aspect)
+    in property <float> view-h;
+    callback open(int);
+    callback act(int, string);         // "folder" / "delete"
+    callback open-folder();
+}
+
+// Echo's openShot + wheelZoom: dark overlay (#000e), the picture fitted inside 24 px padding (rounded 8 px, shadow);
+// wheel = zoom toward the mouse (1.2x per notch, up to 8x), drag = move around while zoomed, click = close (only when
+// not zoomed - a drag never counts as a click), Esc = close
+export component ShotViewer inherits Rectangle {
+    visible: Shots.view-open;
+    background: #000000ee;
+    property <length> aw: root.width - 48px;
+    property <length> ah: root.height - 48px;
+    // fitted size (keeps the aspect)
+    property <float> fit: min(aw / 1px / max(1, Shots.view-w), ah / 1px / max(1, Shots.view-h), 1);
+    property <length> bw: Shots.view-w * fit * 1px;
+    property <length> bh: Shots.view-h * fit * 1px;
+    property <length> bx: (root.width - bw) / 2;
+    property <length> by: (root.height - bh) / 2;
+    property <float> s: 1;
+    property <length> ox;
+    property <length> oy;
+    property <bool> dragged;
+    property <length> dx0;
+    property <length> dy0;
+    property <length> ox0;
+    property <length> oy0;
+    changed visible => {
+        root.s = 1;
+        root.ox = 0;
+        root.oy = 0;
+        if (root.visible) {
+            fs.focus();
+        }
+    }
+    function clamp-pan() {
+        root.ox = min(0px, max(root.bw * (1 - root.s), root.ox));
+        root.oy = min(0px, max(root.bh * (1 - root.s), root.oy));
+    }
+    ta := TouchArea {
+        mouse-cursor: root.s > 1 ? (self.pressed ? MouseCursor.grabbing : MouseCursor.grab) : MouseCursor.pointer;
+        scroll-event(e) => {
+            // main.rs hands one wheel notch out as glide steps adding up to 160 px: 1.2x per 160 px
+            let px = (self.mouse-x - root.bx - root.ox) / root.s;
+            let py = (self.mouse-y - root.by - root.oy) / root.s;
+            let ns = min(8, max(1, root.s * pow(1.2, e.delta-y / 160px)));
+            root.ox = self.mouse-x - root.bx - px * ns;
+            root.oy = self.mouse-y - root.by - py * ns;
+            root.s = ns < 1.02 ? 1 : ns;
+            if (root.s == 1) {
+                root.ox = 0;
+                root.oy = 0;
+            }
+            root.clamp-pan();
+            accept
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.dragged = false;
+                root.dx0 = self.mouse-x;
+                root.dy0 = self.mouse-y;
+                root.ox0 = root.ox;
+                root.oy0 = root.oy;
+            }
+        }
+        moved => {
+            if (self.pressed && root.s > 1) {
+                if (abs(self.mouse-x - root.dx0) + abs(self.mouse-y - root.dy0) > 4px) {
+                    root.dragged = true;
+                }
+                root.ox = root.ox0 + self.mouse-x - root.dx0;
+                root.oy = root.oy0 + self.mouse-y - root.dy0;
+                root.clamp-pan();
+            }
+        }
+        clicked => {
+            if (root.s <= 1 && !root.dragged) {
+                Shots.view-open = false;
+            }
+            root.dragged = false;
+        }
+    }
+    Rectangle {
+        x: root.bx + root.ox;
+        y: root.by + root.oy;
+        width: root.bw * root.s;
+        height: root.bh * root.s;
+        border-radius: 8px;
+        clip: true;
+        drop-shadow-blur: 60px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: Shots.view-img;
+            image-fit: fill;
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Shots.view-open = false;
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+component ShotCard inherits Rectangle {
+    in property <Shot> s;
+    in property <int> i;
+    property <bool> hov: ta.has-hover;
+    background: T.panel;
+    border-radius: T.radius;
+    border-width: 1px;
+    border-color: hov ? T.accent.with-alpha(0.4) : T.line;
+    animate border-color { duration: T.fade; }
+    clip: true;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Shots.open(root.i); }
+    }
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: self.width * 9 / 16;
+        background: #0a0a0c;
+        clip: true;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: s.img;
+            image-fit: cover;
+        }
+    }
+    HorizontalLayout {
+        y: (parent.width - 2px) * 9 / 16 + 1px;
+        height: parent.height - self.y;
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 6px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: s.name;
+                font-size: 14px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+                overflow: elide;
+            }
+            Text {
+                text: s.when;
+                font-size: 12px;
+                color: T.muted;
+                overflow: elide;
+            }
+        }
+        if hov: IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.folder;
+            tip: "Show in folder";
+            clicked => { Shots.act(root.i, "folder"); }
+        }
+        if hov: IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.del;
+            danger: true;
+            tip: "Delete";
+            clicked => { Shots.act(root.i, "delete"); }
+        }
+    }
+}
+
+export component ShotsPage inherits Rectangle {
+    property <length> gap: 22px;
+    property <int> cols: root.width > 1240px ? 4 : root.width > 860px ? 3 : root.width > 500px ? 2 : 1;
+    property <length> cw: (root.width - 56px - 8px - (cols - 1) * gap) / cols;
+    property <length> ch: cw * 9 / 16 + 2px + 58px;
+    VerticalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-top: 4px;
+        spacing: 12px;
+        HorizontalLayout {
+            height: 36px;
+            spacing: 12px;
+            Text {
+                text: Shots.count;
+                font-size: 14px;
+                color: T.muted;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Btn {
+                text: "Open folder";
+                icon: Ic.folder;
+                clicked => { Shots.open-folder(); }
+            }
+        }
+        if Shots.items.length == 0: Text {
+            vertical-stretch: 1;
+            text: "No screenshots yet - press your screenshot hotkey in a game, or P in the player.";
+            font-size: 14px;
+            color: T.muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if Shots.items.length > 0: Flickable {
+            vertical-stretch: 1;
+            content-height: (ceil(Shots.items.length / root.cols)) * (root.ch + root.gap) + 20px;
+            for s[i] in Shots.items: ShotCard {
+                x: mod(i, root.cols) * (root.cw + root.gap);
+                y: floor(i / root.cols) * (root.ch + root.gap);
+                width: root.cw;
+                height: root.ch;
+                s: s;
+                i: i;
+            }
+        }
+    }
+}

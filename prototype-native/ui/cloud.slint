@@ -1,0 +1,391 @@
+// Chat B (item 11): Echo's cloud menu (Copy share link + "Expires" chips, Upload / Free up space / Download /
+// Delete from the cloud / Stop sharing) and the Echo Cloud space manager (#ecm). Rust: src/cloud.rs.
+import { T, Btn } from "theme.slint";
+
+export struct CmItem {
+    label: string,
+    value: string,
+    kind: string,   // "main" (bold) / "warn" (red) / ""
+}
+
+export global Cm {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <[CmItem]> items;
+    in property <bool> chips;      // the "Expires" row under Copy share link
+    in property <int> def-days;    // the default lifetime (Settings > Cloud), highlighted
+    callback pick(string);
+}
+
+export struct EcmRow {
+    path: string,
+    rel: string,
+    name: string,
+    sub: string,
+    size: float,
+    local: bool,
+    on: bool,
+}
+
+export global Ecm {
+    in-out property <bool> open;
+    in property <string> sub;
+    in property <float> used;      // 0..1
+    in property <[EcmRow]> rows;
+    in property <string> sum;
+    in property <bool> any;
+    in-out property <string> show: "all";
+    in-out property <string> sort: "new";
+    in-out property <bool> dl-first: true;
+    callback toggle(int);
+    callback all(bool);
+    callback refill();
+    callback download();
+    callback delete();
+}
+
+component Row inherits Rectangle {
+    in property <CmItem> it;
+    callback clicked;
+    height: 34px;
+    border-radius: 7px;
+    background: ta.has-hover ? T.panel2 : transparent;
+    Text {
+        x: 12px;
+        text: root.it.label;
+        font-size: 13.5px;
+        font-weight: root.it.kind == "main" ? 600 + T.fw : 400 + T.fw;
+        color: root.it.kind == "warn" ? T.bad : T.text;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    callback clicked;
+    height: 26px;
+    width: t.preferred-width + 20px;
+    border-radius: 13px;
+    background: on ? T.accent.with-alpha(0.22) : ta.has-hover ? T.panel2 : transparent;
+    border-width: 1px;
+    border-color: on ? T.accent : T.line;
+    t := Text {
+        text: root.text;
+        font-size: 12.5px;
+        color: root.on ? T.text : T.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component CloudMenuLayer inherits Rectangle {
+    visible: Cm.open;
+    background: #00000060;
+    TouchArea {
+        clicked => { Cm.open = false; }
+    }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Cm.open = false;
+            }
+            accept
+        }
+    }
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 300px;
+        height: col.preferred-height;
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #0009;
+        TouchArea { }
+        col := VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+            Text {
+                text: Cm.title;
+                font-size: 12px;
+                color: T.dim;
+                overflow: elide;
+                height: 26px;
+                vertical-alignment: center;
+                x: 12px;
+                width: parent.width - 24px;
+            }
+            for it[i] in Cm.items: VerticalLayout {
+                Row {
+                    it: it;
+                    clicked => { Cm.pick(it.value); }
+                }
+                if i == 0 && Cm.chips: HorizontalLayout {
+                    padding-left: 12px;
+                    padding-bottom: 6px;
+                    spacing: 6px;
+                    Text {
+                        text: "Expires";
+                        font-size: 12px;
+                        color: T.dim;
+                        vertical-alignment: center;
+                    }
+                    Chip { text: "Never"; on: Cm.def-days == 0; clicked => { Cm.pick("link:0"); } }
+                    Chip { text: "1 day"; on: Cm.def-days == 1; clicked => { Cm.pick("link:1"); } }
+                    Chip { text: "7 days"; on: Cm.def-days == 7; clicked => { Cm.pick("link:7"); } }
+                    Chip { text: "30 days"; on: Cm.def-days == 30; clicked => { Cm.pick("link:30"); } }
+                }
+                if i == 0 && Cm.items.length > 1: Rectangle {
+                    height: 1px;
+                    background: T.line;
+                }
+            }
+        }
+    }
+}
+
+component Check inherits Rectangle {
+    in property <bool> on;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border-width: 1.5px;
+    border-color: on ? T.accent : T.line;
+    background: on ? T.accent : transparent;
+    if root.on: Text {
+        text: "✓";
+        color: white;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component Sel inherits Rectangle {
+    in property <[string]> keys;
+    in property <[string]> labels;
+    in-out property <string> value;
+    callback changed-to();
+    height: 30px;
+    width: 170px;
+    border-radius: 8px;
+    background: T.panel2;
+    border-width: 1px;
+    border-color: T.line;
+    property <int> at: 0;
+    Text {
+        x: 10px;
+        text: root.labels[root.idx()] + "  ▾";
+        font-size: 12.5px;
+        color: T.text;
+        vertical-alignment: center;
+    }
+    function idx() -> int {
+        root.value == root.keys[1] ? 1 : root.value == root.keys[2] ? 2 : root.value == root.keys[3] ? 3 : 0
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        // click = next choice (small, always visible - like Echo's selects)
+        clicked => {
+            root.value = root.keys[Math.mod(root.idx() + 1, root.keys.length)];
+            root.changed-to();
+        }
+    }
+}
+
+export component SpaceLayer inherits Rectangle {
+    visible: Ecm.open;
+    background: #000000d0;
+    TouchArea {
+        clicked => { Ecm.open = false; }
+    }
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Ecm.open = false;
+            }
+            accept
+        }
+    }
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(760px, root.width - 40px);
+        height: min(root.height - 60px, 680px);
+        background: T.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: T.line;
+        clip: true;
+        TouchArea { }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Echo Cloud space";
+                        font-size: 18px;
+                        font-weight: 700 + T.fw;
+                        color: T.text;
+                    }
+                    Text {
+                        text: Ecm.sub;
+                        font-size: 12.5px;
+                        color: T.muted;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        height: 6px;
+                        border-radius: 3px;
+                        background: T.panel2;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * Ecm.used;
+                            border-radius: 3px;
+                            background: Ecm.used > 0.9 ? T.bad : T.accent;
+                        }
+                    }
+                }
+                Btn {
+                    text: "✕";
+                    clicked => { Ecm.open = false; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                selall := Rectangle {
+                    width: 150px;
+                    height: 30px;
+                    property <bool> allon;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Check { y: 6px; on: selall.allon; }
+                        Text {
+                            text: "Select all shown";
+                            font-size: 12.5px;
+                            color: T.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            parent.allon = !parent.allon;
+                            Ecm.all(parent.allon);
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Sel {
+                    keys: ["all", "pc", "only", "cp"];
+                    labels: ["Everything", "Also on this PC", "Only in the cloud", "Share copies"];
+                    value <=> Ecm.show;
+                    changed-to => { Ecm.refill(); }
+                }
+                Sel {
+                    keys: ["new", "old", "big", "new"];
+                    labels: ["Newest first", "Oldest first", "Biggest first", "Newest first"];
+                    value <=> Ecm.sort;
+                    changed-to => { Ecm.refill(); }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: T.line;
+                clip: true;
+                fl := Flickable {
+                    width: parent.width;
+                    height: parent.height;
+                    content-height: lst.preferred-height;
+                    lst := VerticalLayout {
+                        y: 0;
+                        width: fl.width;
+                        height: self.preferred-height;
+                        for r[i] in Ecm.rows: Rectangle {
+                            height: 48px;
+                            background: rta.has-hover ? T.panel2 : transparent;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                Check { y: 15px; on: r.on; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: r.name;
+                                        font-size: 13px;
+                                        color: T.text;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.sub;
+                                        font-size: 11.5px;
+                                        color: T.dim;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                            rta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Ecm.toggle(i); }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Rectangle {
+                    width: 290px;
+                    height: 30px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Check { y: 6px; on: Ecm.dl-first; }
+                        Text {
+                            text: "Download cloud-only clips to this PC first";
+                            font-size: 12.5px;
+                            color: T.muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Ecm.dl-first = !Ecm.dl-first; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: Ecm.sum;
+                    font-size: 13px;
+                    color: T.muted;
+                    vertical-alignment: center;
+                }
+                Btn {
+                    text: "Download";
+                    clicked => { if (Ecm.any) { Ecm.download(); } }
+                }
+                Btn {
+                    text: "Delete from Echo Cloud";
+                    primary: Ecm.any;
+                    clicked => { if (Ecm.any) { Ecm.delete(); } }
+                }
+            }
+        }
+    }
+}

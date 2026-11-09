@@ -1,0 +1,108 @@
+// Echo's sidebar update card (#updcard): "Update ready" before an update, "Updated to Echo X" (What's new) once after
+// it. Look-only in the prototype: the notes come from Echo's CHANGELOG.md (the real port asks echoclip.link like Echo).
+import { T, Btn } from "theme.slint";
+
+export struct UpdOld {
+    v: string,
+    notes: string,
+}
+
+export global Upd {
+    in-out property <bool> on;
+    in-out property <string> title;          // "Update ready" / "Updated to Echo 1.0.70"
+    in-out property <string> text;           // #updtext (max 4 lines)
+    in-out property <string> btn;            // "Restart Echo" / "Got it"
+    in-out property <bool> primary;
+    in-out property <string> more;           // the link under the text ("" = none)
+    in-out property <[UpdOld]> older;        // shown after the link is clicked
+    in-out property <string> all;            // the link after the older list
+    in-out property <bool> older-on;
+    callback clicked();
+    callback all-clicked();
+}
+
+component UpdLink inherits Text {
+    callback clicked;
+    font-size: 12px;
+    color: T.accent;
+    wrap: word-wrap;
+    lta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    // .updlink:hover = underline: Slint has none, so a 1 px line under the text
+    Rectangle {
+        visible: lta.has-hover;
+        y: parent.height - 1px;
+        height: 1px;
+        width: parent.width;
+        background: T.accent;
+    }
+}
+
+export component UpdCard inherits Rectangle {
+    // .updcard: accent gradient 15% -> 6%, accent border 40%, radius 12, padding 12 13, gap 6, margin-bottom 8
+    in property <length> win-h;
+    height: l.preferred-height;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.accent.with-alpha(0.4);
+    background: @linear-gradient(135deg, T.accent.with-alpha(0.15) 0%, T.accent.with-alpha(0.06) 100%);
+    l := VerticalLayout {
+        padding-left: 13px;
+        padding-right: 13px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 6px;
+        Text {
+            text: Upd.title;
+            font-size: 13px;
+            font-weight: 700 + T.fw;
+            color: T.text;
+        }
+        // #updtext: -webkit-line-clamp 4
+        Text {
+            text: Upd.text;
+            font-size: 12px;
+            color: T.muted;
+            wrap: word-wrap;
+            overflow: elide;
+            height: min(self.preferred-height, 4 * (self.font-metrics.ascent - self.font-metrics.descent) * 1.15 + 1px); // 4 lines (line gap ~15%)
+        }
+        // #updmore: max-height clamp(54px, 100vh - 600px, 190px), scrolls
+        if Upd.more != "" && !Upd.older-on: UpdLink {
+            text: Upd.more;
+            clicked => { Upd.older-on = true; }
+        }
+        if Upd.older-on: Rectangle {
+            height: min(ol.preferred-height, clamp(root.win-h - 600px, 54px, 190px));
+            Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-height: ol.preferred-height;
+                ol := VerticalLayout {
+                    height: self.preferred-height;
+                    spacing: 5px;
+                    for o in Upd.older: Text {
+                        // .updold: version bold, then the notes
+                        text: o.v + "  " + o.notes;
+                        font-size: 12px;
+                        color: T.muted;
+                        wrap: word-wrap;
+                    }
+                    UpdLink {
+                        text: Upd.all;
+                        clicked => { Upd.all-clicked(); }
+                    }
+                }
+            }
+        }
+        Btn {
+            width: root.width - 26px;
+            height: 32px;
+            text: Upd.btn;
+            primary: Upd.primary;
+            clicked => { Upd.clicked(); }
+        }
+    }
+}

@@ -1,0 +1,448 @@
+// Echo's Home (#page-home, chat 30 "mockup v6"): the latest clip big + what to do with it, one "Get started" line,
+// quiet numbers (.hstrip), one row of recent clips. Rust fills HomeState; Home's cards are normal library cards
+// (Card.idx = HOME_BASE + position, so hover / favourite / buttons work through Lib like everywhere else).
+import { T, Ic, Icon, TipArea, Btn } from "theme.slint";
+import { Card, CardView, Lib } from "library.slint";
+
+export global HomeState {
+    in-out property <[Card]> cards;        // [0] = the latest clip (big), then the recent ones
+    in-out property <image> hero;          // a sharp still of the latest clip (ffmpeg), else its card picture
+    in-out property <string> hero-meta;    // "1 hour ago · 58.8 MB · FiveM"
+    in-out property <int> extra;           // px for tag / note lines under the recent cards
+    // .hstrip
+    in-out property <string> week;
+    in-out property <string> total;
+    in-out property <string> size;
+    in-out property <string> games;
+    in-out property <string> games-word;   // "game" / "games"
+    in-out property <[int]> bars;          // clips per week, last 6 weeks (oldest first)
+    in-out property <int> bars-max: 1;
+    in-out property <bool> spark;          // at least 3 weeks with clips
+    // Get started (.hgs)
+    in-out property <bool> gs-on;
+    in-out property <[bool]> gs-done;
+    in-out property <string> gs-title;     // "trim or edit a clip"
+    in-out property <string> gs-text;      // "cut it down to the good part"
+    in-out property <string> gs-go;        // button ("" = none)
+    in-out property <string> empty-key;    // first hotkey, for "No clips yet"
+    callback act(string);                  // "copy" / "copym" / "edit" / "link" / "cap" / "play" / "library" / "gs-go" / "gs-skip" / "gs-hide"
+    callback cols(int);                    // recent cards that fit in one row (2..7)
+}
+
+// .hacts .hb: padding 10 14, radius 10, line border, panel
+component HB inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    callback clicked;
+    height: 42px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: ta.has-hover ? T.muted : T.line;
+    background: T.panel;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 10px;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            commands: root.icon;
+            stroke: T.text;
+        }
+        Text {
+            text: root.text;
+            font-size: 14px;
+            color: T.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+export component HomePage inherits Rectangle {
+    background: transparent;
+    // page padding 0 28 36; .hhero columns: min(62%, 48vh * 16/9) + minmax(280, 540), gap 24
+    in property <length> win-h;
+    property <length> cw: self.width - 56px - 8px;
+    property <length> shot-w: max(200px, min(cw * 0.62, win-h * 0.48 * 16 / 9, cw - 24px - 280px));
+    property <length> side-w: min(540px, cw - shot-w - 24px);
+    property <length> shot-h: shot-w * 9 / 16;
+    // one row of recent clips, as many as fit (2 to 7): ~250 px cards
+    property <int> rcols: max(2, min(7, floor((cw + 14px) / 264px)));
+    changed rcols => { HomeState.cols(self.rcols); }
+    init => { HomeState.cols(self.rcols); }
+    property <length> rcard-w: (cw - (rcols - 1) * 14px) / rcols;
+    property <length> rcard-h: rcard-w * 9 / 16 + 2px + 68px + HomeState.extra * 1px;
+    property <bool> has: HomeState.cards.length > 0;
+
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: body.preferred-height;
+        body := VerticalLayout {
+            height: self.preferred-height;
+            padding-left: 28px;
+            padding-right: 36px;
+            padding-bottom: 36px;
+            padding-top: 4px;
+            spacing: 0;
+            // .hempty
+            if !root.has: Text {
+                height: 120px;
+                text: "No clips yet. Play a game and press " + HomeState.empty-key + " - your clip shows up here.";
+                font-size: 14px;
+                color: T.muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            // .hhero
+            if root.has: HorizontalLayout {
+                spacing: 24px;
+                alignment: start;
+                height: max(root.shot-h, side.preferred-height);
+                // .hshot: the latest clip big, radius 14; hover = play circle; click plays
+                shot := Rectangle {
+                    width: root.shot-w;
+                    height: root.shot-h;
+                    y: 0;
+                    border-radius: 14px;
+                    background: #0a0a0c;
+                    clip: true;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: HomeState.hero;
+                        image-fit: cover;
+                    }
+                    sta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { HomeState.act("play"); }
+                    }
+                    Rectangle {
+                        width: 64px;
+                        height: 64px;
+                        border-radius: 32px;
+                        background: #ffffff2e;
+                        opacity: sta.has-hover ? 1 : 0;
+                        animate opacity { duration: 180ms; }
+                        Path {
+                            width: 26px;
+                            height: 26px;
+                            x: 21px;
+                            viewbox-width: 24;
+                            viewbox-height: 24;
+                            fill: white;
+                            commands: "M8 5l12 7-12 7z";
+                        }
+                    }
+                    // the length, like the cards' .dur
+                    if HomeState.cards[0].dur != "": Rectangle {
+                        x: parent.width - self.width - 12px;
+                        y: parent.height - self.height - 12px;
+                        width: dt.preferred-width + 14px;
+                        height: 22px;
+                        border-radius: 6px;
+                        background: #000000dd;
+                        dt := Text {
+                            text: HomeState.cards[0].dur;
+                            font-size: 12px;
+                            font-weight: 600 + T.fw;
+                            color: white;
+                        }
+                    }
+                }
+                // .hside
+                side := VerticalLayout {
+                    width: root.side-w;
+                    alignment: start;
+                    spacing: 0;
+                    Text {
+                        text: "YOUR LATEST CLIP";
+                        font-size: 11px;
+                        font-weight: 600 + T.fw;
+                        letter-spacing: 0.88px;
+                        color: T.dim;
+                    }
+                    Rectangle { height: 6px; }
+                    Text {
+                        text: HomeState.cards[0].title;
+                        font-family: "Segoe UI Variable Display";
+                        font-size: 22px;
+                        font-weight: 700 + T.fw;
+                        color: T.text;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        max-height: 54px;   // 2 lines (line-clamp 2)
+                    }
+                    Rectangle { height: 4px; }
+                    Text {
+                        text: HomeState.hero-meta;
+                        font-size: 13px;
+                        color: T.muted;
+                    }
+                    Rectangle { height: 18px; }
+                    // .hacts: grid gap 8
+                    VerticalLayout {
+                        spacing: 8px;
+                        // .hsplit: accent "Copy for Discord" + ▾ (size menu)
+                        HorizontalLayout {
+                            height: 42px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                border-top-left-radius: 10px;
+                                border-bottom-left-radius: 10px;
+                                background: cta.has-hover ? T.accent.brighter(0.12) : T.accent;
+                                cta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { HomeState.act("copy"); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: "Copy for Discord";
+                                        font-size: 14px;
+                                        color: white;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 40px;
+                                border-top-right-radius: 10px;
+                                border-bottom-right-radius: 10px;
+                                background: ata.has-hover ? T.accent.brighter(0.12) : T.accent;
+                                Rectangle {
+                                    x: 0;
+                                    width: 1px;
+                                    background: #ffffff40;
+                                }
+                                ata := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { HomeState.act("copym"); }
+                                }
+                                TipArea {
+                                    text: "Choose the size";
+                                    hover: ata.has-hover;
+                                }
+                                Icon {
+                                    width: 13px;
+                                    height: 13px;
+                                    stroke-width: 2.4px;
+                                    commands: Ic.down;
+                                    stroke: white;
+                                }
+                            }
+                        }
+                        HB {
+                            text: "Trim / edit";
+                            clicked => { HomeState.act("edit"); }
+                        }
+                        HB {
+                            text: "Share a link";
+                            clicked => { HomeState.act("link"); }
+                        }
+                        HB {
+                            text: "Add captions";
+                            clicked => { HomeState.act("cap"); }
+                        }
+                    }
+                }
+            }
+            // .hgs: one "Get started" line (margin-top 18)
+            if root.has && HomeState.gs-on: VerticalLayout {
+                padding-top: 18px;
+                Rectangle {
+                    height: 46px;
+                    border-radius: 12px;
+                    background: T.accent.with-alpha(0.07);
+                    border-width: 1px;
+                    border-color: T.accent.with-alpha(0.22);
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 14px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            for d in HomeState.gs-done: Rectangle {
+                                y: (parent.height - 5px) / 2;
+                                width: 22px;
+                                height: 5px;
+                                border-radius: 3px;
+                                background: d ? T.accent : T.line;
+                            }
+                        }
+                        Text {
+                            text: "Next step:";
+                            font-size: 14px;
+                            font-weight: 700 + T.fw;
+                            color: T.text;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 4px;
+                            Text {
+                                text: HomeState.gs-title;
+                                font-size: 13px;
+                                color: T.muted;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "· " + HomeState.gs-text;
+                                font-size: 13px;
+                                color: T.dim;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        if HomeState.gs-go != "": Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            height: 28px;
+                            width: gt.preferred-width + 24px;
+                            border-radius: 8px;
+                            background: gta.has-hover ? T.accent.brighter(0.12) : T.accent;
+                            gt := Text {
+                                text: HomeState.gs-go;
+                                font-size: 12px;
+                                color: white;
+                            }
+                            gta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { HomeState.act("gs-go"); }
+                            }
+                        }
+                        Text {
+                            text: "Skip";
+                            font-size: 12px;
+                            color: ska.has-hover ? T.text : T.dim;
+                            vertical-alignment: center;
+                            ska := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { HomeState.act("gs-skip"); }
+                            }
+                        }
+                        Text {
+                            text: "Hide";
+                            font-size: 12px;
+                            color: hda.has-hover ? T.text : T.dim;
+                            vertical-alignment: center;
+                            hda := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { HomeState.act("gs-hide"); }
+                            }
+                        }
+                    }
+                }
+            }
+            // .hstrip: margin 22 0 6, padding 14 0, lines above + below, gap 28
+            if root.has: VerticalLayout {
+                padding-top: 22px;
+                padding-bottom: 6px;
+                Rectangle {
+                    height: 72px;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: T.line;
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: T.line;
+                    }
+                    HorizontalLayout {
+                        padding-top: 14px;
+                        padding-bottom: 14px;
+                        spacing: 28px;
+                        for st in [
+                            { n: HomeState.week, l: "clips this week" },
+                            { n: HomeState.total, l: "clips in total" },
+                            { n: HomeState.size, l: "on this PC" },
+                            { n: HomeState.games, l: HomeState.games-word },
+                        ]: VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: st.n;
+                                font-size: 18px;
+                                font-weight: 700 + T.fw;
+                                color: T.text;
+                            }
+                            Text {
+                                text: st.l;
+                                font-size: 12px;
+                                color: T.dim;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        // .spark: clips per week, last 6 weeks (30 px tall, 8 px bars, the last one brighter)
+                        if HomeState.spark: HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            for b[i] in HomeState.bars: Rectangle {
+                                width: 8px;
+                                Rectangle {
+                                    y: parent.height - self.height - (parent.height - 30px) / 2;
+                                    height: b == 0 ? 0px : max(3px, 30px * max(0.1, b / HomeState.bars-max));
+                                    border-radius: 3px;
+                                    background: T.accent;
+                                    opacity: i == HomeState.bars.length - 1 ? 1 : 0.5;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // .hrow: "Recent" + "Open library →" (margin 26 0 12)
+            if root.has && HomeState.cards.length > 1: HorizontalLayout {
+                padding-top: 26px;
+                padding-bottom: 12px;
+                Text {
+                    text: "Recent";
+                    font-family: "Segoe UI Variable Display";
+                    font-size: 15px;
+                    font-weight: 700 + T.fw;
+                    color: T.text;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: "Open library →";
+                    font-size: 12px;
+                    color: ola.has-hover ? T.accent2 : T.accent;
+                    vertical-alignment: bottom;
+                    ola := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { HomeState.act("library"); }
+                    }
+                }
+            }
+            // #hrecent: one row, gap 14
+            if root.has && HomeState.cards.length > 1: HorizontalLayout {
+                height: root.rcard-h + 4px;
+                spacing: 0;
+                alignment: start;
+                padding-top: 4px;   // room for the hover lift
+                for c[i] in HomeState.cards: Rectangle {
+                    // [0] is the big one above; gap 14 in front of every card but the first
+                    width: i == 0 ? 0px : i == 1 ? root.rcard-w : root.rcard-w + 14px;
+                    visible: i > 0;
+                    if i > 0: CardView {
+                        x: i == 1 ? 0px : 14px;
+                        width: root.rcard-w;
+                        height: root.rcard-h;
+                        data: c;
+                    }
+                }
+            }
+        }
+    }
+}

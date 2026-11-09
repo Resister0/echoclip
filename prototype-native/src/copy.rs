@@ -1,0 +1,314 @@
+//! Chat C: Copy for Discord (Echo's copySized / shrink_clip / copy_to_clipboard). Copy ▾ sizes: Full size (the file
+//! itself) or Discord Free / Nitro Basic / Nitro / Custom (settings.json discord_<k>_mb): a clip bigger than the size
+//! is re-encoded to fit (BT.709 TV range + tags = the "too dark in Discord" fix, only the first audio track), cached
+//! in <clips>/.thumbs/discord/<MB>/ like Echo, then the FILE goes on the clipboard (Windows CF_HDROP through user32 /
+//! kernel32 loaded at run time ⚠ untested; Linux wl-copy / xclip text/uri-list) - paste it into Discord.
+use crate::{prog_box, prog_done, prog_set, toast, AppWindow};
+use slint::ComponentHandle;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+const TV_YUV: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
+const TV_TAGS: [&str; 8] = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+
+/// MB for a Copy size key ("full" / unknown = 0 = the original file)
+pub fn size_mb(key: &str) -> f64 {
+    if key == "full" || key.is_empty() {
+        return 0.0;
+    }
+    let st = crate::library::echo_settings().unwrap_or_default();
+    let d = match key { "free" => 20.0, "basic" => 50.0, "nitro" => 1000.0, "custom" => 100.0, _ => 0.0 };
+    st.get(format!("discord_{key}_mb")).and_then(|v| v.as_f64()).unwrap_or(d)
+}
+
+/// the Copy button's own size (settings copy_default)
+pub fn default_key() -> String {
+    crate::library::echo_settings().and_then(|s| s.get("copy_default").and_then(|v| v.as_str()).map(String::from)).unwrap_or_else(|| "full".into())
+}
+
+fn fmt_mb(b: u64) -> String {
+    let mb = b as f64 / 1e6;
+    if mb >= 100.0 { format!("{mb:.0} MB") } else { format!("{mb:.1} MB") }
+}
+
+/// Copy ▾ / the Copy button: `key` "" = the default size. Runs the shrink on a worker thread with a progress box.
+pub fn copy_clip_ui(a: &AppWindow, path: PathBuf, thumbs: PathBuf, key: &str) {
+    // Home's Get started "Share a clip" counts a copy as done (Echo's echo_copied)
+    crate::lib_fx::ui_set("gs_copied", serde_json::json!(true));
+    let key = if key.is_empty() { default_key() } else { key.to_string() };
+    let mb = size_mb(&key);
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if mb <= 0.0 || size as f64 <= mb * 1e6 {
+        // audit (9 Nov): Echo's copy_clip copies rec.shareable(): an AV1 clip (shrunk old clips) becomes an H.264 copy
+        // first, so it plays in Discord - this copied the AV1 file as it was
+        if let Some(r) = crate::rec_core::rec().filter(|_| echo_core::recorder::is_av1(&path.to_string_lossy())) {
+            let pb = prog_box("Making it play in Discord…");
+            prog_set(pb, None, None, Some(-1.0));
+            let w = a.as_weak();
+            let src = path.to_string_lossy().to_string();
+            crate::lib_net::bg(
+                move || r.shareable(&src).and_then(|p| clipboard_file(Path::new(&p)).map(|_| std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0))),
+                move |res| {
+                    prog_done(pb, 300);
+                    let Some(a) = w.upgrade() else { return };
+                    match res {
+                        Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", fmt_mb(sz))),
+                        Err(e) => toast(&a, e),
+                    }
+                },
+            );
+            return;
+        }
+        match clipboard_file(&path) {
+            Ok(()) => toast(a, format!("Copied{} - paste it into Discord or anywhere", if mb > 0.0 { format!(" ({})", fmt_mb(size)) } else { String::new() })),
+            Err(e) => toast(a, e),
+        }
+        return;
+    }
+    let Some(ff) = crate::sheets::ffmpeg() else {
+        toast(a, "Making it smaller needs ffmpeg (Echo's copy wasn't found)");
+        return;
+    };
+    let pb = prog_box(&format!("Making it fit {} for Discord…", fmt_mb((mb * 1e6) as u64)));
+    prog_set(pb, None, None, Some(0.0));
+    let w = a.as_weak();
+    std::thread::spawn(move || {
+        let prog = move |f: f64| {
+            let _ = slint::invoke_from_event_loop(move || prog_set(pb, None, Some(&format!("{:.0}%", f * 100.0)), Some((f * 100.0) as f32)));
+        };
+        // William (9 Nov): Echo's OWN shrink_clip - it adds the Echo watermark (Settings > Watermark) like the old app;
+        // the copy below never did. Same cache folder (.thumbs/discord/<MB>), same sizes / encoders / 3 tries.
+        let r = match crate::rec_core::rec() {
+            Some(rec) => rec.shrink_clip(&path.to_string_lossy(), mb, &prog).map(PathBuf::from),
+            None => shrink(&ff, &path, &thumbs, mb, &prog),
+        }
+        .and_then(|out| clipboard_file(&out).map(|_| std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0)));
+        let _ = slint::invoke_from_event_loop(move || {
+            prog_done(pb, 400);
+            let Some(a) = w.upgrade() else { return };
+            match r {
+                Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", fmt_mb(sz))),
+                Err(e) => toast(&a, e),
+            }
+        });
+    });
+}
+
+fn skip_enc(venc: &[&str]) -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    let cuda = ["/usr/lib64/libcuda.so.1", "/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/lib/libcuda.so.1"].iter().any(|p| Path::new(p).exists());
+    venc.iter().any(|a| a.ends_with("_amf") || a.ends_with("_qsv") || (a.ends_with("_nvenc") && !cuda))
+}
+
+/// Echo's shrink_clip: bitrate from the size, smaller picture / 30 fps when the bitrate is low, 3 tries
+pub fn shrink(ff: &Path, src: &Path, thumbs: &Path, target_mb: f64, progress: &dyn Fn(f64)) -> Result<PathBuf, String> {
+    let limit = (target_mb * 1_000_000.0) as u64;
+    let src_meta = std::fs::metadata(src).map_err(|e| e.to_string())?;
+    let name = src.file_name().ok_or("bad clip path")?.to_owned();
+    let dir = thumbs.join("discord").join(format!("{}", target_mb.round() as u64));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(&name);
+    // made earlier (and newer than the clip, BT.709-tagged): reuse
+    if let (Ok(m), Ok(sm)) = (std::fs::metadata(&out), src_meta.modified()) {
+        let colours_ok = crate::edrender::hidden_cmd(&crate::edrender::ffprobe(ff)).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
+            .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
+        if m.len() > 0 && m.len() <= limit && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+            return Ok(out);
+        }
+    }
+    let dur = crate::pl_media::duration(ff, src).ok_or("could not read the clip length")?;
+    let (_, h, audio, _) = crate::edrender::probe(ff, src);
+    let h = h.max(2);
+    let tmp = dir.join("shrinking.tmp");
+    let mut factor = 0.92;
+    for attempt in 0..3 {
+        let total = limit as f64 * 8.0 / 1000.0 / dur * factor;
+        let a_kbps = if !audio { 0.0 } else if total > 3000.0 { 160.0 } else if total > 800.0 { 96.0 } else { 64.0 };
+        let v_kbps = total - a_kbps;
+        if v_kbps < 120.0 {
+            return Err(format!("This clip is too long to fit in {target_mb} MB - trim it first"));
+        }
+        let th = if v_kbps >= 8000.0 { h } else if v_kbps >= 4000.0 { 1080 } else if v_kbps >= 1800.0 { 720 } else if v_kbps >= 800.0 { 540 } else { 360 }.min(h);
+        let mut vf: Vec<String> = vec![];
+        if th < h {
+            vf.push(format!("scale=-2:{th}"));
+        }
+        if v_kbps < 1800.0 {
+            vf.push("fps=30".into());
+        }
+        vf.push(TV_YUV.into());
+        let (b, buf, ab) = (format!("{}k", v_kbps as u64), format!("{}k", (v_kbps * 2.0) as u64), format!("{}k", a_kbps as u64));
+        let run = |venc: &[&str]| -> bool {
+            if skip_enc(venc) {
+                return false;
+            }
+            let mut c = crate::edrender::hidden_cmd(ff);
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", &vf.join(",")]);
+            c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
+            if audio {
+                c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]);
+            }
+            let Ok(mut ch) = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp)
+                .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
+            if let Some(o) = ch.stdout.take() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(o).lines().map_while(Result::ok) {
+                    if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                        progress(((attempt as f64 + (v / 1e6 / dur).clamp(0.0, 1.0)) / (attempt as f64 + 1.0)).min(0.99));
+                    }
+                }
+            }
+            ch.wait().is_ok_and(|s| s.success()) && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0)
+        };
+        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-rc", "cbr"])
+            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "cbr"])
+            || run(&["-c:v", "h264_qsv"])
+            || run(&["-c:v", "libx264", "-preset", "veryfast"]);
+        if !ok {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("ffmpeg couldn't make this clip smaller".into());
+        }
+        let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
+        if got <= limit {
+            let _ = std::fs::remove_file(&out);
+            std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+            progress(1.0);
+            return Ok(out);
+        }
+        factor *= limit as f64 / got as f64 * 0.95;
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Err(format!("Couldn't get this clip under {target_mb} MB - trim it first"))
+}
+
+/// the file itself on the clipboard (paste into Discord / Explorer)
+pub fn clipboard_file(p: &Path) -> Result<(), String> {
+    let abs = std::fs::canonicalize(p).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        let s = abs.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+        if win::clipboard_files(&[&s]) { Ok(()) } else { Err("Couldn't copy - another app is holding the clipboard".into()) }
+    }
+    #[cfg(not(windows))]
+    {
+        let uri: String = abs.to_string_lossy().bytes().map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        }).collect();
+        let data = format!("file://{uri}\r\n");
+        // ECHO_CLIP_OUT=<file>: test hook - writes what would go on the clipboard
+        if let Ok(f) = std::env::var("ECHO_CLIP_OUT") {
+            return std::fs::write(f, data).map_err(|e| e.to_string());
+        }
+        let run = |prog: &str, args: &[&str]| -> bool {
+            use std::io::Write;
+            let Ok(mut c) = std::process::Command::new(prog).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return false };
+            if let Some(mut i) = c.stdin.take() {
+                let _ = i.write_all(data.as_bytes());
+            }
+            c.wait().is_ok_and(|s| s.success())
+        };
+        if run("wl-copy", &["--type", "text/uri-list"]) || run("xclip", &["-selection", "clipboard", "-t", "text/uri-list"]) {
+            Ok(())
+        } else {
+            Err("Copy failed - install wl-clipboard (sudo dnf install wl-clipboard)".into())
+        }
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    //! Echo's winutil::clipboard_files without the windows crate: user32 / kernel32 at run time. ⚠ untested
+    use std::ffi::c_void;
+    type Hwnd = isize;
+
+    pub fn clipboard_files(paths: &[&str]) -> bool {
+        // DROPFILES (20 bytes: list offset, pt, fNC, fWide = 1) + NUL-separated UTF-16 paths + an extra NUL
+        let mut d: Vec<u8> = vec![];
+        d.extend(20u32.to_le_bytes());
+        d.extend(0i32.to_le_bytes());
+        d.extend(0i32.to_le_bytes());
+        d.extend(0u32.to_le_bytes());
+        d.extend(1u32.to_le_bytes());
+        for p in paths {
+            for c in p.encode_utf16().chain(std::iter::once(0)) {
+                d.extend(c.to_le_bytes());
+            }
+        }
+        d.extend(0u16.to_le_bytes());
+        unsafe {
+            let (Ok(u), Ok(k)) = (libloading::Library::new("user32.dll"), libloading::Library::new("kernel32.dll")) else { return false };
+            let (Ok(open), Ok(empty), Ok(set), Ok(close), Ok(reg), Ok(galloc), Ok(glock), Ok(gunlock)) = (
+                u.get::<unsafe extern "system" fn(Hwnd) -> i32>(b"OpenClipboard\0"),
+                u.get::<unsafe extern "system" fn() -> i32>(b"EmptyClipboard\0"),
+                u.get::<unsafe extern "system" fn(u32, *mut c_void) -> *mut c_void>(b"SetClipboardData\0"),
+                u.get::<unsafe extern "system" fn() -> i32>(b"CloseClipboard\0"),
+                u.get::<unsafe extern "system" fn(*const u16) -> u32>(b"RegisterClipboardFormatW\0"),
+                k.get::<unsafe extern "system" fn(u32, usize) -> *mut c_void>(b"GlobalAlloc\0"),
+                k.get::<unsafe extern "system" fn(*mut c_void) -> *mut c_void>(b"GlobalLock\0"),
+                k.get::<unsafe extern "system" fn(*mut c_void) -> i32>(b"GlobalUnlock\0"),
+            ) else { return false };
+            let name: Vec<u16> = "Preferred DropEffect".encode_utf16().chain(std::iter::once(0)).collect();
+            let effect = reg(name.as_ptr());
+            let mut opened = false;
+            for _ in 0..10 {
+                if open(0) != 0 {
+                    opened = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            if !opened {
+                return false;
+            }
+            empty();
+            let mut ok = true;
+            for (fmt, data) in [(15u32, d), (effect, 1u32.to_le_bytes().to_vec())] {
+                let h = galloc(0x0002, data.len()); // GMEM_MOVEABLE
+                let p = if h.is_null() { std::ptr::null_mut() } else { glock(h) as *mut u8 };
+                if p.is_null() {
+                    ok = false;
+                    continue;
+                }
+                std::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
+                gunlock(h);
+                ok &= !set(fmt, h).is_null();
+            }
+            close();
+            ok
+        }
+    }
+}
+
+/// Chat A: the Copy menus' sizes ("20 MB", "1 GB") and the default badge from Echo's settings.
+pub fn fill_menu(a: &AppWindow) {
+    let c = a.global::<crate::CopyCfg>();
+    let f = |k: &str| {
+        let mb = size_mb(k);
+        if mb >= 1000.0 { format!("{} GB", (mb / 1000.0 * 10.0).round() / 10.0) } else { format!("{mb:.0} MB") }
+    };
+    c.set_def(default_key().into());
+    c.set_free(f("free").into());
+    c.set_basic(f("basic").into());
+    c.set_nitro(f("nitro").into());
+    c.set_custom(f("custom").into());
+}
+/// Right-click a size = the Copy button's default (Echo's copy_default), once at start.
+pub fn wire(a: &AppWindow) {
+    fill_menu(a);
+    let w = a.as_weak();
+    a.global::<crate::CopyCfg>().on_set_default(move |k| {
+        let Some(a) = w.upgrade() else { return };
+        let mut st = crate::settings::Store::load();
+        match st.write(&[("copy_default", serde_json::Value::String(k.to_string()))]) {
+            Ok(()) => {
+                fill_menu(&a);
+                let name = match k.as_str() { "free" => "Discord Free", "basic" => "Nitro Basic", "nitro" => "Nitro", "custom" => "Custom", _ => "Full size" };
+                toast(&a, format!("Copy now uses {name}"));
+            }
+            Err(e) => toast(&a, e),
+        }
+    });
+}

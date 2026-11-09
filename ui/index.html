@@ -2724,29 +2724,35 @@
   const stripAsked = new Set();   // clips whose seek-bar strip was already asked for on hover
   let jobRunning = false;
   function drawJob(path) {
-    const card = document.querySelector(`.card[data-path="${CSS.escape(path)}"]`); if (!card) return;
-    const th = card.querySelector(".thumb"); let el = th.querySelector(".job"); const j = jobs.get(path);
-    if (!j) { if (el) el.remove(); return; }
-    if (!el) { el = document.createElement("div"); el.className = "job"; el.innerHTML = "<span></span><b><i></i></b>"; th.appendChild(el); }
-    el.classList.toggle("wait", j.state === "wait");
-    el.querySelector("span").textContent = j.state === "wait" ? "Waiting…" : `${j.label} ${j.pct}%`;
-    el.querySelector("i").style.width = j.pct + "%";
+    // EVERY copy of the card: Home shows the same clips (latest / recent row) and comes first in the page, so
+    // querySelector used to find Home's hidden copy and the Library card never showed progress (chat 33)
+    for (const card of document.querySelectorAll(`.card[data-path="${CSS.escape(path)}"]`)) {
+      const th = card.querySelector(".thumb"); if (!th) continue;
+      let el = th.querySelector(".job"); const j = jobs.get(path);
+      if (!j) { if (el) el.remove(); continue; }
+      if (!el) { el = document.createElement("div"); el.className = "job"; el.innerHTML = "<span></span><b><i></i></b>"; th.appendChild(el); }
+      el.classList.toggle("wait", j.state === "wait");
+      el.querySelector("span").textContent = j.state === "wait" ? "Waiting…" : `${j.label} ${j.pct}%`;
+      el.querySelector("i").style.width = j.pct + "%";
+    }
   }
   listen("copy-progress", e => { const [path, f] = e.payload; const j = jobs.get(path); if (j && j.state === "run") { j.pct = Math.round(f * 100); drawJob(path); } });
   function queueJobs(list, factor, av1) {
     const label = av1 ? "Converting to AV1" : "Making smaller";
     let added = 0;
     for (const c of list) if (!c.cloud && !jobs.has(c.path)) { jobs.set(c.path, { label, pct: 0, state: "wait", factor, av1, name: c.name }); drawJob(c.path); added++; }
-    if (added > 1) toast(`${added} clips queued - each one shows its progress`);
+    if (added && jobRunning) toast(added > 1 ? `${added} clips added to the queue` : "Added to the queue - it starts after the current one");
+    else if (added > 1) toast(`${added} clips queued - each one shows its progress`);
     runJobs();
   }
-  let jobBox = null, jobTotal = 0;
+  let jobBox = null, jobDone = 0;
+  // "2 of 5": done so far + the running one + the ones still waiting (clips queued later count at once - chat 33)
+  const jobLine = j => `${jobDone + 1} of ${jobDone + jobs.size}: ${j.name}`;
   async function runJobs() {
     if (jobRunning) return; jobRunning = true;
-    let saved = 0, done = 0;
+    let saved = 0, done = 0; jobDone = 0;
     // one box for the whole queue (spinner, "2 of 9", Cancel = drop the clips still waiting) + polling, because the
     // per-clip progress events didn't arrive on Linux (chat 30)
-    jobTotal = jobs.size;
     const label0 = ([...jobs.values()][0] || {}).av1 ? "Converting to AV1" : "Making clips smaller";
     jobBox = progBox(label0).text("Starting…").pct(0).btn("Cancel", x => {
       let n = 0; for (const [p, j] of [...jobs]) if (j.state === "wait") { jobs.delete(p); drawJob(p); n++; }
@@ -2761,19 +2767,17 @@
       boxVis();
       const j = jobs.get(p); if (!j || j.state !== "run") return;
       j.pct = Math.round(f * 100); drawJob(p);
-      const idx = jobTotal - [...jobs.values()].filter(x => x.state === "wait").length;
-      jobBox.text(`${idx} of ${jobTotal}: ${j.name} · ${j.pct}%`).pct(((idx - 1) + f) / jobTotal * 100);
+      jobBox.text(`${jobLine(j)} · ${j.pct}%`).pct((jobDone + f) / (jobDone + jobs.size) * 100);
     }).catch(() => {}), 500);
     try {
       for (;;) {
         const next = [...jobs].find(([, j]) => j.state === "wait"); if (!next) break;
         const [path, j] = next; j.state = "run"; drawJob(path);
-        jobTotal = Math.max(jobTotal, done + jobs.size);
-        jobBox.text(`${done + 1} of ${jobTotal}: ${j.name}`);
+        jobBox.text(jobLine(j));
         try { const [a, b] = await invoke("compress_clip", { path, factor: j.factor, av1: !!j.av1 }); saved += a - b; done++;
           if (![...jobs.values()].some(x => x.state === "wait")) toast(done > 1 ? `${done} clips done · ${fmtSize(saved)} saved` : `${fmtSize(a)} → ${fmtSize(b)}`); }
         catch (err) { toast(`${j.name}: ${err}`); }
-        jobs.delete(path); drawJob(path); listKey = ""; refresh();
+        jobs.delete(path); jobDone++; drawJob(path); listKey = ""; refresh();
       }
     } finally { jobRunning = false; clearInterval(poll); if (jobBox) { jobBox.text("Done").pct(100); jobBox.done(1200); jobBox = null; } }
   }
@@ -6194,7 +6198,7 @@
     ["ocean", "Ocean", "#2fa8e0", "#7cc9f0", ["#4cc3f0", "#2f8fe0", "#3b5cf0"], "#0b0e12"],
     ["ember", "Ember", "#f07a1a", "#ffa154", ["#ffa154", "#f07a1a", "#e0484a"], "#100d0b"],
     ["emerald", "Emerald", "#2fbf86", "#6fd9ab", ["#6fd9ab", "#2fbf86", "#1d9a9a"], "#0b100e"],
-    ["crimson", "Crimson", "#d0505a", "#e8838a", ["#e8838a", "#d0505a", "#a3306e"], "#100b0c"],
+    ["crimson", "Crimson", "#e03232", "#e97070", ["#e55151", "#e03232", "#a82626"], "#0d0d10"],
     ["rose", "Rosé", "#e0609e", "#f29ac4", ["#f29ac4", "#e0609e", "#9b5be0"], "#100c0f"],
     ["slate", "Slate", "#8a96a8", "#c3ccd8", ["#c3ccd8", "#8a96a8", "#5d6a7c"], "#0c0d0f"],
     // chat 21: 4 more so the picker is 3 full rows of 4 (keep the count a multiple of 4)

@@ -1,0 +1,7 @@
+target/
+*.dll
+*.exe
+*.7z
+/EchoProto
+proto.log
+*.log

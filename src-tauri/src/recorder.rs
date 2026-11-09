@@ -3624,7 +3624,8 @@ impl Recorder {
         Some(p)
     }
 
-    fn watermark_graph(&self, inl: &str, outl: &str, h: u32) -> Option<String> {
+    /// pub: the native app's editor export (prototype-native/src/edrender.rs) adds the same watermark
+    pub fn watermark_graph(&self, inl: &str, outl: &str, h: u32) -> Option<String> {
         let p = Self::watermark_file(self.settings().watermark_style.as_str())?;
         let wh = ((h as f64 * 0.075).round() as u32).max(20);
         let m = ((h as f64 * 0.025).round() as u32).max(6);

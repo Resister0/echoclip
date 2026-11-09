@@ -1,0 +1,36 @@
+// Chat B (night, 9 Nov): Echo's Settings > Appearance > Background effect (index.html bgFx, chat 30): snow, stars,
+// fireflies, embers, leaves, rain. Rust (src/lib_fx.rs) moves the particles ~30 fps and hands over finished shapes;
+// this only draws them. Over the app like Echo's canvas (z 2, opacity .55, never takes clicks).
+
+export struct FxPart {
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    rot: float,     // degrees (leaves, rain)
+    col: color,
+    glow: bool,     // fireflies: soft light around the dot
+}
+
+export global Fx {
+    in property <[FxPart]> parts;
+    in property <bool> on;
+    in property <bool> light;   // light themes: Echo dims the canvas to 35 %
+}
+
+export component FxLayer inherits Rectangle {
+    // Echo: #bgfxc { opacity: .55 } (.35 on light themes)
+    opacity: Fx.light ? 0.35 : 0.55;
+    visible: Fx.on;
+    for p in Fx.parts: Rectangle {
+        x: p.x;
+        y: p.y;
+        width: p.w;
+        height: p.h;
+        border-radius: min(p.w, p.h) / 2;
+        background: p.col;
+        transform-rotation: p.rot * 1deg;
+        drop-shadow-blur: p.glow ? 10px : 0px;
+        drop-shadow-color: p.glow ? #ffe48a : transparent;
+    }
+}

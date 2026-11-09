@@ -1,0 +1,686 @@
+// Echo's look, ported from ui/index.html (:root variables, .btn, .ib, .cgrp, .pill, kbd, tooltips, toasts).
+
+export global T {
+    // text weight boost: Slint's OpenGL text has no ClearType/gamma boost, so Segoe UI looks ~10% thinner than
+    // in Echo's WebView2. Rust sets this on Windows (default 50; ECHO_FONT_BOOST=<n> to try other values)
+    in-out property <int> fw: 0;
+    in-out property <color> bg: #0d0d10;
+    in-out property <color> rail: #0a0a0c;
+    in-out property <color> panel: #16161a;
+    in-out property <color> panel2: #1e1e23;
+    in-out property <color> line: #26262c;
+    in-out property <color> hover: #34343c;
+    in-out property <color> text: #f5f5f7;
+    in-out property <color> muted: #a0a0ab;
+    in-out property <color> dim: #6b6b76;
+    in-out property <color> accent: #7c5cff;
+    in-out property <color> accent2: #9d85ff;
+    out property <color> ok: #34d399;
+    out property <color> bad: #fb5c7c;
+    in-out property <color> hi: #ffd23f; // progress, trim handles, favourites
+    // the gradient's three colours (set by the theme); grad follows them
+    in-out property <color> g0: #8b6cff;
+    in-out property <color> g1: #6a4cf5;
+    in-out property <color> g2: #4f7bff;
+    out property <brush> grad: @linear-gradient(135deg, g0 0%, g1 55%, g2 100%);
+    out property <length> radius: 14px;
+    // Echo uses .15 s for buttons and .18 s for cards; the glow/shadow is NOT animated (it smeared into a trail)
+    out property <duration> fade: 150ms;
+    out property <duration> lift: 180ms;
+}
+
+// 24x24 stroke icons, the same paths as Echo's ui/index.html
+export global Ic {
+    out property <string> star: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z";
+    out property <string> folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z";
+    out property <string> move: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M10 13h6 M13 10l3 3-3 3";
+    out property <string> del: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6";
+    out property <string> check: "M5 12.5l4.5 4.5L19 7.5";
+    out property <string> filter: "M4 6h16 M7 12h10 M10 18h4";
+    out property <string> list: "M8 6h13 M8 12h13 M8 18h13 M3.5 6h.5 M3.5 12h.5 M3.5 18h.5";
+    out property <string> grid: "M4.5 3h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-4A1.5 1.5 0 0 1 3 8.5v-4A1.5 1.5 0 0 1 4.5 3z M15.5 3h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-4A1.5 1.5 0 0 1 14 8.5v-4A1.5 1.5 0 0 1 15.5 3z M4.5 14h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-4A1.5 1.5 0 0 1 3 19.5v-4A1.5 1.5 0 0 1 4.5 14z M15.5 14h4a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a1.5 1.5 0 0 1-1.5-1.5v-4a1.5 1.5 0 0 1 1.5-1.5z";
+    out property <string> down: "M6 9l6 6 6-6";
+    out property <string> x: "M6 6l12 12 M18 6L6 18";
+    out property <string> prev: "M15 5l-7 7 7 7";
+    out property <string> next: "M9 5l7 7-7 7";
+    out property <string> search: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14z M20 20l-4-4";
+    out property <string> edit: "M4 20h4L19 9l-4-4L4 16z M14 6l4 4";
+    out property <string> copy: "M11 9h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1";
+    out property <string> cloud: "M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z";
+    out property <string> share: "M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9 M12 12v9 M9 15l3-3 3 3";
+    out property <string> trim: "M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M20 4L8.1 15.9 M14.5 14.5L20 20 M8.1 8.1L12 12";
+    out property <string> frame: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z";
+    out property <string> image: "M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M3 15l5-5 4 4 3-3 6 6";
+    out property <string> music: "M9 18V5l12-2v13 M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M18 13a3 3 0 1 0 0 6a3 3 0 1 0 0-6z";
+    out property <string> play: "M7 4v16l13-8z";
+    out property <string> pause: "M7 4h4v16H7z M14 4h4v16h-4z";
+    out property <string> vol: "M4 9h4l5-4v14l-5-4H4z M16.5 9a4 4 0 0 1 0 6 M19 6.5a8 8 0 0 1 0 11";
+    out property <string> mute: "M4 9h4l5-4v14l-5-4H4z M17 9.5l5 5 M22 9.5l-5 5";
+    out property <string> fs: "M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5";
+    out property <string> unfs: "M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5";
+    out property <string> shots: "M4 8h3l2-3h6l2 3h3v11H4z M12 9.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7z";
+    out property <string> plus: "M12 5v14 M5 12h14";
+    out property <string> scissors: "M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M20 4L8.1 15.9 M14.5 14.5L20 20 M8.1 8.1L12 12";
+    out property <string> tidy: "M4 20h16 M7 20l2-9h6l2 9 M12 11V4";
+}
+
+// Tooltip shown by TipLayer (one for the whole window). Owners set it after a short hover.
+export global Tip {
+    in-out property <string> text;
+    in-out property <length> x;      // centre of the owner
+    in-out property <length> top;    // owner's top
+    in-out property <length> bottom; // owner's bottom
+    in-out property <bool> on;
+    in-out property <int> owner;     // a number per owner, so leaving one doesn't hide another's tip
+    in-out property <int> next-id: 1;
+    in-out property <int> alive;     // the owner bumps this while hovered; if it stops (owner removed), the tip hides
+    in-out property <bool> above;    // the owner wants it above (bars at the bottom of the window)
+}
+
+// Short message at the bottom (like Echo's toast)
+export global Toast {
+    in-out property <string> text;
+    in-out property <int> seq; // bumps on every message (restarts the hide timer)
+}
+
+export component Icon inherits Path {
+    viewbox-width: 24;
+    viewbox-height: 24;
+    stroke-width: 1.8px;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: transparent;
+    width: 20px;
+    height: 20px;
+}
+
+// Put inside any element with a TouchArea: shows `text` as a tooltip after 500 ms of hover.
+export component TipArea {
+    in property <string> text;
+    in property <bool> hover;
+    in property <bool> above;
+    property <int> id: 0;
+    init => {
+        self.id = Tip.next-id;
+        Tip.next-id += 1;
+    }
+    Timer {
+        interval: 500ms;
+        running: root.hover && root.text != "" && !(Tip.on && Tip.owner == root.id);
+        triggered => {
+            Tip.text = root.text;
+            Tip.x = root.absolute-position.x + root.width / 2;
+            Tip.top = root.absolute-position.y;
+            Tip.bottom = root.absolute-position.y + root.height;
+            Tip.owner = root.id;
+            Tip.above = root.above;
+            Tip.on = true;
+        }
+    }
+    Timer {
+        interval: 150ms;
+        running: root.hover && Tip.on && Tip.owner == root.id;
+        triggered => { Tip.alive += 1; }
+    }
+    changed hover => {
+        if (!self.hover && Tip.owner == self.id) {
+            Tip.on = false;
+        }
+    }
+}
+
+export component TipLayer {
+    // fills the window; draws the tooltip under (or above, near the bottom) its owner
+    property <int> last-alive;
+    Timer {
+        interval: 400ms;
+        running: Tip.on;
+        triggered => {
+            if (Tip.alive == root.last-alive) {
+                Tip.on = false;
+            }
+            root.last-alive = Tip.alive;
+        }
+    }
+    if Tip.on: Rectangle {
+        property <length> w: min(tt.preferred-width + 20px, 320px);
+        x: clamp(Tip.x - self.w / 2, 6px, root.width - self.w - 6px);
+        y: !Tip.above && Tip.bottom + 8px + self.height < root.height ? Tip.bottom + 8px : Tip.top - self.height - 8px;
+        width: self.w;
+        height: tt.preferred-height + 12px;
+        background: T.panel2;
+        border-radius: 7px;
+        border-width: 1px;
+        border-color: T.hover;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000080;
+        tt := Text {
+            x: 10px;
+            width: parent.width - 20px;
+            text: Tip.text;
+            font-size: 12px;
+            color: T.text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// Echo's #notes: ONE column at the bottom centre, newest at the bottom, gap 8 - messages (.note.msg, at most 3,
+// the same text again only restarts its timer) and progress boxes (.note.prog: spinner, title, text, bar, optional
+// button). Everything goes through this stack, so two jobs (e.g. shrinking for Discord + making a share link) can
+// never cover each other. Rust owns the list (main.rs notes::*).
+export struct Note {
+    id: int,
+    prog: bool,       // progress box (else a message)
+    title: string,    // message text / box title
+    text: string,     // box: text on the right (or under the bar when there is a button)
+    pct: float,       // box: 0..100, < 0 = no bar
+    fin: bool,        // box: finished (spinner stops)
+    btn: string,      // box: small button ("Cancel" ...), "" = none
+    out: bool,        // fading out (Rust removes it a moment later)
+}
+
+export global Notes {
+    in-out property <[Note]> items;
+    callback btn(int);   // a box's button
+}
+
+component Spinner inherits Rectangle {
+    in property <bool> still;
+    width: 11px;
+    height: 11px;
+    border-radius: 5.5px;
+    border-width: 2px;
+    border-color: still ? T.hi : T.line;
+    // the coloured quarter (border-top-color in Echo), turning once per 0.8 s
+    if !root.still: Path {
+        width: 11px;
+        height: 11px;
+        viewbox-width: 11;
+        viewbox-height: 11;
+        stroke: T.hi;
+        stroke-width: 2px;
+        fill: transparent;
+        commands: "M 1.6 3.3 A 4.5 4.5 0 0 1 9.4 3.3";
+        transform-rotation: mod(animation-tick() / 1ms, 800) / 800 * 360deg;
+    }
+}
+
+component NoteView inherits Rectangle {
+    in property <Note> n;
+    in property <length> avail;
+    property <bool> shown;
+    init => { self.shown = true; }
+    property <bool> on: shown && !n.out;
+    opacity: on ? 1 : 0;
+    animate opacity { duration: 200ms; }
+    height: n.prog ? box.preferred-height : max(40px, mt.preferred-height + 22px);
+    // the panel (msg: text width + padding; prog: 400 px)
+    property <length> w: n.prog ? min(400px, avail) : min(mt.preferred-width + 36px + 2px, avail);
+    Rectangle {
+        x: (parent.width - root.w) / 2;
+        y: root.on ? 0 : 14px;
+        animate y { duration: 200ms; }
+        width: root.w;
+        height: parent.height;
+        background: T.panel2;
+        border-radius: n.prog ? 12px : 11px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #00000088;
+        TouchArea { }
+        mt := Text {
+                visible: !n.prog;
+                x: 18px;
+                width: parent.width - 36px;
+                height: parent.height;
+                text: n.title;
+                font-size: 14px;
+                color: T.text;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        box := VerticalLayout {
+            visible: n.prog;
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 0;
+            HorizontalLayout {
+                spacing: 8px;
+                Spinner {
+                    y: (parent.height - self.height) / 2;
+                    still: n.fin;
+                }
+                Text {
+                    text: n.title;
+                    font-size: 13px;
+                    font-weight: 700 + T.fw;
+                    color: T.text;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                if n.btn == "": Text {
+                    text: n.text;
+                    font-size: 13px;
+                    color: T.muted;
+                    vertical-alignment: center;
+                }
+                if n.btn != "": Rectangle {
+                    width: bt.preferred-width + 18px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: bta.has-hover ? T.muted : T.line;
+                    bt := Text {
+                        text: n.btn;
+                        font-size: 12px;
+                        color: bta.has-hover ? T.text : T.muted;
+                    }
+                    bta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Notes.btn(n.id); }
+                    }
+                }
+            }
+            if n.pct >= 0: VerticalLayout {
+                padding-top: 8px;
+                Rectangle {
+                    height: 6px;
+                    border-radius: 3px;
+                    background: T.panel;
+                    clip: true;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(n.pct, 0, 100) / 100;
+                        animate width { duration: 200ms; }
+                        background: T.hi;
+                        border-radius: 3px;
+                    }
+                }
+            }
+            // with a button, the text goes under the bar (the title stays readable; .sub margin-top 6)
+            if n.btn != "" && n.text != "": Rectangle { height: 6px; }
+            if n.btn != "" && n.text != "": Text {
+                text: n.text;
+                font-size: 13px;
+                color: T.muted;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component ToastLayer {
+    in property <length> lift;   // the selection bar is showing: Echo moves #notes up (bottom 84 instead of 24)
+    property <length> avail: min(560px, root.width * 0.92);
+    col := VerticalLayout {
+        x: (root.width - root.avail) / 2;
+        width: root.avail;
+        y: root.height - self.preferred-height - 24px - root.lift;
+        animate y { duration: 200ms; }
+        spacing: 8px;
+        for n in Notes.items: NoteView {
+            n: n;
+            avail: root.avail;
+        }
+    }
+}
+
+// Echo's .ib: 34 px icon button, no border, muted icon; hover = panel2 + bright icon
+export component IconBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> on;          // star: yellow + filled
+    in property <bool> danger;      // delete: red on hover
+    in property <length> size: 34px;
+    in property <length> icon-size: 17px;
+    in property <brush> idle-bg: transparent;
+    in property <color> icon-color: T.muted;
+    in property <float> idle-opacity: 1; // William: toolbar controls slightly see-through until hovered
+    callback clicked;
+    opacity: ta.has-hover ? 1 : idle-opacity;
+    animate opacity { duration: T.fade; }
+    width: size;
+    height: size;
+    border-radius: 9px;
+    background: ta.has-hover ? T.panel2 : idle-bg;
+    animate background { duration: T.fade; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
+    }
+    Icon {
+        width: root.icon-size;
+        height: root.icon-size;
+        commands: root.icon;
+        stroke: root.on ? T.hi : root.danger && ta.has-hover ? T.bad : ta.has-hover ? T.text : root.icon-color;
+        fill: root.on ? T.hi : transparent;
+        transform-scale: ta.pressed ? 0.88 : 1;
+        animate transform-scale { duration: 90ms; }
+    }
+}
+
+// Echo's .btn: 36 px, radius 10, border; .primary = gradient; .danger = red on hover; icon-only = square
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> primary;
+    in property <bool> danger;      // red on hover
+    in property <bool> delb;        // Echo's .delb: filled red (dialogs' Delete), lighter red on hover
+    in property <bool> red;         // red icon always (Echo's delete in the player)
+    in property <bool> active;      // yellow border + text (Echo's #ptrim.on)
+    in property <bool> small;       // .btn.sm
+    in property <length> text-size: 0px; // other text size (0 = the normal 14 / small 13)
+    in property <bool> left-half;   // left part of a split button
+    in property <bool> right-half;  // right part of a split button (chevron)
+    in property <color> dot: transparent; // a coloured dot in front of the text (Echo's Record button)
+    in property <bool> tip-above;   // tooltip above the button (the selection bar at the bottom)
+    in property <float> idle-opacity: 1; // William: toolbar controls slightly see-through until hovered
+    // Echo's #longbtn.on: red edge + pink text, the dot blinks (1 s) while a long recording runs
+    in property <color> edge: transparent;
+    in property <color> text-color: transparent;
+    in property <bool> blink-dot;
+    callback clicked;
+    opacity: ta.has-hover ? 1 : idle-opacity;
+    animate opacity { duration: T.fade; }
+    height: small ? 30px : 36px;
+    width: text == "" ? (right-half ? 30px : self.height) : hl.preferred-width;
+    border-top-left-radius: right-half ? 0 : 10px;
+    border-bottom-left-radius: right-half ? 0 : 10px;
+    border-top-right-radius: left-half ? 0 : 10px;
+    border-bottom-right-radius: left-half ? 0 : 10px;
+    border-width: primary ? 0 : 1px;
+    border-color: edge != transparent ? edge : delb ? (ta.has-hover ? #ff7590 : T.bad) : active ? T.hi : danger && ta.has-hover ? T.bad : ta.has-hover ? T.hover : T.line;
+    background: primary ? T.grad : delb ? (ta.has-hover ? #ff7590 : T.bad) : ta.has-hover ? T.panel2 : T.panel;
+    drop-shadow-blur: primary ? 20px : 0;
+    drop-shadow-offset-y: primary ? 6px : 0;
+    drop-shadow-color: T.accent.with-alpha(0.25);
+    animate background, border-color { duration: T.fade; }
+    property <color> fg: text-color != transparent ? text-color : active ? T.hi : danger && ta.has-hover ? T.bad : T.text;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
+        above: root.tip-above;
+    }
+    // brightness on hover for the primary button
+    if root.primary && ta.has-hover: Rectangle {
+        border-radius: 10px;
+        background: #ffffff1c;
+    }
+    hl := HorizontalLayout {
+        padding-left: root.text == "" ? 0 : (root.small ? 11px : 15px);
+        padding-right: root.text == "" ? 0 : (root.small ? 11px : 15px);
+        spacing: 8px;
+        alignment: center;
+        transform-scale: ta.pressed ? 0.96 : 1;
+        animate transform-scale { duration: 90ms; }
+        if root.dot != transparent: Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 9px;
+            height: 9px;
+            border-radius: 4.5px;
+            background: root.dot;
+            opacity: root.blink-dot && mod(animation-tick(), 1000ms) >= 500ms ? 0.2 : 1;
+        }
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            width: root.right-half ? 13px : 16px;
+            height: root.right-half ? 13px : 16px;
+            stroke-width: root.right-half ? 2.4px : 1.8px;
+            commands: root.icon;
+            stroke: root.red ? T.bad : root.fg;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: root.text-size > 0 ? root.text-size : root.small ? 13px : 14px;
+            font-weight: (root.primary || root.delb ? 600 : 500) + T.fw;
+            color: root.primary || root.delb ? white : root.fg;
+        }
+    }
+}
+
+// a thin divider between the two halves of a split button
+export component SplitLine inherits Rectangle {
+    width: 1px;
+    background: #ffffff22;
+}
+
+// Echo's .pill (header: recorder status, hotkeys)
+export component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> dot: transparent;
+    height: 30px;
+    width: hl.preferred-width;
+    border-radius: 15px;
+    background: T.panel;
+    border-width: 1px;
+    border-color: T.line;
+    hl := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        if root.dot != transparent: Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - 8px) / 2;
+            border-radius: 4px;
+            background: root.dot;
+        }
+        Text {
+            text: root.text;
+            font-size: 12.5px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+    // over the pill, not in its row: in the row a child (the recording pill's TouchArea) took a slot + 8 px of
+    // spacing, which left empty space on the right (William, 9 Nov)
+    @children
+}
+
+// Echo's kbd
+export component Kbd inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    width: kt.preferred-width + 12px;
+    border-radius: 5px;
+    background: T.panel2;
+    border-width: 1px;
+    border-color: T.hover;
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: T.hover;
+        border-bottom-left-radius: 5px;
+        border-bottom-right-radius: 5px;
+    }
+    kt := Text {
+        y: 3px;
+        text: root.text;
+        font-family: "Segoe UI"; // Echo: kbd { font: 600 11px "Segoe UI" }
+        font-size: 11px;
+        font-weight: 600 + T.fw;
+        color: T.text;
+    }
+}
+
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <brush> bg: #000000dd;
+    height: 20px;
+    width: bt.preferred-width + 14px;
+    border-radius: 6px;
+    background: bg;
+    bt := Text {
+        text: root.text;
+        font-size: 11.5px;
+        font-weight: 600 + T.fw;
+        color: white;
+    }
+}
+
+// Chat A: the Copy menu's sizes + default from Echo's settings (copy.rs fills it; right-click a size = default)
+export global CopyCfg {
+    in-out property <string> def: "full";
+    in-out property <string> free: "20 MB";
+    in-out property <string> basic: "50 MB";
+    in-out property <string> nitro: "1 GB";
+    in-out property <string> custom: "100 MB";
+    callback set-default(string);
+}
+
+// one line in a menu (copy sizes, sort)
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> right;
+    in property <bool> on;      // tick in front
+    in property <bool> tick-room;
+    in property <string> badge; // e.g. "default"
+    callback clicked;
+    callback right-clicked;
+    height: 36px;
+    border-radius: 8px;
+    background: ta.has-hover ? T.panel2 : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                root.right-clicked();
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        if root.tick-room: Icon {
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            commands: Ic.check;
+            stroke: T.accent2;
+            stroke-width: 2.2px;
+            opacity: root.on ? 1 : 0;
+        }
+        Text {
+            text: root.text;
+            font-size: 13.5px;
+            color: T.text;
+            vertical-alignment: center;
+        }
+        if root.badge != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 18px;
+            width: bdt.preferred-width + 12px;
+            border-radius: 9px;
+            border-width: 1px;
+            border-color: T.hi.with-alpha(0.4);
+            bdt := Text {
+                text: root.badge;
+                font-size: 10.5px;
+                color: T.hi;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        if root.right != "": Text {
+            text: root.right;
+            font-size: 12.5px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Echo's copy menu (sizes for Discord) - real (Chat A: copy.rs)
+export component CopyMenuBody inherits Rectangle {
+    in property <string> size-text;
+    callback picked(string);
+    width: 260px;
+    height: vl.preferred-height;
+    background: T.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.line;
+    drop-shadow-blur: 40px;
+    drop-shadow-offset-y: 14px;
+    drop-shadow-color: #000000aa;
+    TouchArea { }
+    vl := VerticalLayout {
+        padding: 6px;
+        Text {
+            text: "Copy · this clip is " + root.size-text;
+            font-size: 11.5px;
+            color: T.dim;
+            height: 26px;
+            vertical-alignment: center;
+            x: 10px;
+        }
+        MenuRow {
+            text: "Full size";
+            badge: CopyCfg.def == "full" ? "default" : "";
+            right: "original";
+            clicked => { root.picked("full"); }
+            right-clicked => { CopyCfg.set-default("full"); }
+        }
+        MenuRow {
+            text: "Discord Free";
+            badge: CopyCfg.def == "free" ? "default" : "";
+            right: CopyCfg.free;
+            clicked => { root.picked("free"); }
+            right-clicked => { CopyCfg.set-default("free"); }
+        }
+        MenuRow {
+            text: "Nitro Basic";
+            badge: CopyCfg.def == "basic" ? "default" : "";
+            right: CopyCfg.basic;
+            clicked => { root.picked("basic"); }
+            right-clicked => { CopyCfg.set-default("basic"); }
+        }
+        MenuRow {
+            text: "Nitro";
+            badge: CopyCfg.def == "nitro" ? "default" : "";
+            right: CopyCfg.nitro;
+            clicked => { root.picked("nitro"); }
+            right-clicked => { CopyCfg.set-default("nitro"); }
+        }
+        MenuRow {
+            text: "Custom";
+            badge: CopyCfg.def == "custom" ? "default" : "";
+            right: CopyCfg.custom;
+            clicked => { root.picked("custom"); }
+            right-clicked => { CopyCfg.set-default("custom"); }
+        }
+        Rectangle {
+            height: 1px;
+            background: T.line;
+        }
+        Text {
+            text: "Right-click a size to make it the Copy default";
+            font-size: 11.5px;
+            color: T.dim;
+            height: 26px;
+            vertical-alignment: center;
+            x: 10px;
+        }
+    }
+}

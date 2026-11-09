@@ -1,0 +1,573 @@
+// Chat B (night, 9 Nov): Settings > Echo Profile = Echo's renderProfile (ui/index.html #profbody, chat 30) - make a
+// profile, picture, name / @name / bio / colour, clips on your page (pins), your share links, following, delete.
+// Rust: src/lib_profile.rs (all through Echo's own ec_profile / profile_avatar). Styles = Echo's .pf* CSS.
+import { T, Btn } from "theme.slint";
+
+export struct PfClip {
+    id: string,
+    title: string,
+    thumb: image,
+    has-thumb: bool,
+}
+
+export struct PfSwatch {
+    hex: string,
+    c: color,
+}
+
+export struct PfFriend {
+    handle: string,
+    name: string,
+    initial: string,
+    col: color,
+    pic: image,
+    has-pic: bool,
+}
+
+export global Pf {
+    in property <string> state;          // "" / "out" / "loading" / "error" / "new" / "ready"
+    in property <string> err;
+    in-out property <string> name;
+    in-out property <string> handle;
+    in-out property <string> bio;
+    in-out property <string> color: "#7c5cff";
+    in property <string> saved-handle;   // @name as saved (header + page link)
+    in property <string> saved-name;
+    in property <image> pic;
+    in property <bool> has-pic;
+    in property <string> followers;      // "3 followers"
+    in property <[PfClip]> on-page;
+    in property <[PfClip]> links;
+    in property <int> pin-max: 6;
+    in property <[PfFriend]> following;
+    in-out property <string> follow-text;
+    in property <[PfSwatch]> swatches;  // Echo's PF_COLORS (Rust fills them)
+    in-out property <color> col: #7c5cff; // the picked colour (avatar background)
+    in property <string> letter;         // first letter of the name (no picture)
+    // "save" / "make" / "pic" / "pic-x" / "view" / "pin" id / "unpin" id / "follow" / "unfollow" h / "open" h / "delete" / "retry"
+    callback act(string, string);
+    // @name: lower case, a-z 0-9 _ only (Echo cleans it while you type)
+    pure callback clean(string) -> string;
+}
+
+// Echo's .box with an h3 title (same look as the other Settings boxes)
+component PBox inherits Rectangle {
+    in property <string> title;
+    in property <string> right;
+    background: T.panel;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: T.line;
+    VerticalLayout {
+        padding-left: 22px;
+        padding-right: 22px;
+        padding-top: root.title != "" ? 16px : 4px;
+        padding-bottom: 6px;
+        spacing: 0;
+        if root.title != "": HorizontalLayout {
+            padding-bottom: 2px;
+            Text {
+                text: root.title;
+                font-size: 11px;
+                font-weight: 700 + T.fw;
+                letter-spacing: 1px;
+                color: T.dim;
+                horizontal-stretch: 1;
+            }
+            if root.right != "": Text {
+                text: root.right;
+                font-size: 11.5px;
+                font-weight: 500 + T.fw;
+                color: T.dim;
+            }
+        }
+        @children
+    }
+}
+
+// Echo's .din input
+component DIn inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> multi;
+    in property <bool> at;               // .pfat: a dim "@" in front
+    callback edited(string);
+    callback enter();
+    height: root.multi ? 58px : 36px;
+    max-width: 420px;
+    background: T.panel2;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { ti.focus(); }
+    }
+    if root.at: Text {
+        x: 10px;
+        y: 9px;
+        text: "@";
+        font-size: 13.5px;
+        color: T.dim;
+    }
+    if ti.text == "": Text {
+        x: ti.x;
+        y: 9px;
+        text: root.placeholder;
+        font-size: 13.5px;
+        color: T.dim;
+    }
+    ti := TextInput {
+        x: root.at ? 24px : 10px;
+        y: root.multi ? 8px : 0px;
+        width: parent.width - self.x - 10px;
+        height: root.multi ? parent.height - 16px : parent.height;
+        vertical-alignment: root.multi ? top : center;
+        single-line: !root.multi;
+        wrap: root.multi ? word-wrap : no-wrap;
+        font-size: 13.5px;
+        color: T.text;
+        selection-background-color: T.accent.with-alpha(0.45);
+        text <=> root.text;
+        edited => { root.edited(self.text); }
+        accepted => { root.enter(); }
+    }
+}
+
+// Echo's .pfav: round picture, or the first letter on the profile colour; hover = "Change"
+component Avatar inherits Rectangle {
+    in property <image> pic;
+    in property <bool> has-pic;
+    in property <string> letter;
+    in property <color> tint;
+    in property <length> size: 68px;
+    in property <bool> changeable;
+    callback clicked();
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    clip: true;
+    background: root.has-pic ? T.panel2 : root.tint;
+    border-width: root.size > 40px ? 2px : 1px;
+    border-color: T.line;
+    if root.has-pic: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.pic;
+        image-fit: cover;
+    }
+    if !root.has-pic: Text {
+        text: root.letter;
+        font-size: root.size > 40px ? 26px : 14px;
+        font-weight: 700;
+        color: white;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.changeable && ta.has-hover: Rectangle {
+        background: #000000aa;
+        Text {
+            text: "Change";
+            font-size: 11.5px;
+            font-weight: 600;
+            color: white;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.changeable;
+        mouse-cursor: root.changeable ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Echo's .pfclip card (190 px+, 16:9 picture, name, Remove / + Add to page pill)
+component ClipCard inherits Rectangle {
+    in property <PfClip> c;
+    in property <bool> on;
+    in property <bool> full;
+    border-radius: 10px;
+    clip: true;
+    border-width: 1px;
+    border-color: root.on ? T.accent.with-alpha(0.6) : ca.has-hover ? T.muted : T.line;
+    background: T.panel2;
+    ca := TouchArea { }
+    VerticalLayout {
+        Rectangle {
+            height: root.width * 9 / 16;
+            background: @linear-gradient(135deg, T.accent.with-alpha(0.25) 0%, T.panel 100%);
+            if root.c.has-thumb: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.c.thumb;
+                image-fit: cover;
+            }
+        }
+        Text {
+            height: 26px;
+            text: root.c.title;
+            font-size: 12px;
+            color: T.text;
+            overflow: elide;
+            vertical-alignment: center;
+            x: 8px;
+            width: parent.width - 16px;
+        }
+    }
+    pin := Rectangle {
+        property <bool> off: !root.on && root.full;
+        x: parent.width - self.width - 6px;
+        y: 6px;
+        height: 20px;
+        width: pt.preferred-width + 18px;
+        border-radius: 10px;
+        opacity: self.off ? 0.45 : 1;
+        background: root.on ? (pa.has-hover ? #000000 : #000000cc) : T.accent;
+        pt := Text {
+            text: root.on ? "Remove" : "+ Add to page";
+            font-size: 11px;
+            font-weight: 600;
+            color: root.on && !pa.has-hover ? #dddddd : white;
+        }
+        pa := TouchArea {
+            enabled: !pin.off;
+            mouse-cursor: pin.off ? MouseCursor.default : MouseCursor.pointer;
+            clicked => { Pf.act(root.on ? "unpin" : "pin", root.c.id); }
+        }
+    }
+}
+
+// a grid of cards: auto-fill, min 190 px, gap 10 (Echo's .pfclips)
+component ClipGrid inherits Rectangle {
+    in property <[PfClip]> items;
+    in property <bool> on;
+    in property <bool> full;
+    property <int> cols: max(1, floor((root.width + 10px) / 200px));
+    property <length> cw: (root.width - (cols - 1) * 10px) / cols;
+    property <length> ch: cw * 9 / 16 + 28px;
+    height: ceil(root.items.length / cols) * (ch + 10px) + 14px;
+    for c[i] in root.items: ClipCard {
+        x: mod(i, root.cols) * (root.cw + 10px);
+        y: 12px + floor(i / root.cols) * (root.ch + 10px);
+        width: root.cw;
+        height: root.ch;
+        c: c;
+        on: root.on;
+        full: root.full;
+    }
+}
+
+// .row: text left, buttons right
+component PRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> sub;
+    in property <color> sub-color: T.muted;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    spacing: 14px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        spacing: 4px;
+        if root.label != "": Text {
+            text: root.label;
+            font-size: 14px;
+            font-weight: 600 + T.fw;
+            color: T.text;
+            wrap: word-wrap;
+        }
+        if root.sub != "": Text {
+            text: root.sub;
+            font-size: 12.5px;
+            color: root.sub-color;
+            wrap: word-wrap;
+        }
+    }
+    @children
+}
+
+component Label inherits Text {
+    width: 110px;
+    font-size: 13px;
+    color: T.muted;
+    vertical-alignment: center;
+}
+
+export component ProfilePanel inherits VerticalLayout {
+    spacing: 16px;
+    // Echo: the second <p> of #sec-profile, above #profbody
+    Text {
+        text: "Your own little page at echoclip.link/u/yourname: a name, picture, a few words and up to 6 clips you're proud of. Share links show who clipped them. Follow friends to keep their pages one click away. Optional, and no feeds.";
+        font-size: 14px;
+        color: T.muted;
+        wrap: word-wrap;
+    }
+    if Pf.state == "out": PBox {
+        PRow {
+            label: "Your profile appears here once you're signed in";
+            sub: "Sign in above with your email - free, no card, no password.";
+        }
+    }
+    if Pf.state == "loading": PBox {
+        PRow {
+            sub: "Loading…";
+        }
+    }
+    if Pf.state == "error": PBox {
+        PRow {
+            label: "Couldn't load your profile";
+            sub: Pf.err;
+            Btn {
+                y: (parent.height - self.height) / 2;
+                text: "Try again";
+                clicked => { Pf.act("retry", ""); }
+            }
+        }
+    }
+    // Echo: "Make your profile" - @name + Name, then Create profile
+    if Pf.state == "new": PBox {
+        title: "MAKE YOUR PROFILE";
+        GridLayout {
+            padding-top: 14px;
+            padding-bottom: 6px;
+            spacing-horizontal: 14px;
+            spacing-vertical: 10px;
+            Row {
+                Label { text: "@name"; }
+                DIn {
+                    at: true;
+                    placeholder: "yourname";
+                    text <=> Pf.handle;
+                    edited(t) => { Pf.handle = Pf.clean(t); }
+                }
+            }
+            Row {
+                Label { text: "Name"; }
+                DIn {
+                    placeholder: "How your name shows";
+                    text <=> Pf.name;
+                }
+            }
+        }
+        PRow {
+            sub: "3-20 letters, numbers or _. You can change it later.";
+            Btn {
+                y: (parent.height - self.height) / 2;
+                primary: true;
+                text: "Create profile";
+                clicked => { Pf.act("make", ""); }
+            }
+        }
+    }
+    if Pf.state == "ready": VerticalLayout {
+        spacing: 16px;
+        PBox {
+            title: "YOUR PROFILE";
+            // .pfhead: picture (click = change), name + @name · followers, View my page
+            HorizontalLayout {
+                padding-top: 16px;
+                padding-bottom: 16px;
+                spacing: 16px;
+                Avatar {
+                    pic: Pf.pic;
+                    has-pic: Pf.has-pic;
+                    letter: Pf.letter;
+                    tint: Pf.col;
+                    changeable: true;
+                    clicked => { Pf.act("pic", ""); }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: Pf.saved-name;
+                        font-size: 17px;
+                        font-weight: 700 + T.fw;
+                        color: T.text;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "@" + Pf.saved-handle + " · " + Pf.followers;
+                        font-size: 12.5px;
+                        color: T.muted;
+                    }
+                }
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    text: "View my page";
+                    clicked => { Pf.act("view", ""); }
+                }
+            }
+            Rectangle {
+                height: 1px;
+                background: #ffffff0d;
+            }
+            GridLayout {
+                padding-top: 14px;
+                padding-bottom: 6px;
+                spacing-horizontal: 14px;
+                spacing-vertical: 10px;
+                Row {
+                    Label { text: "Name"; }
+                    DIn { text <=> Pf.name; }
+                }
+                Row {
+                    Label { text: "@name"; }
+                    DIn {
+                        at: true;
+                        text <=> Pf.handle;
+                        edited(t) => { Pf.handle = Pf.clean(t); }
+                    }
+                }
+                Row {
+                    Label { text: "Bio"; }
+                    DIn {
+                        multi: true;
+                        placeholder: "A few words - your server, your role, your main game…";
+                        text <=> Pf.bio;
+                    }
+                }
+                Row {
+                    Label { text: "Colour"; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        for c in Pf.swatches: Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: c.c;
+                            border-width: 2px;
+                            border-color: c.hex == Pf.color ? T.text : (swa.has-hover ? T.muted : transparent);
+                            swa := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    Pf.color = c.hex;
+                                    Pf.col = c.c;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            PRow {
+                sub: "Changes show on your page right away.";
+                if Pf.has-pic: Btn {
+                    y: (parent.height - self.height) / 2;
+                    text: "Remove picture";
+                    clicked => { Pf.act("pic-x", ""); }
+                }
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    primary: true;
+                    text: "Save";
+                    clicked => { Pf.act("save", ""); }
+                }
+            }
+        }
+        // two lists, so it's obvious what's public (Echo)
+        PBox {
+            title: "ON YOUR PAGE";
+            right: Pf.on-page.length + " of " + Pf.pin-max;
+            if Pf.on-page.length > 0: ClipGrid {
+                items: Pf.on-page;
+                on: true;
+            }
+            if Pf.on-page.length == 0: PRow {
+                sub: "Nothing on your page yet. Only clips you add here show on echoclip.link/u/" + Pf.saved-handle + ".";
+            }
+        }
+        PBox {
+            title: "YOUR SHARE LINKS";
+            PRow {
+                sub: Pf.links.length > 0
+                    ? "Clips you've made a share link for. Only you see this list - none of these are on your page unless you add them" + (Pf.on-page.length >= Pf.pin-max ? " (your page is full - remove one first)." : ".")
+                    : Pf.on-page.length > 0 ? "All your share links are on your page."
+                    : "Clips you share with Echo Cloud (\"Copy share link\") show up here. Nothing is on your page unless you add it.";
+            }
+            if Pf.links.length > 0: ClipGrid {
+                items: Pf.links;
+                on: false;
+                full: Pf.on-page.length >= Pf.pin-max;
+            }
+        }
+        PBox {
+            title: "FOLLOWING";
+            HorizontalLayout {
+                padding-top: 14px;
+                padding-bottom: 14px;
+                spacing: 8px;
+                DIn {
+                    max-width: 340px;
+                    placeholder: "@name or their echoclip.link/u/ link";
+                    text <=> Pf.follow-text;
+                    enter => { Pf.act("follow", ""); }
+                }
+                Btn {
+                    primary: true;
+                    text: "Follow";
+                    clicked => { Pf.act("follow", ""); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            for f[i] in Pf.following: VerticalLayout {
+                Rectangle {
+                    height: 1px;
+                    background: #ffffff0d;
+                }
+                HorizontalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 10px;
+                    Avatar {
+                        size: 34px;
+                        pic: f.pic;
+                        has-pic: f.has-pic;
+                        letter: f.initial;
+                        tint: f.col;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: f.name;
+                            font-size: 14px;
+                            font-weight: 700 + T.fw;
+                            color: T.text;
+                        }
+                        Text {
+                            text: "@" + f.handle;
+                            font-size: 12.5px;
+                            color: T.muted;
+                        }
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Open page";
+                        clicked => { Pf.act("open", f.handle); }
+                    }
+                    Btn {
+                        y: (parent.height - self.height) / 2;
+                        text: "Unfollow";
+                        clicked => { Pf.act("unfollow", f.handle); }
+                    }
+                }
+            }
+            if Pf.following.length == 0: PRow {
+                sub: "Nobody yet. Friends' pages are at echoclip.link/u/theirname - their \"Follow\" button copies the name for you.";
+            }
+        }
+        PBox {
+            PRow {
+                label: "Delete profile";
+                sub: "Removes your page, picture, pins and follows. Your clips and share links stay.";
+                Btn {
+                    y: (parent.height - self.height) / 2;
+                    danger: true;
+                    text: "Delete profile";
+                    clicked => { Pf.act("delete", ""); }
+                }
+            }
+        }
+    }
+}

@@ -38,9 +38,11 @@ jobs:
             echo "Something that looks like a key is in the files above - not publishing"; exit 1
           fi
           # the public repo builds the releases itself: its workflow + the version number of this build
-          echo "1.0.${{ github.run_number }}" > ci/version.txt
+          # 2.0 (9 Nov 2026): the native app (Slint + mpv) - William: "make it 2.0". Still the run number at the end,
+          # so every build is newer than the one before (2.0.x > 1.0.71 for the updater)
+          echo "2.0.${{ github.run_number }}" > ci/version.txt
           # this publish as a <release> in the Flatpak metainfo (Flathub's "What's new"); never stops the publish
-          python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "1.0.${{ github.run_number }}" "$msg" \
+          python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "2.0.${{ github.run_number }}" "$msg" \
             || echo "::warning::Couldn't add the release to the Flatpak metainfo"
           mkdir -p .github/workflows
           cp ci/public-build.yml .github/workflows/build.yml

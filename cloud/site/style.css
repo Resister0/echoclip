@@ -375,3 +375,12 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .astat .abar { display:block; height:4px; border-radius:2px; background:var(--panel2); overflow:hidden; margin-top:3px; }
 .astat .abar i { display:block; width:6%; height:100%; background:var(--accent); }
 .abtn.aico { padding-left:7px; padding-right:7px; }
+
+/* 2.0: measured Echo vs Medal (index.html #light) */
+.measure { margin-top:16px; }
+.measure table { width:100%; border-collapse:collapse; margin:12px 0 10px; font-size:15px; }
+.measure th { text-align:left; color:var(--muted); font-weight:600; font-size:13px; padding:6px 10px; }
+.measure td { padding:8px 10px; border-top:1px solid rgba(255,255,255,.08); color:var(--muted); }
+.measure tr.us td { color:var(--text); }
+.measure tr.us b { color:rgb(var(--accent-rgb)); }
+.measure .how { color:var(--muted); font-size:13px; line-height:1.55; }

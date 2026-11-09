@@ -1,0 +1,1615 @@
+// Settings page, styled from Echo's ui/index.html (#page-settings: .snav, .sbody, .sec, .box, .row, .switch, .seg,
+// .qhero, .preset, .hk, .themegrid). Rust (settings.rs) builds the rows; this file only draws them.
+import { T, Ic, Icon, TipArea, Btn, IconBtn, MenuRow } from "theme.slint";
+import { ProfilePanel } from "lib_profile.slint"; // Chat B (night)
+
+export struct SOpt {
+    value: string,
+    label: string,
+    sub: string,    // hint / description / size
+}
+
+// Echo's #ecplans (Settings > Cloud > Upgrade): one card per size - "250 GB", per month (primary), per year (-17 %)
+export struct EcPlan {
+    size: string,
+    mid: string,     // product id per month ("" = none)
+    mtext: string,   // "€4.95 / month"
+    yid: string,
+    ytext: string,
+    save: string,    // "-17%" ("" = none)
+}
+export global EcPlans {
+    in-out property <[EcPlan]> plans;
+    in-out property <string> state;  // "" = hidden, "loading", "shown"
+    in-out property <string> busy;   // product id being opened
+    callback buy(string);
+}
+
+export struct SRow {
+    kind: string,   // switch, slider, slider-dimsw, select, seg, button, buttons, hotkey, presets, themes, colors, usage, game, path, numbers, info
+    key: string,
+    key2: string,   // second control: switch next to a slider / select, or the seconds select of a hotkey
+    label: string,
+    sub: string,
+    on: bool,
+    on2: bool,
+    value: string,
+    num: float,
+    min: float,
+    max: float,
+    step: float,
+    vtext: string,
+    opts: [SOpt],
+    keys: [string],
+    btn: string,
+    act: string,
+    btn2: string,
+    act2: string,
+    dep: bool,      // does nothing in the current setup: dimmed, not clickable (why = tooltip)
+    why: string,
+    listen: bool,   // hotkey button waiting for keys
+    col: bool,
+}
+
+export struct SBox {
+    title: string,
+    btn: string,
+    act: string,
+    rows: [SRow],
+}
+
+export struct SNav {
+    id: string,
+    label: string,
+    icon: string,
+    head: string,
+}
+
+export struct ThemeCard {
+    id: string,
+    name: string,
+    on: bool,
+    bg: color,
+    rail: color,
+    panel: color,
+    accent: color,
+    text: color,
+}
+
+export struct ThemeLine {
+    items: [ThemeCard],
+}
+
+export global S {
+    in property <[SNav]> nav;
+    in property <string> sec: "hotkeys";
+    in property <string> title;
+    in property <string> intro;
+    in property <[SBox]> boxes;
+    in property <string> note;
+    in property <bool> hero;
+    in property <string> qbig;
+    in property <string> qsub;
+    in property <string> qmin;
+    in property <string> qclip;
+    in property <string> qcliplbl;
+    in property <[ThemeLine]> themes;
+    in property <bool> listening;
+    in-out property <string> query;
+    callback pick(string);
+    callback search(string);
+    callback set(string, string);
+    callback act(string);
+    callback listen(string);
+    callback key(string, bool, bool, bool, bool);
+    callback cancel-listen();
+}
+
+// Chat B: Echo's colour picker for custom themes (saturation/value square, hue bar, R G B) + RGB mode: double-click
+// the round preview = the colour cycles through the rainbow (William: "like Vape v4"). Rust: src/lib_color.rs.
+export global Cp {
+    in-out property <bool> open;
+    in property <string> key;        // theme_accent / theme_bg / theme_hi
+    in property <string> title;
+    in property <float> h;           // 0..360
+    in property <float> s;           // 0..1
+    in property <float> v;           // 0..1
+    in property <color> cur;
+    in property <color> hue-color;
+    in property <int> r;
+    in property <int> g;
+    in property <int> b;
+    in property <bool> rgb;          // this colour cycles
+    in property <length> px;         // where the swatch was (the picker opens under it)
+    in property <length> py;
+    callback changed(float, float, float, bool);   // h, s, v, final (mouse up)
+    callback set-rgb(int, int, int);
+    callback toggle-rgb();
+    callback open-at(string, length, length);
+}
+
+// .switch: 42 x 24
+component SSwitch inherits Rectangle {
+    in property <bool> on;
+    in property <bool> dim;
+    callback toggled(bool);
+    width: 42px;
+    height: 24px;
+    border-radius: 12px;
+    background: on ? T.accent : #3a3a3a;
+    opacity: dim ? 0.45 : 1;
+    animate background { duration: 150ms; }
+    Rectangle {
+        x: root.on ? 21px : 3px;
+        y: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: white;
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+// input[type=range]: 200 px, accent fill; saves when let go (dragging keeps its own value)
+component SSlider inherits Rectangle {
+    in property <float> value;
+    in property <float> lo;
+    in property <float> hi: 1;
+    in property <float> step: 0.05;
+    out property <float> v: value;
+    callback commit(float);
+    changed value => { self.v = self.value; }
+    width: 200px;
+    height: 24px;
+    property <float> frac: root.hi > root.lo ? clamp((root.v - root.lo) / (root.hi - root.lo), 0, 1) : 0;
+    Rectangle {
+        y: 10px;
+        height: 4px;
+        border-radius: 2px;
+        background: T.hover;
+    }
+    Rectangle {
+        x: 0;
+        y: 10px;
+        width: 8px + (root.width - 16px) * root.frac;
+        height: 4px;
+        border-radius: 2px;
+        background: T.accent;
+    }
+    Rectangle {
+        x: (root.width - 16px) * root.frac;
+        y: 4px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: white;
+        drop-shadow-blur: 4px;
+        drop-shadow-color: #00000080;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        function at(px: length) {
+            root.v = clamp(round(((px - 8px) / max(1px, root.width - 16px) * (root.hi - root.lo) + root.lo) / root.step) * root.step, root.lo, root.hi);
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.at(self.mouse-x);
+            } else if (e.kind == PointerEventKind.up) {
+                root.commit(root.v);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                self.at(self.mouse-x);
+            }
+        }
+    }
+}
+
+// <select>: button with the picked option + a menu
+// Settings dropdowns: ONE shared list drawn by SDropLayer (app.slint, above the page and the setup wizard). It was a
+// PopupWindow per select: Slint closed it on the PRESS of a click on an option (counted as outside) and the click
+// landed on whatever was under it (William's Settings pickers; same bug as the library filter). Every select does
+// S.set(key, value) when an option is picked.
+export global SDrop {
+    in-out property <bool> open;
+    in-out property <length> bx;    // the select button, window coordinates
+    in-out property <length> by;
+    in-out property <length> bw;
+    in-out property <length> bh;
+    in-out property <[SOpt]> opts;
+    in-out property <string> value;
+    in-out property <string> key;
+}
+
+component SSelect inherits Rectangle {
+    in property <[SOpt]> opts;
+    in property <string> value;
+    in property <string> label;     // the picked option's text (Rust fills it in)
+    in property <bool> compact;     // as wide as its text (Echo's hotkey length select: "3m ▾")
+    in property <string> key;       // S.set(key, picked value)
+    height: 36px;
+    width: compact ? lt.preferred-width + 36px : min(340px, max(140px, lt.preferred-width + 44px));
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: ta.has-hover || (SDrop.open && SDrop.key == root.key) ? T.hover : T.line;
+    background: T.panel;
+    lt := Text {
+        x: root.compact ? 10px : 12px;
+        width: parent.width - (root.compact ? 34px : 40px);
+        text: root.label;
+        font-size: 13.5px;
+        color: T.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Icon {
+        x: parent.width - (root.compact ? 22px : 26px);
+        width: 14px;
+        height: 14px;
+        commands: Ic.down;
+        stroke: T.muted;
+        stroke-width: 2.2px;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            SDrop.opts = root.opts;
+            SDrop.value = root.value;
+            SDrop.key = root.key;
+            SDrop.bx = root.absolute-position.x;
+            SDrop.by = root.absolute-position.y;
+            SDrop.bw = root.width;
+            SDrop.bh = root.height;
+            SDrop.open = true;
+        }
+    }
+}
+
+// the open dropdown list: below the select (above it when there's no room), a click outside closes it and is
+// swallowed, Esc closes it
+export component SDropLayer inherits Rectangle {
+    if SDrop.open: Rectangle {
+        TouchArea {
+            clicked => { SDrop.open = false; }
+        }
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    SDrop.open = false;
+                    return accept;
+                }
+                reject
+            }
+        }
+        list := Rectangle {
+            property <length> below: SDrop.by + SDrop.bh + 4px;
+            width: max(SDrop.bw, 200px);
+            height: sel.preferred-height;
+            x: min(SDrop.bx, root.width - self.width - 8px);
+            y: below + self.height <= root.height - 8px ? below : max(8px, SDrop.by - self.height - 4px);
+            background: T.panel;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: T.line;
+            drop-shadow-blur: 30px;
+            drop-shadow-offset-y: 10px;
+            drop-shadow-color: #000000aa;
+            TouchArea { }   // gaps between rows don't close it
+            sel := VerticalLayout {
+                padding: 6px;
+                for o in SDrop.opts: MenuRow {
+                    text: o.label;
+                    tick-room: true;
+                    on: o.value == SDrop.value;
+                    clicked => {
+                        SDrop.open = false;
+                        S.set(SDrop.key, o.value);
+                    }
+                }
+            }
+        }
+    }
+}
+// .seg: segmented buttons
+component SSeg inherits Rectangle {
+    in property <[SOpt]> opts;
+    in property <string> value;
+    callback picked(string);
+    height: 38px;
+    width: hl.preferred-width;
+    background: T.bg;
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: T.line;
+    hl := HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        for o in root.opts: Rectangle {
+            width: st.preferred-width + 28px;
+            border-radius: 8px;
+            background: o.value == root.value ? T.panel2 : transparent;
+            animate background { duration: 150ms; }
+            st := Text {
+                text: o.label;
+                font-size: 13px;
+                font-weight: 500 + T.fw;
+                color: o.value == root.value || sta.has-hover ? T.text : T.muted;
+            }
+            sta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.picked(o.value); }
+            }
+        }
+    }
+}
+
+// .hk: the keys of a hotkey (or "Press keys…" / "Off - click to set")
+component HkBtn inherits Rectangle {
+    in property <[string]> keys;
+    in property <bool> listen;
+    callback clicked;
+    width: max(150px, hl.preferred-width + 24px);
+    height: 40px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: root.listen ? T.accent : ta.has-hover ? T.hover : T.line;
+    background: T.bg;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    hl := HorizontalLayout {
+        alignment: center;
+        spacing: 5px;
+        if root.listen: Text {
+            text: "Press keys…";
+            font-size: 13px;
+            color: T.accent2;
+            vertical-alignment: center;
+        }
+        if !root.listen && root.keys.length == 0: Text {
+            text: "Off - click to set";
+            font-size: 13px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+        if !root.listen: HorizontalLayout {
+            spacing: 5px;
+            for k in root.keys: Rectangle {
+                y: 6px;
+                height: 28px;
+                width: max(30px, kt.preferred-width + 20px);
+                border-radius: 7px;
+                background: T.panel2;
+                border-width: 1px;
+                border-color: T.hover;
+                Rectangle {
+                    y: parent.height - 3px;
+                    height: 3px;
+                    background: T.hover;
+                    border-bottom-left-radius: 7px;
+                    border-bottom-right-radius: 7px;
+                }
+                kt := Text {
+                    y: 5px;
+                    text: k;
+                    font-size: 13px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                }
+            }
+        }
+    }
+}
+
+// a small text box that saves on Enter / when it loses focus
+component SField inherits Rectangle {
+    in property <string> value;
+    in property <length> w: 70px;
+    in property <bool> mono;
+    callback commit(string);
+    preferred-width: w;
+    min-width: 60px;
+    height: 34px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    background: T.bg;
+    ti := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        text: root.value;
+        font-size: 13px;
+        color: T.text;
+        vertical-alignment: center;
+        single-line: true;
+        accepted => { root.commit(self.text); }
+        changed has-focus => {
+            if (!self.has-focus && self.text != root.value) {
+                root.commit(self.text);
+            }
+        }
+    }
+}
+
+// .chk: small checkbox + label (game rules)
+component SCheck inherits Rectangle {
+    in property <bool> on;
+    in property <string> text;
+    in property <string> tip;
+    callback toggled(bool);
+    width: hl.preferred-width;
+    height: 30px;
+    hl := HorizontalLayout {
+        spacing: 7px;
+        Rectangle {
+            y: 7px;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border-width: root.on ? 0 : 1.5px;
+            border-color: T.dim;
+            background: root.on ? T.accent : transparent;
+            if root.on: Icon {
+                width: 12px;
+                height: 12px;
+                commands: Ic.check;
+                stroke: white;
+                stroke-width: 2.6px;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 13px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+}
+
+// one .row
+export component RowView inherits Rectangle {
+    in property <SRow> r;
+    in property <bool> last;
+    property <bool> plain: r.kind != "ecplans" && r.kind != "seg" && r.kind != "presets" && r.kind != "themes" && r.kind != "usage" && r.kind != "game" && r.kind != "path" && r.kind != "info";
+    property <[color]> pal: [T.accent, #3ddc97, #4fb8f0, #f0a93a, #e0609e, #8a96a8, #f07a1a, #6a6ff0];
+    lay := VerticalLayout {
+        padding-top: root.r.kind == "presets" || root.r.kind == "themes" || root.r.kind == "usage" ? 12px : 14px;
+        padding-bottom: root.r.kind == "presets" || root.r.kind == "themes" || root.r.kind == "usage" ? 12px : 14px;
+        opacity: root.r.dep ? 0.45 : 1;
+        // label + controls on one line
+        if root.plain: HorizontalLayout {
+            spacing: 14px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 4px;
+                if root.r.label != "": Text {
+                    text: root.r.label;
+                    font-size: 14px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                    wrap: word-wrap;
+                }
+                if root.r.sub != "": Text {
+                    text: root.r.sub;
+                    font-size: 12.5px;
+                    color: root.r.kind == "ecacct" && root.r.vtext == "err" ? #f87171 : T.muted;
+                    wrap: word-wrap;
+                }
+                // Echo's .ecbar: 6 px, max 320 px, accent fill (red over 95 %); num < 0 = space not known yet
+                if root.r.kind == "ecacct" && root.r.num >= 0: Rectangle {
+                    height: 8px;
+                    Rectangle {
+                        x: 0;
+                        y: 2px;
+                        height: 6px;
+                        width: min(320px, parent.width);
+                        border-radius: 3px;
+                        background: T.line;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * min(1, root.r.num);
+                            background: root.r.num > 0.95 ? #ef4444 : T.accent;
+                        }
+                    }
+                }
+            }
+            // value text (controller names, used space)
+            if root.r.vtext != "" && (root.r.kind == "button"): Text {
+                text: root.r.vtext;
+                font-size: 13px;
+                color: T.muted;
+                vertical-alignment: center;
+            }
+            if root.r.kind == "slider" || root.r.kind == "slider-dimsw": HorizontalLayout {
+                spacing: 14px;
+                alignment: end;
+                sl := SSlider {
+                    y: (parent.height - self.height) / 2;
+                    value: root.r.num;
+                    lo: root.r.min;
+                    hi: root.r.max;
+                    step: root.r.step;
+                    commit(v) => { S.set(root.r.key, v); }
+                }
+                Text {
+                    width: 70px;
+                    text: root.r.max <= 2.01 ? round(sl.v * 100) + "%" : round(sl.v) + " Mbps";
+                    font-size: 13px;
+                    color: T.muted;
+                    vertical-alignment: center;
+                }
+                if root.r.key2 != "": SSwitch {
+                    y: (parent.height - self.height) / 2;
+                    on: root.r.on2;
+                    dim: root.r.kind == "slider-dimsw";
+                    toggled(v) => { S.set(root.r.key2, v ? "true" : "false"); }
+                }
+            }
+            if root.r.kind == "select": SSelect {
+                y: (parent.height - self.height) / 2;
+                opts: root.r.opts;
+                value: root.r.value;
+                label: root.r.vtext;
+                key: root.r.key;
+            }
+            // Echo's #bgfx: select + "Still" checkbox
+            if root.r.kind == "selectchk": SSelect {
+                y: (parent.height - self.height) / 2;
+                opts: root.r.opts;
+                value: root.r.value;
+                label: root.r.vtext;
+                key: root.r.key;
+            }
+            if root.r.kind == "selectchk": SCheck {
+                y: (parent.height - self.height) / 2;
+                text: "Still";
+                on: root.r.on2;
+                tip: "Draw one still picture, no animation";
+                toggled(v) => { S.set(root.r.key2, v ? "true" : "false"); }
+            }
+            if root.r.kind == "select" && root.r.key2 != "": SSwitch {
+                y: (parent.height - self.height) / 2;
+                on: root.r.on2;
+                toggled(v) => { S.set(root.r.key2, v ? "true" : "false"); }
+            }
+            if root.r.kind == "hotkey": HkBtn {
+                y: (parent.height - self.height) / 2;
+                keys: root.r.keys;
+                listen: root.r.listen;
+                clicked => { S.listen(root.r.key); }
+            }
+            if root.r.kind == "hotkey" && root.r.opts.length > 0: SSelect {
+                y: (parent.height - self.height) / 2;
+                compact: true;
+                opts: root.r.opts;
+                value: root.r.value;
+                label: root.r.vtext;
+                key: root.r.key2;
+            }
+            if root.r.kind == "hotkey": IconBtn {
+                y: (parent.height - self.height) / 2;
+                icon: Ic.x;
+                danger: true;
+                tip: root.r.opts.length > 0 ? "Remove" : "Turn off";
+                clicked => { S.act(root.r.act); }
+            }
+            if root.r.kind == "numbers": HorizontalLayout {
+                spacing: 6px;
+                for o in root.r.opts: SField {
+                    y: 3px;
+                    value: o.label;
+                    commit(t) => { S.set(o.value, t); }
+                }
+            }
+            if root.r.kind == "colors": HorizontalLayout {
+                spacing: 8px;
+                for o[i] in root.r.opts: VerticalLayout {
+                    spacing: 3px;
+                    Text {
+                        text: i == 0 ? "Accent" : i == 1 ? "Background" : "Highlight";
+                        font-size: 11.5px;
+                        color: T.dim;
+                    }
+                    sw := Rectangle {
+                        width: 96px;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: T.panel2;
+                        border-width: 1px;
+                        border-color: swa.has-hover ? T.accent : T.line;
+                        HorizontalLayout {
+                            padding: 5px;
+                            spacing: 7px;
+                            Rectangle {
+                                width: 20px;
+                                border-radius: 5px;
+                                background: o.sub == "" ? T.panel : T.accent;
+                                // the colour itself: Rust puts it into T via Cp while picking; here the hex text says it
+                                Rectangle {
+                                    border-radius: 5px;
+                                    background: i == 0 ? T.accent : i == 1 ? T.bg : T.hi;
+                                    border-width: 1px;
+                                    border-color: #ffffff30;
+                                }
+                            }
+                            Text {
+                                text: o.label;
+                                font-size: 12px;
+                                color: T.muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                        swa := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Cp.open-at(o.value, sw.absolute-position.x, sw.absolute-position.y + 34px); }
+                        }
+                    }
+                }
+            }
+            if root.r.kind == "buttons" || root.r.kind == "ecacct": HorizontalLayout {
+                spacing: 6px;
+                for o[i] in root.r.opts: Btn {
+                    y: (parent.height - self.height) / 2;
+                    text: o.label;
+                    // sub "sm" = Echo's quiet .btn.sm (Delete account…)
+                    small: o.sub == "sm";
+                    primary: i == 0 && root.r.key != "sounds";
+                    clicked => { S.act(o.value); }
+                }
+            }
+            // Echo's #sndfiles: one line per sound on the right ("Clip saved: built-in [Choose .wav]" /
+            // "Clip saved: my.wav [Change] [Reset]")
+            if root.r.kind == "soundfiles": VerticalLayout {
+                spacing: 6px;
+                alignment: center;
+                for o in root.r.opts: HorizontalLayout {
+                    spacing: 6px;
+                    alignment: end;
+                    Text {
+                        text: o.label + ": " + (o.sub == "" ? "built-in" : o.sub);
+                        font-size: 12.5px;
+                        color: T.muted;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 220px;
+                    }
+                    Btn {
+                        small: true;
+                        text: o.sub == "" ? "Choose .wav" : "Change";
+                        clicked => { S.act("soundpick:" + o.value); }
+                    }
+                    if o.sub != "": Btn {
+                        small: true;
+                        text: "Reset";
+                        clicked => { S.act("soundreset:" + o.value); }
+                    }
+                }
+            }
+            if root.r.btn != "" && root.r.kind != "path": Btn {
+                y: (parent.height - self.height) / 2;
+                text: root.r.btn;
+                clicked => { S.act(root.r.act); }
+            }
+            if root.r.btn2 != "" && root.r.kind != "path": Btn {
+                y: (parent.height - self.height) / 2;
+                text: root.r.btn2;
+                primary: root.r.act2 == "discord";
+                clicked => { S.act(root.r.act2); }
+            }
+            if root.r.kind == "switch": SSwitch {
+                y: (parent.height - self.height) / 2;
+                on: root.r.on;
+                toggled(v) => { S.set(root.r.key, v ? "true" : "false"); }
+            }
+        }
+        // .row.col: label (and hint) on top, segmented buttons below
+        if root.r.kind == "seg": VerticalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: root.r.label;
+                    font-size: 14px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                }
+                if root.r.sub != "": Text {
+                    text: root.r.sub;
+                    font-size: 12.5px;
+                    color: T.muted;
+                    wrap: word-wrap;
+                }
+            }
+            HorizontalLayout {
+                alignment: start;
+                SSeg {
+                    opts: root.r.opts;
+                    value: root.r.value;
+                    picked(v) => { S.set(root.r.key, v); }
+                }
+            }
+        }
+        // .qseg presets
+        if root.r.kind == "presets": Rectangle {
+            height: 58px;
+            background: T.bg;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: T.line;
+            HorizontalLayout {
+                padding: 3px;
+                spacing: 2px;
+                for o in root.r.opts: Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 8px;
+                    background: o.value == root.r.value ? T.panel2 : transparent;
+                    animate background { duration: 150ms; }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text {
+                            text: o.label;
+                            font-size: 13px;
+                            font-weight: 600 + T.fw;
+                            horizontal-alignment: center;
+                            color: o.value == root.r.value || pa.has-hover ? T.text : T.muted;
+                        }
+                        Text {
+                            text: o.sub;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            color: o.value == root.r.value ? T.muted : T.dim;
+                        }
+                    }
+                    pa := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { S.set("preset", o.value); }
+                    }
+                }
+                if root.r.value == "": Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 8px;
+                    background: T.accent.with-alpha(0.12);
+                    Text {
+                        text: "Custom";
+                        font-size: 12px;
+                        color: T.accent2;
+                    }
+                }
+            }
+        }
+        // .themegrid: 4 cards per line
+        if root.r.kind == "themes": VerticalLayout {
+            spacing: 12px;
+            for line in S.themes: HorizontalLayout {
+                spacing: 12px;
+                for c in line.items: Rectangle {
+                    horizontal-stretch: 1;
+                    max-width: 200px;
+                    height: 104px;
+                    border-radius: 12px;
+                    border-width: c.on ? 2px : 1px;
+                    border-color: c.on ? T.accent : tca.has-hover ? T.hover : T.line;
+                    background: T.bg;
+                    // tiny preview of the app in this theme
+                    Rectangle {
+                        x: 8px;
+                        y: 8px;
+                        width: parent.width - 16px;
+                        height: 62px;
+                        border-radius: 7px;
+                        background: c.bg;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * 0.26;
+                            background: c.rail;
+                            for i in 3: Rectangle {
+                                x: 5px;
+                                y: 8px + i * 10px;
+                                width: parent.width - 10px;
+                                height: 5px;
+                                border-radius: 2px;
+                                background: i == 0 ? c.accent : c.panel;
+                            }
+                        }
+                        for i in 2: Rectangle {
+                            x: parent.width * 0.26 + 8px + i * (parent.width * 0.74 - 16px) / 2;
+                            y: 12px;
+                            width: (parent.width * 0.74 - 24px) / 2;
+                            height: 40px;
+                            border-radius: 4px;
+                            background: c.panel;
+                            Rectangle {
+                                x: 5px;
+                                y: parent.height - 10px;
+                                width: parent.width * 0.5;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: i == 0 ? c.accent : c.text.with-alpha(0.3);
+                            }
+                        }
+                    }
+                    Text {
+                        x: 10px;
+                        y: 76px;
+                        text: c.name;
+                        font-size: 12.5px;
+                        font-weight: (c.on ? 600 : 500) + T.fw;
+                        color: c.on ? T.text : T.muted;
+                    }
+                    tca := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { S.set("theme", c.id); }
+                    }
+                }
+                // fill a short last line so cards keep their width
+                for i in (4 - line.items.length): Rectangle {
+                    horizontal-stretch: 1;
+                    max-width: 200px;
+                }
+            }
+        }
+        // What's using space: stacked bar + legend
+        if root.r.kind == "usage": VerticalLayout {
+            spacing: 12px;
+            Rectangle {
+                height: 14px;
+                border-radius: 7px;
+                background: T.panel2;
+                clip: true;
+                // keys[i] = where segment i starts (0..1), value = its share
+                for o[i] in root.r.opts: Rectangle {
+                    x: parent.width * root.r.keys[i].to-float();
+                    width: parent.width * o.value.to-float();
+                    background: root.pal[mod(i, 8)];
+                }
+            }
+            for o[i] in root.r.opts: HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    y: 4px;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 3px;
+                    background: root.pal[mod(i, 8)];
+                }
+                Text {
+                    text: o.label;
+                    font-size: 12.5px;
+                    color: T.muted;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: o.sub;
+                    font-size: 12.5px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                }
+            }
+        }
+        // a game in "Your games"
+        if root.r.kind == "game": HorizontalLayout {
+            spacing: 12px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 26px;
+                height: 26px;
+                border-radius: 7px;
+                background: T.panel2;
+                Text {
+                    text: root.r.value;
+                    font-size: 12px;
+                    font-weight: 700 + T.fw;
+                    color: T.muted;
+                }
+            }
+            Text {
+                text: root.r.label;
+                font-size: 14px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            SCheck {
+                y: (parent.height - self.height) / 2;
+                text: "Record";
+                tip: "Off = Echo pauses recording while this game runs";
+                on: root.r.on;
+                toggled(v) => { S.set("game_record:" + root.r.key, v ? "true" : "false"); }
+            }
+            SCheck {
+                y: (parent.height - self.height) / 2;
+                text: "Own folder";
+                tip: "Off = its clips go in the main folder";
+                on: root.r.on2;
+                toggled(v) => { S.set("game_folder:" + root.r.key, v ? "true" : "false"); }
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                small: true;
+                text: "Remove";
+                tip: "Not a game? Remove it";
+                clicked => { S.act(root.r.act); }
+            }
+        }
+        // clips folder: label 150 px, path box, Open
+        if root.r.kind == "path": VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 14px;
+                Text {
+                    width: 150px;
+                    text: root.r.label;
+                    font-size: 14px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                    vertical-alignment: center;
+                }
+                SField {
+                    horizontal-stretch: 1;
+                    w: 300px;
+                    value: root.r.value;
+                    commit(t) => { S.set(root.r.key, t); }
+                }
+                if root.r.btn2 != "": Btn {
+                    text: root.r.btn2;
+                    clicked => { S.act(root.r.act2); }
+                }
+                Btn {
+                    text: root.r.btn;
+                    clicked => { S.act(root.r.act); }
+                }
+            }
+            Text {
+                text: root.r.sub;
+                font-size: 12px;
+                color: T.dim;
+                wrap: word-wrap;
+            }
+        }
+        // plain text (notes inside a box)
+        // Echo's #ecplans: grid of cards (auto-fit, min 170 px, gap 10, margin-top 12), "Loading plans…" first
+        if root.r.kind == "ecplans" && EcPlans.state == "loading": Text {
+            text: "Loading plans…";
+            font-size: 12.5px;
+            color: T.muted;
+        }
+        if root.r.kind == "ecplans" && EcPlans.state == "shown": HorizontalLayout {
+            spacing: 10px;
+            for p in EcPlans.plans: Rectangle {
+                horizontal-stretch: 1;
+                min-width: 170px;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: T.line;
+                background: #ffffff06;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        Text {
+                            text: p.size;
+                            font-size: 20px;
+                            font-weight: 700 + T.fw;
+                            color: T.text;
+                        }
+                        Text {
+                            text: "for your clips + share links";
+                            font-size: 12.5px;
+                            color: T.muted;
+                        }
+                    }
+                    if p.mid != "": Btn {
+                        primary: true;
+                        text: EcPlans.busy == p.mid ? "Opening…" : p.mtext;
+                        clicked => { EcPlans.buy(p.mid); }
+                    }
+                    if p.yid != "": Rectangle {
+                        height: yb.height;
+                        yb := Btn {
+                            width: parent.width;
+                            text: EcPlans.busy == p.yid ? "Opening…" : p.ytext;
+                            clicked => { EcPlans.buy(p.yid); }
+                        }
+                        // Echo's .save: purple "-17%" next to the year price
+                        if p.save != "" && EcPlans.busy != p.yid: Text {
+                            x: parent.width - self.preferred-width - 12px;
+                            y: (parent.height - self.height) / 2;
+                            text: p.save;
+                            font-size: 11px;
+                            color: #a78bfa;
+                        }
+                    }
+                }
+            }
+        }
+        if root.r.kind == "info": VerticalLayout {
+            spacing: 2px;
+            if root.r.label != "": Text {
+                text: root.r.label;
+                font-size: 14px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+            }
+            Text {
+                text: root.r.sub;
+                font-size: 12.5px;
+                color: root.r.label != "" ? T.muted : T.dim;
+                wrap: word-wrap;
+            }
+        }
+    }
+    // dimmed rows: not clickable, the reason as a tooltip
+    if root.r.dep: dta := TouchArea {
+        mouse-cursor: not-allowed;
+        TipArea {
+            text: root.r.why;
+            hover: dta.has-hover;
+        }
+    }
+    if !root.last: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #ffffff0d;
+    }
+}
+
+component SNavBtn inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> on;
+    in property <bool> faded;
+    callback clicked;
+    height: 34px;
+    border-radius: 8px;
+    background: on ? T.accent.with-alpha(0.12) : ta.has-hover ? T.panel : transparent;
+    opacity: faded ? 0.45 : 1;
+    Rectangle {
+        x: 0;
+        y: 8px;
+        width: 3px;
+        height: parent.height - 16px;
+        border-radius: 2px;
+        background: T.accent;
+        opacity: root.on ? 1 : 0;
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 10px;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            commands: root.icon;
+            stroke: root.on || ta.has-hover ? T.text : T.muted;
+        }
+        Text {
+            text: root.label;
+            font-size: 14px;
+            color: root.on || ta.has-hover ? T.text : T.muted;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Echo's main background: radial-gradient(900px 380px at 70% -120px, accent 11 %, transparent 70%) - a soft glow in
+// the theme's colour at the top. `top` = how far above this element main's top edge is (Settings page: 68 px).
+export component TopGlow inherits Rectangle {
+    in property <length> top;
+    clip: true;
+    Rectangle {
+        x: parent.width * 0.7 - 380px;
+        y: -120px - root.top - 380px;
+        width: 760px;
+        height: 760px;
+        transform-scale-x: 900 / 380;
+        background: @radial-gradient(circle, T.accent.with-alpha(0.11) 0%, T.accent.with-alpha(0.0) 70%);
+    }
+}
+
+component ColorPop inherits Rectangle {
+    width: 250px;
+    height: 262px;
+    background: #3a3a40;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #ffffff20;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #000a;
+    TouchArea { }
+    // saturation (left -> right) / value (top -> bottom) square
+    sq := Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 140px;
+        border-radius: 6px;
+        clip: true;
+        background: @linear-gradient(90deg, #ffffff 0%, Cp.hue-color 100%);
+        Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+        Rectangle {
+            x: Cp.s * parent.width - 7px;
+            y: (1 - Cp.v) * parent.height - 7px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 2px;
+            border-color: white;
+            drop-shadow-blur: 2px;
+            drop-shadow-color: #0008;
+        }
+        sqa := TouchArea {
+            mouse-cursor: crosshair;
+            function at(fin: bool) {
+                Cp.changed(Cp.h, max(0, min(1, self.mouse-x / self.width)), max(0, min(1, 1 - self.mouse-y / self.height)), fin);
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { self.at(false); }
+                if (e.kind == PointerEventKind.up) { self.at(true); }
+            }
+            moved => { if (self.pressed) { self.at(false); } }
+        }
+    }
+    // preview circle: double-click = RGB mode (rainbow), like Vape v4
+    prev := Rectangle {
+        x: 14px;
+        y: 152px;
+        width: 34px;
+        height: 34px;
+        border-radius: 17px;
+        background: Cp.cur;
+        border-width: Cp.rgb ? 2px : 0;
+        border-color: white;
+        pa := TouchArea {
+            mouse-cursor: pointer;
+            double-clicked => { Cp.toggle-rgb(); }
+        }
+    }
+    if pa.has-hover || Cp.rgb: Text {
+        x: 8px;
+        y: 188px;
+        width: 46px;
+        horizontal-alignment: center;
+        text: Cp.rgb ? "RGB on" : "2× = RGB";
+        font-size: 9.5px;
+        color: #ddd;
+    }
+    // hue bar
+    hb := Rectangle {
+        x: 62px;
+        y: 162px;
+        width: parent.width - 76px;
+        height: 12px;
+        border-radius: 6px;
+        background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.7%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.7%, #ff00ff 83.3%, #ff0000 100%);
+        Rectangle {
+            x: Cp.h / 360 * parent.width - 8px;
+            y: -2px;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: Cp.hue-color;
+            border-width: 2px;
+            border-color: white;
+        }
+        hba := TouchArea {
+            mouse-cursor: pointer;
+            function at(fin: bool) {
+                Cp.changed(max(0, min(359.9, self.mouse-x / self.width * 360)), Cp.s, Cp.v, fin);
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { self.at(false); }
+                if (e.kind == PointerEventKind.up) { self.at(true); }
+            }
+            moved => { if (self.pressed) { self.at(false); } }
+        }
+    }
+    // R G B
+    HorizontalLayout {
+        x: 14px;
+        y: 202px;
+        width: parent.width - 28px;
+        height: 30px;
+        spacing: 8px;
+        for c[i] in [Cp.r, Cp.g, Cp.b]: Rectangle {
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #ffffff40;
+            ti := TextInput {
+                x: 4px;
+                width: parent.width - 8px;
+                text: c;
+                color: white;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                single-line: true;
+                input-type: InputType.number;
+                accepted => {
+                    Cp.set-rgb(i == 0 ? self.text.to-float() : Cp.r, i == 1 ? self.text.to-float() : Cp.g, i == 2 ? self.text.to-float() : Cp.b);
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        x: 14px;
+        y: 236px;
+        width: parent.width - 28px;
+        height: 18px;
+        spacing: 8px;
+        for l in ["R", "G", "B"]: Text {
+            text: l;
+            color: #ddd;
+            font-size: 11.5px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    background: T.bg;
+    TopGlow {
+        width: root.width;
+        height: root.height;
+        top: 68px;
+    }
+    // another Settings page = start at its top (it kept the last page's scroll position)
+    property <string> page-title: S.title;
+    changed page-title => {
+        fl.content-y = 0;
+    }
+    property <bool> lis: S.listening;
+    changed lis => {
+        if (self.lis) {
+            keys.focus();
+        }
+    }
+    public function focus-search() {
+        sq.focus();
+    }
+    public function focus-page() {
+        keys.focus();
+    }
+    keys := FocusScope {
+        key-pressed(e) => {
+            if (e.modifiers.control && (e.text == "f" || e.text == "F")) {
+                sq.focus();
+                return accept;
+            }
+            if (!S.listening) {
+                return reject;
+            }
+            if (e.text == Key.Escape) {
+                S.cancel-listen();
+                return accept;
+            }
+            S.key(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta);
+            accept
+        }
+        HorizontalLayout {
+            // ---------- .snav ----------
+            Rectangle {
+                width: 230px;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: T.line;
+                }
+                VerticalLayout {
+                    padding-top: 18px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-bottom: 16px;
+                    spacing: 2px;
+                    // search
+                    Rectangle {
+                        height: 34px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: sq.has-focus ? T.accent : T.line;
+                        background: T.panel2;
+                        if sq.text == "": Text {
+                            x: 11px;
+                            text: "Search settings…  (Ctrl+F)";
+                            font-size: 13px;
+                            color: T.muted.with-alpha(0.75);
+                            vertical-alignment: center;
+                        }
+                        sq := TextInput {
+                            x: 11px;
+                            width: parent.width - 22px;
+                            text <=> S.query;
+                            font-size: 13px;
+                            color: T.text;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => { S.search(self.text); }
+                            key-pressed(e) => {
+                                if (e.text == Key.Escape && self.text != "") {
+                                    self.text = "";
+                                    S.search("");
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                    }
+                    Rectangle { height: 6px; }
+                    for n in S.nav: VerticalLayout {
+                        spacing: 2px;
+                        // Echo's h4: margin 10px 10px 6px - the 10 px inset lines the header up with the items (William)
+                        if n.head != "": HorizontalLayout {
+                            padding-left: 10px;
+                            Text {
+                                text: n.head;
+                                font-size: 11px;
+                                font-weight: 700 + T.fw;
+                                letter-spacing: 0.9px;
+                                color: T.dim;
+                                height: 26px;
+                                vertical-alignment: bottom;
+                            }
+                        }
+                        if n.head != "": Rectangle { height: 4px; }
+                        SNavBtn {
+                            label: n.label;
+                            icon: n.icon;
+                            on: S.query == "" && S.sec == n.id;
+                            faded: S.query != "";
+                            clicked => { S.pick(n.id); }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    // .dccard: Discord invite
+                    Rectangle {
+                        height: 52px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: dca.has-hover ? T.accent.with-alpha(0.45) : T.line;
+                        background: T.accent.with-alpha(dca.has-hover ? 0.14 : 0.06);
+                        animate background, border-color { duration: 150ms; }
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 10px;
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 8px;
+                                background: T.accent.with-alpha(0.16);
+                                Icon {
+                                    width: 16px;
+                                    height: 16px;
+                                    commands: "M8 9h.01M16 9h.01 M5 5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5l-4 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z";
+                                    stroke: T.accent2;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Join the Discord";
+                                    overflow: elide;
+                                    font-size: 12.5px;
+                                    font-weight: 600 + T.fw;
+                                    color: T.text;
+                                }
+                                Text {
+                                    text: "Help, ideas and new versions";
+                                    overflow: elide;
+                                    font-size: 11px;
+                                    color: T.dim;
+                                }
+                            }
+                            Text {
+                                text: "→";
+                                font-size: 14px;
+                                color: dca.has-hover ? T.accent2 : T.dim;
+                                vertical-alignment: center;
+                            }
+                        }
+                        dca := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { S.act("discord"); }
+                        }
+                    }
+                }
+            }
+            // ---------- .sbody ----------
+            Rectangle {
+            horizontal-stretch: 1;
+            fl := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-height: body.preferred-height + 90px;
+                property <length> w: min(820px, self.width - 68px);
+                body := VerticalLayout {
+                    x: (fl.width - fl.w) / 2;
+                    y: 30px;
+                    width: fl.w;
+                    height: self.preferred-height;
+                    spacing: 0;
+                    Text {
+                        text: S.title;
+                        font-size: 22px;
+                        font-weight: 700 + T.fw;
+                        color: T.text;
+                        font-family: "Segoe UI Variable Display";
+                    }
+                    Rectangle { height: 4px; }
+                    Text {
+                        text: S.intro;
+                        font-size: 14px;
+                        color: T.muted;
+                        wrap: word-wrap;
+                    }
+                    Rectangle { height: 22px; }
+                    // .qhero
+                    if S.hero: Rectangle {
+                        height: 92px;
+                        border-radius: 14px;
+                        border-width: 1px;
+                        border-color: T.accent.with-alpha(0.28);
+                        background: @linear-gradient(135deg, T.accent.with-alpha(0.22) 0%, T.accent.with-alpha(0.04) 60%);
+                        HorizontalLayout {
+                            padding-left: 24px;
+                            padding-right: 24px;
+                            spacing: 24px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                Text {
+                                    text: S.qbig;
+                                    font-size: 26px;
+                                    font-weight: 700 + T.fw;
+                                    color: T.text;
+                                }
+                                HorizontalLayout {
+                                    spacing: 7px;
+                                    Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 3.5px;
+                                        background: #3ddc97;
+                                    }
+                                    Text {
+                                        text: S.qsub;
+                                        font-size: 12.5px;
+                                        color: T.muted;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: S.qmin;
+                                    font-size: 18px;
+                                    font-weight: 700 + T.fw;
+                                    color: T.text;
+                                    horizontal-alignment: right;
+                                }
+                                Text {
+                                    text: "per minute";
+                                    font-size: 12px;
+                                    color: T.muted;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text {
+                                    text: S.qclip;
+                                    font-size: 18px;
+                                    font-weight: 700 + T.fw;
+                                    color: T.text;
+                                    horizontal-alignment: right;
+                                }
+                                Text {
+                                    text: S.qcliplbl;
+                                    font-size: 12px;
+                                    color: T.muted;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                    }
+                    if S.hero: Rectangle { height: 22px; }
+                    // .box
+                    for b in S.boxes: VerticalLayout {
+                        Rectangle {
+                            background: T.panel;
+                            border-radius: 14px;
+                            border-width: 1px;
+                            // Echo's .ecloudbox: accent edge (33 %) + a faint accent wash from the top left
+                            border-color: b.title == "ECHO CLOUD" ? T.accent.with-alpha(0.33) : T.line;
+                            if b.title == "ECHO CLOUD": Rectangle {
+                                border-radius: 14px;
+                                background: @linear-gradient(135deg, T.accent.with-alpha(0.08) 0%, T.accent.with-alpha(0.0) 60%);
+                            }
+                            VerticalLayout {
+                                padding-left: 22px;
+                                padding-right: 22px;
+                                padding-top: 2px;
+                                padding-bottom: 4px;
+                                HorizontalLayout {
+                                    padding-top: 16px;
+                                    padding-bottom: 2px;
+                                    Text {
+                                        text: b.title;
+                                        font-size: 11px;
+                                        font-weight: 700 + T.fw;
+                                        letter-spacing: 1px;
+                                        color: T.dim;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if b.btn != "": Btn {
+                                        text: b.btn;
+                                        small: true;
+                                        text-size: 11px;   // Echo: the button inherits the box title's 11 px
+                                        clicked => { S.act(b.act); }
+                                    }
+                                }
+                                for r[i] in b.rows: RowView {
+                                    r: r;
+                                    last: i == b.rows.length - 1;
+                                }
+                            }
+                        }
+                        Rectangle { height: 16px; }
+                    }
+                    // Chat B (night): Echo's #profbody under the account box (lib_profile.slint)
+                    if S.sec == "profile": ProfilePanel { }
+                    if S.sec == "profile": Rectangle { height: 16px; }
+                    if S.note != "": Text {
+                        text: S.note;
+                        font-size: 12.5px;
+                        color: T.dim;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            }
+        }
+    }
+    // Chat D: "Press keys…" - clicking anywhere else cancels (Echo); the wheel still scrolls under it
+    if S.listening: TouchArea {
+        clicked => { S.cancel-listen(); }
+    }
+    // Chat B: colour picker (click outside closes)
+    if Cp.open: TouchArea {
+        clicked => { Cp.open = false; }
+    }
+    if Cp.open: ColorPop {
+        x: min(root.width - self.width - 12px, max(12px, Cp.px - root.absolute-position.x));
+        y: min(root.height - self.height - 12px, max(12px, Cp.py - root.absolute-position.y));
+    }
+}

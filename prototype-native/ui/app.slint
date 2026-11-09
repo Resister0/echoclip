@@ -1,0 +1,2097 @@
+// Echo native UI prototype - library + player in Slint, styled from Echo's ui/index.html (Violet theme).
+import { ListView } from "std-widgets.slint";
+import { T, Ic, Icon, Tip, TipArea, TipLayer, Toast, Notes, Note, ToastLayer, IconBtn, Btn, Badge, Pill, Kbd, MenuRow, CopyCfg } from "theme.slint";
+export { CopyCfg } // Chat A: Copy menu sizes + default (copy.rs)
+import { Card, GridRow, FOpt, FLine, Flip, HoverVid, Lib, CDrag, CardView, ListCard, FilterPanel, FPill } from "library.slint";
+import { Play, PlayerView } from "player.slint";
+import { Pf, PfClip, PfFriend, PfSwatch } from "lib_profile.slint"; // Chat B (night): Echo Profile
+import { Fx, FxPart, FxLayer } from "lib_fx.slint"; // Chat B (night): background effect
+import { SDrop, SDropLayer } from "settings.slint"; // Chat B (night): shared Settings dropdown list
+import { S, Cp, EcPlans, EcPlan, SOpt, SRow, SBox, SNav, ThemeCard, ThemeLine, SettingsPage, TopGlow } from "settings.slint";
+import { Dlg, DChoice, DialogLayer } from "dialog.slint";
+import { Tidy, TRow, TidyLayer } from "tidy.slint";
+import { Shots, Shot, ShotsPage, ShotViewer } from "lib_shots.slint";
+import { HomeState, HomePage } from "home.slint";
+import { Upd, UpdOld, UpdCard } from "update.slint";
+import { Su, Tour, SetupLayer, TourLayer } from "setup.slint";
+import { Cm, CmItem, Ecm, EcmRow, CloudMenuLayer, SpaceLayer } from "cloud.slint";
+import { PopupWin } from "popup.slint";
+export { PopupWin } // Chat A: in-game popup window (src/popup.rs)
+import { Ed, EdSeg, EdTxt, EdTick, EdAud, EdMenu, EditorView } from "editor.slint";
+
+export { Fx, FxPart, Pf, PfClip, PfFriend, PfSwatch } // Chat B (night)
+export { Card, GridRow, FOpt, FLine, Flip, HoverVid, Lib, CDrag, Tidy, TRow, Shots, Shot, Play, Toast, Notes, Note, S, SOpt, SRow, SBox, SNav, ThemeCard, ThemeLine, T, Dlg, DChoice, HomeState, Upd, UpdOld, Su, Tour, Cp, EcPlans, EcPlan, Cm, CmItem, Ecm, EcmRow, Ed, EdSeg, EdTxt, EdTick, EdAud, EdMenu }
+
+export struct NavItem {
+    id: string,      // "all" / "today" / "week" / "fav" / "edited" / "cloud" / "shots" / "game:<folder>" / "tag:<tag>"
+    label: string,
+    count: string,
+    initial: string, // folder badge letter ("" = use the icon, "#" = tag)
+    icon: string,    // svg path data, 24x24
+    section: string, // a section title shown above this entry ("" = none)
+    depth: int,      // sub-folder level (0 = top)
+    folder: string,  // folder rows: "FiveM/Heists" ("" = not a folder)
+    real: bool,      // a real folder on disk (can be dragged)
+    drop: string,    // while a folder is dragged: "into" / "sort" / "" (set by Rust at drag start)
+    has-img: bool,   // a game icon Echo saved (shown instead of the letter)
+    img: image,
+}
+
+// inline folder name box in the sidebar: rename a folder / a new (sub-)folder
+global FEdit {
+    in-out property <string> rename;     // folder being renamed ("" = none)
+    in-out property <bool> new-on;       // the "new folder" box is open...
+    in-out property <string> parent;     // ...under this folder ("" = top level)
+    in-out property <string> hover;      // real folder under the mouse (F2 = rename it) - Chat D
+}
+
+// a sidebar folder being dragged (onto another folder = sub-folder, between siblings = reorder)
+global FDrag {
+    in-out property <bool> on;
+    in-out property <string> src;
+    in-out property <string> label;
+    in-out property <bool> sub;          // the dragged folder is a sub-folder (may go back to the top level)
+    in-out property <length> px;         // mouse, window coordinates
+    in-out property <length> py;
+    in-out property <string> target;     // folder under the mouse
+    in-out property <string> zone;       // "into" / "before" / "after" / "top" / ""
+}
+
+export struct HotkeyPill {
+    keys: [string],  // "Shift", "F11"
+    label: string,   // "Clip 3m"
+}
+
+// Echo's .nav (pages) and .flt (clip filters / folders)
+component NavBtn inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <string> count;
+    in property <string> initial;
+    in property <bool> has-img;
+    in property <image> img;
+    in property <bool> on;
+    in property <bool> page;   // .nav: accent background + bar when on
+    in property <int> depth;
+    // folder rows: drag to move / reorder
+    in property <string> folder;
+    in property <bool> drag-ok;
+    in property <string> drop;
+    in property <string> label-edit;      // rename box text to start with
+    in property <bool> menu-ok;           // folder rows: right-click menu
+    in property <bool> menu-real;         // a real folder (not only a name prefix)
+    in property <bool> menu-empty;        // no clips inside: Delete is offered
+    in property <bool> card-drop;         // a dragged CARD may be dropped here (folders + "All clips") - Chat D
+    callback clicked;
+    callback drag-start();
+    callback drag-end();
+    callback folder-act(string);          // "new" / "rename" / "delete" / "open" / "notreal"
+    callback renamed(string);
+    property <bool> dragged;
+    property <length> rel: FDrag.py - self.absolute-position.y;
+    property <bool> over: FDrag.on && root.drop != "" && root.rel >= 0 && root.rel < self.height
+        && FDrag.px >= self.absolute-position.x && FDrag.px < self.absolute-position.x + self.width;
+    property <string> zone: !root.over ? "" : root.drop == "into" ? "into" : root.rel < self.height / 2 ? "before" : "after";
+    // a card dragged over this row
+    property <bool> card-over: CDrag.on && root.card-drop && CDrag.py >= self.absolute-position.y && CDrag.py < self.absolute-position.y + self.height
+        && CDrag.px >= self.absolute-position.x && CDrag.px < self.absolute-position.x + self.width;
+    changed card-over => {
+        if (self.card-over) {
+            CDrag.target = root.folder;
+            CDrag.target-label = root.folder == "" ? "the main folder" : root.folder;
+            CDrag.hit = true;
+        } else if (CDrag.hit && CDrag.target == root.folder) {
+            CDrag.hit = false;
+        }
+    }
+    changed zone => {
+        if (root.zone != "") {
+            FDrag.target = root.folder;
+            FDrag.zone = root.zone;
+        } else if (FDrag.target == root.folder) {
+            FDrag.target = "";
+            FDrag.zone = "";
+        }
+    }
+    opacity: FDrag.on && FDrag.src == root.folder && root.folder != "" ? 0.45 : 1;
+    height: 42px;
+    border-radius: 10px;
+    border-width: 1px;
+    background: zone == "into" || card-over ? T.accent.with-alpha(0.16) : on ? (page ? T.accent.with-alpha(0.10) : T.panel) : ta.has-hover && !FDrag.on ? T.accent.with-alpha(0.06) : transparent;
+    border-color: zone == "into" || card-over ? T.accent : on && page ? T.accent.with-alpha(0.22) : ta.has-hover && !on && !FDrag.on ? T.accent.with-alpha(0.32) : transparent;
+    animate background, border-color { duration: 200ms; }
+    transform-scale: ta.pressed && !root.dragged ? 0.98 : 1;
+    animate transform-scale { duration: 90ms; }
+    ta := TouchArea {
+        mouse-cursor: root.dragged ? MouseCursor.grabbing : MouseCursor.pointer;
+        changed has-hover => {
+            if (self.has-hover && root.menu-real) {
+                FEdit.hover = root.folder;
+            } else if (!self.has-hover && FEdit.hover == root.folder) {
+                FEdit.hover = "";
+            }
+        }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.dragged = false;
+            }
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.dragged) {
+                root.drag-end();
+            }
+        }
+        moved => {
+            if (self.pressed && root.drag-ok) {
+                if (!root.dragged && (abs(self.mouse-y - self.pressed-y) > 6px || abs(self.mouse-x - self.pressed-x) > 6px)) {
+                    root.dragged = true;
+                    root.drag-start();
+                }
+                if (root.dragged) {
+                    FDrag.px = self.absolute-position.x + self.mouse-x;
+                    FDrag.py = self.absolute-position.y + self.mouse-y;
+                }
+            }
+        }
+        clicked => {
+            if (!root.dragged) {
+                root.clicked();
+            }
+        }
+    }
+    // Echo's folderCtx: right-click a folder
+    if root.menu-ok: ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "New sub-folder…";
+                activated => { root.folder-act(root.menu-real ? "new" : "notreal"); }
+            }
+            MenuItem {
+                title: "Rename folder…";
+                activated => { root.folder-act(root.menu-real ? "rename" : "notreal"); }
+            }
+            if root.menu-real && root.menu-empty: MenuItem {
+                title: "Delete folder";
+                activated => { root.folder-act("delete"); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Open folder";
+                activated => { root.folder-act(root.menu-real ? "open" : "notreal"); }
+            }
+        }
+    }
+    // reorder: a line where the folder would land
+    if root.zone == "before" || root.zone == "after": Rectangle {
+        x: 10px + (root.depth > 0 ? 15px + (root.depth - 1) * 16px : 0px);
+        y: root.zone == "before" ? -2px : parent.height - 1px;
+        width: parent.width - self.x - 6px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: T.accent;
+    }
+    if on && page: Rectangle {
+        x: 0;
+        y: 10px;
+        width: 2px;
+        height: parent.height - 20px;
+        background: T.accent.with-alpha(0.9);
+        border-top-right-radius: 3px;
+        border-bottom-right-radius: 3px;
+    }
+    HorizontalLayout {
+        padding-left: 13px + (root.depth > 0 ? 15px + (root.depth - 1) * 16px : 0px);
+        padding-right: 13px;
+        spacing: 12px;
+        if root.has-img: Rectangle {
+            width: 22px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 6px;
+            clip: true;
+            Image {
+                width: 22px;
+                height: 22px;
+                source: root.img;
+                image-fit: cover;
+            }
+        }
+        if initial == "" && !root.has-img: Icon {
+            y: (parent.height - self.height) / 2;
+            width: 19px;
+            height: 19px;
+            commands: root.icon;
+            stroke: on && page ? T.accent2 : (on || ta.has-hover) ? T.text : T.muted;
+        }
+        if initial != "" && !root.has-img: Rectangle {
+            width: 22px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 6px;
+            background: T.panel2;
+            border-width: 1px;
+            border-color: T.line;
+            Text {
+                text: root.initial;
+                font-size: 11.5px;
+                font-weight: 700 + T.fw;
+                color: T.accent2;
+            }
+        }
+        if FEdit.rename != root.folder || root.folder == "": Text {
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14.5px;
+            font-weight: 500 + T.fw;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: (on || ta.has-hover) ? T.text : T.muted;
+        }
+        if FEdit.rename == root.folder && root.folder != "": Rectangle {
+            horizontal-stretch: 1;
+            y: (parent.height - self.height) / 2;
+            height: 28px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: T.accent;
+            background: T.bg;
+            property <bool> done;
+            rn := TextInput {
+                x: 8px;
+                width: parent.width - 16px;
+                text: root.label;
+                font-size: 14px;
+                color: T.text;
+                vertical-alignment: center;
+                single-line: true;
+                init => {
+                    self.focus();
+                    self.select-all();
+                }
+                accepted => {
+                    parent.done = true;
+                    root.renamed(self.text);
+                    FEdit.rename = "";
+                }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        parent.done = true;
+                        FEdit.rename = "";
+                        return accept;
+                    }
+                    reject
+                }
+                changed has-focus => {
+                    if (!self.has-focus && !parent.done) {
+                        parent.done = true;
+                        root.renamed(self.text);
+                        FEdit.rename = "";
+                    }
+                }
+            }
+        }
+        if count != "": Text {
+            text: root.count;
+            vertical-alignment: center;
+            font-size: 12.5px;
+            color: on ? T.accent2 : T.dim;
+        }
+    }
+}
+
+// Echo's inline "new folder" box in the sidebar (Enter = make it, Esc / click away = cancel)
+component NewFolderBox inherits Rectangle {
+    in property <int> depth;
+    callback made(string);
+    property <bool> done;
+    height: 40px;
+    Rectangle {
+        x: 12px + (root.depth > 0 ? 15px + (root.depth - 1) * 16px : 0px);
+        width: parent.width - self.x - 8px;
+        y: 6px;
+        height: 28px;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: T.accent;
+        background: T.bg;
+        if nfi.text == "": Text {
+            x: 8px;
+            text: root.depth > 0 ? "Sub-folder name" : "Folder name, e.g. FiveM staff evidence";
+            font-size: 13px;
+            color: T.dim;
+            vertical-alignment: center;
+            overflow: elide;
+            width: parent.width - 16px;
+        }
+        nfi := TextInput {
+            x: 8px;
+            width: parent.width - 16px;
+            font-size: 13.5px;
+            color: T.text;
+            vertical-alignment: center;
+            single-line: true;
+            init => { self.focus(); }
+            accepted => {
+                root.done = true;
+                FEdit.new-on = false;
+                if (self.text != "") {
+                    root.made(self.text);
+                }
+            }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    root.done = true;
+                    FEdit.new-on = false;
+                    return accept;
+                }
+                reject
+            }
+            changed has-focus => {
+                if (!self.has-focus && !root.done) {
+                    root.done = true;
+                    FEdit.new-on = false;
+                    if (self.text != "") {
+                        root.made(self.text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Echo's <select> look (sort)
+component SelectBtn inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+    height: 36px;
+    width: hl.preferred-width;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: ta.has-hover ? T.hover : T.line;
+    background: T.panel;
+    in property <float> idle-opacity: 1;
+    opacity: ta.has-hover ? 1 : idle-opacity;
+    animate opacity { duration: T.fade; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    hl := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 10px;
+        Text {
+            text: root.text;
+            font-size: 14px;
+            color: T.text;
+            vertical-alignment: center;
+        }
+        Icon {
+            y: (parent.height - self.height) / 2;
+            width: 13px;
+            height: 13px;
+            stroke-width: 2.2px;
+            commands: Ic.down;
+            stroke: T.muted;
+        }
+    }
+}
+
+// Chat A: Windows-style caption button (title bar option B)
+component WinBtn inherits Rectangle {
+    in property <string> kind;      // min / max / restore / close
+    out property <bool> hov: ta.has-hover;
+    callback clicked;
+    width: 46px;
+    height: 52px;
+    background: ta.has-hover ? (root.kind == "close" ? #e81123 : #ffffff14) : transparent;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Path {
+        width: 10px;
+        height: 10px;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        commands: root.kind == "min" ? "M0 5 L10 5" : root.kind == "max" ? "M0.5 0.5 L9.5 0.5 L9.5 9.5 L0.5 9.5 Z" : root.kind == "restore" ? "M2.5 0.5 L9.5 0.5 L9.5 7.5 M0.5 2.5 L7.5 2.5 L7.5 9.5 L0.5 9.5 Z" : "M0 0 L10 10 M10 0 L0 10";
+        stroke: ta.has-hover && root.kind == "close" ? white : T.muted;
+        stroke-width: 1px;
+    }
+}
+
+// Chat A: invisible window edges for resizing a frameless window
+component Edge inherits TouchArea {
+    in property <string> dir;
+    callback go(string);
+    mouse-cursor: dir == "n" || dir == "s" ? MouseCursor.ns-resize : dir == "e" || dir == "w" ? MouseCursor.ew-resize : dir == "ne" || dir == "sw" ? MouseCursor.nesw-resize : MouseCursor.nwse-resize;
+    pointer-event(e) => {
+        if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+            root.go(root.dir);
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Echo";
+    // William (9 Nov, release): Echo's icon in the taskbar / Alt+Tab (was Windows' blank one); the exe's own icon
+    // comes from build.rs (echo.ico, same picture)
+    icon: @image-url("echo-icon.png");
+    // Chat A: Echo's own title bar (option B, merged with the header) - no Windows frame. ECHO_NATIVE_FRAME=1 = old frame
+    in property <bool> custom-frame: true;
+    in property <bool> win-max; // was "maximized" (shadowed Window's builtin)
+    in-out property <bool> fopen; // Echo's #fmenu (FilterLayer below)
+    in property <length> win-hh: 900px; // window height for the update card + Home (no layout binding loop)
+    callback win-act(string);               // "min" / "max" / "close" / "drag" / "resize:n|s|e|w|ne|nw|se|sw"
+    no-frame: root.custom-frame;
+    // fullscreen + Windows window mode: the whole window is see-through, the video window sits right behind it
+    background: root.player-open && Play.full && Play.video-window ? transparent : T.bg;
+    preferred-width: 1500px;
+    preferred-height: 900px;
+    min-width: 960px;
+    min-height: 600px;
+    default-font-family: "Segoe UI Variable Text";
+    default-font-weight: 400 + T.fw;
+
+    // ---------- library ----------
+    in property <[Card]> cards;
+    in property <[GridRow]> rows;
+    in property <[NavItem]> nav;
+    in property <string> filter: "all";
+    in property <string> count-text;
+    in property <string> list-name: "All clips"; // the sidebar entry being shown (library toolbar, opens the filter)
+    in property <bool> list-view;
+    in property <string> sort: "new";
+    in property <[FLine]> flines;
+    in property <[FOpt]> factive;
+    in property <int> picked-n;
+    in property <string> empty-title: "Nothing here";
+    in property <string> empty-text;
+    in property <[HotkeyPill]> hotkeys;
+    in property <string> storage-used;
+    in property <string> storage-cap;
+    in property <float> storage-frac;
+    callback pick-filter(string);
+    callback search(string);
+    callback set-cols(int);
+    callback set-sort(string);
+    callback set-view(bool);
+    callback ftoggle(string, string);
+    callback fclear();
+    callback pick-all();
+    callback pick-clear();
+    callback pick-fav();
+    callback pick-act(string);
+    callback move-picked(string);              // Move menu: into this folder ("" = main folder)
+    callback folder-drag-start(string);        // Rust marks where the folder may go (NavItem.drop)
+    callback folder-drop(string, string, string); // src, target, zone ("into" / "before" / "after" / "top")
+    callback folder-act(string, string);       // folder, "delete" / "open" / "notreal"
+    callback folder-new(string, string);       // parent ("" = top level), name
+    callback folder-rename(string, string);    // folder, new name (same parent)
+    // "home" / "library" / "settings" (Settings sits over the main column; Home replaces the toolbar + grid).
+    // Echo opens on Home.
+    in-out property <string> view: "home";
+    // William (9 Nov): mouse Back button = back to the page before (main.rs nav_back)
+    out property <string> prev-view: "home";
+    property <string> last-view: "home";
+    changed view => {
+        root.prev-view = root.last-view;
+        root.last-view = root.view;
+    }
+    public function focus-settings() {
+        sp.focus-page();
+    }
+    callback page(string);          // look-only things: "Home", "Settings", "Record", "Save clip", "Tidy up", ...
+    callback open-folder();
+
+    // ---------- player ----------
+    in property <bool> player-open;
+    // Chat A: recorder header (src/rec_core.rs)
+    in property <string> rec-state: "Starting…";
+    in property <string> rec-tip;
+    in property <bool> rec-on;
+    in property <string> rec-long: "Record";
+    in property <bool> rec-long-on;
+    in property <bool> rec-mic-off;
+    in property <string> rec-saving;
+    // Chat A: the game Echo sees (title bar chip, from sketch D)
+    in property <string> rec-game;          // "" = no game
+    in property <string> rec-game-sub;      // "recording its window" / "recording" / "not recorded"
+    in property <bool> rec-game-off;        // set to not record: grey
+    in property <image> rec-game-icon;
+    in property <bool> rec-game-has-icon;
+    in property <string> rec-game-letter;
+    callback rec-act(string);
+    // the video rectangle (Rust renders mpv at exactly this size, or puts its video window there).
+    // Echo: width = min(100% - 56, (100vh - 330) * 16/9), centred; bar 36 + 14 above, strip 66 + controls 57 + hints below
+    property <length> pw-norm: max(320px, min(root.width - 56px, (root.height - 330px) * 16 / 9));
+    property <length> block: 50px + pw-norm * 9 / 16 + 66px + 57px + 2px + 36px;
+    // the editor (native chat 5) shows the same mpv video in its stage
+    out property <length> video-w: Ed.open ? ev.vw : Play.full ? root.width : pw-norm;
+    out property <length> video-h: Ed.open ? ev.vh : Play.full ? (Play.overlay-ok ? root.height : root.height - 123px) : pw-norm * 9 / 16;
+    out property <length> video-x: Ed.open ? ev.vx : Play.full ? 0 : (root.width - pw-norm) / 2;
+    out property <length> video-y: Ed.open ? ev.vy : Play.full ? 0 : max(64px, (root.height - block) / 2 + 51px);
+    property <length> side-w: min(300px, (root.width - pw-norm) / 2 - 110px);
+    out property <bool> preview-on: player-open && !Ed.open && pv.preview-on;
+    out property <length> preview-x: pv.preview-x;
+    out property <length> preview-y: pv.preview-y;
+    out property <length> preview-w: pv.pw;
+    out property <length> preview-h: pv.ph;
+    // for the fullscreen controls mpv draws
+    out property <float> osd-progress: pv.shown-frac;
+    out property <float> osd-hover: pv.hover-frac;
+
+    // ---------- prototype stats (in the sidebar card) ----------
+    // Echo's sidebar statcard (rec_core::draw_status)
+    in property <string> rail-state: "Starting…";
+    in property <string> rail-mode;
+    in property <string> rail-health;
+    in property <int> rail-health-k;          // 0 ok (green) / 1 warn / 2 bad
+    in property <bool> acct-on: true;
+    in property <bool> acct-signed;
+    callback acct-act(string);                // "open" / "hide"
+
+    property <string> sort-label: sort == "old" ? "Oldest" : sort == "big" ? "Largest" : sort == "long" ? "Longest" : sort == "name" ? "Name" : "Newest";
+
+    // keyboard focus: the player while it's open (Space / arrows / Esc), else the library (Ctrl+A / Esc)
+    public function focus-player() {
+        pv.take-focus();
+    }
+    public function focus-library() {
+        keys.focus();
+    }
+    public function focus-editor() {
+        ev.take-focus();
+    }
+    public function focus-dialog() {
+        dl.take-focus();
+    }
+    public function focus-tidy() {
+        tdl.take-focus();
+    }
+
+    // Chat A: full-width title bar (William's sketch B) above the sidebar + page
+    VerticalLayout {
+        // see-through fullscreen (Windows): the library must not show through. (Not hidden otherwise: hiding it
+        // stopped Slint from drawing the OpenGL video texture - Linux path)
+        visible: !(root.player-open && Play.full && Play.video-window);
+        // Chat A: header = title bar (option B): 52 px, empty space drags the window, double-click maximizes,
+        // Echo's own minimize / maximize / close on the right
+        Rectangle {
+        height: 52px;
+        // Chat A: sketch D glow - a soft accent light from the top left, fading out to the right and down
+        background: T.rail;
+        clip: true;
+        // William (twice): less bright, and no hard edge where the bar meets the page - the glow now fades out
+        // completely toward the bar's bottom edge, so nothing is left to cut off there
+        Rectangle {
+            background: @linear-gradient(90deg, T.accent.with-alpha(0.15) 0%, T.accent.with-alpha(0.06) 28%, T.accent.with-alpha(0.0) 60%);
+        }
+        Rectangle {
+            background: @linear-gradient(180deg, T.rail.with-alpha(0.0) 0%, T.rail.with-alpha(0.55) 60%, T.rail 100%);
+        }
+        Rectangle { y: parent.height - 1px; height: 1px; background: T.line; }
+        TouchArea {
+            pointer-event(e) => {
+                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down && root.custom-frame) {
+                    root.win-act("drag");
+                }
+            }
+            double-clicked => {
+                if (root.custom-frame) {
+                    root.win-act("max");
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 52px;
+            padding-left: 16px;
+            padding-right: root.custom-frame ? 0px : 24px;
+            spacing: 8px;
+            // Echo's logo (moved up from the sidebar's brand row)
+            Rectangle {
+                y: 12px;
+                width: 28px;
+                height: 28px;
+                border-radius: 8px;
+                background: T.grad;
+                drop-shadow-blur: 14px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: T.accent.with-alpha(0.33);
+                Path {
+                    width: 18px;
+                    height: 18px;
+                    viewbox-width: 256;
+                    viewbox-height: 256;
+                    stroke: white;
+                    stroke-width: 1.8px;
+                    stroke-line-cap: round;
+                    fill: transparent;
+                    commands: "M 52.82 155.36 A 80 80 0 1 1 143.26 206.53";
+                }
+                Path {
+                    width: 18px;
+                    height: 18px;
+                    viewbox-width: 256;
+                    viewbox-height: 256;
+                    fill: white;
+                    commands: "M 48 104 L 58 70 L 82 96 Z M 106 86 L 176 128 L 106 170 Z";
+                }
+            }
+            Text {
+                text: root.view == "home" ? "Home" : root.view == "settings" ? "Settings" : root.view == "shots" ? "Screenshots" : "Library";
+                width: self.preferred-width + 8px; // h1 margin-right 8
+                font-size: 17px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+                font-family: "Segoe UI Variable Display";
+            }
+            Rectangle {
+                width: 1px;
+                height: 22px;
+                y: 15px;
+                background: T.line;
+            }
+            Pill {
+                y: 12px;
+                height: 28px;
+                opacity: 0.72;
+                text: root.rec-saving != "" ? root.rec-saving : root.rec-state;
+                dot: root.rec-on ? T.ok : T.bad;
+                TouchArea {
+                    // double-click the pill = restart the recorder (Echo: Settings > App > Restart recorder)
+                    double-clicked => { root.rec-act("restart"); }
+                }
+            }
+            // Chat A: game chip (sketch D) - icon (or first letter), "FiveM · recording its window"
+            if root.rec-game != "": Rectangle {
+                y: 12px;
+                height: 28px;
+                opacity: 0.72;
+                width: gml.preferred-width;
+                border-radius: 14px;
+                background: root.rec-game-off ? T.panel : #ff8a3c1a;
+                border-width: 1px;
+                border-color: root.rec-game-off ? T.line : #ff8a3c40;
+                gml := HorizontalLayout {
+                    padding-left: 5px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    Rectangle {
+                        y: 4px;
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 6px;
+                        clip: true;
+                        background: root.rec-game-has-icon ? transparent : root.rec-game-off ? T.panel2 : @linear-gradient(135deg, #ff9a3c 0%, #ff4f7a 100%);
+                        if root.rec-game-has-icon: Image {
+                            width: 20px;
+                            height: 20px;
+                            source: root.rec-game-icon;
+                            image-fit: contain;
+                            opacity: root.rec-game-off ? 0.5 : 1;
+                        }
+                        if !root.rec-game-has-icon: Text {
+                            text: root.rec-game-letter;
+                            font-size: 10.5px;
+                            font-weight: 800;
+                            color: white;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        text: root.rec-game + " · " + root.rec-game-sub;
+                        font-size: 12.5px;
+                        color: root.rec-game-off ? T.muted : T.text;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            // .chips (gap 8): .chip = padding 0 10, gap 6: keys (.chk-k padding 2 3, gap 4), "Clip", length select
+            hkchips := HorizontalLayout {
+                spacing: 8px;
+                for h in root.hotkeys: Rectangle {
+                    y: 12px;
+                    height: 28px;
+                    // William: the bar's pill + chips slightly see-through (cleaner)
+                    opacity: 0.72;
+                    width: chl.preferred-width;
+                    border-radius: 14px;
+                    background: T.panel;
+                    border-width: 1px;
+                    border-color: T.line;
+                    chl := HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            padding-left: 3px;
+                            padding-right: 3px;
+                            spacing: 4px;
+                            for k in h.keys: Kbd {
+                                y: 5px;
+                                text: k;
+                            }
+                        }
+                        Text {
+                            text: "Clip";
+                            font-size: 12.5px;
+                            color: T.muted;
+                            vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                            padding-left: 2px;
+                            padding-right: 2px;
+                            spacing: 7px;
+                            Text {
+                                text: h.label;
+                                font-size: 12.5px;
+                                color: T.muted;
+                                vertical-alignment: center;
+                            }
+                            Icon {
+                                y: 9px;
+                                width: 12px;
+                                height: 12px;
+                                stroke-width: 2.2px;
+                                commands: Ic.down;
+                                stroke: T.muted;
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconBtn {
+                y: 11px;
+                size: 30px;
+                icon-size: 16px;
+                icon: root.rec-mic-off ? "M3 3l18 18 M9 9v2a3 3 0 0 0 5.1 2.1 M15 9.3V6a3 3 0 0 0-5.9-.8 M17 16.9A7 7 0 0 1 5 11 M19 11a7 7 0 0 1-.2 1.7 M12 18v3" : "M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5 11a7 7 0 0 0 14 0 M12 18v3";
+                icon-color: root.rec-mic-off ? T.bad : T.muted;
+                tip: root.rec-mic-off ? "Mic muted - your voice isn't recorded (click to turn it on)" : "Mic on - click to mute it in your clips";
+                clicked => { root.rec-act("mic"); }
+            }
+            Btn {
+                y: 10px;
+                height: 32px;
+                // Echo's #longbtn: red dot (William: "the nice fancy red icon"), red edge + blinking dot while recording
+                dot: #ff5c7a;
+                blink-dot: root.rec-long-on;
+                edge: root.rec-long-on ? #ff5c7a : transparent;
+                text-color: root.rec-long-on ? #ff9aac : transparent;
+                text: root.rec-long;
+                tip: root.rec-long-on ? "Stop and save the recording" : "Record everything until you stop";
+                clicked => { root.rec-act("long"); }
+            }
+            savebtn := Btn {
+                y: 10px;
+                height: 32px;
+                primary: true;
+                text: "Save clip";
+                icon: Ic.scissors;
+                tip: root.rec-tip != "" ? root.rec-tip : "Save the last moments now";
+                clicked => { root.rec-act("save"); }
+            }
+            if root.custom-frame: Rectangle {
+                width: 1px;
+                height: 22px;
+                y: 15px;
+                background: T.line;
+            }
+            if root.custom-frame: WinBtn {
+                kind: "min";
+                clicked => { root.win-act("min"); }
+            }
+            if root.custom-frame: WinBtn {
+                kind: root.win-max ? "restore" : "max";
+                clicked => { root.win-act("max"); }
+            }
+            if root.custom-frame: WinBtn {
+                kind: "close";
+                clicked => { root.win-act("close"); }
+            }
+        }
+        }
+        HorizontalLayout {
+            // see-through fullscreen (Windows): the library must not show through. (Not hidden otherwise: hiding it
+            // stopped Slint from drawing the OpenGL video texture - Linux path)
+            // ---------- .rail ----------
+            Rectangle {
+                width: 264px;
+                background: T.rail;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: T.line;
+                }
+                VerticalLayout {
+                    padding-top: 18px;
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-bottom: 14px;
+                    spacing: 2px;
+                    // .brandrow: moved into the title bar (Chat A)
+                    NavBtn {
+                        label: "Home";
+                        icon: "M3 11l9-7 9 7v8a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z";
+                        page: true;
+                        on: root.view == "home";
+                        clicked => { root.page("Home"); }
+                    }
+                    NavBtn {
+                        label: "Library";
+                        icon: "M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z M10 9.5v5l4.5-2.5z";
+                        page: true;
+                        on: root.view == "library";
+                        clicked => { root.pick-filter("all"); }
+                    }
+                    NavBtn {
+                        label: "Settings";
+                        icon: "M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
+                        page: true;
+                        on: root.view == "settings";
+                        clicked => { root.page("Settings"); }
+                    }
+                    Flickable {
+                        vertical-stretch: 1;
+                        content-height: navcol.preferred-height;
+                        // mouse drags move folders (FDrag), not the list - the wheel still scrolls
+                        interactive: false;
+                        navcol := VerticalLayout {
+                            alignment: start;
+                            spacing: 2px;
+                            for n in root.nav: VerticalLayout {
+                                // .navlbl: 11.5 px, letter-spaced, padding 16 12 6
+                                if n.section != "": Rectangle {
+                                    // drop a sub-folder here = back to the top level
+                                    property <length> rel: FDrag.py - self.absolute-position.y;
+                                    property <bool> top-ok: n.section == "FOLDERS" && FDrag.on && FDrag.sub && self.rel >= 0 && self.rel < self.height
+                                        && FDrag.px >= self.absolute-position.x && FDrag.px < self.absolute-position.x + self.width;
+                                    changed top-ok => {
+                                        if (self.top-ok) {
+                                            FDrag.target = "";
+                                            FDrag.zone = "top";
+                                        } else if (FDrag.zone == "top") {
+                                            FDrag.zone = "";
+                                        }
+                                    }
+                                    border-radius: 8px;
+                                    border-width: self.top-ok ? 1px : 0px;
+                                    border-color: T.accent;
+                                    background: self.top-ok ? T.accent.with-alpha(0.16) : transparent;
+                                    height: hdl.preferred-height;
+                                hdl := HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 10px;
+                                    padding-top: 16px;
+                                    padding-bottom: 6px;
+                                    Text {
+                                        text: n.section;
+                                        height: 16.7px; // CSS line-height 1.45
+                                        font-size: 11.5px;
+                                        font-weight: 600 + T.fw;
+                                        letter-spacing: 0.9px;
+                                        color: T.dim;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if n.section == "FOLDERS": Text {
+                                        text: "+";
+                                        font-size: 15px;
+                                        color: pta.has-hover ? T.text : T.dim;
+                                        pta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                FEdit.rename = "";
+                                                FEdit.parent = "";
+                                                FEdit.new-on = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                }
+                                if n.section == "FOLDERS" && FEdit.new-on && FEdit.parent == "": NewFolderBox {
+                                    depth: 0;
+                                    made(t) => { root.folder-new("", t); }
+                                }
+                                NavBtn {
+                                    label: n.label;
+                                    icon: n.icon;
+                                    count: n.count;
+                                    initial: n.initial;
+                                    has-img: n.has-img;
+                                    img: n.img;
+                                    depth: n.depth;
+                                    folder: n.folder;
+                                    drag-ok: n.real && FEdit.rename != n.folder;
+                                    drop: n.drop;
+                                    menu-ok: n.folder != "";
+                                    card-drop: n.folder != "" || n.id == "all";
+                                    menu-real: n.real;
+                                    menu-empty: n.count == "";
+                                    folder-act(what) => {
+                                        if (what == "new") {
+                                            FEdit.rename = "";
+                                            FEdit.parent = n.folder;
+                                            FEdit.new-on = true;
+                                        } else if (what == "rename") {
+                                            FEdit.new-on = false;
+                                            FEdit.rename = n.folder;
+                                        } else {
+                                            root.folder-act(n.folder, what);
+                                        }
+                                    }
+                                    renamed(t) => { root.folder-rename(n.folder, t); }
+                                    on: (root.view == "library" || root.view == "shots") && root.filter == n.id;
+                                    clicked => { root.pick-filter(n.id); }
+                                    drag-start => {
+                                        FDrag.src = n.folder;
+                                        FDrag.label = n.label;
+                                        FDrag.sub = n.depth > 0;
+                                        FDrag.target = "";
+                                        FDrag.zone = "";
+                                        FDrag.on = true;
+                                        root.folder-drag-start(n.folder);
+                                    }
+                                    drag-end => {
+                                        FDrag.on = false;
+                                        if (FDrag.zone != "") {
+                                            root.folder-drop(FDrag.src, FDrag.target, FDrag.zone);
+                                        }
+                                        FDrag.zone = "";
+                                        FDrag.target = "";
+                                    }
+                                }
+                                if FEdit.new-on && FEdit.parent == n.folder && n.folder != "": NewFolderBox {
+                                    depth: n.depth + 1;
+                                    made(t) => { root.folder-new(n.folder, t); }
+                                }
+                            }
+                        }
+                    }
+                    // #updcard (Echo: above the statcard, margin-bottom 8)
+                    if Upd.on: UpdCard {
+                        win-h: root.win-hh; // set from Rust (titlebar.rs): root.height here was a binding loop
+                    }
+                    if Upd.on: Rectangle { height: 4px; } // + the column spacing (2 + 2) = Echo's margin-bottom 8
+                    // .statcard (where Echo shows the recorder): prototype status + storage meter + memory
+                    Rectangle {
+                        // natural height: the nav list above takes the spare room, not this card
+                        height: sc.preferred-height;
+                        vertical-stretch: 0;
+                        background: T.panel;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: T.line;
+                        sc := VerticalLayout {
+                            alignment: start;
+                            padding-left: 13px;
+                            padding-right: 13px;
+                            padding-top: 12px;
+                            padding-bottom: 12px;
+                            spacing: 9px;
+                            // William (9 Nov, release): Echo's own .statcard - #raildot + #railstate, #railmode,
+                            // #railhealth, the meter, the Echo Profile row (was the prototype's memory readout;
+                            // that's in the log / ECHO_STATS now)
+                            HorizontalLayout {
+                                spacing: 9px;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    y: (parent.height - 8px) / 2;
+                                    border-radius: 4px;
+                                    background: root.rec-on ? T.ok : T.bad;
+                                }
+                                Text {
+                                    text: root.rail-state;
+                                    font-size: 13px;
+                                    font-weight: 600 + T.fw;
+                                    color: T.text;
+                                    overflow: elide;
+                                }
+                            }
+                            if root.rail-mode != "": Text {
+                                text: root.rail-mode;
+                                font-size: 12px;
+                                color: T.muted;
+                                wrap: word-wrap;
+                            }
+                            if root.rail-health != "": Text {
+                                text: root.rail-health;
+                                font-size: 11.5px;
+                                color: root.rail-health-k == 2 ? #ff5c7a : root.rail-health-k == 1 ? #ffb84d : #3ddc97;
+                                wrap: word-wrap;
+                            }
+                            // .meter
+                            Rectangle {
+                                height: 5px;
+                                border-radius: 3px;
+                                background: #ffffff12;
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * clamp(root.storage-frac, 0, 1);
+                                    border-radius: 3px;
+                                    background: T.grad;
+                                }
+                            }
+                            HorizontalLayout {
+                                Text {
+                                    text: root.storage-used;
+                                    font-size: 11.5px;
+                                    color: T.muted;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: root.storage-cap;
+                                    font-size: 11.5px;
+                                    color: T.muted;
+                                }
+                            }
+                            // .acctrow: Echo Profile (never the email - the sidebar shows in screenshots / streams)
+                            if root.acct-on: Rectangle {
+                                height: 37px;
+                                Rectangle { y: 0; height: 1px; background: T.line; }
+                                acta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.acct-act("open"); }
+                                }
+                                HorizontalLayout {
+                                    y: 11px;
+                                    height: 26px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 26px;
+                                        border-radius: 13px;
+                                        background: T.panel2;
+                                        Icon {
+                                            width: 14px;
+                                            height: 14px;
+                                            commands: "M8 8a4 4 0 1 0 8 0a4 4 0 1 0 -8 0z M4 21a8 8 0 0 1 16 0";
+                                            stroke: T.muted;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        alignment: center;
+                                        Text {
+                                            text: "Echo Profile";
+                                            font-size: 12px;
+                                            font-weight: 600 + T.fw;
+                                            color: T.text;
+                                        }
+                                        Text {
+                                            text: root.acct-signed ? "Signed in ✓" : "Get started →";
+                                            font-size: 11px;
+                                            color: acta.has-hover ? T.text : T.accent;
+                                        }
+                                    }
+                                    // drawn x (the font has no "✕" - it showed as an empty box)
+                                    if !root.acct-signed: Rectangle {
+                                        width: 16px;
+                                        Icon {
+                                            y: 2px;
+                                            width: 12px;
+                                            height: 12px;
+                                            commands: Ic.x;
+                                            stroke: axa.has-hover ? T.text : T.dim;
+                                        }
+                                        axa := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.acct-act("hide"); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------- main ----------
+            keys := FocusScope {
+                horizontal-stretch: 1;
+                init => { self.focus(); }
+                key-pressed(e) => {
+                    // William (9 Nov): Echo's Ctrl+F - search clips (from any page it opens the Library first); in
+                    // Settings it searches the settings
+                    if (e.modifiers.control && (e.text == "f" || e.text == "F") && !root.player-open && !Dlg.open && !Ed.open) {
+                        root.ctrl-off();
+                        if (root.view == "settings") {
+                            sp.focus-search();
+                            return accept;
+                        }
+                        if (root.view != "library") {
+                            root.pick-filter("all");
+                        }
+                        sti.focus();
+                        sti.select-all();
+                        return accept;
+                    }
+                    // F2 on a sidebar folder = rename it inline (Chat D)
+                    if (e.text == Key.F2 && FEdit.hover != "" && !root.player-open && !Dlg.open) {
+                        FEdit.new-on = false;
+                        FEdit.rename = FEdit.hover;
+                        return accept;
+                    }
+                    if (root.view != "library" || root.player-open || Dlg.open) {
+                        return reject;
+                    }
+                    if (e.text == Key.Escape && root.fopen) {
+                        root.fopen = false;
+                        return accept;
+                    }
+                    // Echo's power-user keys (hold Ctrl = all cards show their buttons + the key hint; the keys act on
+                    // the clip under the mouse). Not while clips are selected: Ctrl+click is for selecting then.
+                    if (e.text == Key.Control) {
+                        if (!e.repeat && root.picked-n == 0) {
+                            root.ctrl-down = true;
+                        }
+                        return accept;
+                    }
+                    if (!e.modifiers.control) {
+                        root.ctrl-off();
+                    }
+                    if (e.modifiers.control && (e.text == "a" || e.text == "A")) {
+                        root.pick-all();
+                        return accept;
+                    }
+                    if (e.text == Key.Escape && root.picked-n > 0) {
+                        root.pick-clear();
+                        return accept;
+                    }
+                    if (Lib.hover-idx < 0) {
+                        return reject;
+                    }
+                    if (e.modifiers.control && (e.text == "c" || e.text == "C")) {
+                        root.ctrl-off();
+                        Lib.act(Lib.hover-idx, "copy");
+                        return accept;
+                    }
+                    if (e.modifiers.control || e.modifiers.alt || e.modifiers.meta) {
+                        return reject;
+                    }
+                    if (e.text == Key.Return || e.text == " ") {
+                        Lib.open(Lib.hover-idx, false);
+                    } else if (e.text == "e" || e.text == "E") {
+                        Lib.act(Lib.hover-idx, "edit");
+                    } else if (e.text == "f" || e.text == "F") {
+                        Lib.fav(Lib.hover-idx);
+                    } else if (e.text == "l" || e.text == "L") {
+                        Lib.act(Lib.hover-idx, "link");
+                    } else if (e.text == "o" || e.text == "O") {
+                        Lib.act(Lib.hover-idx, "folder");
+                    } else if (e.text == Key.F2) {
+                        Lib.act(Lib.hover-idx, "rename");
+                    } else if (e.text == Key.Delete && root.picked-n > 0) {
+                        root.pick-act("delete");
+                    } else if (e.text == Key.Delete && root.picked-n == 0) {
+                        Lib.act(Lib.hover-idx, "delete");
+                    } else {
+                        return reject;
+                    }
+                    accept
+                }
+                key-released(e) => {
+                    if (e.text == Key.Control) {
+                        root.ctrl-off();
+                    }
+                    reject
+                }
+                // Chat B: Echo's soft accent glow at the top of main (settings.slint TopGlow)
+                TopGlow {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    top: 0;
+                }
+                VerticalLayout {
+                    // the page under the header: Home, or the library's toolbar + clips
+                    Rectangle {
+                    vertical-stretch: 1;
+                    HomePage {
+                        visible: root.view == "home";
+                        width: parent.width;
+                        height: parent.height;
+                        win-h: root.win-hh; // set from Rust (titlebar.rs): root.height here was a binding loop
+                    }
+                    // Chat D: Screenshots page
+                    if root.view == "shots": ShotsPage {
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                    VerticalLayout {
+                    // only in the library: Settings is drawn OVER this column, and a Slint background doesn't stop clicks -
+                    // with the grid still there, the cards under Settings' empty spots could be clicked (William, chat 4)
+                    visible: root.view == "library";
+                    // .toolbar: padding 4 28 6
+                    Rectangle {
+                        height: 46px;
+                        HorizontalLayout {
+                            padding-left: 20px; // + the name button's 8 px = the cards' 28 px
+                            padding-right: 28px;
+                            padding-top: 4px;
+                            padding-bottom: 6px;
+                            spacing: 10px;
+                            // William (9 Nov, sketch E): the list's name IS the filter button ("All clips ▾", "FiveM ▾"):
+                            // no floating pill under the title bar line; the count follows it. (was: count, then a
+                            // bordered "Filter" pill)
+                            fbtn := Rectangle {
+                                y: 2px;
+                                height: 32px;
+                                width: fhl.preferred-width;
+                                border-radius: 8px;
+                                background: fta.has-hover || root.fopen ? #ffffff0f : transparent;
+                                animate background { duration: T.fade; }
+                                fta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.fopen = !root.fopen; }
+                                }
+                                TipArea {
+                                    text: "Filter clips";
+                                    hover: fta.has-hover;
+                                }
+                                fhl := HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 5px;
+                                    Text {
+                                        text: root.list-name;
+                                        font-size: 16px;
+                                        font-weight: 600 + T.fw;
+                                        color: T.text;
+                                        vertical-alignment: center;
+                                    }
+                                    Icon {
+                                        y: (parent.height - self.height) / 2 + 1px;
+                                        width: 15px;
+                                        height: 15px;
+                                        stroke-width: 2.2px;
+                                        commands: Ic.down;
+                                        stroke: root.factive.length > 0 || fta.has-hover || root.fopen ? T.text : T.muted;
+                                    }
+                                    if root.factive.length > 0: Rectangle {
+                                        y: 7px;
+                                        width: max(18px, fn.preferred-width + 8px);
+                                        height: 18px;
+                                        border-radius: 9px;
+                                        background: T.accent;
+                                        fn := Text {
+                                            text: root.factive.length;
+                                            font-size: 11px;
+                                            font-weight: 700 + T.fw;
+                                            color: white;
+                                        }
+                                    }
+                                }
+                                // Echo's #fmenu is drawn by FilterLayer (end of this file), not a PopupWindow: Slint's
+                                // popup closed on the PRESS of a chip click (counted as outside) and the release then
+                                // opened the clip behind it (William)
+                            }
+                            Text {
+                                text: root.count-text;
+                                font-size: 13px;
+                                color: T.muted;
+                                vertical-alignment: center;
+                            }
+                            for o in root.factive: FPill {
+                                y: 3px;
+                                o: o;
+                                head: o.group == "game" ? "Game" : o.group == "type" ? "Type" : "Tag";
+                                clicked => { root.ftoggle(o.group, o.key); }
+                            }
+                            if root.factive.length > 1: Text {
+                                text: "Clear all";
+                                font-size: 12.5px;
+                                color: cta.has-hover ? T.text : T.muted;
+                                vertical-alignment: center;
+                                cta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.fclear(); }
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            // .searchbox
+                            Rectangle {
+                                width: 260px;
+                                height: 36px;
+                                opacity: sti.has-focus || sta.has-hover || sti.text != "" ? 1 : 0.72;
+                                animate opacity { duration: T.fade; }
+                                border-radius: 10px;
+                                background: T.panel;
+                                border-width: 1px;
+                                border-color: sti.has-focus ? T.accent : T.line;
+                                drop-shadow-blur: sti.has-focus ? 6px : 0;
+                                drop-shadow-color: T.accent.with-alpha(0.25);
+                                sta := TouchArea {
+                                    mouse-cursor: MouseCursor.text;
+                                    clicked => { sti.focus(); }
+                                }
+                                Icon {
+                                    x: 11px;
+                                    y: 10px;
+                                    width: 16px;
+                                    height: 16px;
+                                    commands: Ic.search;
+                                    stroke: T.dim;
+                                }
+                                if sti.text == "": Text {
+                                    x: 34px;
+                                    text: "Search clips…";
+                                    font-size: 14px;
+                                    color: T.dim;
+                                    vertical-alignment: center;
+                                    height: parent.height;
+                                }
+                                sti := TextInput {
+                                    x: 34px;
+                                    width: parent.width - 46px;
+                                    height: parent.height;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    font-size: 14px;
+                                    color: T.text;
+                                    selection-background-color: T.accent.with-alpha(0.45);
+                                    edited => { root.search(self.text); }
+                                    // Echo: Esc in the search box empties it and leaves it
+                                    key-pressed(e) => {
+                                        if (e.text == Key.Escape) {
+                                            self.text = "";
+                                            root.search("");
+                                            keys.focus();
+                                            return accept;
+                                        }
+                                        reject
+                                    }
+                                }
+                            }
+                            SelectBtn {
+                                idle-opacity: 0.72;
+                                text: root.sort-label;
+                                clicked => { spop.show(); }
+                            }
+                            IconBtn {
+                                y: 1px;
+                                icon: root.list-view ? Ic.grid : Ic.list;
+                                tip: "Grid / list view";
+                                idle-opacity: 0.72;
+                                icon-color: T.text;
+                                idle-bg: T.panel;
+                                clicked => { root.set-view(!root.list-view); }
+                            }
+                            Btn {
+                                text: "Tidy up";
+                                idle-opacity: 0.72;
+                                icon: Ic.tidy;
+                                tip: "Find clips saved twice, very short clips and the biggest ones";
+                                clicked => { root.page("Tidy up"); }
+                            }
+                            Btn {
+                                text: "Open folder";
+                                idle-opacity: 0.72;
+                                icon: Ic.folder;
+                                clicked => { root.open-folder(); }
+                            }
+                        }
+                        spop := PopupWindow {
+                            x: parent.width - 520px;
+                            y: 44px;
+                            width: 160px;
+                            // its own height, so Slint counts clicks on the rows as inside the popup
+                            height: spl.preferred-height;
+                            Rectangle {
+                                background: T.panel;
+                                border-radius: 12px;
+                                border-width: 1px;
+                                border-color: T.line;
+                                drop-shadow-blur: 40px;
+                                drop-shadow-offset-y: 14px;
+                                drop-shadow-color: #000000aa;
+                                spl := VerticalLayout {
+                                    padding: 6px;
+                                    MenuRow {
+                                        text: "Newest";
+                                        tick-room: true;
+                                        on: root.sort == "new";
+                                        clicked => { root.set-sort("new"); }
+                                    }
+                                    MenuRow {
+                                        text: "Oldest";
+                                        tick-room: true;
+                                        on: root.sort == "old";
+                                        clicked => { root.set-sort("old"); }
+                                    }
+                                    MenuRow {
+                                        text: "Largest";
+                                        tick-room: true;
+                                        on: root.sort == "big";
+                                        clicked => { root.set-sort("big"); }
+                                    }
+                                    MenuRow {
+                                        text: "Longest";
+                                        tick-room: true;
+                                        on: root.sort == "long";
+                                        clicked => { root.set-sort("long"); }
+                                    }
+                                    MenuRow {
+                                        text: "Name";
+                                        tick-room: true;
+                                        on: root.sort == "name";
+                                        clicked => { root.set-sort("name"); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // the clips: 4 columns like Echo (.grid repeat(4)), gap 22; list view 1 column, gap 8
+                    grid := Rectangle {
+                        vertical-stretch: 1;
+                        property <length> gap: root.list-view ? 8px : 22px;
+                        property <length> avail: self.width - 56px - 8px; // padding 28 each side, room for the scroll bar
+                        // Echo's .grid: 4 columns, 3 at <= 1500 px window width, 2 at <= 1120, 1 at <= 760 (CSS media queries)
+                        property <int> cols: root.list-view ? 1 : root.width > 1500px ? 4 : root.width > 1120px ? 3 : root.width > 760px ? 2 : 1;
+                        property <length> card-w: (avail - (cols - 1) * gap) / cols;
+                        property <length> card-h: card-w * 9 / 16 + 2px + 68px;
+                        init => { root.set-cols(self.cols); }
+                        changed cols => { root.set-cols(self.cols); }
+                        ListView {
+                            for r in root.rows: Rectangle {
+                                // .group: padding-top 18, h2 (~21 px) + 12 below; rows: gap only BETWEEN rows of a group
+                                height: r.header != "" ? 51px : (root.list-view ? 101px : grid.card-h + r.extra * 1px) + (r.last ? 0 : grid.gap);
+                                if r.header != "": HorizontalLayout {
+                                    x: 28px;
+                                    y: 18px;
+                                    height: 21px;
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Text {
+                                        text: r.header;
+                                        font-size: 15px;
+                                        font-weight: 600 + T.fw;
+                                        color: T.text;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: r.count;
+                                        font-size: 12.5px;
+                                        color: T.dim;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if r.header == "" && !root.list-view: HorizontalLayout {
+                                    x: 28px;
+                                    y: 0;
+                                    height: grid.card-h + r.extra * 1px;
+                                    spacing: grid.gap;
+                                    alignment: start;
+                                    for c in r.n: CardView {
+                                        width: grid.card-w;
+                                        height: grid.card-h + r.extra * 1px;
+                                        data: root.cards[r.first + c];
+                                    }
+                                }
+                                if r.header == "" && root.list-view: ListCard {
+                                    x: 28px;
+                                    y: 0;
+                                    width: grid.card-w;
+                                    height: 101px;
+                                    data: root.cards[r.first];
+                                }
+                            }
+                        }
+                        // .empty
+                        if root.rows.length == 0: VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 72px;
+                                    height: 72px;
+                                    border-radius: 22px;
+                                    background: T.panel;
+                                    border-width: 1px;
+                                    border-color: T.line;
+                                    drop-shadow-blur: 30px;
+                                    drop-shadow-offset-y: 10px;
+                                    drop-shadow-color: T.accent.with-alpha(0.12);
+                                    Icon {
+                                        width: 30px;
+                                        height: 30px;
+                                        commands: Ic.search;
+                                        stroke: T.accent2;
+                                    }
+                                }
+                            }
+                            Rectangle { height: 12px; }
+                            Text {
+                                text: root.empty-title;
+                                font-size: 17px;
+                                font-weight: 600 + T.fw;
+                                color: T.text;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: root.empty-text;
+                                font-size: 14px;
+                                color: T.muted;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                    }
+                    }
+                }
+            }
+        }
+    }
+
+    // .pickbar: floats at the bottom while clips are selected
+    if root.picked-n > 0 && !root.player-open && root.view == "library": pbar := Rectangle {
+        x: 264px + (root.width - 264px - self.width) / 2;
+        y: root.height - self.height - 22px;
+        width: pbl.preferred-width;
+        height: 54px;
+        background: T.panel2;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.accent;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: #000000cc;
+        TouchArea { }
+        pbl := HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            Text {
+                text: root.picked-n + " clip" + (root.picked-n == 1 ? "" : "s") + " selected";
+                font-size: 14px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+            }
+            Rectangle { width: 16px; }
+            Btn {
+                text: "Combine";
+                icon: "M4 6h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z M15 6h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z M11 12h3";
+                tip: "Join the selected clips into one video (oldest first)";
+                tip-above: true;
+                clicked => { root.pick-act("combine"); }
+            }
+            mvb := Btn {
+                text: "Move";
+                icon: Ic.move;
+                tip: "Move the selected clips into a folder";
+                tip-above: true;
+                clicked => { mpop.show(); }
+            }
+            Btn {
+                text: "Favourite";
+                icon: Ic.star;
+                clicked => { root.pick-fav(); }
+            }
+            Btn {
+                text: "Delete";
+                icon: Ic.del;
+                danger: true;
+                clicked => { root.pick-act("delete"); }
+            }
+            Btn {
+                text: "Clear";
+                tip: "Clear the selection (Esc)";
+                tip-above: true;
+                clicked => { root.pick-clear(); }
+            }
+        }
+        // Echo's #foldmenu - opens ABOVE the bar (in Echo it opened below and was cut off at the window's bottom)
+        mpop := PopupWindow {
+            x: mvb.x;
+            height: min(mvl.preferred-height, pbar.y - 80px);
+            y: -self.height - 8px;
+            width: 280px;
+            close-policy: close-on-click-outside;
+            init => { nf.text = ""; }
+            Rectangle {
+                background: T.panel;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: T.line;
+                drop-shadow-blur: 40px;
+                drop-shadow-offset-y: 14px;
+                drop-shadow-color: #000000aa;
+                TouchArea { }
+                Flickable {
+                    // no drag-scroll inside a PopupWindow: its delayed press reached the cards behind (see FilterPanel)
+                    interactive: false;
+                    content-height: mvl.preferred-height;
+                    mvl := VerticalLayout {
+                        padding: 6px;
+                        alignment: start;
+                        Text {
+                            text: "Move " + root.picked-n + " clip" + (root.picked-n == 1 ? "" : "s") + " to";
+                            font-size: 11.5px;
+                            color: T.dim;
+                            height: 26px;
+                            vertical-alignment: center;
+                            x: 10px;
+                        }
+                        for n in root.nav: HorizontalLayout {
+                            padding-left: n.depth * 16px;
+                            visible: n.folder != "";
+                            height: n.folder != "" ? 36px : 0px;
+                            MenuRow {
+                                text: n.label;
+                                right: n.count;
+                                clicked => {
+                                    mpop.close();
+                                    root.move-picked(n.folder);
+                                }
+                            }
+                        }
+                        MenuRow {
+                            text: "Main folder (no folder)";
+                            clicked => {
+                                mpop.close();
+                                root.move-picked("");
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            background: T.line;
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 4px;
+                            padding-top: 6px;
+                            spacing: 8px;
+                            height: 42px;
+                            Text {
+                                text: "New folder";
+                                font-size: 13.5px;
+                                color: T.text;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                border-radius: 8px;
+                                border-width: 1px;
+                                border-color: nf.has-focus ? T.accent : T.line;
+                                background: T.bg;
+                                if nf.text == "": Text {
+                                    x: 8px;
+                                    text: "Name or Folder/Sub";
+                                    font-size: 13px;
+                                    color: T.dim;
+                                    vertical-alignment: center;
+                                }
+                                nf := TextInput {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    font-size: 13px;
+                                    color: T.text;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    accepted => {
+                                        if (self.text != "") {
+                                            mpop.close();
+                                            root.move-picked(self.text);
+                                            self.text = "";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- settings (over the library column) ----------
+    // under the header (title, recorder pill, hotkeys, Record / Save clip), like Echo
+    sp := SettingsPage {
+        x: 264px;
+        // the title bar is 52 px since Chat A's custom bar (was the 68 px header)
+        y: 52px;
+        width: root.width - 264px;
+        height: root.height - 52px;
+        visible: root.view == "settings";
+    }
+
+    // Chat B (night): Echo's background effect canvas (#bgfxc, z 2): over the pages, under the player / dialogs;
+    // plain shapes only, so clicks go straight through
+    FxLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+
+    // ---------- player ----------
+    pv := PlayerView {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: root.player-open && !Ed.open;
+        vx: root.video-x;
+        vy: root.video-y;
+        vw: root.video-w;
+        vh: root.video-h;
+        side-w: root.side-w;
+        side-x: root.width - 80px - root.side-w;
+        side-on: root.side-w >= 170px;
+    }
+
+    // ---------- editor (over the player; the player's video moves into its stage) ----------
+    ev := EditorView {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: Ed.open;
+        win-pad: root.custom-frame && !Play.full && !root.win-max ? 3 * 46px : 0;
+        win-drag: root.custom-frame && !Play.full;
+        win-act(k) => { root.win-act(k); }
+    }
+
+    // Chat D: Tidy up (Echo z 120) - BELOW the dialog, so its delete confirm shows above it
+    tdl := TidyLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    // Chat B: first-run setup + "Show me around" tour (setup.slint)
+    SetupLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    tour := TourLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        hx: Tour.step == 0 ? grid.absolute-position.x + 28px : Tour.step == 1 ? hkchips.absolute-position.x : Tour.step == 2 ? savebtn.absolute-position.x : Tour.step == 3 ? fbtn.absolute-position.x : sp.absolute-position.x + 12px;
+        // William: steps 2/3/5/6 were off - fixed offsets from the old 68 px header. The chips sit at y 12 (28 tall) in
+        // the 52 px bar, Save clip's own position already includes its y; Settings rows: Cloud 311 px / Clips &
+        // Storage 275 px below the page top (measured on screen, 34 px tall)
+        hy: Tour.step == 0 ? grid.absolute-position.y + 8px : Tour.step == 1 ? hkchips.absolute-position.y + 12px : Tour.step == 2 ? savebtn.absolute-position.y : Tour.step == 3 ? fbtn.absolute-position.y : Tour.step == 4 ? sp.absolute-position.y + 311px : sp.absolute-position.y + 275px;
+        hw: Tour.step == 0 ? grid.card-w : Tour.step == 1 ? hkchips.width : Tour.step == 2 ? savebtn.width : Tour.step == 3 ? fbtn.width : 206px;
+        hh: Tour.step == 0 ? grid.card-h : Tour.step == 1 ? 28px : Tour.step == 2 ? savebtn.height : Tour.step == 3 ? fbtn.height : 34px;
+    }
+    // Chat B (night): the open Settings dropdown (settings.slint SDrop) - above the page and the setup wizard
+    SDropLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    // Chat B: cloud menu + Echo Cloud space manager (cloud.slint) - below the dialog, so their confirms show above
+    SpaceLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    CloudMenuLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    public function focus-tour() {
+        tour.take-focus();
+    }
+    // Echo's #fmenu: the filter panel under the Filter button. Own layer instead of a PopupWindow (see fbtn); the
+    // backdrop closes it on a click outside and swallows that click (it never reaches a card).
+    if root.fopen && root.view == "library" && !root.player-open: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        TouchArea {
+            clicked => { root.fopen = false; }
+        }
+        FilterPanel {
+            x: min(fbtn.absolute-position.x, root.width - self.width - 12px);
+            y: fbtn.absolute-position.y + 38px;
+            lines: root.flines;
+            toggle(g, k) => { root.ftoggle(g, k); }
+            clear => { root.fclear(); }
+        }
+    }    // William (9 Nov): Screenshots open in the app (Echo's openShot) - above the pages, below dialogs
+    ShotViewer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    // Echo's #confirm (above the player, like Echo's z-index 400)
+    dl := DialogLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+
+    TipLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    // ---- Echo's power-user mode: Ctrl held 150 ms -> ctrl-held; let go -> no slide for 300 ms (body.ctrlinst) ----
+    property <bool> ctrl-down;
+    property <bool> inst-clear;
+    // a Ctrl+click that selects ends the Ctrl mode (hint + buttons on every card) - Chat D
+    changed picked-n => {
+        if (root.picked-n > 0 && Lib.ctrl-held) {
+            root.ctrl-off();
+        }
+    }
+    public function ctrl-off() {
+        root.ctrl-down = false;
+        if (Lib.ctrl-held) {
+            Lib.ctrl-inst = true;
+            root.inst-clear = false;
+            root.inst-clear = true;
+            inst-t.restart();
+        }
+        Lib.ctrl-held = false;
+    }
+    Timer {
+        interval: 150ms;
+        running: root.ctrl-down;
+        triggered => {
+            root.ctrl-down = false;
+            if (root.picked-n == 0 && root.view == "library" && !root.player-open) {
+                root.inst-clear = false;
+                Lib.ctrl-inst = true;
+                Lib.ctrl-held = true;
+            }
+        }
+    }
+    inst-t := Timer {
+        interval: 300ms;
+        running: root.inst-clear;
+        triggered => {
+            root.inst-clear = false;
+            Lib.ctrl-inst = false;
+        }
+    }
+    // #keyhint: bottom centre, fades + rises 8 px in .15 s (at once while Ctrl goes down / up)
+    kh := Rectangle {
+        // never over the selection bar: hidden as soon as something is selected (Chat D)
+        property <bool> on: Lib.ctrl-held && !root.player-open && root.picked-n == 0;
+        x: (root.width - self.width) / 2;
+        y: root.height - 18px - self.height + (self.on ? 0px : 8px);
+        animate y { duration: Lib.ctrl-inst ? 0ms : 150ms; }
+        width: khl.preferred-width;
+        height: khl.preferred-height;
+        opacity: self.on ? 1 : 0;
+        animate opacity { duration: Lib.ctrl-inst ? 0ms : 150ms; }
+        visible: self.opacity > 0.01;
+        background: T.panel;
+        border-width: 1px;
+        border-color: T.line;
+        border-radius: 10px;
+        drop-shadow-blur: 30px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #00000088;
+        khl := HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 0px;
+            for part in [
+                { t: "Mouse on a clip: ", k: false }, { t: "Enter", k: true }, { t: " open · ", k: false },
+                { t: "E", k: true }, { t: " edit · ", k: false }, { t: "F", k: true }, { t: " favourite · ", k: false },
+                { t: "F2", k: true }, { t: " rename · ", k: false }, { t: "Ctrl", k: true }, { t: "+", k: false },
+                { t: "C", k: true }, { t: " copy · ", k: false }, { t: "L", k: true }, { t: " link · ", k: false },
+                { t: "O", k: true }, { t: " folder · ", k: false }, { t: "Del", k: true }, { t: " delete · ", k: false },
+                { t: "Ctrl", k: true }, { t: "+click select", k: false }
+            ]: Rectangle {
+                width: part.k ? kb.width : tx.preferred-width;
+                height: 20px;
+                kb := Kbd {
+                    visible: part.k;
+                    text: part.k ? part.t : "";
+                }
+                tx := Text {
+                    visible: !part.k;
+                    text: part.t;
+                    font-size: 12px;
+                    color: T.muted;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
+            }
+        }
+    }
+    ToastLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        lift: root.picked-n > 0 && !root.player-open ? 60px : 0px;
+    }
+    // a card being dragged onto a sidebar folder (Chat D)
+    if CDrag.on: Rectangle {
+        x: CDrag.px + 14px;
+        y: CDrag.py + 10px;
+        width: cgl.preferred-width;
+        height: 32px;
+        background: T.panel2;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: CDrag.hit ? T.accent : T.line;
+        drop-shadow-blur: 20px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000099;
+        cgl := HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 12px;
+            spacing: 8px;
+            Icon {
+                y: (parent.height - self.height) / 2;
+                width: 15px;
+                height: 15px;
+                commands: CDrag.hit ? Ic.folder : Ic.move;
+                stroke: T.accent2;
+            }
+            Text {
+                text: CDrag.hit ? CDrag.label + "  →  " + CDrag.target-label : CDrag.label;
+                font-size: 13px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+            }
+        }
+    }
+    // the folder being dragged in the sidebar + what a drop would do
+    if FDrag.on: Rectangle {
+        x: FDrag.px + 14px;
+        y: FDrag.py + 10px;
+        width: ghl.preferred-width;
+        height: 32px;
+        background: T.panel2;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: FDrag.zone != "" ? T.accent : T.line;
+        drop-shadow-blur: 20px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000099;
+        ghl := HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 12px;
+            spacing: 8px;
+            Icon {
+                y: (parent.height - self.height) / 2;
+                width: 15px;
+                height: 15px;
+                commands: Ic.folder;
+                stroke: T.accent2;
+            }
+            Text {
+                text: FDrag.zone == "into" ? "Into " + FDrag.target : FDrag.zone == "top" ? "To the top level" : FDrag.zone == "before" || FDrag.zone == "after" ? "Put " + FDrag.label + " here" : FDrag.label;
+                font-size: 13px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+            }
+        }
+    }
+    // night 9 Nov: the player's backdrop covers the title bar, so with a clip open the window couldn't be moved,
+    // maximized or closed (a click there closed the player instead). Like Echo's real frame: the bar keeps
+    // dragging (double-click = maximize) and the window buttons over the player; the rest of it stays dimmed.
+    if root.custom-frame && root.player-open && !Play.full && !Ed.open: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: 52px;
+        TouchArea {
+            pointer-event(e) => {
+                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                    root.win-act("drag");
+                }
+            }
+            double-clicked => { root.win-act("max"); }
+        }
+        HorizontalLayout {
+            alignment: end;
+            WinBtn {
+                kind: "min";
+                clicked => { root.win-act("min"); }
+            }
+            WinBtn {
+                kind: root.win-max ? "restore" : "max";
+                clicked => { root.win-act("max"); }
+            }
+            WinBtn {
+                kind: "close";
+                clicked => { root.win-act("close"); }
+            }
+        }
+    }
+    // William (9 Nov): the editor's window buttons. Not maximized: always there, right of Export (the editor keeps
+    // win-pad free for them). Maximized: the editor bar is untouched (Export at the far right) and the buttons are
+    // folded up out of sight - pushing the mouse against the top edge on the right folds them down over Undo / 9:16 /
+    // Export, so "mouse into the top-right corner + click" closes, the middle one restores. Moving off them folds them
+    // back up.
+    if root.custom-frame && Ed.open && !Play.full: Rectangle {
+        property <bool> down: !root.win-max || etrig.has-hover || eb1.hov || eb2.hov || eb3.hov;
+        x: root.width - self.width;
+        y: 0;
+        width: 3 * 46px;
+        height: 60px;
+        etrig := TouchArea {
+            y: 0;
+            height: root.win-max ? 3px : 0;
+        }
+        Rectangle {
+            y: parent.down ? 0 : -62px;
+            animate y { duration: 140ms; easing: ease-out; }
+            height: 60px;
+            background: root.win-max ? T.panel : transparent;
+            border-bottom-left-radius: root.win-max ? 10px : 0;
+            border-width: root.win-max ? 1px : 0;
+            border-color: T.line;
+            drop-shadow-blur: root.win-max ? 18px : 0;
+            drop-shadow-offset-y: root.win-max ? 4px : 0;
+            drop-shadow-color: root.win-max ? #00000090 : transparent;
+            HorizontalLayout {
+                eb1 := WinBtn {
+                    height: 60px;
+                    kind: "min";
+                    clicked => { root.win-act("min"); }
+                }
+                eb2 := WinBtn {
+                    height: 60px;
+                    kind: root.win-max ? "restore" : "max";
+                    clicked => { root.win-act("max"); }
+                }
+                eb3 := WinBtn {
+                    height: 60px;
+                    kind: "close";
+                    clicked => { root.win-act("close"); }
+                }
+            }
+        }
+    }
+    // Chat A: resize edges (frameless window, not when maximized / fullscreen)
+    if root.custom-frame && !root.win-max && !Play.full: Rectangle {
+        Edge { dir: "n"; x: 8px; y: 0; width: parent.width - 16px; height: 5px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "s"; x: 8px; y: parent.height - 5px; width: parent.width - 16px; height: 5px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "w"; x: 0; y: 8px; width: 5px; height: parent.height - 16px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "e"; x: parent.width - 5px; y: 8px; width: 5px; height: parent.height - 16px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "nw"; x: 0; y: 0; width: 8px; height: 8px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "ne"; x: parent.width - 8px; y: 0; width: 8px; height: 8px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "sw"; x: 0; y: parent.height - 8px; width: 8px; height: 8px; go(d) => { root.win-act("resize:" + d); } }
+        Edge { dir: "se"; x: parent.width - 8px; y: parent.height - 8px; width: 8px; height: 8px; go(d) => { root.win-act("resize:" + d); } }
+    }
+}

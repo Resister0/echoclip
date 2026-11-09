@@ -1,0 +1,48 @@
+[package]
+name = "echo-native-proto"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Echo - game clip recorder (native Slint + mpv app)"
+
+[dependencies]
+# only the winit window backend + the OpenGL (femtovg) renderer: no Qt, no accessibility layer
+slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "raw-window-handle-06", "unstable-winit-030"] }
+glow = "0.16"
+libloading = "0.8"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
+raw-window-handle = "0.6"
+# fullscreen controls drawn by mpv over the video (osd.rs) - both already in Slint's dependency tree
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+ab_glyph = "0.2"
+# editor stickers: colour emoji from the system font (already in Slint's dependency tree)
+swash = "0.2"
+# Chat A: Echo's real backend (recorder, settings, hotkeys, cloud) - src-tauri/src files compiled unchanged
+echo-core = { path = "echo-core" }
+# Chat B: Echo's internet requests (same as src-tauri: reqwest blocking + rustls/ring) - lib_net.rs
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Chat B: update card - checks the installer's signature against Echo's updater key (setup.rs)
+minisign-verify = "0.2"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+# Chat A: tray icon + menu (same crate Tauri used for Echo's tray)
+tray-icon = "0.21"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Graphics_Dwm", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_ToolHelp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Chat A: tray icon on Linux (StatusNotifierItem over D-Bus, KDE / GNOME with AppIndicator)
+ksni = { version = "0.3", features = ["blocking"] }
+
+[build-dependencies]
+slint-build = "1"
+# Windows exe icon + version info (build.rs) - only compiled in for Windows builds
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

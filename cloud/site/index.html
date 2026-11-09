@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Echo - lightweight game clipping for any PC</title>
+<title>Echo - incredibly light game clipping for any PC</title>
 <meta name="description" content="An ad-free clip recorder that won't slow your games down, even on low-end PCs. Free, no account needed. Press one key to save the last moments, then trim and share on Discord. Windows and Linux.">
 <meta name="theme-color" content="#7c5cff">
-<meta property="og:title" content="Echo - lightweight game clipping for any PC">
+<meta property="og:title" content="Echo - incredibly light game clipping for any PC">
 <meta property="og:description" content="An ad-free clip recorder that won't slow your games down, even on low-end PCs. Free, no account needed. Press one key to save the last moments, then trim and share on Discord. Windows and Linux.">
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
@@ -32,7 +32,7 @@
 <section class="hero" id="download">
   <canvas id="sky" aria-hidden="true"></canvas>
   <div class="wrap">
-    <p class="eyebrow">Lightweight game clipping for Windows &amp; Linux</p>
+    <p class="eyebrow">Incredibly light game clipping for Windows &amp; Linux</p>
     <h1>Save the moment<br><span>you just played.</span></h1>
     <p class="lead">Echo records your game in the background without slowing it down, even on low-end PCs. Hit one key and the last moments become a clip, ready to trim, caption and share on Discord.</p>
     <div class="dl">
@@ -49,7 +49,7 @@
       also <a href="/download/windows-portable">Echo.exe without installing</a> or the <a href="/download/linux-tar">plain Linux build</a></p>
 
     <div class="stats">
-      <div><b>12 MB</b><small>The Echo app itself</small></div>
+      <div><b>~250 MB</b><small>Memory while recording, encoder included</small></div>
       <div><b>Rust</b><small>Fast, native core</small></div>
       <div><b>0</b><small>Electron or bundled Chromium</small></div>
       <div><b>2</b><small>Systems: Windows &amp; Linux</small></div>
@@ -163,12 +163,12 @@
   <div class="wrap">
     <p class="eyebrow">Light by design</p>
     <h2>Built to stay out of your game's way</h2>
-    <p class="sub">A clipping app runs the whole time you play, so it should be small. Echo is written in Rust and uses the web view your system already has, instead of shipping a full browser of its own.</p>
+    <p class="sub">A clipping app runs the whole time you play, so it should be small. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays your clips with mpv - no web view and no bundled browser at all.</p>
     <div class="compare">
       <div class="card us"><h3>Echo</h3>
         <ul>
-          <li>Rust core: the app itself is about 12 MB (FFmpeg comes alongside for video)</li>
-          <li>Uses the system's own web view (WebView2 on Windows, WebKitGTK on Linux)</li>
+          <li>Native Rust app on Windows - no web view, no bundled browser</li>
+          <li>Clips play hardware-decoded with mpv; FFmpeg comes alongside for video</li>
           <li>Records with your graphics card's encoder (NVIDIA or AMD)</li>
           <li>No account, ads or overlay needed to save a clip</li>
         </ul></div>
@@ -180,7 +180,16 @@
           <li>Usually Windows only</li>
         </ul></div>
     </div>
-    <div class="chips"><span class="chip">Open source · GPL-3.0</span><span class="chip">Rust</span><span class="chip">Tauri</span><span class="chip">FFmpeg</span><span class="chip">Wayland (KDE)</span><span class="chip">PipeWire / PulseAudio</span><span class="chip">gpu-screen-recorder</span></div>
+    <div class="card measure">
+      <h3>Measured: Echo vs Medal, both recording</h3>
+      <table>
+        <tr><th></th><th>Memory</th><th>CPU</th></tr>
+        <tr class="us"><td>Echo 2.0</td><td><b>252 MB</b></td><td>1.2 %</td></tr>
+        <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
+      </table>
+      <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
+    </div>
+    <div class="chips"><span class="chip">Open source · GPL-3.0</span><span class="chip">Rust</span><span class="chip">Slint</span><span class="chip">mpv</span><span class="chip">FFmpeg</span><span class="chip">Wayland (KDE)</span><span class="chip">PipeWire / PulseAudio</span><span class="chip">gpu-screen-recorder</span></div>
   </div>
 </section>
 
@@ -243,6 +252,15 @@
         <p class="note">Backups and syncing between your PCs work the same. The one thing you miss: Discord-playable share links, which need Echo Cloud.</p>
         <a class="btn small byobtn" href="#download" style="margin-top:16px">Download Echo</a></div>
     </div>
+    <div class="card measure">
+      <h3>Measured: Echo vs Medal, both recording</h3>
+      <table>
+        <tr><th></th><th>Memory</th><th>CPU</th></tr>
+        <tr class="us"><td>Echo 2.0</td><td><b>252 MB</b></td><td>1.2 %</td></tr>
+        <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
+      </table>
+      <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
+    </div>
     <div class="chips"><span class="chip">Echo Cloud</span><span class="chip">Google Drive</span><span class="chip">MEGA</span><span class="chip">pCloud</span><span class="chip">Filen</span><span class="chip">WebDAV</span><span class="chip">SFTP</span><span class="chip">S3</span><span class="chip">NAS / folder</span></div>
   </div>
 </section>
@@ -259,7 +277,7 @@
     <details><summary>What do I need to run Echo?</summary><p><b>Windows:</b> Windows 10 (version 1903 or newer) or Windows 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years. <b>Linux:</b> a current 64-bit distribution. The Flatpak brings everything it needs; the AppImage uses gpu-screen-recorder and ffmpeg from your system. The replay buffer needs a little disk space: about 1.5 GB for 10 minutes at the standard quality.</p></details>
     <details><summary>Where do I get help or suggest something?</summary><p>In the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a>: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → <b>Send log</b> gives you a link to paste there, so problems are found quickly.</p></details>
     <details><summary>Is Echo open source?</summary><p>Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on <a href="https://github.com/Resister0/echoclip">GitHub</a>, so you can check what it does, build it yourself or suggest changes.</p></details>
-    <details><summary>Why is Echo so small?</summary><p>Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo is built in Rust with Tauri and borrows the web view your system already has, so the app itself is only about 12 MB.</p></details>
+    <details><summary>Why is Echo so small?</summary><p>Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays clips with mpv, with no browser engine at all. (On Linux it still borrows the web view your system already has, for now.)</p></details>
     <details><summary>Which Linux distributions work?</summary><p>Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the <b>Flatpak</b> brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The <b>AppImage</b> is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the <a href="/download">download page</a>.</p></details>
   </div>
 </section>

@@ -1,0 +1,142 @@
+// Echo's #confirm dialog (confirmBox / choiceBox / askText): dark blurred backdrop, .dlg 400 px panel, title 17 px,
+// muted message, buttons right-aligned. One global drives it; Rust opens it (main.rs ask()) and gets the answer.
+import { T, Btn } from "theme.slint";
+
+export struct DChoice {
+    label: string,
+    value: string,   // what answer() gets ("" = same as closing)
+    kind: string,    // "" / "primary" / "delb" (filled red)
+}
+
+export global Dlg {
+    in-out property <bool> open;
+    in-out property <string> title;
+    in-out property <string> msg;
+    in-out property <[DChoice]> choices;
+    in-out property <bool> input;          // askText: a text field under the message
+    in-out property <string> placeholder;
+    in-out property <string> text;         // the field's text (Rust reads it with the answer)
+    in-out property <string> enter;        // the value Enter answers ("" = Enter does nothing - choiceBox)
+    in-out property <bool> secret;         // Chat B: the field hides what's typed (cloud passwords)
+    callback answer(string);               // "" = closed without choosing (Esc / click outside / Cancel)
+}
+
+export component DialogLayer inherits Rectangle {
+    visible: Dlg.open;
+    // #confirm: #000000d0 (+ blur, which Slint can't do)
+    background: #000000d0;
+    public function take-focus() {
+        if (Dlg.input) {
+            ti.focus();
+        } else {
+            fs.focus();
+        }
+    }
+    // click outside = closed without choosing
+    TouchArea {
+        clicked => { Dlg.answer(""); }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Dlg.answer("");
+                return accept;
+            }
+            if (e.text == Key.Return && Dlg.enter != "") {
+                Dlg.answer(Dlg.enter);
+                return accept;
+            }
+            accept
+        }
+    }
+    // .dlg: 400 px, panel, line border, radius 14, padding 22, shadow 0 20 60 #000c
+    dlg := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 400px;
+        height: col.preferred-height;
+        background: T.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 60px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000cc;
+        TouchArea { }   // clicks inside don't close it
+        col := VerticalLayout {
+            padding: 22px;
+            spacing: 0;
+            Text {
+                text: Dlg.title;
+                font-family: "Segoe UI Variable Display";
+                font-size: 17px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 8px; }
+            Text {
+                text: Dlg.msg;
+                font-size: 14px;
+                color: T.muted;
+                wrap: word-wrap;
+            }
+            // always there (an `if` would hide its id from take-focus), collapsed when not asked for
+            VerticalLayout {
+                visible: Dlg.input;
+                padding-top: Dlg.input ? 12px : 0px;
+                Rectangle {
+                    height: Dlg.input ? 36px : 0px;
+                    clip: true;
+                    background: T.panel2;
+                    border-radius: 9px;
+                    border-width: 1px;
+                    border-color: ti.has-focus ? T.accent : T.line;
+                    if ti.text == "": Text {
+                        x: 10px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: Dlg.placeholder;
+                        font-size: 14px;
+                        color: T.dim;
+                    }
+                    ti := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        single-line: true;
+                        font-size: 14px;
+                        color: T.text;
+                        input-type: Dlg.secret ? InputType.password : InputType.text;
+                        text <=> Dlg.text;
+                        selection-background-color: T.accent.with-alpha(0.45);
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                Dlg.answer("");
+                                return accept;
+                            }
+                            if (e.text == Key.Return && Dlg.enter != "") {
+                                Dlg.answer(Dlg.enter);
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 20px; }
+            // .dbtn: right-aligned, gap 8
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                for c in Dlg.choices: Btn {
+                    text: c.label;
+                    primary: c.kind == "primary";
+                    delb: c.kind == "delb";
+                    clicked => { Dlg.answer(c.value); }
+                }
+            }
+        }
+    }
+}

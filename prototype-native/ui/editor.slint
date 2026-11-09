@@ -1,0 +1,1632 @@
+// The video editor (Echo's #editor, native chat 5). Rust (editor.rs / edrender.rs) owns the edit and does all the
+// hit testing; this file only draws, following Echo's CSS (.ebar, .etools/.tgrp/.tb, .etl/.eruler/.etrack/.eseg/
+// .etb, .einsp). The video itself is mpv's (Windows: its own window at the stage rectangle); texts, captions,
+// boxes, selection handles, gaps and fades over it are an ASS overlay drawn by mpv.
+import { T, Ic, Icon, TipArea, Btn, Kbd } from "theme.slint";
+import { Play } from "player.slint";
+
+export struct EdSeg {
+    at: float,
+    len: float,
+    start: float,
+    speed: float,   // 0 = freeze frame
+    sel: bool,
+    fi: float,
+    fo: float,
+    label: string,  // "2x · Freeze · Vivid" chip
+    drag: bool,     // being dragged: lifted, follows the mouse without easing
+    other: bool,    // from another file (Media): no filmstrip of the clip, its name instead
+    row: int,       // layers only: rows from the top of the Layers track
+    down: bool,     // layers only: being dragged below row 1 = drops back onto the main track (faded)
+}
+
+export struct EdTxt {
+    start: float,
+    len: float,
+    label: string,
+    sel: bool,
+    kind: int,      // 0 text, 1 caption, 2 box (Effects track)
+    lane: int,      // text lane (overlapping texts / captions stack)
+}
+
+export struct EdAud {
+    at: float,
+    len: float,
+    label: string,
+    sel: bool,
+    row: int,
+    mute: bool,
+    mic: bool,      // mic row: blue (Echo's .eab.mic)
+    fi: float,
+    fo: float,
+}
+
+export struct EdMenu {
+    label: string,
+    key: string,
+    act: string,
+    off: bool,      // disabled
+    sep: bool,      // a line instead of an item
+}
+
+export struct EdTick {
+    t: float,
+    label: string,
+}
+
+export struct TipPart {
+    t: string,
+    k: bool,        // a key (kbd chip)
+}
+
+export global Ed {
+    in-out property <bool> open;
+    in-out property <string> name;
+    in-out property <float> dur;            // the source clip (seconds) - filmstrip pictures
+    in-out property <float> total;
+    in-out property <float> t;              // playhead (output seconds)
+    in-out property <bool> playing;
+    in-out property <string> time-text: "0:00.0 / 0:00.0";
+    in-out property <string> t-text: "0:00.0";
+    in-out property <float> pps: 40;        // timeline pixels per second
+    in-out property <float> scroll;         // timeline scroll (px)
+    in-out property <[EdSeg]> segs;
+    in-out property <[EdTxt]> texts;
+    in-out property <[EdTick]> ticks;
+    in-out property <[float]> marks;       // Chat A: Echo's bookmarks on the ruler (output seconds)
+    in-out property <int> lanes: 1;         // text lanes
+    in-out property <[EdAud]> auds;         // separated audio (U)
+    in-out property <int> aud-rows;         // audio rows (one per source track; 0 = no Audio track)
+    in-out property <float> text-y: 114;    // Text track top (below the Audio track)
+    in-out property <[EdSeg]> layers;       // video layers above the main track (PiP, Echo's eotrack)
+    in-out property <int> ov-rows;          // layer rows (0 = no Layers track)
+    in-out property <float> video-y: 38;    // main Video track top (below the layers)
+    in-out property <float> aud-y: 114;     // Audio track top
+    in-out property <float> drag-dy;        // a piece dragged upward follows the mouse (<= 0)
+    in-out property <float> tl-top;         // the timeline's top in the window (set with every timeline mouse event)
+    in-out property <int> lay-row: 1;       // the selected layer (inspector)
+    in-out property <float> lay-scale: 1;
+    in-out property <bool> lay-sound: true;
+    in-out property <string> aud-label;
+    in-out property <float> aud-vol: 1;
+    in-out property <bool> aud-mute;
+    in-out property <float> fx-y: -1;       // Effects track top (-1 = no boxes, no track)
+    in-out property <float> tl-content: 170; // timeline content height
+    in-out property <bool> can-undo;
+    in-out property <bool> can-redo;
+    in-out property <bool> snap: true;
+    in-out property <bool> vertical;
+    in-out property <bool> busy;            // exporting
+    in-out property <bool> listening;       // captions running
+    in-out property <bool> has-caps;
+    in-out property <string> cursor;        // "" / "ew" / "move" over the timeline
+    // inspector
+    in-out property <string> sel-kind;      // "" / "seg" / "txt" / "cap" / "box"
+    in-out property <float> sel-speed: 1;
+    in-out property <float> sel-fi;
+    in-out property <float> sel-fo;
+    in-out property <float> sel-fmax: 1;
+    in-out property <bool> sel-freeze;
+    in-out property <float> sel-hold: 2;
+    in-out property <string> sel-look;
+    in-out property <float> sel-bri;
+    in-out property <float> sel-con: 1;
+    in-out property <float> sel-sat: 1;
+    in-out property <string> sel-info;
+    in-out property <string> sel-text;
+    in-out property <string> sel-color;
+    in-out property <string> sel-anim;
+    in-out property <float> sel-size: 0.08;
+    in-out property <string> box-kind;
+    in-out property <float> box-blur: 20;
+    in-out property <string> box-color;
+    in-out property <float> box-opacity: 1;
+    in-out property <string> box-zoom;
+    in-out property <string> cap-style: "classic";
+    in-out property <bool> cap-hl: true;
+    in-out property <string> cap-hl-color: "ffd23f";
+    in-out property <int> cap-lines: 1;
+    in-out property <float> cap-w: 0.7;
+    in-out property <bool> normalize;
+    in-out property <float> volume: 1;      // the edit's volume (0..2) + mute (Clip panel)
+    in-out property <bool> mute;
+    in-out property <float> zoom-frac: 0.3; // timeline zoom slider 0..1
+    in-out property <bool> export-menu;
+    in-out property <bool> menu-open;       // right-click timeline menu (Echo's #ectx)
+    in-out property <length> menu-x;
+    in-out property <length> menu-y;        // inside the timeline
+    in-out property <[EdMenu]> menu-items;
+    in-out property <bool> rng-on;          // highlighted part (yellow band)
+    in-out property <float> rng-a;
+    in-out property <float> rng-b;
+    in-out property <string> rng-text;
+    in-out property <int> text-focus;       // bumped by Rust: focus the inspector's text box
+    in-out property <bool> sticker-menu;    // Sticker button's menu: emoji grid + "Picture or GIF from your PC…"
+    in-out property <[image]> emoji;
+    in-out property <bool> marq;            // Ctrl+drag selection box on the timeline (content coordinates)
+    in-out property <float> marq-x;
+    in-out property <float> marq-y;
+    in-out property <float> marq-w;
+    in-out property <float> marq-h;
+    callback act(string);                   // buttons + keys: "back" "undo" "redo" "split" "del" "ripple" "gaps" "text" "cap" "play" "export:<p>" ...
+    callback tl(string, length, length);    // timeline mouse: down / move / up / hover / wheel-up / wheel-down / ctrl-wheel-up ...
+    callback stage(string, length, length); // mouse on the video
+    callback set(string, string);           // inspector: key, value
+    callback key(string, bool, bool, bool) -> bool;   // text, ctrl, shift, repeat
+}
+
+// Echo's .seg-btns button (selected = white with dark text)
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <string> tip;
+    callback clicked;
+    height: 30px;
+    min-width: lb.preferred-width + 18px;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: on ? T.text : ta.has-hover ? T.hover : T.line;
+    background: on ? T.text : ta.has-hover ? T.panel2 : transparent;
+    animate background, border-color { duration: T.fade; }
+    lb := Text {
+        text: root.text;
+        font-size: 12.5px;
+        font-weight: (root.on ? 600 : 500) + T.fw;
+        color: root.on ? #111 : T.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
+    }
+}
+
+// Echo's .swatch button
+component Swatch inherits Rectangle {
+    in property <color> c;
+    in property <bool> on;
+    callback clicked;
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+    background: c;
+    border-width: 2px;
+    border-color: on ? white : T.line;
+    drop-shadow-blur: on ? 4px : 0;
+    drop-shadow-color: T.accent;
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component ESlider inherits Rectangle {
+    in property <float> value;
+    in property <float> lo;
+    in property <float> hi: 1;
+    in property <float> step: 0.05;
+    in property <color> thumb: white;
+    out property <float> v: value;
+    callback moved(float);
+    callback commit(float);
+    changed value => { self.v = self.value; }
+    height: 22px;
+    property <float> frac: root.hi > root.lo ? clamp((root.v - root.lo) / (root.hi - root.lo), 0, 1) : 0;
+    Rectangle {
+        y: 9px;
+        height: 4px;
+        border-radius: 2px;
+        background: T.hover;
+    }
+    Rectangle {
+        x: 0;
+        y: 9px;
+        width: 8px + (root.width - 16px) * root.frac;
+        height: 4px;
+        border-radius: 2px;
+        background: T.accent;
+    }
+    Rectangle {
+        x: (root.width - 16px) * root.frac;
+        y: 3px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.thumb;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        function at(px: length) {
+            root.v = clamp(round(((px - 8px) / max(1px, root.width - 16px) * (root.hi - root.lo) + root.lo) / root.step) * root.step, root.lo, root.hi);
+            root.moved(root.v);
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                self.at(self.mouse-x);
+            } else if (e.kind == PointerEventKind.up) {
+                root.commit(root.v);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                self.at(self.mouse-x);
+            }
+        }
+    }
+}
+
+// Echo's .einsp label
+component Label inherits Text {
+    font-size: 12.5px;
+    color: T.muted;
+}
+
+// Echo's .einsp h3 (15 px, line under it)
+component H3 inherits VerticalLayout {
+    in property <string> text;
+    spacing: 12px;
+    Text {
+        text: root.text;
+        font-size: 15px;
+        font-weight: 700 + T.fw;
+        color: T.text;
+    }
+    Rectangle { height: 1px; background: T.line; }
+}
+
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled;
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background: on ? T.accent : T.hover;
+    animate background { duration: T.fade; }
+    Rectangle {
+        x: root.on ? 18px : 2px;
+        y: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: white;
+        animate x { duration: 120ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+// a setting row: words left, switch right (Echo's .row)
+component SwitchRow inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> on;
+    callback toggled;
+    height: 30px;
+    Text { text: root.text; font-size: 13px; font-weight: 600 + T.fw; color: T.text; vertical-alignment: center; horizontal-stretch: 1; }
+    Rectangle {
+        width: 38px;
+        Toggle { y: 4px; on: root.on; toggled => { root.toggled(); } }
+    }
+}
+
+// one line of Echo's shortcut tips: words + <kbd> keys (line-height 1.9 = 24 px)
+component TipLine inherits HorizontalLayout {
+    in property <[TipPart]> parts;
+    spacing: 3px;
+    alignment: start;
+    height: 24px;
+    for p in root.parts: Rectangle {
+        width: p.k ? kb.width : tx.preferred-width;
+        kb := Kbd {
+            visible: p.k;
+            y: 2px;
+            text: p.t;
+        }
+        tx := Text {
+            visible: !p.k;
+            text: p.t;
+            font-size: 12.5px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Echo's .tb (inside a .tgrp)
+component Tool inherits Rectangle {
+    in property <string> icon;
+    in property <string> text;
+    in property <string> tip;
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 30px;
+    width: hl.preferred-width;
+    border-radius: 7px;
+    background: on ? T.hi.with-alpha(0.08) : ta.has-hover && enabled ? #ffffff12 : transparent;
+    opacity: enabled ? 1 : 0.35;
+    animate background { duration: T.fade; }
+    property <color> fg: on ? T.hi : ta.has-hover && enabled ? T.text : T.muted;
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
+    }
+    hl := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            width: 17px;
+            height: 17px;
+            stroke-width: 2px;
+            commands: root.icon;
+            stroke: root.fg;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 12.5px;
+            font-weight: 500 + T.fw;
+            color: root.fg;
+        }
+    }
+}
+
+// Echo's .tgrp: a rounded group of tool buttons
+component Group inherits Rectangle {
+    background: T.panel2;
+    border-width: 1px;
+    border-color: T.line;
+    border-radius: 10px;
+    height: 38px;
+    width: gl.preferred-width;
+    gl := HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        @children
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <int> focus-seq;
+    callback edited(string);
+    background: T.bg;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    height: 76px;
+    clip: true;
+    changed focus-seq => {
+        ti.focus();
+        ti.select-all();
+    }
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { ti.focus(); }
+    }
+    ti := TextInput {
+        x: 10px;
+        y: 8px;
+        width: parent.width - 20px;
+        height: parent.height - 16px;
+        text <=> root.text;
+        single-line: false;
+        wrap: word-wrap;
+        font-size: 13.5px;
+        color: T.text;
+        selection-background-color: T.accent.with-alpha(0.45);
+        selection-foreground-color: T.text;
+        edited => { root.edited(self.text); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                Ed.act("blur");
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+// the label column of a timeline track (Echo's .tlab)
+component TrackLabel inherits Rectangle {
+    in property <string> icon;
+    in property <string> text;
+    width: 96px;
+    background: T.rail;
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-x: 6px;
+    drop-shadow-color: #00000060;
+    Rectangle { x: parent.width - 1px; width: 1px; background: T.line; }
+    HorizontalLayout {
+        padding-left: 10px;
+        spacing: 7px;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            width: 15px;
+            height: 15px;
+            stroke-width: 2px;
+            commands: root.icon;
+            stroke: T.muted;
+        }
+        Text {
+            text: root.text;
+            font-size: 11.5px;
+            font-weight: 600 + T.fw;
+            color: T.muted;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+export component EditorView inherits Rectangle {
+    background: T.bg;
+    property <length> insp-w: 324px;
+    property <length> tl-h: clamp(Ed.tl-content * 1px, 170px, root.height * 0.45);
+    property <length> tools-h: 52px;
+    property <length> top-h: 60px;
+    property <length> area-w: root.width - insp-w;
+    property <length> area-h: root.height - top-h - tools-h - tl-h;
+    out property <length> vw: max(160px, min(area-w - 48px, (area-h - 28px) * 16 / 9));
+    out property <length> vh: vw * 9 / 16;
+    out property <length> vx: (area-w - vw) / 2;
+    out property <length> vy: top-h + max(0px, (area-h - vh) / 2);
+    property <length> lp: 104px;
+    // William (9 Nov): frameless window - room for the window buttons (app.slint draws them over the bar's right
+    // end) and the bar's empty space moves the window / double-click maximizes, like the main title bar
+    in property <length> win-pad;
+    in property <bool> win-drag;
+    callback win-act(string);
+
+    public function take-focus() {
+        fs.focus();
+    }
+
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (Ed.key(e.text, e.modifiers.control, e.modifiers.shift, e.repeat)) {
+                return accept;
+            }
+            return reject;
+        }
+    }
+    // keeps clicks from reaching the library / player under it
+    TouchArea {
+        clicked => {
+            Ed.export-menu = false;
+            fs.focus();
+        }
+    }
+
+    // ---------- stage background (Echo's .ewrap) ----------
+    Rectangle {
+        y: root.top-h;
+        width: root.area-w;
+        height: root.area-h;
+        background: @radial-gradient(circle, #16161c 0%, #0b0b0f 70%);
+    }
+
+    // ---------- top bar (Echo's .ebar) ----------
+    Rectangle {
+        height: root.top-h;
+        y: 0;
+        background: @linear-gradient(180deg, T.panel 0%, T.rail 100%);
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: T.line;
+        }
+        if root.win-drag: TouchArea {
+            pointer-event(e) => {
+                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                    Ed.export-menu = false;
+                    root.win-act("drag");
+                }
+            }
+            double-clicked => { root.win-act("max"); }
+        }
+        HorizontalLayout {
+            x: 12px;
+            y: 11px;
+            width: root.width - 24px - root.win-pad;
+            height: 38px;
+            spacing: 8px;
+            Btn {
+                text: "Back";
+                icon: Ic.prev;
+                tip: "Back (Esc)";
+                clicked => { Ed.act("back"); }
+            }
+            Text {
+                text: Ed.name;
+                vertical-alignment: center;
+                font-size: 14.5px;
+                font-weight: 600 + T.fw;
+                color: T.text;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if Ed.rng-on: Text {
+                text: Ed.rng-text;
+                vertical-alignment: center;
+                font-size: 12px;
+                color: T.hi;
+            }
+            if Ed.rng-on: Btn {
+                text: "Cut range";
+                tip: "Remove the highlighted part (X)";
+                clicked => { Ed.act("rng-cut"); }
+            }
+            if Ed.rng-on: Btn {
+                text: "Export range";
+                tip: "Export only the highlighted part";
+                clicked => { Ed.act("export:range"); }
+            }
+            if Ed.rng-on: Btn {
+                icon: Ic.x;
+                tip: "Clear highlight (Esc)";
+                clicked => { Ed.act("rng-clear"); }
+            }
+            Btn {
+                text: "Undo";
+                icon: "M9 14 4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-3";
+                tip: "Undo (Ctrl+Z)";
+                clicked => { Ed.act("undo"); }
+            }
+            Btn {
+                text: "9:16";
+                icon: "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z";
+                active: Ed.vertical;
+                tip: "Vertical 9:16 for TikTok / Shorts - drag the frame on the video";
+                clicked => { Ed.act("vertical"); }
+            }
+            Btn {
+                text: Ed.busy ? "Exporting…" : "Export";
+                icon: "M12 3v12 M7 10l5 5 5-5 M5 21h14";
+                primary: true;
+                clicked => {
+                    if (!Ed.busy) {
+                        Ed.export-menu = !Ed.export-menu;
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- the video (mpv draws it here; Slint shows texture-mode frames) ----------
+    Rectangle {
+        x: root.vx;
+        y: root.vy;
+        width: root.vw;
+        height: root.vh;
+        background: black;
+        border-radius: 6px;
+        clip: true;
+        if Ed.open: Image {
+            width: parent.width - (Play.tick ? 0px : 0.01px);
+            height: parent.height;
+            source: Play.frame;
+            image-fit: fill;
+        }
+        sta := TouchArea {
+            mouse-cursor: default;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    fs.focus();
+                    Ed.export-menu = false;
+                    Ed.stage("down", self.mouse-x, self.mouse-y);
+                } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    Ed.stage("up", self.mouse-x, self.mouse-y);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    Ed.stage("move", self.mouse-x, self.mouse-y);
+                }
+            }
+            double-clicked => { Ed.stage("dbl", self.mouse-x, self.mouse-y); }
+            scroll-event(e) => {
+                // the amount goes along: main.rs hands one wheel notch out in many small glide steps (160 px)
+                Ed.stage("wheel:" + e.delta-y / 1px, self.mouse-x, self.mouse-y);
+                return accept;
+            }
+        }
+    }
+
+    // ---------- inspector (Echo's #einsp) ----------
+    Rectangle {
+        x: root.width - root.insp-w;
+        y: root.top-h;
+        width: root.insp-w;
+        height: root.area-h;
+        background: T.bg;
+        clip: true;
+        Rectangle {
+            x: 0;
+            width: 1px;
+            background: T.line;
+        }
+        TouchArea { }
+        // scrolls when the window is short (Flickable sized from outside, body from its own preferred height)
+        Flickable {
+            x: 1px;
+            width: parent.width - 1px;
+            height: parent.height;
+            content-height: ib.preferred-height;
+        ib := VerticalLayout {
+            width: parent.width;
+            height: self.preferred-height;
+            padding: 18px;
+            padding-top: 16px;
+            spacing: 8px;
+            alignment: start;
+            // ----- nothing selected: the clip + Echo's tips -----
+            if Ed.sel-kind == "": VerticalLayout {
+                spacing: 8px;
+                H3 { text: "Clip"; }
+                Rectangle { height: 6px; }
+                Label { text: "Volume " + round(Ed.volume * 100) + "%"; }
+                ESlider {
+                    value: Ed.volume;
+                    lo: 0;
+                    hi: 2;
+                    step: 0.05;
+                    moved(v) => { Ed.set("volume-live", v); }
+                    commit(v) => { Ed.set("volume", v); }
+                }
+                Rectangle { height: 14px; }
+                SwitchRow { text: "Mute audio"; on: Ed.mute; toggled => { Ed.set("mute", Ed.mute ? "0" : "1"); } }
+                Rectangle { height: 22px; }
+                Text { text: "Shortcuts"; font-size: 12.5px; font-weight: 700 + T.fw; color: T.text; }
+                VerticalLayout {
+                    TipLine { parts: [{ t: "Space", k: true }, { t: "play / pause ·", k: false }, { t: "←", k: true }, { t: "→", k: true }, { t: "2 s (", k: false }, { t: "Shift", k: true }, { t: ": 0.1 s)", k: false }]; }
+                    TipLine { parts: [{ t: "S", k: true }, { t: "split at playhead", k: false }]; }
+                    TipLine { parts: [{ t: "Del", k: true }, { t: "delete (leaves a gap) ·", k: false }, { t: "Shift", k: true }, { t: "+", k: false }, { t: "Del", k: true }, { t: "ripple", k: false }]; }
+                    TipLine { parts: [{ t: "delete", k: false }]; }
+                    TipLine { parts: [{ t: "Ctrl", k: true }, { t: "+", k: false }, { t: "D", k: true }, { t: "duplicate ·", k: false }, { t: "Ctrl", k: true }, { t: "+", k: false }, { t: "A", k: true }, { t: "select all", k: false }]; }
+                    TipLine { parts: [{ t: "I", k: true }, { t: "/", k: false }, { t: "O", k: true }, { t: "highlight from / up to the playhead ·", k: false }, { t: "X", k: true }]; }
+                    TipLine { parts: [{ t: "cuts the highlight", k: false }]; }
+                    TipLine { parts: [{ t: "T", k: true }, { t: "add text", k: false }]; }
+                    TipLine { parts: [{ t: "B", k: true }, { t: "blur / colour box (hide names, chat…)", k: false }]; }
+                    TipLine { parts: [{ t: "Z", k: true }, { t: "zoom in on a spot", k: false }]; }
+                    TipLine { parts: [{ t: "U", k: true }, { t: "separate audio of a piece", k: false }]; }
+                    TipLine { parts: [{ t: "F", k: true }, { t: "freeze frame", k: false }]; }
+                    TipLine { parts: [{ t: "C", k: true }, { t: "auto captions from your mic", k: false }]; }
+                    TipLine { parts: [{ t: "Ctrl", k: true }, { t: "+", k: false }, { t: "Z", k: true }, { t: "undo ·", k: false }, { t: "Ctrl", k: true }, { t: "+", k: false }, { t: "Y", k: true }, { t: "redo", k: false }]; }
+                    TipLine { parts: [{ t: "Esc", k: true }, { t: "deselect / clear the highlight", k: false }]; }
+                }
+                Rectangle { height: 22px; }
+                Text { text: "Mouse"; font-size: 12.5px; font-weight: 700 + T.fw; color: T.text; }
+                VerticalLayout {
+                    TipLine { parts: [{ t: "Click a piece for colour, speed and fades.", k: false }]; }
+                    TipLine { parts: [{ t: "Drag piece edges to trim them.", k: false }]; }
+                    TipLine { parts: [{ t: "Drag a piece anywhere — gaps play as black.", k: false }]; }
+                    TipLine { parts: [{ t: "Drag a piece up to put it on a layer (PiP).", k: false }]; }
+                    TipLine { parts: [{ t: "Drag on empty timeline space to highlight a part", k: false }]; }
+                    TipLine { parts: [{ t: "(yellow).", k: false }]; }
+                    TipLine { parts: [{ t: "Ctrl", k: true }, { t: "+click / drag on empty space: select several.", k: false }]; }
+                    TipLine { parts: [{ t: "Ctrl", k: true }, { t: "+scroll to zoom the timeline.", k: false }]; }
+                }
+            }
+            // ----- a piece -----
+            if Ed.sel-kind == "seg": VerticalLayout {
+                spacing: 8px;
+                H3 { text: Ed.sel-freeze ? "Freeze frame" : "Clip piece"; }
+                if Ed.sel-freeze: VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Hold " + round(Ed.sel-hold * 10) / 10 + "s"; }
+                    ESlider {
+                        value: Ed.sel-hold;
+                        lo: 0.5;
+                        hi: 10;
+                        step: 0.1;
+                        moved(v) => { Ed.set("hold-live", v); }
+                        commit(v) => { Ed.set("hold", v); }
+                    }
+                }
+                if !Ed.sel-freeze: VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Speed"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "0.25x"; on: abs(Ed.sel-speed - 0.25) < 0.01; clicked => { Ed.set("speed", "0.25"); } }
+                        Chip { text: "0.5x"; on: abs(Ed.sel-speed - 0.5) < 0.01; clicked => { Ed.set("speed", "0.5"); } }
+                        Chip { text: "0.75x"; on: abs(Ed.sel-speed - 0.75) < 0.01; clicked => { Ed.set("speed", "0.75"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "1x"; on: abs(Ed.sel-speed - 1) < 0.01; clicked => { Ed.set("speed", "1"); } }
+                        Chip { text: "1.5x"; on: abs(Ed.sel-speed - 1.5) < 0.01; clicked => { Ed.set("speed", "1.5"); } }
+                        Chip { text: "2x"; on: abs(Ed.sel-speed - 2) < 0.01; clicked => { Ed.set("speed", "2"); } }
+                    }
+                }
+                Label { text: Ed.sel-info; wrap: word-wrap; }
+                Label { text: "Fade in " + round(Ed.sel-fi * 10) / 10 + "s"; }
+                ESlider {
+                    value: Ed.sel-fi;
+                    hi: Ed.sel-fmax;
+                    step: 0.1;
+                    moved(v) => { Ed.set("fi-live", v); }
+                    commit(v) => { Ed.set("fi", v); }
+                }
+                Label { text: "Fade out " + round(Ed.sel-fo * 10) / 10 + "s"; }
+                ESlider {
+                    value: Ed.sel-fo;
+                    hi: Ed.sel-fmax;
+                    step: 0.1;
+                    moved(v) => { Ed.set("fo-live", v); }
+                    commit(v) => { Ed.set("fo", v); }
+                }
+                Label { text: "Colour"; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "None"; on: Ed.sel-look == ""; clicked => { Ed.set("look", ""); } }
+                    Chip { text: "Vivid"; on: Ed.sel-look == "vivid"; clicked => { Ed.set("look", "vivid"); } }
+                    Chip { text: "Punchy"; on: Ed.sel-look == "punch"; clicked => { Ed.set("look", "punch"); } }
+                    Chip { text: "Warm"; on: Ed.sel-look == "warm"; clicked => { Ed.set("look", "warm"); } }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "Cool"; on: Ed.sel-look == "cool"; clicked => { Ed.set("look", "cool"); } }
+                    Chip { text: "Cinema"; on: Ed.sel-look == "cinema"; tip: "Cinematic"; clicked => { Ed.set("look", "cinema"); } }
+                    Chip { text: "B&W"; on: Ed.sel-look == "bw"; clicked => { Ed.set("look", "bw"); } }
+                    Chip { text: "Vintage"; on: Ed.sel-look == "vintage"; clicked => { Ed.set("look", "vintage"); } }
+                }
+                Label { text: "Brightness " + round(Ed.sel-bri * 100); }
+                ESlider { value: Ed.sel-bri; lo: -0.6; hi: 0.6; step: 0.02; moved(v) => { Ed.set("bri-live", v); } commit(v) => { Ed.set("bri", v); } }
+                Label { text: "Contrast " + round(Ed.sel-con * 100) + "%"; }
+                ESlider { value: Ed.sel-con; lo: 0.5; hi: 1.8; step: 0.02; moved(v) => { Ed.set("con-live", v); } commit(v) => { Ed.set("con", v); } }
+                Label { text: "Saturation " + round(Ed.sel-sat * 100) + "%"; }
+                ESlider { value: Ed.sel-sat; lo: 0; hi: 2; step: 0.02; moved(v) => { Ed.set("sat-live", v); } commit(v) => { Ed.set("sat", v); } }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Btn { text: "Same for all pieces"; small: true; clicked => { Ed.act("color-all"); } }
+                    Btn { text: "Reset"; small: true; clicked => { Ed.act("color-reset"); } }
+                }
+            }
+            // ----- separated audio -----
+            if Ed.sel-kind == "aud": VerticalLayout {
+                spacing: 8px;
+                H3 { text: Ed.aud-label; }
+                Label { text: "Volume " + round(Ed.aud-vol * 100) + "%"; }
+                ESlider { value: Ed.aud-vol; lo: 0; hi: 2; step: 0.05; moved(v) => { Ed.set("aud-vol-live", v); } commit(v) => { Ed.set("aud-vol", v); } }
+                SwitchRow { text: "Mute"; on: Ed.aud-mute; toggled => { Ed.set("aud-mute", Ed.aud-mute ? "0" : "1"); } }
+                Label { text: "Fade in " + round(Ed.sel-fi * 10) / 10 + "s"; }
+                ESlider { value: Ed.sel-fi; hi: Ed.sel-fmax; step: 0.1; moved(v) => { Ed.set("fi-live", v); } commit(v) => { Ed.set("fi", v); } }
+                Label { text: "Fade out " + round(Ed.sel-fo * 10) / 10 + "s"; }
+                ESlider { value: Ed.sel-fo; hi: Ed.sel-fmax; step: 0.1; moved(v) => { Ed.set("fo-live", v); } commit(v) => { Ed.set("fo", v); } }
+                Label { text: Ed.sel-info; wrap: word-wrap; }
+                Label { text: "Drag it to move it (it sticks to piece edges), drag its ends to trim. S cuts it at the playhead."; wrap: word-wrap; color: T.dim; }
+                Btn { text: "Delete audio"; clicked => { Ed.act("del"); } }
+            }
+            // ----- a layer piece (Echo's layer panel) -----
+            if Ed.sel-kind == "ov": VerticalLayout {
+                spacing: 8px;
+                H3 { text: "Layer " + Ed.lay-row; }
+                Label { text: "Size " + round(Ed.lay-scale * 100) + "%"; }
+                ESlider { value: Ed.lay-scale; lo: 0.15; hi: 1; step: 0.01; moved(v) => { Ed.set("lay-scale-live", v); } commit(v) => { Ed.set("lay-scale", v); } }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "Full frame"; on: Ed.lay-scale > 0.995; clicked => { Ed.set("lay-full", ""); } }
+                    Chip { text: "Corner (PiP)"; on: abs(Ed.lay-scale - 0.36) < 0.005; clicked => { Ed.set("lay-pip", ""); } }
+                }
+                SwitchRow { text: "Include its sound"; on: Ed.lay-sound; toggled => { Ed.set("lay-sound", Ed.lay-sound ? "0" : "1"); } }
+                Label { text: "Speed"; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "0.25x"; on: abs(Ed.sel-speed - 0.25) < 0.01; clicked => { Ed.set("speed", "0.25"); } }
+                    Chip { text: "0.5x"; on: abs(Ed.sel-speed - 0.5) < 0.01; clicked => { Ed.set("speed", "0.5"); } }
+                    Chip { text: "0.75x"; on: abs(Ed.sel-speed - 0.75) < 0.01; clicked => { Ed.set("speed", "0.75"); } }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "1x"; on: abs(Ed.sel-speed - 1) < 0.01; clicked => { Ed.set("speed", "1"); } }
+                    Chip { text: "1.5x"; on: abs(Ed.sel-speed - 1.5) < 0.01; clicked => { Ed.set("speed", "1.5"); } }
+                    Chip { text: "2x"; on: abs(Ed.sel-speed - 2) < 0.01; clicked => { Ed.set("speed", "2"); } }
+                }
+                Label { text: Ed.sel-info; wrap: word-wrap; }
+                Label { text: "Drag it on the video to move it, scroll on it to resize. Drag its block down onto the main track to put it back."; wrap: word-wrap; color: T.dim; }
+                Btn { text: "Delete layer piece"; clicked => { Ed.act("del"); } }
+            }
+            // ----- a box (blur / colour / zoom) -----
+            // ----- several things (Ctrl+click / Ctrl+drag / Ctrl+A) -----
+            if Ed.sel-kind == "multi": VerticalLayout {
+                spacing: 8px;
+                H3 { text: "Selection"; }
+                Label { text: Ed.sel-info; wrap: word-wrap; }
+                Label { text: "Drag one of them to move them all together."; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Btn { text: "Delete"; tip: "Delete all of them (Del)"; clicked => { Ed.act("del"); } }
+                    Btn { text: "Ripple delete"; tip: "Delete and close the gaps (Shift+Del)"; clicked => { Ed.act("ripple"); } }
+                }
+            }
+            if Ed.sel-kind == "box": VerticalLayout {
+                spacing: 8px;
+                H3 { text: Ed.box-kind == "blur" ? "Blur box" : Ed.box-kind == "zoom" ? "Zoom" : Ed.box-kind == "image" ? "Sticker" : "Colour box"; }
+                if Ed.box-kind == "image": VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Opacity " + round(Ed.box-opacity * 100) + "%"; }
+                    ESlider { value: Ed.box-opacity; lo: 0.1; hi: 1; step: 0.05; moved(v) => { Ed.set("box-opacity-live", v); } commit(v) => { Ed.set("box-opacity", v); } }
+                }
+                if Ed.box-kind != "image": HorizontalLayout {
+                    spacing: 4px;
+                    Chip { text: "Blur"; on: Ed.box-kind == "blur"; clicked => { Ed.set("box-kind", "blur"); } }
+                    Chip { text: "Colour"; on: Ed.box-kind == "color"; clicked => { Ed.set("box-kind", "color"); } }
+                    Chip { text: "Zoom"; on: Ed.box-kind == "zoom"; clicked => { Ed.set("box-kind", "zoom"); } }
+                }
+                if Ed.box-kind == "zoom": Label {
+                    text: "Zooms in " + Ed.box-zoom + "× on the blue area (smaller box = closer). It eases in and out; click elsewhere to preview.";
+                    wrap: word-wrap;
+                }
+                if Ed.box-kind == "blur": VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Blur strength " + round(Ed.box-blur); }
+                    ESlider { value: Ed.box-blur; lo: 4; hi: 80; step: 1; moved(v) => { Ed.set("box-blur-live", v); } commit(v) => { Ed.set("box-blur", v); } }
+                    Label { text: "The preview shows a frosted box - the export really blurs it."; wrap: word-wrap; color: T.dim; }
+                }
+                if Ed.box-kind == "color": VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Colour"; }
+                    HorizontalLayout {
+                        spacing: 7px;
+                        alignment: start;
+                        Swatch { c: #000000; on: Ed.box-color == "000000"; clicked => { Ed.set("box-color", "000000"); } }
+                        Swatch { c: #2b2b33; on: Ed.box-color == "2b2b33"; clicked => { Ed.set("box-color", "2b2b33"); } }
+                        Swatch { c: #ffffff; on: Ed.box-color == "ffffff"; clicked => { Ed.set("box-color", "ffffff"); } }
+                        Swatch { c: #ff5c7a; on: Ed.box-color == "ff5c7a"; clicked => { Ed.set("box-color", "ff5c7a"); } }
+                        Swatch { c: #ffd23f; on: Ed.box-color == "ffd23f"; clicked => { Ed.set("box-color", "ffd23f"); } }
+                        Swatch { c: #4cc2ff; on: Ed.box-color == "4cc2ff"; clicked => { Ed.set("box-color", "4cc2ff"); } }
+                    }
+                    Label { text: "Opacity " + round(Ed.box-opacity * 100) + "%"; }
+                    ESlider { value: Ed.box-opacity; lo: 0.1; hi: 1; step: 0.05; moved(v) => { Ed.set("box-opacity-live", v); } commit(v) => { Ed.set("box-opacity", v); } }
+                }
+                Label { text: Ed.sel-info; wrap: word-wrap; }
+                Btn { text: Ed.box-kind == "image" ? "Delete sticker" : "Delete box"; clicked => { Ed.act("del"); } }
+            }
+            // ----- a text / caption -----
+            if Ed.sel-kind == "txt" || Ed.sel-kind == "cap": VerticalLayout {
+                spacing: 8px;
+                H3 { text: Ed.sel-kind == "cap" ? "Caption" : "Text"; }
+                Field {
+                    text: Ed.sel-text;
+                    focus-seq: Ed.text-focus;
+                    edited(s) => { Ed.set("text", s); }
+                }
+                if Ed.sel-kind == "txt": VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Size " + round(Ed.sel-size * 1000) / 10 + "% · or drag a corner / scroll on the text"; wrap: word-wrap; }
+                    ESlider {
+                        value: Ed.sel-size;
+                        lo: 0.02;
+                        hi: 0.4;
+                        step: 0.005;
+                        moved(v) => { Ed.set("size-live", v); }
+                        commit(v) => { Ed.set("size", v); }
+                    }
+                    Label { text: "Color"; }
+                    HorizontalLayout {
+                        spacing: 7px;
+                        alignment: start;
+                        Swatch { c: #ffffff; on: Ed.sel-color == "ffffff"; clicked => { Ed.set("color", "ffffff"); } }
+                        Swatch { c: #ffd23f; on: Ed.sel-color == "ffd23f"; clicked => { Ed.set("color", "ffd23f"); } }
+                        Swatch { c: #ff5c7a; on: Ed.sel-color == "ff5c7a"; clicked => { Ed.set("color", "ff5c7a"); } }
+                        Swatch { c: #3ddc97; on: Ed.sel-color == "3ddc97"; clicked => { Ed.set("color", "3ddc97"); } }
+                        Swatch { c: #4cc2ff; on: Ed.sel-color == "4cc2ff"; clicked => { Ed.set("color", "4cc2ff"); } }
+                        Swatch { c: #000000; on: Ed.sel-color == "000000"; clicked => { Ed.set("color", "000000"); } }
+                    }
+                    Label { text: "Animation"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "None"; on: Ed.sel-anim == ""; clicked => { Ed.set("anim", ""); } }
+                        Chip { text: "Fade"; on: Ed.sel-anim == "fade"; clicked => { Ed.set("anim", "fade"); } }
+                        Chip { text: "Pop"; on: Ed.sel-anim == "pop"; clicked => { Ed.set("anim", "pop"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Slide up"; on: Ed.sel-anim == "slide"; clicked => { Ed.set("anim", "slide"); } }
+                        Chip { text: "Bounce"; on: Ed.sel-anim == "bounce"; clicked => { Ed.set("anim", "bounce"); } }
+                        Chip { text: "Typewriter"; on: Ed.sel-anim == "type"; clicked => { Ed.set("anim", "type"); } }
+                    }
+                    Label { text: Ed.sel-info + " · Ctrl+D duplicates"; wrap: word-wrap; }
+                    Btn { text: "Delete text"; clicked => { Ed.act("del"); } }
+                }
+                if Ed.sel-kind == "cap": VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Caption style (all captions)"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Classic"; on: Ed.cap-style == "classic"; clicked => { Ed.set("cap-style", "classic"); } }
+                        Chip { text: "Yellow"; on: Ed.cap-style == "yellow"; clicked => { Ed.set("cap-style", "yellow"); } }
+                        Chip { text: "LOUD"; on: Ed.cap-style == "loud"; clicked => { Ed.set("cap-style", "loud"); } }
+                    }
+                    SwitchRow { text: "Highlight the spoken word"; on: Ed.cap-hl; toggled => { Ed.set("cap-hl", Ed.cap-hl ? "0" : "1"); } }
+                    HorizontalLayout {
+                        spacing: 7px;
+                        alignment: start;
+                        Swatch { c: #ffd23f; on: Ed.cap-hl-color == "ffd23f"; clicked => { Ed.set("cap-hl-color", "ffd23f"); } }
+                        Swatch { c: #3ddc97; on: Ed.cap-hl-color == "3ddc97"; clicked => { Ed.set("cap-hl-color", "3ddc97"); } }
+                        Swatch { c: #ff5c7a; on: Ed.cap-hl-color == "ff5c7a"; clicked => { Ed.set("cap-hl-color", "ff5c7a"); } }
+                        Swatch { c: #4cc2ff; on: Ed.cap-hl-color == "4cc2ff"; clicked => { Ed.set("cap-hl-color", "4cc2ff"); } }
+                        Swatch { c: #ffffff; on: Ed.cap-hl-color == "ffffff"; clicked => { Ed.set("cap-hl-color", "ffffff"); } }
+                    }
+                    Label { text: "Position"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Top"; clicked => { Ed.set("cap-pos", "0.15"); } }
+                        Chip { text: "Middle"; clicked => { Ed.set("cap-pos", "0.5"); } }
+                        Chip { text: "Bottom"; clicked => { Ed.set("cap-pos", "0.83"); } }
+                    }
+                    Label { text: "Lines per caption (or drag the caption box)"; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "1"; on: Ed.cap-lines == 1; clicked => { Ed.set("cap-lines", "1"); } }
+                        Chip { text: "2"; on: Ed.cap-lines == 2; clicked => { Ed.set("cap-lines", "2"); } }
+                        Chip { text: "3"; on: Ed.cap-lines == 3; clicked => { Ed.set("cap-lines", "3"); } }
+                    }
+                    Label { text: "Tip: drag a caption on the video to move just that one; drag the caption box to move all of them."; wrap: word-wrap; color: T.dim; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Btn { text: "Save as .txt"; small: true; clicked => { Ed.act("cap-txt"); } }
+                        Btn { text: "Remove all"; small: true; danger: true; clicked => { Ed.act("cap-clear"); } }
+                    }
+                }
+            }
+        }
+        }
+    }
+
+    // ---------- tools (Echo's .etools) ----------
+    Rectangle {
+        y: root.height - root.tl-h - root.tools-h;
+        height: root.tools-h;
+        background: T.panel;
+        Rectangle { y: 0; height: 1px; background: T.line; }
+        HorizontalLayout {
+            x: 14px;
+            width: parent.width - 28px;
+            spacing: 10px;
+            padding-top: 7px;
+            padding-bottom: 7px;
+            Rectangle {
+                width: 30px;
+                Icon {
+                    width: 18px;
+                    height: 18px;
+                    commands: Ed.playing ? Ic.pause : Ic.play;
+                    fill: pta.has-hover ? T.accent2 : white;
+                    stroke: transparent;
+                }
+                pta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Ed.act("play"); }
+                }
+                TipArea {
+                    text: "Play / pause (Space)";
+                    hover: pta.has-hover;
+                }
+            }
+            Text {
+                text: Ed.time-text;
+                vertical-alignment: center;
+                font-size: 14px;
+                font-weight: 600 + T.fw;
+                font-family: "Cascadia Mono";
+                color: T.text;
+                min-width: 136px;
+            }
+            Group {
+                Tool { icon: "M9 14L4 9l5-5 M4 9h10a6 6 0 0 1 0 12h-3"; tip: "Undo (Ctrl+Z)"; enabled: Ed.can-undo; clicked => { Ed.act("undo"); } }
+                Tool { icon: "M15 14l5-5-5-5 M20 9H10a6 6 0 0 0 0 12h3"; tip: "Redo (Ctrl+Y)"; enabled: Ed.can-redo; clicked => { Ed.act("redo"); } }
+            }
+            Group {
+                Tool { icon: Ic.scissors; text: "Split"; tip: "Split at playhead (S)"; clicked => { Ed.act("split"); } }
+                Tool { icon: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6"; text: "Delete"; tip: "Delete - leaves a gap (Del)"; clicked => { Ed.act("del"); } }
+                Tool { icon: "M3 6h11 M8 6V4h4v2 M13 6l-1 14H5L4 6 M17 12h5 M19 9l3 3-3 3"; text: "Ripple"; tip: "Ripple delete - closes the gap (Shift+Del)"; clicked => { Ed.act("ripple"); } }
+                Tool { icon: "M3 6v12 M21 6v12 M7 12h10 M7 12l3-3 M7 12l3 3 M17 12l-3-3 M17 12l-3 3"; text: "Close gaps"; tip: "Close all gaps on the video track"; clicked => { Ed.act("gaps"); } }
+            }
+            Group {
+                Tool { icon: "M5 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M16 10l5-3v10l-5-3 M9.5 9v6 M6.5 12h6"; text: "Media"; tip: "Add another video or a sound to the timeline"; clicked => { Ed.act("media"); } }
+                Tool { icon: "M5 6V4h14v2 M12 4v16 M9 20h6"; text: "Text"; tip: "Add text (T)"; clicked => { Ed.act("text"); } }
+                Tool { icon: "M6 6h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"; text: "Box"; tip: "Blur or colour box over part of the video (B)"; clicked => { Ed.act("box"); } }
+                Tool { icon: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M20 20l-4.5-4.5 M11 8v6 M8 11h6"; text: "Zoom"; tip: "Zoom in on a spot (Z)"; clicked => { Ed.act("zoomfx"); } }
+                Tool { icon: "M14 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8l7-7V6a3 3 0 0 0-3-3z M14 21v-4a3 3 0 0 1 3-3h4"; text: "Sticker"; tip: "Sticker, emoji or picture on the video"; clicked => { Ed.act("sticker"); } }
+                Tool { icon: "M12 2v20 M4 7l16 10 M20 7L4 17"; text: "Freeze"; tip: "Freeze frame at the playhead (F)"; clicked => { Ed.act("freeze"); } }
+                Tool {
+                    icon: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M10 10.5a2 2 0 1 0 0 3 M17 10.5a2 2 0 1 0 0 3";
+                    text: Ed.listening ? "Listening…" : "Captions";
+                    tip: "Auto captions from your mic and Discord (C)";
+                    enabled: !Ed.listening;
+                    clicked => { Ed.act("cap"); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                y: 4px;
+                width: snt.width;
+                height: 30px;
+                snt := Tool { icon: "M6 3v8a6 6 0 0 0 12 0V3h-4v8a2 2 0 0 1-4 0V3z"; text: "Snap"; on: Ed.snap; tip: "Snapping: pieces stick to the playhead and to each other"; clicked => { Ed.act("snap"); } }
+            }
+            Group {
+                Tool { icon: "M5 12h14"; tip: "Zoom out (Ctrl+scroll)"; clicked => { Ed.act("zoom-out"); } }
+                Rectangle {
+                    width: 110px;
+                    ESlider {
+                        y: 4px;
+                        width: parent.width;
+                        thumb: T.accent;
+                        value: Ed.zoom-frac;
+                        step: 0.01;
+                        moved(v) => { Ed.set("zoom", v); }
+                    }
+                }
+                Tool { icon: "M12 5v14 M5 12h14"; tip: "Zoom in (Ctrl+scroll)"; clicked => { Ed.act("zoom-in"); } }
+            }
+        }
+    }
+
+    // ---------- timeline (Echo's .etl) ----------
+    tl := Rectangle {
+        x: 0;
+        y: root.height - root.tl-h;
+        width: root.width;
+        height: root.tl-h;
+        background: T.rail;
+        clip: true;
+        property <float> pps: Ed.pps;
+        property <length> sx: Ed.scroll * 1px;
+        property <length> vy: Ed.video-y * 1px;
+        property <length> ty: Ed.text-y * 1px;
+        property <length> ay: Ed.aud-y * 1px;
+        // ruler
+        Rectangle {
+            y: 0;
+            height: 26px;
+            background: T.panel;
+            Rectangle { y: parent.height - 1px; height: 1px; background: T.line; }
+        }
+        for k in Ed.ticks: Rectangle {
+            x: root.lp + k.t * tl.pps * 1px - tl.sx;
+            y: 0;
+            width: 1px;
+            height: 26px;
+            visible: self.x > root.lp - 20px && self.x < tl.width + 20px;
+            Rectangle {
+                y: 20px;
+                width: 1px;
+                height: 6px;
+                background: T.dim;
+            }
+            Text {
+                x: -self.width / 2;
+                y: 5px;
+                width: 60px;
+                horizontal-alignment: center;
+                text: k.label;
+                font-size: 11px;
+                color: T.dim;
+            }
+        }
+        // Chat A: bookmarks (yellow triangles on the ruler, like Echo's)
+        for m in Ed.marks: Path {
+            x: root.lp + m * tl.pps * 1px - tl.sx - 6px;
+            y: 0;
+            width: 12px;
+            height: 8px;
+            visible: self.x > root.lp - 12px && self.x < tl.width + 12px;
+            viewbox-width: 12;
+            viewbox-height: 8;
+            commands: "M0 0 L12 0 L6 8 Z";
+            fill: #ffd84d;
+            stroke: #00000088;
+            stroke-width: 1px;
+        }
+        // track backgrounds (Echo's .etrack:not(.ov) { background:#ffffff05 })
+        Rectangle { x: root.lp; y: tl.vy; height: 64px; background: #ffffff05; }
+        if Ed.aud-rows > 0: Rectangle { x: root.lp; y: tl.ay; height: Ed.aud-rows * 44px - 4px; background: #ffffff05; }
+        Rectangle { x: root.lp; y: tl.ty; height: Ed.lanes * 34px; background: #ffffff05; animate height { duration: 140ms; easing: ease-out; } }
+        if Ed.fx-y >= 0: Rectangle { x: root.lp; y: Ed.fx-y * 1px; height: 34px; background: #ffffff05; }
+        // pieces (Echo's .eseg)
+        for s in Ed.segs: pc := Rectangle {
+            // other pieces slide when the dragged one pushes them (eased); the dragged one follows the mouse exactly
+            property <float> av: s.at;
+            animate av { duration: 170ms; easing: ease-out; }
+            x: root.lp + (s.drag ? s.at : av) * tl.pps * 1px - tl.sx + 1px;
+            y: s.drag ? tl.vy - 6px + Ed.drag-dy * 1px : tl.vy;
+            animate y { duration: s.drag ? 0ms : 120ms; easing: ease-out; }
+            width: max(4px, s.len * tl.pps * 1px - 2px);
+            height: 64px;
+            border-radius: 8px;
+            background: s.other ? #2a3346 : #333333;
+            drop-shadow-blur: s.drag ? 18px : s.sel ? 18px : 0;
+            drop-shadow-offset-y: s.drag ? 8px : 0;
+            drop-shadow-color: s.drag ? #000000b0 : T.hi.with-alpha(0.25);
+            property <length> tw: 64px * 16 / 9;
+            // William (9 Nov): only the tiles in view (was the first 200 - past ~22000 px, zoomed in, the strip went grey)
+            property <int> k0: max(0, floor((root.lp - self.x) / self.tw));
+            property <int> n: Play.sheet-ok && !s.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
+            Rectangle {
+                border-radius: 8px;
+                clip: true;
+                for k in pc.n: Image {
+                    x: (pc.k0 + k) * pc.tw;
+                    width: pc.tw;
+                    height: 64px;
+                    property <float> ts: s.speed == 0 ? s.start : s.start + (pc.k0 + k + 0.5) * pc.tw / 1px / tl.pps * s.speed;
+                    property <int> f: max(0, min(59, floor(ts / max(0.1, Ed.dur) * 60)));
+                    source: Play.sheet;
+                    source-clip-x: mod(f, 10) * Play.sheet-tw;
+                    source-clip-y: floor(f / 10) * Play.sheet-th;
+                    source-clip-width: Play.sheet-tw;
+                    source-clip-height: Play.sheet-th;
+                    image-fit: cover;
+                }
+                // fades: dark ramps
+                if s.fi > 0.04: Rectangle {
+                    x: 0;
+                    width: min(parent.width, s.fi * tl.pps * 1px);
+                    background: @linear-gradient(90deg, #000000cc 0%, #00000000 100%);
+                }
+                if s.fo > 0.04: Rectangle {
+                    x: parent.width - self.width;
+                    width: min(parent.width, s.fo * tl.pps * 1px);
+                    background: @linear-gradient(270deg, #000000cc 0%, #00000000 100%);
+                }
+                if s.label != "": Rectangle {
+                    x: 8px;
+                    y: 6px;
+                    width: spt.preferred-width + 12px;
+                    height: 19px;
+                    border-radius: 5px;
+                    background: #000000cc;
+                    spt := Text {
+                        text: s.label;
+                        font-size: 11.5px;
+                        font-weight: 600;
+                        color: T.text;
+                    }
+                }
+                // trim handles (Echo's .eh, yellow while selected)
+                if s.sel && s.speed != 0: Rectangle { x: 0; width: 10px; background: T.hi; }
+                if s.sel && s.speed != 0: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+            }
+            Rectangle {
+                border-radius: 8px;
+                border-width: s.sel ? 2px : 1px;
+                border-color: s.sel ? T.hi : #ffffff30;
+            }
+        }
+        // video layers above the main track (Echo's .eov: filmstrip, accent border, "Layer 1" chip; yellow when
+        // selected; faded while it's being dragged down onto the main track)
+        for o in Ed.layers: lc := Rectangle {
+            x: root.lp + o.at * tl.pps * 1px - tl.sx + 1px;
+            y: 38px + o.row * 72px;
+            width: max(8px, o.len * tl.pps * 1px - 2px);
+            height: 64px;
+            border-radius: 7px;
+            background: o.other ? #2a3346 : #333333;
+            opacity: o.down ? 0.5 : 1;
+            drop-shadow-blur: o.drag ? 18px : 0;
+            drop-shadow-offset-y: o.drag ? 8px : 0;
+            drop-shadow-color: #000000b0;
+            property <length> tw: 64px * 16 / 9;
+            property <int> k0: max(0, floor((root.lp - self.x) / self.tw));
+            property <int> n: Play.sheet-ok && !o.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
+            Rectangle {
+                border-radius: 7px;
+                clip: true;
+                for k in lc.n: Image {
+                    x: (lc.k0 + k) * lc.tw;
+                    width: lc.tw;
+                    height: 64px;
+                    property <float> ts: o.start + (lc.k0 + k + 0.5) * lc.tw / 1px / tl.pps * o.speed;
+                    property <int> f: max(0, min(59, floor(ts / max(0.1, Ed.dur) * 60)));
+                    source: Play.sheet;
+                    source-clip-x: mod(f, 10) * Play.sheet-tw;
+                    source-clip-y: floor(f / 10) * Play.sheet-th;
+                    source-clip-width: Play.sheet-tw;
+                    source-clip-height: Play.sheet-th;
+                    image-fit: cover;
+                }
+                Rectangle {
+                    x: 8px;
+                    y: 6px;
+                    width: min(parent.width - 12px, lpt.preferred-width + 12px);
+                    height: 19px;
+                    border-radius: 5px;
+                    background: #000000cc;
+                    clip: true;
+                    lpt := Text {
+                        text: o.label;
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: T.text;
+                    }
+                }
+                if o.sel: Rectangle { x: 0; width: 10px; background: T.hi; }
+                if o.sel: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+            }
+            Rectangle {
+                border-radius: 7px;
+                border-width: 2px;
+                border-color: o.sel ? T.hi : T.accent2;
+            }
+        }
+        // separated audio (Echo's .eab: striped green, mic blue, muted faded)
+        for a in Ed.auds: Rectangle {
+            x: root.lp + a.at * tl.pps * 1px - tl.sx + 1px;
+            y: tl.ay + a.row * 44px;
+            width: max(8px, a.len * tl.pps * 1px - 2px);
+            height: 40px;
+            border-radius: 7px;
+            background: a.mic ? #1f4f7a : #1f6f55;
+            border-width: a.sel ? 2px : 1px;
+            border-color: a.sel ? T.hi : a.mic ? #3b8fd6 : #2fa57d;
+            opacity: a.mute ? 0.45 : 1;
+            clip: true;
+            // stripes
+            for k in min(400, ceil(self.width / 5px)): Rectangle {
+                x: k * 5px;
+                width: 2px;
+                background: a.mic ? #1a4266 : #1a5a46;
+            }
+            if a.fi > 0.04: Rectangle { x: 0; width: min(parent.width, a.fi * tl.pps * 1px); background: @linear-gradient(90deg, #000000cc 0%, #00000000 100%); }
+            if a.fo > 0.04: Rectangle { x: parent.width - self.width; width: min(parent.width, a.fo * tl.pps * 1px); background: @linear-gradient(270deg, #000000cc 0%, #00000000 100%); }
+            Text {
+                x: 12px;
+                width: parent.width - 16px;
+                text: a.label;
+                font-size: 12px;
+                font-weight: 600 + T.fw;
+                color: white;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if a.sel: Rectangle { x: 0; width: 10px; background: T.hi; }
+            if a.sel: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+        }
+        // texts, captions (Text track, in lanes) and boxes (Effects track) - Echo's .etb / .etb.cap / .etb.bx
+        for x in Ed.texts: Rectangle {
+            x: root.lp + x.start * tl.pps * 1px - tl.sx;
+            y: x.kind == 2 ? Ed.fx-y * 1px : tl.ty + x.lane * 34px;
+            animate y { duration: 140ms; easing: ease-out; }
+            width: max(8px, x.len * tl.pps * 1px);
+            height: 32px;
+            border-radius: 7px;
+            background: x.kind == 1 ? #2b2b33 : x.kind == 2 ? #1f4d5c : #4a3b8f;
+            border-width: x.sel ? 2px : 1px;
+            border-color: x.sel ? T.hi : x.kind == 1 ? #55556a : x.kind == 2 ? #2f8fa8 : #6d5bd0;
+            clip: true;
+            Text {
+                x: 12px;
+                width: parent.width - 16px;
+                text: x.label;
+                font-size: 12px;
+                font-weight: 600 + T.fw;
+                color: white;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if x.sel: Rectangle { x: 0; width: 10px; background: T.hi; }
+            if x.sel: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+        }
+        // highlighted part
+        if Ed.rng-on: Rectangle {
+            x: root.lp + Ed.rng-a * tl.pps * 1px - tl.sx;
+            y: 0;
+            width: max(2px, (Ed.rng-b - Ed.rng-a) * tl.pps * 1px);
+            height: tl.height;
+            background: T.hi.with-alpha(0.13);
+            Rectangle { x: 0; width: 2px; background: T.hi; }
+            Rectangle { x: parent.width - 2px; width: 2px; background: T.hi; }
+        }
+        // Ctrl+drag selection box (Echo's .emarq)
+        if Ed.marq: Rectangle {
+            x: Ed.marq-x * 1px - tl.sx;
+            y: Ed.marq-y * 1px;
+            width: Ed.marq-w * 1px;
+            height: Ed.marq-h * 1px;
+            background: T.accent.with-alpha(0.14);
+            border-width: 1px;
+            border-color: T.accent;
+            border-radius: 3px;
+        }
+        // playhead (Echo: #ff4d6d with a glow)
+        Rectangle {
+            x: root.lp + Ed.t * tl.pps * 1px - tl.sx - 1px;
+            y: 0;
+            width: 2px;
+            height: tl.height;
+            background: #ff4d6d;
+            drop-shadow-blur: 6px;
+            drop-shadow-color: #ff4d6d99;
+            visible: self.x >= root.lp - 2px;
+            Path {
+                x: -6px;
+                y: 0;
+                width: 14px;
+                height: 8px;
+                commands: "M0 0 L14 0 L7 8 Z";
+                fill: #ff4d6d;
+                stroke: transparent;
+            }
+        }
+        // track names (sticky, Echo's .tlab)
+        Rectangle { x: 0; y: 26px; width: 96px; height: tl.height - 26px; background: T.rail; Rectangle { x: parent.width - 1px; width: 1px; background: T.line; } }
+        TrackLabel { x: 0; y: 0; height: 26px; text: ""; }
+        Text { x: 10px; y: 0; height: 26px; vertical-alignment: center; text: Ed.t-text; font-size: 12px; font-weight: 600; color: T.text; }
+        if Ed.ov-rows > 0: TrackLabel { x: 0; y: 38px; height: Ed.ov-rows * 72px - 8px; icon: "M12 3l9 5-9 5-9-5z M3 13l9 5 9-5"; text: "Layers"; }
+        TrackLabel { x: 0; y: tl.vy; height: 64px; icon: "M5 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M17 10l4-2v8l-4-2"; text: "Video"; }
+        if Ed.aud-rows > 0: TrackLabel { x: 0; y: tl.ay; height: Ed.aud-rows * 44px - 4px; icon: "M4 9v6h4l5 4V5L8 9z M16 9a4 4 0 0 1 0 6"; text: "Audio"; }
+        TrackLabel { x: 0; y: tl.ty; height: Ed.lanes * 34px; icon: "M5 6V4h14v2 M12 4v16 M9 20h6"; text: "Text"; animate height { duration: 140ms; easing: ease-out; } }
+        if Ed.fx-y >= 0: TrackLabel { x: 0; y: Ed.fx-y * 1px; height: 34px; icon: "M6 6h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z"; text: "Effects"; }
+        Rectangle { y: 0; height: 1px; background: T.line; }
+        tla := TouchArea {
+            mouse-cursor: Ed.cursor == "ew" ? MouseCursor.ew-resize : Ed.cursor == "move" ? MouseCursor.grab : MouseCursor.default;
+            pointer-event(e) => {
+                Ed.tl-top = self.absolute-position.y / 1px;
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                    fs.focus();
+                    Ed.export-menu = false;
+                    Ed.tl("menu", self.mouse-x, self.mouse-y);
+                } else if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    fs.focus();
+                    Ed.export-menu = false;
+                    Ed.menu-open = false;
+                    Ed.tl(e.modifiers.control || e.modifiers.shift ? "cdown" : "down", self.mouse-x, self.mouse-y);
+                } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    Ed.tl("up", self.mouse-x, self.mouse-y);
+                }
+            }
+            moved => {
+                Ed.tl-top = self.absolute-position.y / 1px;
+                Ed.tl(self.pressed ? "move" : "hover", self.mouse-x, self.mouse-y);
+            }
+            scroll-event(e) => {
+                // the amount goes along (glide steps of one 160 px notch, see the stage wheel)
+                if (e.modifiers.control) {
+                    Ed.tl("ctrl-wheel:" + e.delta-y / 1px, self.mouse-x, self.mouse-y);
+                } else {
+                    Ed.tl("wheel:" + (e.delta-y + e.delta-x) / 1px, self.mouse-x, self.mouse-y);
+                }
+                return accept;
+            }
+        }
+        // horizontal scrollbar - ABOVE the timeline's mouse area (William: it was under it, so hovering / dragging it
+        // did nothing). Drag the thumb, or click the track to jump there; Rust keeps the scroll ("scrollto:<px>").
+        sbar := Rectangle {
+            property <float> content: max(1, Ed.total * tl.pps + 200);
+            property <float> view: max(1, (tl.width - root.lp) / 1px);
+            property <length> tw: max(30px, self.width * min(1, view / content));
+            property <length> tx: (self.width - self.tw) * clamp(Ed.scroll / max(1, content - view), 0, 1);
+            property <length> grab;
+            visible: content - 160 > view;
+            x: root.lp;
+            y: tl.height - 14px;
+            width: tl.width - root.lp;
+            height: 14px;
+            function to(thumb-x: length) {
+                let f = clamp(thumb-x / max(1px, self.width - self.tw), 0, 1);
+                Ed.tl("scrollto:" + f * (self.content - self.view), 0, 0);
+            }
+            Rectangle {
+                x: sbar.tx;
+                y: sbta.has-hover || sbta.pressed ? 4px : 6px;
+                width: sbar.tw;
+                height: sbta.has-hover || sbta.pressed ? 9px : 6px;
+                border-radius: 4px;
+                background: sbta.pressed ? T.muted : sbta.has-hover ? T.dim : T.hover;
+                animate y, height, background { duration: 120ms; }
+            }
+            sbta := TouchArea {
+                mouse-cursor: MouseCursor.default;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                        // on the thumb: keep where it was grabbed; on the track: centre the thumb there
+                        sbar.grab = self.mouse-x >= sbar.tx && self.mouse-x <= sbar.tx + sbar.tw ? self.mouse-x - sbar.tx : sbar.tw / 2;
+                        sbar.to(self.mouse-x - sbar.grab);
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        sbar.to(self.mouse-x - sbar.grab);
+                    }
+                }
+            }
+        }
+        // the ✕ on the highlight (above the timeline's mouse area)
+        if Ed.rng-on: Rectangle {
+            x: root.lp + Ed.rng-b * tl.pps * 1px - tl.sx - 24px;
+            y: 3px;
+            width: 20px;
+            height: 20px;
+            border-radius: 6px;
+            background: T.hi;
+            opacity: rxa.has-hover ? 1 : 0.85;
+            Text { text: "✕"; font-size: 11px; font-weight: 700; color: black; horizontal-alignment: center; vertical-alignment: center; }
+            rxa := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { Ed.act("rng-clear"); }
+            }
+        }
+    }
+
+    // ---------- export menu ----------
+    if Ed.export-menu: Rectangle {
+        x: root.width - 12px - root.win-pad - self.width;
+        y: 54px;
+        width: 300px;
+        height: em.preferred-height;
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #000000b0;
+        TouchArea { }
+        em := VerticalLayout {
+            padding: 6px;
+            spacing: 2px;
+            for p in [
+                { k: "", n: "Export", d: "Same size as the clip" },
+                { k: "yt", n: "YouTube", d: "1080p, 60 FPS" },
+                { k: "tt", n: "TikTok / Shorts / Reels", d: "Vertical 1080×1920" },
+                { k: "dc", n: "Discord", d: "One export that fits your Discord size" },
+            ]: Rectangle {
+                height: 48px;
+                border-radius: 8px;
+                background: pa.has-hover ? T.panel2 : transparent;
+                pa := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Ed.export-menu = false;
+                        Ed.act("export:" + p.k);
+                    }
+                }
+                VerticalLayout {
+                    padding-left: 12px;
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: p.n; font-size: 13.5px; font-weight: 600 + T.fw; color: T.text; }
+                    Text { text: p.d; font-size: 11.5px; color: T.muted; }
+                }
+            }
+            Rectangle {
+                height: 56px;
+                Rectangle { y: 0; height: 1px; background: T.line; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text { text: "Even out loudness"; font-size: 13px; color: T.text; }
+                        Text { text: "Quiet and loud clips end up equally loud"; font-size: 11px; color: T.dim; wrap: word-wrap; }
+                    }
+                    Rectangle {
+                        width: 38px;
+                        Toggle {
+                            y: 17px;
+                            on: Ed.normalize;
+                            toggled => { Ed.set("normalize", Ed.normalize ? "0" : "1"); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Sticker menu (Echo's #estk): emoji + a picture / GIF from the PC ----------
+    if Ed.sticker-menu: TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                Ed.sticker-menu = false;
+            }
+        }
+    }
+    if Ed.sticker-menu: Rectangle {
+        x: min(root.width - self.width - 12px, 560px);
+        y: root.height - root.tl-h - root.tools-h - self.height - 6px;
+        width: 9 * 40px + 2 * 10px;
+        height: 4 * 40px + 2 * 10px + 46px;
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 30px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #000000b0;
+        TouchArea { }
+        for im[k] in Ed.emoji: Rectangle {
+            x: 10px + mod(k, 9) * 40px;
+            y: 10px + floor(k / 9) * 40px;
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: ea.has-hover ? T.panel2 : transparent;
+            Image { width: 28px; height: 28px; source: im; image-fit: contain; }
+            ea := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    Ed.sticker-menu = false;
+                    Ed.act("emoji:" + k);
+                }
+            }
+        }
+        Btn {
+            x: 10px;
+            y: parent.height - 42px;
+            width: parent.width - 20px;
+            text: "Picture or GIF from your PC…";
+            clicked => {
+                Ed.sticker-menu = false;
+                Ed.act("sticker-pic");
+            }
+        }
+    }
+
+    // ---------- right-click timeline menu (Echo's #ectx) ----------
+    if Ed.menu-open: TouchArea {
+        // a click anywhere else closes it
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                Ed.menu-open = false;
+            }
+        }
+    }
+    if Ed.menu-open: Rectangle {
+        x: min(Ed.menu-x, root.width - self.width - 8px);
+        y: min(root.height - root.tl-h + Ed.menu-y, root.height - self.height - 8px);
+        width: 230px;
+        height: ml.preferred-height;
+        background: T.panel;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 14px;
+        drop-shadow-color: #000000b0;
+        TouchArea { }
+        ml := VerticalLayout {
+            padding: 5px;
+            for it in Ed.menu-items: Rectangle {
+                height: it.sep ? 9px : 32px;
+                border-radius: 7px;
+                background: !it.sep && !it.off && mia.has-hover ? T.panel2 : transparent;
+                if it.sep: Rectangle { x: 2px; y: 4px; width: parent.width - 4px; height: 1px; background: T.line; }
+                if !it.sep: HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    opacity: it.off ? 0.35 : 1;
+                    Text { text: it.label; font-size: 13px; color: T.text; vertical-alignment: center; horizontal-stretch: 1; }
+                    if it.key != "": Kbd { y: 6px; text: it.key; }
+                }
+                mia := TouchArea {
+                    enabled: !it.sep && !it.off;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Ed.menu-open = false;
+                        Ed.act(it.act);
+                    }
+                }
+            }
+        }
+    }
+}

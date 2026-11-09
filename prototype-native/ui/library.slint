@@ -1,0 +1,885 @@
+// Library cards (grid + list), date-group headers, filter panel - styled like Echo's .card / .thumb / .info / #fmenu.
+import { T, Ic, Icon, TipArea, IconBtn, Btn, Badge, Toast, CopyMenuBody } from "theme.slint";
+
+export struct Card {
+    idx: int,        // row in the current view
+    title: string,
+    when: string,    // "Friday"
+    size: string,    // "22.7 MB"
+    dur: string,
+    game: string,
+    thumb: image,
+    has-thumb: bool,
+    fav: bool,
+    picked: bool,
+    edited: bool,
+    tags: [string],
+    note: string,
+    cloud: bool,     // Chat D badges: also in the cloud (Echo's cloud.json)
+    shared: bool,    // has a share link (links.json)
+    cloud-only: bool, // Chat B: only in the cloud (plays from there)
+    views: string,   // Chat B: "Shared" / "Shared · 12 views"
+    gicon: image,    // the game's icon (Echo's .gico), top-left on the picture
+    has-gicon: bool,
+}
+
+// one row of the virtualised library list: a date header, or up to `cols` cards starting at `first`
+export struct GridRow {
+    header: string,
+    count: string,
+    first: int,
+    n: int,
+    extra: int,      // px for tag / note lines under the names in this row (cards in a row line up)
+    last: bool,      // last card row of its group: no gap below it (Echo's grid gap is only between rows)
+}
+
+// one option in the filter panel
+export struct FOpt {
+    group: string, // game / type / tag
+    key: string,
+    label: string,
+    count: int,
+    on: bool,
+}
+
+// chips wrapped over several lines (Slint 1.18 has no flow layout): Rust pre-splits each section into lines
+export struct FLine {
+    head: string, // section title on its first line, else ""
+    opts: [FOpt],
+}
+
+// William (9 Nov): the hover preview = the real clip playing (src/hover_vid.rs), like Echo's <video> on Windows
+export global HoverVid {
+    in-out property <int> row: -1;       // view row of the card that plays it (-1 = none)
+    in-out property <image> frame;
+}
+
+// the hover flipbook (60 pictures, 10 x 6) shared by all cards: only the hovered card shows it
+export global Flip {
+    in-out property <int> row: -1;       // view row of the card that plays it
+    in-out property <image> sheet;
+    in-out property <int> tw;            // one picture's size in the sheet (pixels)
+    in-out property <int> th;
+}
+
+export global Lib {
+    in-out property <bool> picking;      // something is selected: a click selects instead of playing
+    callback open(int, bool);            // row, ctrl/shift held
+    callback pick(int);
+    callback hover(int, bool);
+    callback fav(int);
+    callback act(int, string);           // row, "folder" / "rename" / "move" / "delete" / "smaller" / "edit" / "cloud" / "copy"
+    // Echo's power-user mode: holding Ctrl (150 ms) = every card shows its extra buttons at once + the key hint
+    in-out property <bool> ctrl-held;
+    in-out property <bool> ctrl-inst;    // no slide while Ctrl goes down / up (Echo's body.ctrlinst, 300 ms)
+    in-out property <int> hover-idx: -1; // the card under the mouse (its data.idx) - keys act on it
+    // Chat D: card drag onto sidebar folders, inline rename, Move to menu
+    callback drag-start(int);            // row: Rust fills CDrag.label + stops the hover preview
+    callback drop-to(int, string);       // row, folder ("" = the main folder)
+    callback rename(int, string);        // row, new name
+    callback move-to(int, string);       // row (or the selection it's in), folder ("" = main folder, "?" = ask for a new one)
+    in-out property <int> renaming: -1;  // card whose name is being edited (data.idx)
+    in-out property <[string]> folders;  // every folder, sidebar order (Move to menu)
+}
+
+// a card dragged onto a sidebar folder ("All clips" = the main folder) - Echo's cardDrag
+export global CDrag {
+    in-out property <bool> on;
+    in-out property <string> label;      // "Valorant 2026-11-08 10-00-00" / "3 clips"
+    in-out property <bool> hit;          // the mouse is over a drop target...
+    in-out property <string> target;     // ...this folder ("" = main folder)
+    in-out property <string> target-label;
+    in-out property <length> px;         // mouse, window coordinates
+    in-out property <length> py;
+}
+
+component CardMenu inherits ContextMenuArea {
+    in property <Card> data;
+    Menu {
+        MenuItem {
+            title: "Play";
+            activated => { Lib.open(data.idx, false); }
+        }
+        MenuItem {
+            title: data.fav ? "Remove from favourites" : "Add to favourites";
+            activated => { Lib.fav(data.idx); }
+        }
+        MenuItem {
+            title: data.picked ? "Deselect" : "Select";
+            activated => { Lib.pick(data.idx); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Rename";
+            activated => { Lib.renaming = data.idx; }
+        }
+        Menu {
+            title: "Move to";
+            for f in Lib.folders: MenuItem {
+                title: f;
+                activated => { Lib.move-to(data.idx, f); }
+            }
+            MenuItem {
+                title: "Main folder (no folder)";
+                activated => { Lib.move-to(data.idx, ""); }
+            }
+            MenuItem {
+                title: "New folder…";
+                activated => { Lib.move-to(data.idx, "?"); }
+            }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Make smaller (about half the size)";
+            activated => { Lib.act(data.idx, "smaller"); }
+        }
+        MenuItem {
+            title: "Make much smaller (about a third)";
+            activated => { Lib.act(data.idx, "smaller3"); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Show in folder";
+            activated => { Lib.act(data.idx, "folder"); }
+        }
+        MenuItem {
+            title: "Delete";
+            activated => { Lib.act(data.idx, "delete"); }
+        }
+    }
+}
+
+// Echo's .thumb .pick: white ring, accent + tick when picked
+component PickTick inherits Rectangle {
+    in property <bool> on;
+    in property <bool> show;
+    in property <length> size: 26px;
+    callback clicked;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: on ? T.accent : #00000066;
+    border-width: 2px;
+    border-color: on ? T.accent : #ffffffcc;
+    opacity: show || on ? 1 : 0;
+    animate opacity { duration: T.fade; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: "Select (Ctrl+click)";
+        hover: ta.has-hover;
+    }
+    if root.on: Icon {
+        width: 14px;
+        height: 14px;
+        commands: Ic.check;
+        stroke: white;
+        stroke-width: 3px;
+    }
+}
+
+// click handling shared by grid + list cards: Ctrl/Shift+click or "something selected" = select, else play
+component CardTouch inherits TouchArea {
+    in property <int> clip-row;
+    property <bool> dragged;
+    // the press started on THIS card: a release alone (e.g. after a popup closed on the press) never opens a clip
+    property <bool> down-here;
+    mouse-cursor: self.dragged ? MouseCursor.grabbing : MouseCursor.pointer;
+    moved => {
+        if (self.pressed && !self.dragged && Lib.renaming != clip-row
+            && (abs(self.mouse-x - self.pressed-x) > 8px || abs(self.mouse-y - self.pressed-y) > 8px)) {
+            self.dragged = true;
+            CDrag.hit = false;
+            CDrag.target = "";
+            Lib.drag-start(clip-row);
+            CDrag.on = true;
+        }
+        if (self.dragged) {
+            CDrag.px = self.absolute-position.x + self.mouse-x;
+            CDrag.py = self.absolute-position.y + self.mouse-y;
+        }
+    }
+    pointer-event(e) => {
+        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+            self.dragged = false;
+            self.down-here = true;
+        }
+        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left && !self.down-here) {
+            return;
+        }
+        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+            self.down-here = false;
+        }
+        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left && self.dragged) {
+            self.dragged = false;
+            CDrag.on = false;
+            if (CDrag.hit) {
+                CDrag.hit = false;
+                Lib.drop-to(clip-row, CDrag.target);
+            }
+            return;
+        }
+        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left && self.has-hover) {
+            if (e.modifiers.control || e.modifiers.shift || e.modifiers.meta) {
+                Lib.pick(clip-row);
+            } else {
+                Lib.open(clip-row, false);
+            }
+        }
+    }
+}
+
+// the clip name; click it (or F2) = rename inline like Echo (Enter / click away = save, Esc = cancel)
+component NameLine inherits Rectangle {
+    in property <Card> data;
+    property <bool> editing: Lib.renaming == data.idx;
+    height: 20px;
+    if !root.editing: Text {
+        width: min(self.preferred-width, parent.width);
+        x: 0;
+        text: data.title;
+        font-size: 15px;
+        font-weight: 600 + T.fw;
+        color: T.text;
+        overflow: elide;
+        vertical-alignment: center;
+        TouchArea {
+            mouse-cursor: text;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    if (e.modifiers.control || e.modifiers.shift || e.modifiers.meta) {
+                        Lib.pick(data.idx);
+                    } else if (Lib.picking) {
+                        Lib.open(data.idx, false);
+                    } else {
+                        Lib.renaming = data.idx;
+                    }
+                }
+            }
+            clicked => { }
+        }
+    }
+    if root.editing: Rectangle {
+        x: -5px;
+        width: parent.width + 5px;
+        border-radius: 5px;
+        border-width: 1px;
+        border-color: T.accent;
+        background: T.bg;
+        property <bool> done;
+        ti := TextInput {
+            x: 5px;
+            width: parent.width - 10px;
+            text: data.title;
+            font-size: 14.5px;
+            font-weight: 600 + T.fw;
+            color: T.text;
+            vertical-alignment: center;
+            single-line: true;
+            init => {
+                self.focus();
+                self.select-all();
+            }
+            accepted => {
+                parent.done = true;
+                Lib.renaming = -1;
+                Lib.rename(data.idx, self.text);
+            }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    parent.done = true;
+                    Lib.renaming = -1;
+                    return accept;
+                }
+                reject
+            }
+            changed has-focus => {
+                if (!self.has-focus && !parent.done) {
+                    parent.done = true;
+                    Lib.renaming = -1;
+                    Lib.rename(data.idx, self.text);
+                }
+            }
+        }
+    }
+}
+
+// Echo's .tchip
+component TagChip inherits Rectangle {
+    in property <string> text;
+    height: 18px;
+    width: tt.preferred-width + 16px;
+    border-radius: 9px;
+    background: T.accent.with-alpha(0.15);
+    border-width: 1px;
+    border-color: T.accent.with-alpha(0.33);
+    tt := Text {
+        text: "#" + root.text;
+        font-size: 11px;
+        color: T.accent2;
+    }
+}
+
+// the thumbnail with its badges (shared by grid + list)
+component Thumb inherits Rectangle {
+    in property <Card> data;
+    in property <bool> hov;
+    in property <bool> small; // list view
+    background: #0a0a0c;
+    clip: true;
+    Image {
+        source: data.thumb;
+        width: 100%;
+        height: 100%;
+        image-fit: cover;
+    }
+    // the real clip, faded in over the still (Echo: opacity .25 s once it can play)
+    if HoverVid.row == data.idx && hov: Image {
+        width: 100%;
+        height: 100%;
+        source: HoverVid.frame;
+        image-fit: cover;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 250ms; }
+    }
+    // .thumb::after - a soft dark gradient at the bottom (badges stay readable)
+    Rectangle {
+        y: parent.height * 0.78;
+        height: parent.height * 0.22;
+        background: @linear-gradient(180deg, #00000000 0%, #00000055 100%);
+    }
+    // selected: accent tint; something else selected: this one is dimmed
+    Rectangle {
+        // Echo (chat 26): while selecting, the pictures of NOT selected cards fade to 55 %
+        background: data.picked ? T.accent.with-alpha(0.16) : Lib.picking ? (hov ? #0a0a0c26 : #0a0a0c73) : transparent;
+        animate background { duration: T.fade; }
+    }
+    if data.dur != "": Badge {
+        x: parent.width - self.width - 9px;
+        y: parent.height - self.height - 9px;
+        text: data.dur;
+        bg: #000000dd;
+    }
+    if data.edited: Badge {
+        x: 9px;
+        y: parent.height - self.height - 9px;
+        text: "Edited";
+        bg: T.accent.with-alpha(0.85);
+    }
+    // Echo's .tbadges (top right): "Shared" + a cloud mark when the clip is also in the cloud
+    HorizontalLayout {
+        x: parent.width - self.preferred-width - 9px;
+        y: 9px;
+        height: 20px;
+        spacing: 5px;
+        if data.shared: Badge {
+            text: data.views != "" ? data.views : "Shared";
+            bg: #000000bb;
+        }
+        if data.cloud-only: Badge {
+            text: "Cloud only";
+            bg: T.accent.with-alpha(0.85);
+        }
+        if data.cloud: Rectangle {
+            width: 24px;
+            height: 20px;
+            border-radius: 6px;
+            background: #000000bb;
+            Icon {
+                width: 14px;
+                height: 14px;
+                commands: Ic.cloud;
+                stroke: white;
+            }
+        }
+    }
+    // Echo's .gico: 22 px game icon (radius 6, small shadow) where the select circle appears - on hover / while
+    // selecting it slides right of the circle (left 9 -> 42 px in .15 s)
+    if data.has-gicon: Rectangle {
+        property <bool> moved: root.hov || data.picked || Lib.picking;
+        x: self.moved ? (root.small ? 37px : 42px) : 9px;
+        animate x { duration: 150ms; easing: ease; }
+        y: root.small ? 9px : 11px;
+        width: root.small ? 18px : 22px;
+        height: self.width;
+        border-radius: 6px;
+        drop-shadow-blur: 3px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #000000cc;
+        clip: true;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: data.gicon;
+            image-fit: cover;
+        }
+    }
+    PickTick {
+        x: 9px;
+        y: 9px;
+        size: root.small ? 22px : 26px;
+        on: data.picked;
+        show: root.hov || Lib.picking;
+        clicked => { Lib.pick(data.idx); }
+    }
+}
+
+// Echo's .ovl: the extra buttons (edit, cloud, folder, delete) slide in on hover, then copy [copy | v] and the star
+component CardButtons inherits HorizontalLayout {
+    in property <Card> data;
+    in property <bool> hov;
+    in property <string> size-text;
+    spacing: 2px;
+    alignment: end;
+    // .more: takes no room until hover (the name gets the full width), then slides open to the LEFT of copy
+    // (max-width 0 -> 142 + margin 6, .18 s ease; opacity in .15 s after .05 s, out .12 s). Ctrl held: at once.
+    property <bool> open: root.hov || Lib.ctrl-held;
+    more := Rectangle {
+        width: root.open ? 148px : 0px;
+        animate width { duration: Lib.ctrl-inst ? 0ms : 180ms; easing: ease; }
+        opacity: root.open ? 1 : 0;
+        animate opacity { duration: Lib.ctrl-inst ? 0ms : root.open ? 150ms : 120ms; delay: Lib.ctrl-inst || !root.open ? 0ms : 50ms; }
+        visible: self.width > 0.5px;
+        clip: true;
+        HorizontalLayout {
+        x: 0;
+        width: 142px;
+        spacing: 2px;
+        IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.edit;
+            tip: "Edit";
+            clicked => { Lib.act(data.idx, "edit"); }
+        }
+        IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.cloud;
+            tip: "Cloud: upload, free up space, delete";
+            clicked => { Lib.act(data.idx, "cloud"); }
+        }
+        IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.folder;
+            tip: "Show in folder";
+            clicked => { Lib.act(data.idx, "folder"); }
+        }
+        IconBtn {
+            y: (parent.height - self.height) / 2;
+            icon: Ic.del;
+            danger: true;
+            tip: "Delete";
+            clicked => { Lib.act(data.idx, "delete"); }
+        }
+        }
+    }
+    // .cgrp: copy + size menu
+    cg := Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 60px;
+        height: 34px;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: cga.has-hover ? T.muted : T.line;
+        animate border-color { duration: T.fade; }
+        cga := TouchArea { }
+        HorizontalLayout {
+            padding: 1px;
+            IconBtn {
+                width: 34px;
+                height: 32px;
+                icon: Ic.copy;
+                tip: "Copy to clipboard (Ctrl+click: choose size)";
+                clicked => { Lib.act(data.idx, "copy"); }
+            }
+            Rectangle {
+                width: 1px;
+                Rectangle {
+                    y: 8px;
+                    height: parent.height - 16px;
+                    background: T.line;
+                }
+            }
+            IconBtn {
+                width: 23px;
+                height: 32px;
+                icon: Ic.down;
+                icon-size: 12px;
+                tip: "Copy smaller for Discord";
+                clicked => { cm.show(); }
+            }
+        }
+        cm := PopupWindow {
+            x: 0;
+            y: cg.height + 6px;
+            // own size: Slint tests clicks against it (none = every click 'outside', fell through - William)
+            width: cmb.preferred-width;
+            height: cmb.preferred-height;
+            close-policy: close-on-click-outside;
+            cmb := CopyMenuBody {
+                size-text: root.size-text;
+                picked(k) => {
+                    cm.close();
+                    Lib.act(data.idx, "copy:" + k);
+                }
+            }
+        }
+    }
+    IconBtn {
+        y: (parent.height - self.height) / 2;
+        icon: Ic.star;
+        on: data.fav;
+        tip: data.fav ? "Remove from favourites" : "Add to favourites";
+        clicked => { Lib.fav(data.idx); }
+    }
+}
+
+export component CardView inherits Rectangle {
+    in property <Card> data;
+    // ta wraps the whole card: it stays "hovered" while the mouse is on the tick or the buttons inside it
+    property <bool> hov: ta.has-hover;
+    changed hov => {
+        if (self.hov) {
+            Lib.hover-idx = data.idx;
+        } else if (Lib.hover-idx == data.idx) {
+            Lib.hover-idx = -1;
+        }
+        Lib.hover(data.idx, self.hov);
+    }
+    ta := CardTouch {
+        clip-row: data.idx;
+        inner := Rectangle {
+            // .card:hover - lift 3 px + accent border + shadow (the shadow switches instantly: an animated blur is
+            // re-drawn every frame and smeared into a "trail")
+            y: hov ? -3px : 0;
+            animate y { duration: T.lift; easing: ease-out; }
+            height: root.height;
+            width: root.width;
+            background: T.panel;
+            border-radius: T.radius;
+            border-width: 1px;
+            border-color: data.picked ? T.accent.with-alpha(0.9) : hov ? T.accent.with-alpha(0.4) : T.line;
+            animate border-color { duration: T.lift; }
+            drop-shadow-blur: hov ? 34px : 0;
+            drop-shadow-offset-y: hov ? 14px : 0;
+            drop-shadow-color: #00000099;
+            clip: true;
+            thumb := Thumb {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: self.width * 9 / 16;
+                border-top-left-radius: T.radius - 1px;
+                border-top-right-radius: T.radius - 1px;
+                data: root.data;
+                hov: root.hov;
+            }
+            // .info - padding 12 10 12 16; name 15 px semibold; meta "Friday • 22.7 MB"
+            HorizontalLayout {
+                // natural height at the top (Echo: cards in a row stretch, the info keeps its own height)
+                y: thumb.height + 1px;
+                height: self.preferred-height;
+                padding-left: 16px;
+                padding-right: 10px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 3px;
+                    alignment: center;
+                    NameLine {
+                        data: root.data;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: data.when;
+                            font-size: 12.5px;
+                            color: T.muted;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            width: 3px;
+                            height: 3px;
+                            y: (parent.height - 3px) / 2;
+                            border-radius: 1.5px;
+                            background: T.dim;
+                        }
+                        Text {
+                            text: data.size;
+                            font-size: 12.5px;
+                            color: T.muted;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                    }
+                    if data.tags.length > 0: HorizontalLayout {
+                        spacing: 4px;
+                        padding-top: 4px;
+                        alignment: start;
+                        for t in data.tags: TagChip {
+                            text: t;
+                        }
+                    }
+                    if data.note != "": Text {
+                        text: data.note;
+                        font-size: 12px;
+                        color: T.muted;
+                        overflow: elide;
+                    }
+                }
+                CardButtons {
+                    data: root.data;
+                    hov: root.hov;
+                    size-text: data.size;
+                }
+            }
+        }
+        // right-click menu: on top, but it only takes right clicks (left clicks + hover pass through)
+        CardMenu {
+            data: root.data;
+        }
+    }
+}
+
+// list view (.grid.list): one row per clip, 176 px picture
+export component ListCard inherits Rectangle {
+    in property <Card> data;
+    property <bool> hov: ta.has-hover;
+    changed hov => {
+        if (self.hov) {
+            Lib.hover-idx = data.idx;
+        } else if (Lib.hover-idx == data.idx) {
+            Lib.hover-idx = -1;
+        }
+        Lib.hover(data.idx, self.hov);
+    }
+    ta := CardTouch {
+        clip-row: data.idx;
+        Rectangle {
+            background: T.panel;
+            border-radius: T.radius;
+            border-width: 1px;
+            border-color: data.picked ? T.accent.with-alpha(0.9) : hov ? T.accent.with-alpha(0.4) : T.line;
+            animate border-color { duration: T.lift; }
+            clip: true;
+            HorizontalLayout {
+                spacing: 0;
+                Thumb {
+                    width: 176px;
+                    data: root.data;
+                    hov: root.hov;
+                    small: true;
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 10px;
+                    spacing: 10px;
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 3px;
+                        alignment: center;
+                        NameLine {
+                            data: root.data;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: data.when;
+                                font-size: 12.5px;
+                                color: T.muted;
+                            }
+                            Rectangle {
+                                width: 3px;
+                                height: 3px;
+                                y: (parent.height - 3px) / 2;
+                                border-radius: 1.5px;
+                                background: T.dim;
+                            }
+                            Text {
+                                text: data.size;
+                                font-size: 12.5px;
+                                color: T.muted;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        if data.tags.length > 0: HorizontalLayout {
+                            spacing: 4px;
+                            padding-top: 2px;
+                            alignment: start;
+                            for t in data.tags: TagChip {
+                                text: t;
+                            }
+                        }
+                    }
+                    CardButtons {
+                        data: root.data;
+                        hov: root.hov;
+                        size-text: data.size;
+                    }
+                }
+            }
+        }
+        CardMenu {
+            data: root.data;
+        }
+    }
+}
+
+// Echo's .fchip
+component FChip inherits Rectangle {
+    in property <FOpt> o;
+    callback clicked;
+    height: 28px;
+    width: hl.preferred-width;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: o.on ? T.accent.with-alpha(0.7) : ta.has-hover ? T.line : transparent;
+    background: o.on ? T.accent.with-alpha(0.2) : T.panel2;
+    animate background, border-color { duration: 120ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    hl := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 7px;
+        Text {
+            text: o.label;
+            font-size: 12.5px;
+            color: o.on || ta.has-hover ? T.text : T.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: o.count;
+            font-size: 11px;
+            color: T.dim;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Echo's #fmenu
+export component FilterPanel inherits Rectangle {
+    in property <[FLine]> lines;
+    callback toggle(string, string);
+    callback clear();
+    width: 520px;
+    height: min(vl.preferred-height, 560px);
+    background: T.panel;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: T.line;
+    drop-shadow-blur: 50px;
+    drop-shadow-offset-y: 18px;
+    drop-shadow-color: #000000bb;
+    // swallow clicks so the popup doesn't close when a gap between chips is clicked
+    TouchArea { }
+    Flickable {
+        // William: a click on a chip opened the clip BEHIND the panel. A draggable Flickable delays the mouse press
+        // (to see if it's a drag) and Slint replays that delayed press on the main window's items, not this popup's.
+        // interactive: false = no delay; the wheel still scrolls.
+        interactive: false;
+        content-height: vl.preferred-height;
+        vl := VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 14px;
+            padding-bottom: 16px;
+            spacing: 0;
+            HorizontalLayout {
+                Text {
+                    text: "Filter clips";
+                    font-size: 14px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: "Clear all";
+                    font-size: 12.5px;
+                    color: cta.has-hover ? T.text : T.muted;
+                    cta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.clear(); }
+                    }
+                }
+            }
+            for l in root.lines: VerticalLayout {
+                spacing: 8px;
+                padding-top: l.head != "" ? 12px : 6px;
+                if l.head != "": Text {
+                    text: l.head;
+                    font-size: 11px;
+                    font-weight: 600 + T.fw;
+                    letter-spacing: 0.9px;
+                    color: T.dim;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for o in l.opts: FChip {
+                        o: o;
+                        clicked => { root.toggle(o.group, o.key); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Echo's .fpill: active filter next to the Filter button; the x removes it
+export component FPill inherits Rectangle {
+    in property <FOpt> o;
+    in property <string> head;
+    callback clicked;
+    height: 30px;
+    width: min(hl.preferred-width, 200px);
+    border-radius: 15px;
+    background: T.accent.with-alpha(0.14);
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: "Remove this filter";
+        hover: ta.has-hover;
+    }
+    hl := HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 6px;
+        spacing: 6px;
+        Text {
+            text: root.head + ":";
+            font-size: 12.5px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: o.label;
+            font-size: 12.5px;
+            color: T.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: 6px;
+            border-radius: 9px;
+            background: ta.has-hover ? #ffffff1a : transparent;
+            Icon {
+                width: 11px;
+                height: 11px;
+                commands: Ic.x;
+                stroke: ta.has-hover ? T.text : T.muted;
+                stroke-width: 2.2px;
+            }
+        }
+    }
+}
