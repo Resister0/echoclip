@@ -55,6 +55,8 @@ struct Api {
     set_property_string: unsafe extern "C" fn(*mut Handle, *const c_char, *const c_char) -> c_int,
     get_property_string: unsafe extern "C" fn(*mut Handle, *const c_char) -> *mut c_char,
     command: unsafe extern "C" fn(*mut Handle, *const *const c_char) -> c_int,
+    /// mpv_command_async: queue a command and return at once (the reply event is dropped by drain_events)
+    command_async: Option<unsafe extern "C" fn(*mut Handle, u64, *const *const c_char) -> c_int>,
     free: unsafe extern "C" fn(*mut c_void),
     wait_event: unsafe extern "C" fn(*mut Handle, f64) -> *mut Event,
     error_string: unsafe extern "C" fn(c_int) -> *const c_char,
@@ -184,6 +186,7 @@ fn load_api() -> Result<Api, String> {
             set_property_string: f!("mpv_set_property_string"),
             get_property_string: f!("mpv_get_property_string"),
             command: f!("mpv_command"),
+            command_async: lib.get(b"mpv_command_async\0").ok().map(|s| *s),
             free: f!("mpv_free"),
             wait_event: f!("mpv_wait_event"),
             error_string: f!("mpv_error_string"),
@@ -436,6 +439,16 @@ impl Mpv {
         let mut p: Vec<*const c_char> = c.iter().map(|a| a.as_ptr()).collect();
         p.push(ptr::null());
         unsafe { (self.api.command)(self.h, p.as_ptr()) };
+    }
+
+    /// Like command(), but never waits for mpv's core (which can be busy seeking / decoding for a while): for seeks
+    /// fired many times a second while dragging on the seek strip (10 Nov 2026: the sync seeks made the whole UI lag).
+    pub fn command_async(&self, args: &[&str]) {
+        let Some(run) = self.api.command_async else { return self.command(args) };
+        let c: Vec<CString> = args.iter().map(|a| cs(a)).collect();
+        let mut p: Vec<*const c_char> = c.iter().map(|a| a.as_ptr()).collect();
+        p.push(ptr::null());
+        unsafe { run(self.h, 0, p.as_ptr()) };
     }
 
     /// Empty mpv's event queue (state is read by polling properties, except the "new file's first picture is on

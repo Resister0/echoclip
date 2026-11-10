@@ -7140,7 +7140,7 @@ impl Recorder {
         let made = match provider {
             "pcloud" => rclone_out(&["config", "create", &name, "pcloud", "config_template", OAUTH_PAGE]),
             // drive.file: Echo only sees the files it made itself, not the rest of the Drive.
-            // Echo's own Google login (project "Echo" in Google Cloud, owner w@volkan.dk, desktop client "Echo app
+            // Echo's own Google login (project "Echo" in Google Cloud, desktop client "Echo app
             // (rclone)", chat 28) instead of rclone's shared one, which Google is retiring. A desktop app's
             // "secret" isn't secret (Google says so - it ships inside every copy). Accounts connected before keep
             // rclone's login: drive.file only shows files made with the SAME login, so switching them would hide
@@ -7649,7 +7649,7 @@ impl Recorder {
             }
         }
         // Echo Cloud gets a smaller copy (cloudsave.rs); the user's own clouds always get the clip itself, AV1 too
-        // (William, 10 Nov 2026 - they used to get an AV1 clip's H.264 copy; its share link now plays an H.264 share
+        // (10 Nov 2026 - they used to get an AV1 clip's H.264 copy; its share link now plays an H.264 share
         // copy next to it instead, cloudsave.rs link_via_own_copy)
         let made_copy = if to_ec { self.cloud_copy(path, &rel, &stage) } else { Ok((path.to_string(), false)) };
         let (up, temp) = match made_copy {
@@ -8634,7 +8634,7 @@ impl Recorder {
         // share copy (an AV1 clip): an H.264 copy goes to Echo Cloud, so the link plays everywhere
         let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
         let local = self.clips_dir().join(rel);
-        // av1-upload-fix (William, 10 Nov 2026): the link would play an AV1 file (the clip on this PC that isn't
+        // av1-upload-fix (10 Nov 2026): the link would play an AV1 file (the clip on this PC that isn't
         // uploaded yet, or the cloud's file - also a cloud-only clip): it plays an H.264 share copy instead. A cloud
         // that already has Echo's H.264 copy (Echo Cloud's smaller copy, old AV1 uploads) is linked as it is.
         let needs_copy = self.link_needs_h264(rel, &local);
@@ -8645,7 +8645,7 @@ impl Recorder {
                 Err(e) => return Err(e),
             }
         }
-        // own clouds only (av1-upload-fix, William 10 Nov 2026): they keep the AV1 original, so the link plays an
+        // own clouds only (av1-upload-fix, 10 Nov 2026): they keep the AV1 original, so the link plays an
         // H.264 share copy next to it
         if !has_ec && needs_copy {
             if let Some(r) = self.link_via_own_copy(rel, &local, days, progress)? { return Ok(r); }

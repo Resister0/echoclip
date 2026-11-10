@@ -5,7 +5,7 @@ const gb = (b) => { b = b || 0; return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB"
 const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
 const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-";
 const money = (v, c) => (v || 0).toLocaleString(undefined, { style: "currency", currency: c || "EUR" });
-// signed in with the email code (w@volkan.dk only, chat 30): a session token like the app's, kept in this browser until
+// signed in with the email code (the admin address only, chat 30): a session token like the app's, kept in this browser until
 // "Sign out" (ends the session on the server too) or 180 days unused. The old ADMIN_KEY is no longer stored anywhere.
 let key = ""; try { localStorage.removeItem("echo_admin_key"); sessionStorage.removeItem("echo_admin_key"); key = localStorage.getItem("echo_admin_token") || ""; } catch { }
 const auth = (extra) => ({ authorization: "Bearer " + key, ...(extra || {}) });

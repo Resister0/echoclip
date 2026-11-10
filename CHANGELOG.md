@@ -3,6 +3,12 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.3 - 10 Nov
+- Trimming is smooth: dragging the trim ends or the play head no longer makes Echo (or the mouse) lag, and it lands on the exact frame when you let go
+- Opening a clip again shows its preview strip at once (Linux kept making it again on every open)
+- Linux: the AppImage starts on more systems (it brings its own keyboard library for X11 now)
+- Linux: the anonymous performance numbers now count only Echo's own memory, the same way as on Windows
+
 ## 2.0.2 - 10 Nov
 - New hotkey: Show / hide Echo - brings Echo up over your game, or back to the tray (Settings > Hotkeys, off by default)
 - Clearer notifications: icons and colours, Undo after deleting or moving clips, speed and time left on downloads and uploads, and buttons like Show in folder, Open and Play

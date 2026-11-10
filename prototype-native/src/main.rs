@@ -40,6 +40,7 @@ mod pl_layer; // Chat C/A: editor video layers (PiP) in the preview
 mod pl_sticker;
 mod pl_actions;
 mod pl_cuts; // 9 Nov: cut out parts on the player's strip (Shift+drag, X)
+mod pl_seek; // 10 Nov: paced, non-blocking seeks while dragging on the strip / the trim ends
 mod perf; // 9 Nov: memory / CPU averages for the admin panel (sent with the update check)
 mod specs; // r2-perf (10 Nov): the PC's hardware model names + recording settings, sent with those numbers
 mod hover_vid; // 9 Nov: card hover preview = the real clip (was a flipbook)
@@ -1667,6 +1668,8 @@ fn main() {
                     s.failed.push(d.key);
                     return;
                 };
+                // "sheet: reused <stem>.scrub.jpg in 85 ms" / "made …" (ffmpeg ran) - in proto.log too
+                log_to(&mut Vec::new(), format!("sheet: {}", d.note));
                 if s.player == Some(d.key) {
                     s.player_px = Some((d.key, px.clone(), d.tw, d.th));
                 }
@@ -1897,6 +1900,19 @@ fn main() {
             pl.set_has_next((row as usize) + 1 < lib.view_len());
             pl.set_sheet_ok(false);
             SHEETS.with(|s| s.borrow_mut().player = Some(idx));
+            // the same clip again, its pictures still in memory: show them now, no 400 ms wait (player_px = the same
+            // pictures for the fullscreen controls mpv draws on Windows - only when they're this clip's too)
+            let again = SHEETS.with(|s| {
+                let s = s.borrow();
+                s.player_px.as_ref().filter(|x| x.0 == idx).and_then(|_| s.items.iter().find(|x| x.0 == idx).map(|x| (x.1.clone(), x.2, x.3)))
+            });
+            if let Some((img, tw, th)) = again {
+                eprintln!("sheet: reused from memory");
+                pl.set_sheet(img);
+                pl.set_sheet_tw(tw);
+                pl.set_sheet_th(th);
+                pl.set_sheet_ok(true);
+            }
             a.set_player_open(true);
             a.invoke_focus_player();
             a.window().request_redraw(); // mpv starts / loads the file in the render hook
@@ -2096,9 +2112,10 @@ fn main() {
             p.closed_at = Some(Instant::now());
             SHEETS.with(|s| {
                 let mut s = s.borrow_mut();
-                s.player = None;
-                let keep = s.hover.map(|h| h.0);
-                s.items.retain(|x| Some(x.0) == keep);
+                // keep the closed clip's pictures too (at most 2 are kept anyway): opening it again shows them
+                // at once instead of decoding the sheet again (10 Nov 2026: looked like "made on every open")
+                let keep = [s.hover.map(|h| h.0), s.player.take()];
+                s.items.retain(|x| keep.contains(&Some(x.0)));
             });
             if let Some(a) = w.upgrade() {
                 a.set_player_open(false);
@@ -2150,15 +2167,28 @@ fn main() {
             }
         });
     }
+    // keyframe seeks while dragging on the strip / a trim end: paced + never waiting for mpv (pl_seek.rs)
+    let drag_seek = {
+        let p = player.clone();
+        Rc::new(pl_seek::DragSeek::new(move |t| {
+            if let Some(m) = p.borrow().mpv.as_ref() {
+                m.command_async(&["seek", &format!("{t:.3}"), "absolute+keyframes"]);
+            }
+        }))
+    };
     {
-        let (w, p) = (app.as_weak(), player.clone());
+        let (w, p, ds) = (app.as_weak(), player.clone(), drag_seek.clone());
         pl.on_seek(move |frac, dragging| {
             let p = p.borrow();
             if let Some(m) = p.mpv.as_ref() {
-                let d = m.get_f64("duration").unwrap_or(p.duration);
-                let t = format!("{:.3}", frac as f64 * d);
+                let d = if p.duration > 0.0 { p.duration } else { m.get_f64("duration").unwrap_or(0.0) };
                 // keyframe seeks while dragging (fast), one exact seek on release
-                m.command(&["seek", &t, if dragging { "absolute+keyframes" } else { "absolute+exact" }]);
+                if dragging {
+                    ds.drag(frac as f64 * d);
+                } else {
+                    ds.end();
+                    m.command_async(&["seek", &format!("{:.3}", frac as f64 * d), "absolute+exact"]);
+                }
             }
             if let Some(a) = w.upgrade() {
                 let pl = a.global::<Play>();
@@ -2366,21 +2396,23 @@ fn main() {
     pl_cuts::wire(&app, player.clone());
     pl_actions::wire_tags(&app, player.clone()); // gaps-player: Tags box suggestions + add on blur
     {
-        let (w, p, lt) = (app.as_weak(), player.clone(), last_trim.clone());
+        let (w, p, lt, ds) = (app.as_weak(), player.clone(), last_trim.clone(), drag_seek.clone());
         pl.on_trim_changed(move |dragging| {
             let Some(a) = w.upgrade() else { return };
             let pl = a.global::<Play>();
             let p = p.borrow();
             let Some(m) = p.mpv.as_ref() else { return };
-            let d = m.get_f64("duration").unwrap_or(p.duration);
+            // p.duration while dragging: reading mpv's property waits for its core (busy with the last seek)
+            let d = if p.duration > 0.0 && dragging { p.duration } else { m.get_f64("duration").unwrap_or(p.duration) };
             let (t0, t1) = (pl.get_t0(), pl.get_t1());
             let (l0, l1) = lt.get();
             lt.set((t0, t1));
             if dragging {
-                // show the frame under the handle that moves (fast keyframe seek)
+                // show the frame under the handle that moves (fast keyframe seek, paced: pl_seek.rs)
                 let f = if (t1 - l1).abs() > (t0 - l0).abs() { t1 } else { t0 };
-                m.command(&["seek", &format!("{:.3}", f as f64 * d), "absolute+keyframes"]);
+                ds.drag(f as f64 * d);
             } else {
+                ds.end();
                 // play the selection on a loop (mpv's A-B loop), from its start
                 m.set("ab-loop-a", &format!("{:.3}", t0 as f64 * d));
                 m.set("ab-loop-b", &format!("{:.3}", t1 as f64 * d));
@@ -3043,7 +3075,7 @@ fn main() {
     // ECHO_IDLE_SECS = test knob for the 60 s shutdown
     let idle_after = Duration::from_secs(std::env::var("ECHO_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60));
     {
-        let (w, p, lib) = (app.as_weak(), player.clone(), lib.clone());
+        let (w, p, lib, ds) = (app.as_weak(), player.clone(), lib.clone(), drag_seek.clone());
         let root = clips_dir.clone();
         let mut tick = 0u32;
         let mut hidden_since: Option<Instant> = None;
@@ -3137,6 +3169,10 @@ fn main() {
                     a.window().request_redraw();
                     return;
                 }
+            }
+            // dragging on the strip / a trim end: no reads (each one waits for mpv's core, busy seeking)
+            if ds.busy() {
+                return;
             }
             let pos = m.get_f64("time-pos").unwrap_or(0.0);
             let dur = m.get_f64("duration").unwrap_or(p.duration);

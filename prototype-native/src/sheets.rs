@@ -1,8 +1,10 @@
 //! The 60-picture "scrub sheet" of a clip (10 x 6 frames, Echo's <stem>.scrub.jpg): hover flipbook on the cards and
-//! the seek-bar preview in the player. Echo's own sheet is used when it's there and newer than the clip; otherwise
-//! the prototype makes one with ffmpeg (same command as recorder.rs scrub_sheet) in ITS OWN cache folder - it never
-//! writes into Echo's .thumbs. Sheets are decoded on a worker thread and scaled to 320x180 per picture
-//! (3200x1080 = ~10 MB as pixels instead of ~41 MB at full size).
+//! the seek-bar preview in the player. The sheet in the clip's .thumbs is used when it's there and newer than the
+//! clip; otherwise one is made with ffmpeg (same command as recorder.rs scrub_sheet) and kept THERE, Windows and Linux
+//! alike (10 Nov 2026: it went to the temp folder before = /tmp on Linux, RAM, made again after every reboot).
+//! An edited clip is newer than its sheet = made again; delete / rename take it along (lib_thumbs.rs). Cloud-only
+//! clips (a stream) and folders Echo can't write to use a cache folder of their own. Sheets are decoded on a worker
+//! thread and scaled to 320x180 per picture (3200x1080 = ~10 MB as pixels instead of ~41 MB at full size).
 use slint::{Rgb8Pixel, SharedPixelBuffer};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -126,7 +128,26 @@ fn probe_dur(clip: &Path) -> f64 {
     t.trim().split(':').filter_map(|x| x.parse::<f64>().ok()).fold(0.0, |acc, x| acc * 60.0 + x)
 }
 
+/// the cache folder for sheets that can't go into .thumbs: Windows %TEMP% (kept), Linux ~/.cache (not /tmp = RAM)
+fn own_dir() -> PathBuf {
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+        if let Some(b) = base {
+            return b.join("echo").join("sheets");
+        }
+    }
+    std::env::temp_dir().join("echo-proto-sheets")
+}
+
 fn own_cache(clip: &Path) -> PathBuf {
+    own_cache_in(&own_dir(), clip)
+}
+
+fn own_cache_in(dir: &Path, clip: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     // a stream: the clip's part of the address only (the streaming server's port changes between runs)
@@ -136,8 +157,7 @@ fn own_cache(clip: &Path) -> PathBuf {
     } else {
         clip.hash(&mut h);
     }
-    let dir = std::env::temp_dir().join("echo-proto-sheets");
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir);
     dir.join(format!("{:016x}.jpg", h.finish()))
 }
 
@@ -172,19 +192,56 @@ fn make(job: &Job, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// a local clip without a fresh sheet: make it (or take the one an older Echo left in the temp folder) and keep it in
+/// .thumbs as <stem>.scrub.jpg. None = .thumbs can't be written (read-only folder): the caller uses its own cache.
+/// Ok((path, how)): how = "made" (ffmpeg ran) / "moved" (the temp-folder copy).
+fn into_thumbs(job: &Job) -> Option<Result<(PathBuf, &'static str), String>> {
+    let out = &job.echo_sheet;
+    std::fs::create_dir_all(out.parent()?).ok()?;
+    // written under another name first: a half-written sheet must never look fresh
+    let tmp = out.with_extension("part.jpg");
+    std::fs::File::create(&tmp).ok()?;
+    let old = own_cache_in(&std::env::temp_dir().join("echo-proto-sheets"), &job.clip);
+    let moved = fresh(&old, &job.clip) && std::fs::copy(&old, &tmp).is_ok();
+    let made = if moved { Ok(()) } else { make(job, &tmp) };
+    let r = made.and_then(|_| std::fs::rename(&tmp, out).map_err(|e| e.to_string()));
+    let _ = std::fs::remove_file(&tmp);
+    if r.is_ok() {
+        let _ = std::fs::remove_file(&old); // the temp-folder copy isn't needed any more
+        // a clip dated in the future (clock / synced folder): give the sheet the clip's date, or it's never "fresh"
+        // and made again on every open
+        if !fresh(out, &job.clip) {
+            if let (Some(t), Ok(f)) = (mtime(&job.clip), std::fs::File::options().write(true).open(out)) {
+                let _ = f.set_modified(t);
+            }
+        }
+    }
+    Some(r.map(|_| (out.clone(), if moved { "moved" } else { "made" })))
+}
+
 fn load(job: &Job) -> Done {
     let t0 = std::time::Instant::now();
     let fail = |note: String| Done { key: job.key, px: None, rgba: None, tw: 0, th: 0, note };
     // a stream has no file date: a sheet made before (Echo's, from when the clip was on this PC, or ours) is used as is
     let far = remote(&job.clip);
+    let mut how = "reused";
     let path = if fresh(&job.echo_sheet, &job.clip) || (far && job.echo_sheet.exists()) {
         job.echo_sheet.clone()
+    } else if let Some(r) = (!far).then(|| into_thumbs(job)).flatten() {
+        match r {
+            Ok((p, h)) => {
+                how = h;
+                p
+            }
+            Err(e) => return fail(format!("no seek pictures: {e}")),
+        }
     } else {
         let own = own_cache(&job.clip);
         if !(fresh(&own, &job.clip) || (far && own.exists())) {
             if let Err(e) = make(job, &own) {
                 return fail(format!("no seek pictures: {e}"));
             }
+            how = "made";
         }
         own
     };
@@ -209,7 +266,7 @@ fn load(job: &Job) -> Done {
         }
         Some(b)
     };
-    Done { key: job.key, px: Some(px), rgba, tw, th, note: format!("seek pictures in {} ms", t0.elapsed().as_millis()) }
+    Done { key: job.key, px: Some(px), rgba, tw, th, note: format!("{how} {} in {} ms", path.file_name().unwrap_or_default().to_string_lossy(), t0.elapsed().as_millis()) }
 }
 
 /// one worker: newest request first (older hover requests are dropped)

@@ -1,5 +1,0 @@
-# Brandname - free, lightweight tools for PC gamers. Everything here may be indexed.
-User-agent: *
-Allow: /
-
-Sitemap: https://brandname.com/sitemap.xml

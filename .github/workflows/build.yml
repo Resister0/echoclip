@@ -172,7 +172,7 @@ jobs:
           # GTK crates in Cargo.lock come from tray-icon, which is Windows-only (Linux's tray = ksni over D-Bus).
           # libmpv-dev = libmpv.so.1 (mpv 0.34) + its libraries, bundled into the AppImage.
           sudo apt-get $APT install -y libasound2-dev libdbus-1-dev pkg-config \
-            libfuse2 file patchelf zsync libfontconfig1-dev libxkbcommon-dev libmpv-dev
+            libfuse2 file patchelf zsync libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libmpv-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -245,6 +245,8 @@ jobs:
         # People who auto-update from the old (Tauri) AppImage get this file - it must play clips without mpv installed.
         # Not bundled (the PC's own copies are used): libva (an older libva can't load newer VA-API drivers = no GPU
         # decoding), libwayland-* / libxkbcommon (Slint loads them too - same copies as the plain build), libdbus.
+        # Exception: libxkbcommon-x11.so.0 + libxcb-xkb.so.1 ARE bundled - winit loads them by name on X11 and panics
+        # without them (AppImageHub's test system lacks them, 10 Nov 2026); found through echo-clips' RUNPATH ($ORIGIN/../lib).
         # Plus linuxdeploy's own excludelist (glibc, libstdc++, GL/EGL, X11, ALSA, fontconfig...).
         # Built as Echo-native.AppImage + .sig and only renamed at the very end. No fallback to the old Tauri AppImage
         # (10 Nov 2026): if this fails, the run fails.
@@ -276,6 +278,10 @@ jobs:
             --exclude-library 'libxkbcommon*' --exclude-library 'libdbus-1.so*'
           # mpv.rs looks for usr/lib/libmpv.so.1 by that exact name
           [ -e AppDir/usr/lib/libmpv.so.1 ] || ln -s "$(basename "$(readlink -f "$MPV")")" AppDir/usr/lib/libmpv.so.1
+          # winit's X11 keyboard library (dlopen'ed as libxkbcommon-x11.so.0) + its libxcb-xkb; libxkbcommon.so.0 and libxcb stay the system's
+          for L in libxkbcommon-x11.so.0 libxcb-xkb.so.1; do cp -L "/usr/lib/x86_64-linux-gnu/$L" AppDir/usr/lib/; done
+          if ldd AppDir/usr/lib/libxkbcommon-x11.so.0 | grep 'not found'; then echo "bundled libxkbcommon-x11 misses libraries"; exit 1; fi
+          readelf -d AppDir/usr/bin/echo-clips | grep -qE 'R(UN)?PATH.*\$ORIGIN/\.\./lib' || { echo "echo-clips has no \$ORIGIN/../lib RUNPATH - bundled libraries would not be found"; exit 1; }
           readelf -d AppDir/usr/bin/echo-clips | grep -iE 'runpath|rpath' || true
           ls AppDir/usr/lib; du -sh AppDir
           # every library the bundled libmpv needs: in the AppDir, or one of the system ones left out on purpose

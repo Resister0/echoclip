@@ -32,7 +32,7 @@ flatpak install -y flathub org.flatpak.Builder
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
 # build + install (from the repo root; first build ~20-40 min: ffmpeg, gpu-screen-recorder, Echo)
-cd ~/Desktop/Echo
+cd ~/Desktop/Sonela/Echo
 flatpak run org.flatpak.Builder --user --install --force-clean --install-deps-from=flathub build-dir flatpak/link.echoclip.Echo.yml
 
 # run it (close the normal Echo first - only one Echo can run)
@@ -61,7 +61,7 @@ Clips stay in `~/Videos/EchoClips` (shared).
 
 ## Echo's own Flatpak repo (what users install)
 
-Flathub is off: its rules don't allow AI-written manifests or apps that are mostly AI-written (see `Claude outputs/ECHO_HANDOFF_chat23.md`, chat 27).
+Flathub is off: its rules don't allow AI-written manifests or apps that are mostly AI-written (see `Claude outputs/ECHO_LOG.md`, chat 27).
 Instead every publish builds the Flatpak in GitHub Actions and adds it to Echo's own repo:
 
 - **Build**: job `flatpak` in `ci/public-build.yml` runs `ci/flatpak-repo.sh` in the public repo: this manifest, `ECHO_VERSION` from `ci/version.txt`, signed with GPG, last 3 versions kept, small update downloads (static deltas).

@@ -1234,7 +1234,7 @@ impl Store {
                 }
                 sync.extend([
                     self.sw("cloud_free_after", "Free up space after uploading", "Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud - from Echo Cloud as its smaller copy)"),
-                    // the "Original quality in Echo Cloud" switch was removed (William, 10 Nov 2026): Echo Cloud always
+                    // the "Original quality in Echo Cloud" switch was removed (10 Nov 2026): Echo Cloud always
                     // gets the smaller copy
                     self.sel(
                         "link_days",

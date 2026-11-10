@@ -273,7 +273,22 @@ fn sample() -> Option<(f64, f64)> {
     }
 }
 
-/// Linux: /proc - own RSS + children's (ffmpeg), CPU from utime + stime (clock ticks, 100 on every desktop distro)
+/// Linux: /proc - own PRIVATE memory + children's (recorder / ffmpeg), CPU from utime + stime (clock ticks, 100 on every
+/// desktop distro). Private = Private_Clean + Private_Dirty from smaps_rollup = what Windows reports (Task Manager's private
+/// working set). Until 2.0.3 Linux sent VmRSS, which also counts shared libraries (graphics driver, fonts, libmpv) in full
+/// and read 2-5x higher than Windows (10 Nov 2026). VmRSS only as a fallback when smaps_rollup can't be read.
+#[cfg(not(windows))]
+fn private_kb(rollup: &str) -> Option<f64> {
+    let mut sum = None;
+    for l in rollup.lines() {
+        if l.starts_with("Private_Clean:") || l.starts_with("Private_Dirty:") {
+            let v = l.split_whitespace().nth(1)?.parse::<f64>().ok()?;
+            sum = Some(sum.unwrap_or(0.0) + v);
+        }
+    }
+    sum
+}
+
 #[cfg(not(windows))]
 fn sample() -> Option<(f64, f64)> {
     fn one(pid: &str) -> Option<(f64, f64)> {
@@ -281,9 +296,11 @@ fn sample() -> Option<(f64, f64)> {
         let rest = &st[st.rfind(')')? + 2..];
         let f: Vec<&str> = rest.split_whitespace().collect();
         let cpu = (f.get(11)?.parse::<f64>().ok()? + f.get(12)?.parse::<f64>().ok()?) / 100.0;
-        let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-        let rss = s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-        Some((rss / 1024.0, cpu))
+        let kb = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok().and_then(|r| private_kb(&r)).unwrap_or_else(|| {
+            let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+            s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0)
+        });
+        Some((kb / 1024.0, cpu))
     }
     let me = std::process::id().to_string();
     let (mut mem, mut cpu) = one(&me)?;
@@ -310,6 +327,17 @@ mod tests {
     fn agg(n: u32, mem_sum: f64, mem_peak: f64, cpu_sum: f64, cpu_peak: f64, rn: u32, rmem_sum: f64, rcpu_sum: f64) -> Agg {
         Agg { n, mem_sum, mem_peak, cpu_sum, cpu_peak, rn, rmem_sum, rcpu_sum }
     }
+    #[cfg(not(windows))]
+    #[test]
+    fn private_memory_from_smaps_rollup() {
+        let r = "Rss:              250000 kB\nPss:              120000 kB\nShared_Clean:     150000 kB\nPrivate_Clean:     20000 kB\nPrivate_Dirty:     60000 kB\n";
+        assert_eq!(private_kb(r), Some(80000.0));
+        assert_eq!(private_kb("Rss: 1 kB\n"), None);
+        // this test process can read its own rollup and gets a sane number
+        let me = std::fs::read_to_string("/proc/self/smaps_rollup").ok().and_then(|r| private_kb(&r));
+        assert!(me.is_some_and(|kb| kb > 100.0));
+    }
+
     fn put() {
         let mut st = [Agg::default(); 4];
         st[State::Tray as usize] = agg(2, 100.0, 60.0, 1.0, 0.6, 0, 0.0, 0.0);

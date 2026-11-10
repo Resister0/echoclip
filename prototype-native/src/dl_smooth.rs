@@ -1,7 +1,7 @@
 //! Smooth download bars (download-bar session, 10 Nov 2026). Cloud downloads come through Echo's rclone streaming
 //! server, which hands the bytes over in 1 MiB lumps (measured: 309 of 345 bursts on Google Drive, 54 of 57 on Echo
 //! Cloud) with 0.3-0.4 s stalls now and then. Below ~10 MB/s the 100 ms progress tick saw "+1 MB, 0, +1 MB, 0…", so
-//! the bar moved, stopped, moved several times a second - "choppy as f" (William). Echo itself drew a steady 60 fps
+//! the bar moved, stopped, moved several times a second ("choppy"). Echo itself drew a steady 60 fps
 //! (measured), and the Slint animation tweaks couldn't help: the input was lumpy.
 //! So the bar shows this value instead of the raw bytes: it moves at the average speed of the last ~1.5 s, never goes
 //! back, never gets more than one lump ahead of the bytes really received (it waits there in a long stall), and

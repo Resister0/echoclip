@@ -3,7 +3,7 @@
 //!
 //! - Smaller Echo Cloud copy: what goes up to Echo Cloud is a GPU re-encode (H.264, constant quality, max 1080p,
 //!   only the mix track, +faststart). The clip on the PC is never touched. Skipped when it saves less than 15 %.
-//!   Always on: the "Original quality in Echo Cloud" switch was removed (William, 10 Nov 2026; an old settings.json
+//!   Always on: the "Original quality in Echo Cloud" switch was removed (10 Nov 2026; an old settings.json
 //!   key "cloud_original" is ignored). The user's own clouds get the original.
 //! - No duplicate uploads: the clip's SHA-256 goes with the upload; the server says when the same clip is already
 //!   stored under another name (a clip renamed / moved outside Echo, or the same clip in two folders).
@@ -315,7 +315,7 @@ impl Recorder {
         }
     }
 
-    /// av1-upload-fix (William, 10 Nov 2026): does a share link for this clip need an H.264 share copy - would it
+    /// av1-upload-fix (10 Nov 2026): does a share link for this clip need an H.264 share copy - would it
     /// otherwise play an AV1 file (many phones and browsers can't)? Decided by what the cloud really stores:
     /// - not in a cloud yet: the clip on this PC (the link uploads from here)
     /// - Echo's own copy in the cloud (Echo Cloud's smaller copy, an AV1 clip's H.264 copy - "smaller"): never
@@ -375,7 +375,7 @@ impl Recorder {
         Ok(tmp)
     }
 
-    /// av1-upload-fix (William, 10 Nov 2026): a share link for an AV1 clip on the user's own clouds (no Echo Cloud).
+    /// av1-upload-fix (10 Nov 2026): a share link for an AV1 clip on the user's own clouds (no Echo Cloud).
     /// The clip itself stays the original there; the link plays an H.264 copy, uploaded as
     /// Echo/.shared/<folder>/<name>.mp4 (dot folders aren't clips in the listing). Made from the clip on this PC
     /// (kept in .thumbs/h264), or - cloud-only clip - from its file fetched from the cloud just for this. None = no

@@ -57,7 +57,7 @@ fn desktop_entry() {
     );
     let f = data.join("applications/link.echoclip.Echo.desktop");
     // 10 Nov 2026: leave an entry alone that starts ANOTHER Echo which still exists (a dev build in the repo took
-    // over William's AppImage entry, like autostart in rec_core.rs) - the window still gets the icon from it
+    // over the user's own AppImage entry, like autostart in rec_core.rs) - the window still gets the icon from it
     let other = std::fs::read_to_string(&f).ok().and_then(|s| {
         let e = s.lines().find_map(|l| l.strip_prefix("Exec="))?.trim().to_string();
         let path = match e.strip_prefix('"') { Some(r) => r.split('"').next()?.to_string(), None => e.split_whitespace().next()?.to_string() };
