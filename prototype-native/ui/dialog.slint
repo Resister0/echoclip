@@ -18,6 +18,13 @@ export global Dlg {
     in-out property <string> text;         // the field's text (Rust reads it with the answer)
     in-out property <string> enter;        // the value Enter answers ("" = Enter does nothing - choiceBox)
     in-out property <bool> secret;         // Chat B: the field hides what's typed (cloud passwords)
+    // gaps-settings: Echo's sendFeedback form - the field takes several lines (Enter = new line), a second field
+    // (email) and a checkbox under it. Rust sets these right after ask() and clears `form` with the answer.
+    in-out property <bool> form;
+    in-out property <string> placeholder2;
+    in-out property <string> text2;
+    in-out property <bool> checked;
+    in-out property <string> check-text;
     callback answer(string);               // "" = closed without choosing (Esc / click outside / Cancel)
 }
 
@@ -86,7 +93,8 @@ export component DialogLayer inherits Rectangle {
                 visible: Dlg.input;
                 padding-top: Dlg.input ? 12px : 0px;
                 Rectangle {
-                    height: Dlg.input ? 36px : 0px;
+                    // the form's message: Echo's textarea, 5 rows
+                    height: !Dlg.input ? 0px : Dlg.form ? 104px : 36px;
                     clip: true;
                     background: T.panel2;
                     border-radius: 9px;
@@ -94,19 +102,24 @@ export component DialogLayer inherits Rectangle {
                     border-color: ti.has-focus ? T.accent : T.line;
                     if ti.text == "": Text {
                         x: 10px;
-                        height: parent.height;
-                        vertical-alignment: center;
+                        y: Dlg.form ? 8px : 0px;
+                        height: Dlg.form ? self.preferred-height : parent.height;
+                        width: parent.width - 20px;
+                        vertical-alignment: TextVerticalAlignment.center;
                         text: Dlg.placeholder;
-                        font-size: 14px;
+                        font-size: Dlg.form ? 13px : 14px;
                         color: T.dim;
+                        wrap: word-wrap;
                     }
                     ti := TextInput {
                         x: 10px;
+                        y: Dlg.form ? 8px : 0px;
                         width: parent.width - 20px;
-                        height: parent.height;
-                        vertical-alignment: center;
-                        single-line: true;
-                        font-size: 14px;
+                        height: Dlg.form ? parent.height - 16px : parent.height;
+                        vertical-alignment: Dlg.form ? TextVerticalAlignment.top : TextVerticalAlignment.center;
+                        single-line: !Dlg.form;
+                        wrap: Dlg.form ? TextWrap.word-wrap : TextWrap.no-wrap;
+                        font-size: Dlg.form ? 13px : 14px;
                         color: T.text;
                         input-type: Dlg.secret ? InputType.password : InputType.text;
                         text <=> Dlg.text;
@@ -116,13 +129,93 @@ export component DialogLayer inherits Rectangle {
                                 Dlg.answer("");
                                 return accept;
                             }
-                            if (e.text == Key.Return && Dlg.enter != "") {
+                            if (e.text == Key.Return && Dlg.enter != "" && !Dlg.form) {
                                 Dlg.answer(Dlg.enter);
                                 return accept;
                             }
                             reject
                         }
                     }
+                }
+                // the form's email line
+                if Dlg.form: Rectangle {
+                    height: 46px;
+                    Rectangle {
+                        y: 10px;
+                        height: 36px;
+                        clip: true;
+                        background: T.panel2;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: ti2.has-focus ? T.accent : T.line;
+                        if ti2.text == "": Text {
+                            x: 10px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            text: Dlg.placeholder2;
+                            font-size: 13px;
+                            color: T.dim;
+                        }
+                        ti2 := TextInput {
+                            x: 10px;
+                            width: parent.width - 20px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            single-line: true;
+                            font-size: 13px;
+                            color: T.text;
+                            input-type: InputType.text;
+                            text <=> Dlg.text2;
+                            selection-background-color: T.accent.with-alpha(0.45);
+                            key-pressed(e) => {
+                                if (e.text == Key.Escape) {
+                                    Dlg.answer("");
+                                    return accept;
+                                }
+                                if (e.text == Key.Return && Dlg.enter != "") {
+                                    Dlg.answer(Dlg.enter);
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
+                    }
+                }
+                // the form's checkbox (Echo: 12.5 px, muted, box on the left)
+                if Dlg.form: Rectangle {
+                  height: chl.preferred-height;
+                  chl := HorizontalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding-top: 10px;
+                    spacing: 8px;
+                    Rectangle {
+                        y: 2px;
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 4px;
+                        border-width: Dlg.checked ? 0px : 1px;
+                        border-color: T.line;
+                        background: Dlg.checked ? T.accent : T.panel2;
+                        Text {
+                            visible: Dlg.checked;
+                            text: "✓";
+                            font-size: 11px;
+                            color: #ffffff;
+                        }
+                    }
+                    Text {
+                        text: Dlg.check-text;
+                        font-size: 12.5px;
+                        color: T.muted;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                  }
+                  TouchArea {
+                      mouse-cursor: pointer;
+                      clicked => { Dlg.checked = !Dlg.checked; }
+                  }
                 }
             }
             Rectangle { height: 20px; }

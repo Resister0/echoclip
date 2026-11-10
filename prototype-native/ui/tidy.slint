@@ -1,6 +1,8 @@
 // Chat D - Echo's #tidy dialog: clips saved twice, very short clips, the biggest ones. Favourites are never listed.
+// Session cleanup (10 Nov 2026): + "Edit and original" and "In the cloud too"; saved twice keeps the latest clip.
 // Rust (src/tidy.rs) fills the rows; the delete confirm is the normal dialog (DialogLayer sits ABOVE this layer).
 import { T, Ic, Icon, Btn, IconBtn } from "theme.slint";
+import { Focus } from "focus.slint"; // port leftovers L2
 
 export struct TRow {
     kind: string,     // "head" (section title) / "gap" (space between groups) / "clip"
@@ -8,7 +10,9 @@ export struct TRow {
     note: string,     // head: the note next to it; clip: "12.3 MB · 0:08 · 5 min ago · FiveM"
     idx: int,         // clip id
     on: bool,         // ticked
-    keep: bool,       // "KEEP (longest)"
+    keep: bool,       // the clip a "saved twice" group keeps (its tag is green)
+    tag: string,      // "KEEP (latest)" / "ORIGINAL" / "EDIT" next to the name ("" = none)
+    act: string,      // "" = delete as usual; "pc" = only the copy on this PC goes, its cloud copy stays
     group: int,       // clips of one "saved twice" group share a number (their border); -1 = in a plain list
     first: bool,      // first / last clip of its bordered box
     last: bool,
@@ -49,6 +53,12 @@ component TCheck inherits Rectangle {
 export component TidyLayer inherits Rectangle {
     visible: Tidy.open;
     background: #000000aa;
+    // L2: every way out (Esc, ×, click outside, Play) hands the keys back to the page
+    changed visible => {
+        if (!self.visible) {
+            Focus.back();
+        }
+    }
     // click outside the panel = close
     TouchArea {
         clicked => { Tidy.open = false; }
@@ -100,7 +110,7 @@ export component TidyLayer inherits Rectangle {
                         color: T.text;
                     }
                     Text {
-                        text: "Clips saved twice, very short clips and the biggest ones. Favourites are never listed, and deleted clips go to the " + Tidy.bin + ".";
+                        text: "Clips saved twice, very short clips, edits and their originals, the biggest ones and clips that are in the cloud too. Favourites are never listed, and deleted clips go to the " + Tidy.bin + ".";
                         font-size: 13px;
                         color: T.muted;
                         wrap: word-wrap;
@@ -226,11 +236,11 @@ export component TidyLayer inherits Rectangle {
                                                 color: T.text;
                                                 overflow: elide;
                                             }
-                                            if r.keep: Text {
-                                                text: "KEEP (longest)";
+                                            if r.tag != "": Text {
+                                                text: r.tag;
                                                 font-size: 11px;
                                                 font-weight: 700 + T.fw;
-                                                color: #3ddc97;
+                                                color: r.keep ? #3ddc97 : T.dim;
                                                 vertical-alignment: center;
                                             }
                                         }
@@ -258,21 +268,25 @@ export component TidyLayer inherits Rectangle {
                 padding-top: 12px;
                 padding-bottom: 12px;
                 spacing: 12px;
-                if Tidy.cloud-box: HorizontalLayout {
-                    spacing: 8px;
-                    TCheck {
-                        y: (parent.height - self.height) / 2;
-                        on: Tidy.cloud-too;
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { Tidy.cloud-too = !Tidy.cloud-too; }
+                // Echo's <label class="chk">: the text ticks it too (PORT_LEFTOVERS L43)
+                if Tidy.cloud-box: Rectangle {
+                    width: chk.preferred-width;
+                    chk := HorizontalLayout {
+                        spacing: 8px;
+                        TCheck {
+                            y: (parent.height - self.height) / 2;
+                            on: Tidy.cloud-too;
+                        }
+                        Text {
+                            text: "Also delete their cloud copies";
+                            font-size: 13px;
+                            color: T.text;
+                            vertical-alignment: center;
                         }
                     }
-                    Text {
-                        text: "Also delete their cloud copies";
-                        font-size: 13px;
-                        color: T.text;
-                        vertical-alignment: center;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Tidy.cloud-too = !Tidy.cloud-too; }
                     }
                 }
                 Rectangle {
@@ -287,7 +301,7 @@ export component TidyLayer inherits Rectangle {
                 Btn {
                     text: "Delete selected";
                     delb: Tidy.n-on > 0;
-                    opacity: Tidy.n-on > 0 ? 1 : 0.45;
+                    enabled: Tidy.n-on > 0; // L15: a real disabled state (was faked with opacity .45)
                     clicked => {
                         if (Tidy.n-on > 0) {
                             Tidy.delete();

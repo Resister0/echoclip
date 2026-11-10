@@ -4,6 +4,7 @@
 // boxes, selection handles, gaps and fades over it are an ASS overlay drawn by mpv.
 import { T, Ic, Icon, TipArea, Btn, Kbd } from "theme.slint";
 import { Play } from "player.slint";
+import { Over, OverStill } from "over.slint"; // r2-layout: menus over the video, clicks that go on (L1, L39)
 
 export struct EdSeg {
     at: float,
@@ -18,6 +19,18 @@ export struct EdSeg {
     other: bool,    // from another file (Media): no filmstrip of the clip, its name instead
     row: int,       // layers only: rows from the top of the Layers track
     down: bool,     // layers only: being dragged below row 1 = drops back onto the main track (faded)
+    rev: bool,      // Play backwards: no trim handles (Echo's isMan)
+    tr: bool,       // a transition from the piece before: "⇄" mark (Echo's .etr)
+}
+
+// one row of the captions list (Echo's .caprow)
+export struct EdCap {
+    i: int,         // index into the edit's texts
+    a: string,      // start, m:ss.mmm
+    b: string,      // end
+    text: string,
+    sel: bool,
+    on: bool,       // showing right now
 }
 
 export struct EdTxt {
@@ -127,6 +140,29 @@ export global Ed {
     in-out property <string> cap-hl-color: "ffd23f";
     in-out property <int> cap-lines: 1;
     in-out property <float> cap-w: 0.7;
+    // the captions panel (Echo's capPanel) + "This caption"
+    in-out property <[EdCap]> caps;
+    in-out property <int> cap-count;
+    in-out property <float> cap-size: 0.065;
+    in-out property <bool> cap-show-box;
+    in-out property <bool> cap-own;
+    in-out property <float> cap-y: 0.83;
+    in-out property <string> cap-anim;
+    // a piece: Play backwards + the transition from the piece before
+    in-out property <bool> sel-rev;
+    in-out property <string> sel-tr;
+    in-out property <float> sel-td: 0.5;
+    in-out property <bool> sel-has-prev;
+    in-out property <bool> sel-near;
+    in-out property <bool> sel-amute;
+    // the text colour picker ("Any colour")
+    in-out property <bool> pick-open;
+    in-out property <float> pick-h;
+    in-out property <float> pick-s;
+    in-out property <float> pick-v: 1;
+    in-out property <string> pick-hex;
+    in-out property <float> export-pct;     // the Export button fills (Echo)
+    in-out property <string> dc-text: "One export that fits your Discord size";
     in-out property <bool> normalize;
     in-out property <float> volume: 1;      // the edit's volume (0..2) + mute (Clip panel)
     in-out property <bool> mute;
@@ -215,6 +251,8 @@ component ESlider inherits Rectangle {
     out property <float> v: value;
     callback moved(float);
     callback commit(float);
+    callback reset;     // double-click (Echo: Brightness / Contrast / Saturation back to normal)
+    in property <string> tip; // L35 (the timeline zoom: "Timeline zoom")
     changed value => { self.v = self.value; }
     height: 22px;
     property <float> frac: root.hi > root.lo ? clamp((root.v - root.lo) / (root.hi - root.lo), 0, 1) : 0;
@@ -258,6 +296,11 @@ component ESlider inherits Rectangle {
                 self.at(self.mouse-x);
             }
         }
+        double-clicked => { root.reset(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
     }
 }
 
@@ -441,6 +484,334 @@ component Field inherits Rectangle {
     }
 }
 
+// ---------- the captions list (Echo's #caplist / .caprow) ----------
+// a caption's start / end (m:ss.mmm): type a time + Enter, or scroll on it to nudge 10 ms (Shift: 100 ms)
+component TimeBox inherits Rectangle {
+    in property <string> value;
+    in property <int> idx;
+    in property <bool> end;
+    height: 30px;
+    min-width: 40px;
+    horizontal-stretch: 1;
+    border-radius: 7px;
+    background: T.bg;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { ti.focus(); }
+        scroll-event(e) => {
+            // one wheel notch arrives as small glide steps adding up to 160 px (main.rs)
+            Ed.set("cap-nudge", root.idx + "|" + (root.end ? "end" : "start") + "|" + (e.delta-y / 160px * (e.modifiers.shift ? 0.1 : 0.01)));
+            return accept;
+        }
+        ti := TextInput {
+            x: 7px;
+            width: parent.width - 14px;
+            height: parent.height;
+            vertical-alignment: center;
+            single-line: true;
+            text: root.value;
+            font-size: 12px;
+            color: T.text;
+            selection-background-color: T.accent.with-alpha(0.45);
+            selection-foreground-color: T.text;
+            accepted => { Ed.act("blur"); }
+            changed has-focus => {
+                if (self.has-focus) {
+                    self.select-all();
+                } else if (self.text != root.value) {
+                    Ed.set(root.end ? "cap-end" : "cap-start", root.idx + "|" + self.text);
+                }
+            }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    self.text = root.value;
+                    Ed.act("blur");
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+}
+
+// a caption's text: Enter = done, Shift+Enter = a 2nd line
+component CapText inherits Rectangle {
+    in property <string> value;
+    in property <int> idx;
+    in property <bool> sel;
+    in property <int> focus-seq;
+    height: max(32px, ti.preferred-height + 14px);
+    border-radius: 7px;
+    background: T.bg;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.line;
+    changed focus-seq => {
+        if (root.sel) {
+            ti.focus();
+            ti.select-all();
+        }
+    }
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { ti.focus(); }
+        ti := TextInput {
+            x: 8px;
+            y: 7px;
+            width: parent.width - 16px;
+            single-line: false;
+            wrap: word-wrap;
+            text: root.value;
+            font-size: 13px;
+            color: T.text;
+            selection-background-color: T.accent.with-alpha(0.45);
+            selection-foreground-color: T.text;
+            edited => { Ed.set("cap-text", root.idx + "|" + self.text); }
+            changed has-focus => {
+                if (self.has-focus && !root.sel) {
+                    Ed.act("cap-sel:" + root.idx);
+                }
+            }
+            key-pressed(e) => {
+                if ((e.text == Key.Return && !e.modifiers.shift) || e.text == Key.Escape) {
+                    Ed.act("blur");
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        if ti.text == "": Text {
+            x: 8px;
+            y: 7px;
+            text: "Caption text (Shift+Enter = new line)";
+            font-size: 13px;
+            color: T.dim;
+        }
+    }
+}
+
+component CapRow inherits Rectangle {
+    in property <EdCap> c;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: c.sel ? T.hi : c.on ? #3a3a46 : transparent;
+    background: c.on || ta.has-hover ? T.panel2 : transparent;
+    height: lay.preferred-height;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Ed.act("cap-row:" + root.c.i); }
+    }
+    lay := VerticalLayout {
+        padding: 8px;
+        spacing: 5px;
+        HorizontalLayout {
+            spacing: 5px;
+            Rectangle {
+                width: 28px;
+                border-radius: 7px;
+                background: pa.has-hover ? T.hover : transparent;
+                Icon { width: 13px; height: 13px; commands: Ic.play; fill: pa.has-hover ? T.text : T.muted; stroke: transparent; }
+                pa := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Ed.act("cap-play:" + root.c.i); }
+                }
+                TipArea { text: "Play from here"; hover: pa.has-hover && !pa.pressed; }
+            }
+            TimeBox { value: root.c.a; idx: root.c.i; end: false; }
+            Text { width: 10px; text: "–"; color: T.dim; horizontal-alignment: center; vertical-alignment: center; }
+            TimeBox { value: root.c.b; idx: root.c.i; end: true; }
+            Rectangle {
+                width: 28px;
+                border-radius: 7px;
+                background: xa.has-hover ? T.hover : transparent;
+                Icon { width: 13px; height: 13px; stroke-width: 2px; commands: Ic.x; stroke: xa.has-hover ? #ff5c7a : T.muted; }
+                xa := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Ed.act("cap-del:" + root.c.i); }
+                }
+                TipArea { text: "Delete caption"; hover: xa.has-hover && !xa.pressed; }
+            }
+        }
+        CapText { value: root.c.text; idx: root.c.i; sel: root.c.sel; focus-seq: Ed.text-focus; }
+    }
+}
+
+// Echo's capPanel: style, size, the caption box, lines, position, highlight, every caption, add / remove / .txt
+component CapPanel inherits VerticalLayout {
+    spacing: 8px;
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text { text: "Captions"; font-size: 15px; font-weight: 700 + T.fw; color: T.text; }
+            Text { text: Ed.cap-count; font-size: 12.5px; color: T.dim; vertical-alignment: bottom; }
+        }
+        Rectangle { height: 1px; background: T.line; }
+    }
+    HorizontalLayout {
+        spacing: 4px;
+        Chip { text: "Classic"; on: Ed.cap-style == "classic"; clicked => { Ed.set("cap-style", "classic"); } }
+        Chip { text: "Yellow"; on: Ed.cap-style == "yellow"; clicked => { Ed.set("cap-style", "yellow"); } }
+        Chip { text: "LOUD"; on: Ed.cap-style == "loud"; clicked => { Ed.set("cap-style", "loud"); } }
+    }
+    Label { text: "Size " + round(Ed.cap-size * 1000) / 10 + "%"; }
+    ESlider { value: Ed.cap-size; lo: 0.03; hi: 0.15; step: 0.005; moved(v) => { Ed.set("cap-size-live", v); } commit(v) => { Ed.set("cap-size", v); } }
+    SwitchRow { text: "Show caption box"; on: Ed.cap-show-box; toggled => { Ed.set("cap-box", Ed.cap-show-box ? "0" : "1"); } }
+    Label { text: "Box width " + round(Ed.cap-w * 100) + "%"; }
+    ESlider { value: Ed.cap-w; lo: 0.15; hi: 1; step: 0.01; moved(v) => { Ed.set("cap-w-live", v); } commit(v) => { Ed.set("cap-w", v); } }
+    Label { text: "Lines"; }
+    HorizontalLayout {
+        spacing: 4px;
+        Chip { text: "1"; on: Ed.cap-lines == 1; clicked => { Ed.set("cap-lines", "1"); } }
+        Chip { text: "2"; on: Ed.cap-lines == 2; clicked => { Ed.set("cap-lines", "2"); } }
+        Chip { text: "3"; on: Ed.cap-lines == 3; clicked => { Ed.set("cap-lines", "3"); } }
+    }
+    Label { text: "Position"; }
+    HorizontalLayout {
+        spacing: 4px;
+        Chip { text: "Top"; clicked => { Ed.set("cap-pos", "0.12"); } }
+        Chip { text: "Middle"; clicked => { Ed.set("cap-pos", "0.5"); } }
+        Chip { text: "Bottom"; clicked => { Ed.set("cap-pos", "0.83"); } }
+    }
+    SwitchRow { text: "Highlight spoken word"; on: Ed.cap-hl; toggled => { Ed.set("cap-hl", Ed.cap-hl ? "0" : "1"); } }
+    HorizontalLayout {
+        spacing: 7px;
+        alignment: start;
+        Swatch { c: #ffd23f; on: Ed.cap-hl-color == "ffd23f"; clicked => { Ed.set("cap-hl-color", "ffd23f"); } }
+        Swatch { c: #3ddc97; on: Ed.cap-hl-color == "3ddc97"; clicked => { Ed.set("cap-hl-color", "3ddc97"); } }
+        Swatch { c: #4cc2ff; on: Ed.cap-hl-color == "4cc2ff"; clicked => { Ed.set("cap-hl-color", "4cc2ff"); } }
+        Swatch { c: #ff5c7a; on: Ed.cap-hl-color == "ff5c7a"; clicked => { Ed.set("cap-hl-color", "ff5c7a"); } }
+        Swatch { c: #b388ff; on: Ed.cap-hl-color == "b388ff"; clicked => { Ed.set("cap-hl-color", "b388ff"); } }
+        Swatch { c: #ffffff; on: Ed.cap-hl-color == "ffffff"; clicked => { Ed.set("cap-hl-color", "ffffff"); } }
+    }
+    VerticalLayout {
+        spacing: 4px;
+        for c in Ed.caps: CapRow { c: c; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Btn { text: "+ Add at playhead"; small: true; horizontal-stretch: 1; clicked => { Ed.act("cap-add"); } }
+        Btn { text: "Remove all"; small: true; danger: true; horizontal-stretch: 1; clicked => { Ed.act("cap-clear"); } }
+    }
+    Btn { text: "Save captions as text (.txt)"; small: true; tip: "A .txt file with every caption and its time, next to the clip"; clicked => { Ed.act("cap-txt"); } }
+}
+
+// "Any colour" (Echo's <input type=color>): a saturation / brightness square, a hue bar and the hex code
+component ColorPick inherits VerticalLayout {
+    spacing: 8px;
+    property <string> hx: Ed.pick-hex;
+    changed hx => { hti.text = self.hx; }
+    function send(end: bool) {
+        Ed.set(end ? "pick-end" : "pick", Ed.pick-h + "," + Ed.pick-s + "," + Ed.pick-v);
+    }
+    Rectangle {
+        height: 120px;
+        border-radius: 7px;
+        clip: true;
+        background: hsv(Ed.pick-h, 1, 1);
+        Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
+        Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+        Rectangle {
+            x: Ed.pick-s * parent.width - 7px;
+            y: (1 - Ed.pick-v) * parent.height - 7px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 2px;
+            border-color: white;
+            drop-shadow-blur: 3px;
+            drop-shadow-color: #000000a0;
+        }
+        sva := TouchArea {
+            mouse-cursor: crosshair;
+            function at() {
+                Ed.pick-s = clamp(self.mouse-x / self.width, 0, 1);
+                Ed.pick-v = clamp(1 - self.mouse-y / self.height, 0, 1);
+                root.send(false);
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    self.at();
+                } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    root.send(true);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    self.at();
+                }
+            }
+        }
+    }
+    Rectangle {
+        height: 14px;
+        border-radius: 7px;
+        background: @linear-gradient(90deg, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+        Rectangle {
+            x: Ed.pick-h / 360 * parent.width - 4px;
+            width: 8px;
+            border-radius: 4px;
+            border-width: 2px;
+            border-color: white;
+            drop-shadow-blur: 3px;
+            drop-shadow-color: #000000a0;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            function at() {
+                Ed.pick-h = clamp(self.mouse-x / self.width, 0, 1) * 360;
+                root.send(false);
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    self.at();
+                } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    root.send(true);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    self.at();
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: "#"; font-size: 13px; color: T.muted; vertical-alignment: center; }
+        Rectangle {
+            height: 28px;
+            border-radius: 7px;
+            background: T.bg;
+            border-width: 1px;
+            border-color: hti.has-focus ? T.accent : T.line;
+            hti := TextInput {
+                x: 8px;
+                width: parent.width - 16px;
+                height: parent.height;
+                vertical-alignment: center;
+                single-line: true;
+                text: Ed.pick-hex;
+                font-size: 13px;
+                color: T.text;
+                accepted => {
+                    Ed.set("color", self.text);
+                    Ed.act("blur");
+                }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        Ed.act("blur");
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+        }
+    }
+}
+
 // the label column of a timeline track (Echo's .tlab)
 component TrackLabel inherits Rectangle {
     in property <string> icon;
@@ -574,6 +945,7 @@ export component EditorView inherits Rectangle {
             if Ed.rng-on: Btn {
                 text: "Export range";
                 tip: "Export only the highlighted part";
+                enabled: !Ed.busy; // L14/L15: Echo disables it while an export runs
                 clicked => { Ed.act("export:range"); }
             }
             if Ed.rng-on: Btn {
@@ -594,10 +966,11 @@ export component EditorView inherits Rectangle {
                 tip: "Vertical 9:16 for TikTok / Shorts - drag the frame on the video";
                 clicked => { Ed.act("vertical"); }
             }
-            Btn {
-                text: Ed.busy ? "Exporting…" : "Export";
+            expbtn := Btn {
+                text: Ed.busy ? (Ed.export-pct > 0.5 ? "Exporting " + round(Ed.export-pct) + "%" : "Exporting…") : "Export";
                 icon: "M12 3v12 M7 10l5 5 5-5 M5 21h14";
                 primary: true;
+                enabled: !Ed.busy; // L15: Echo's disabled Export while it runs
                 clicked => {
                     if (!Ed.busy) {
                         Ed.export-menu = !Ed.export-menu;
@@ -622,13 +995,16 @@ export component EditorView inherits Rectangle {
             source: Play.frame;
             image-fit: fill;
         }
+        // r2-layout (L1): Windows - the video window is parked while a menu covers it; its picture stays here
+        if Ed.open: OverStill { }
         sta := TouchArea {
             mouse-cursor: default;
             pointer-event(e) => {
                 if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
                     fs.focus();
                     Ed.export-menu = false;
-                    Ed.stage("down", self.mouse-x, self.mouse-y);
+                    // Ctrl / Shift: a text joins the selection; Alt: place a text without the snap to the middle
+                    Ed.stage(e.modifiers.control || e.modifiers.shift ? "cdown" : e.modifiers.alt ? "adown" : "down", self.mouse-x, self.mouse-y);
                 } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                     Ed.stage("up", self.mouse-x, self.mouse-y);
                 }
@@ -690,7 +1066,61 @@ export component EditorView inherits Rectangle {
                 }
                 Rectangle { height: 14px; }
                 SwitchRow { text: "Mute audio"; on: Ed.mute; toggled => { Ed.set("mute", Ed.mute ? "0" : "1"); } }
-                Rectangle { height: 22px; }
+                Rectangle { height: 14px; }
+            }
+            // ----- the captions panel: in the Clip panel when there are captions (Echo's #capwrap), and for a
+            // selected caption. ONE instance for both, so a row keeps the keyboard when it gets selected -----
+            if (Ed.sel-kind == "" && Ed.has-caps) || Ed.sel-kind == "cap": VerticalLayout {
+                spacing: 8px;
+                CapPanel { }
+                if Ed.sel-kind == "cap": VerticalLayout {
+                    spacing: 8px;
+                    Rectangle { height: 4px; }
+                    H3 { text: "This caption"; }
+                    Label { text: "Height " + round((1 - Ed.cap-y) * 100) + "%"; }
+                    ESlider { value: 1 - Ed.cap-y; lo: 0.03; hi: 0.97; step: 0.005; moved(v) => { Ed.set("cap-y-live", 1 - v); } commit(v) => { Ed.set("cap-y", 1 - v); } }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Btn { text: "+ Line above"; small: true; horizontal-stretch: 1; tip: "A second caption at the same time, one line above this one"; clicked => { Ed.act("cap-above"); } }
+                        Btn { text: "+ Line below"; small: true; horizontal-stretch: 1; tip: "A second caption at the same time, one line below this one"; clicked => { Ed.act("cap-below"); } }
+                    }
+                    Rectangle {
+                        height: bk.preferred-height;
+                        opacity: Ed.cap-own ? 1 : 0.4;
+                        bk := Btn {
+                            width: parent.width;
+                            text: "Back to the other captions' spot";
+                            small: true;
+                            clicked => {
+                                if (Ed.cap-own) {
+                                    Ed.act("cap-back");
+                                }
+                            }
+                        }
+                    }
+                    Label { text: "Caption animation (all captions)"; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "None"; on: Ed.cap-anim == ""; clicked => { Ed.set("cap-anim", ""); } }
+                        Chip { text: "Fade"; on: Ed.cap-anim == "fade"; clicked => { Ed.set("cap-anim", "fade"); } }
+                        Chip { text: "Pop"; on: Ed.cap-anim == "pop"; clicked => { Ed.set("cap-anim", "pop"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Slide up"; on: Ed.cap-anim == "slide"; clicked => { Ed.set("cap-anim", "slide"); } }
+                        Chip { text: "Bounce"; on: Ed.cap-anim == "bounce"; clicked => { Ed.set("cap-anim", "bounce"); } }
+                    }
+                    Label {
+                        text: "Tip: drag a caption on the video to move just that one; drag the caption box to move all of them. Shift+Enter in a caption's text starts a 2nd line. Scroll on a time to nudge it by 10 ms (Shift: 100 ms).";
+                        wrap: word-wrap;
+                        color: T.dim;
+                    }
+                }
+                Rectangle { height: 14px; }
+            }
+            if Ed.sel-kind == "": VerticalLayout {
+                spacing: 8px;
+                Rectangle { height: 8px; }
                 Text { text: "Shortcuts"; font-size: 12.5px; font-weight: 700 + T.fw; color: T.text; }
                 VerticalLayout {
                     TipLine { parts: [{ t: "Space", k: true }, { t: "play / pause ·", k: false }, { t: "←", k: true }, { t: "→", k: true }, { t: "2 s (", k: false }, { t: "Shift", k: true }, { t: ": 0.1 s)", k: false }]; }
@@ -712,7 +1142,10 @@ export component EditorView inherits Rectangle {
                 Rectangle { height: 22px; }
                 Text { text: "Mouse"; font-size: 12.5px; font-weight: 700 + T.fw; color: T.text; }
                 VerticalLayout {
-                    TipLine { parts: [{ t: "Click a piece for colour, speed and fades.", k: false }]; }
+                    TipLine { parts: [{ t: "Click a piece for colour, transitions and", k: false }]; }
+                    TipLine { parts: [{ t: "reverse.", k: false }]; }
+                    TipLine { parts: [{ t: "Right-click the timeline for more", k: false }]; }
+                    TipLine { parts: [{ t: "(close gaps, speed…).", k: false }]; }
                     TipLine { parts: [{ t: "Drag piece edges to trim them.", k: false }]; }
                     TipLine { parts: [{ t: "Drag a piece anywhere — gaps play as black.", k: false }]; }
                     TipLine { parts: [{ t: "Drag a piece up to put it on a layer (PiP).", k: false }]; }
@@ -755,6 +1188,7 @@ export component EditorView inherits Rectangle {
                     }
                 }
                 Label { text: Ed.sel-info; wrap: word-wrap; }
+                if !Ed.sel-freeze: SwitchRow { text: "Play backwards"; on: Ed.sel-rev; toggled => { Ed.set("rev", Ed.sel-rev ? "0" : "1"); } }
                 Label { text: "Fade in " + round(Ed.sel-fi * 10) / 10 + "s"; }
                 ESlider {
                     value: Ed.sel-fi;
@@ -770,6 +1204,33 @@ export component EditorView inherits Rectangle {
                     step: 0.1;
                     moved(v) => { Ed.set("fo-live", v); }
                     commit(v) => { Ed.set("fo", v); }
+                }
+                // Echo: the transition from the piece before (2nd piece on), its length when it isn't a cut
+                if Ed.sel-has-prev: VerticalLayout {
+                    spacing: 8px;
+                    Label { text: "Transition from the piece before" + (Ed.sel-near ? "" : " (only when they touch)"); wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Cut"; on: Ed.sel-tr == ""; clicked => { Ed.set("tr", ""); } }
+                        Chip { text: "Crossfade"; on: Ed.sel-tr == "fade"; clicked => { Ed.set("tr", "fade"); } }
+                        Chip { text: "Fade to black"; on: Ed.sel-tr == "fadeblack"; clicked => { Ed.set("tr", "fadeblack"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Wipe"; on: Ed.sel-tr == "wipeleft"; clicked => { Ed.set("tr", "wipeleft"); } }
+                        Chip { text: "Slide"; on: Ed.sel-tr == "slideleft"; clicked => { Ed.set("tr", "slideleft"); } }
+                        Chip { text: "Circle"; on: Ed.sel-tr == "circleopen"; clicked => { Ed.set("tr", "circleopen"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Chip { text: "Zoom"; on: Ed.sel-tr == "zoomin"; clicked => { Ed.set("tr", "zoomin"); } }
+                        Chip { text: "Pixels"; on: Ed.sel-tr == "pixelize"; clicked => { Ed.set("tr", "pixelize"); } }
+                    }
+                    if Ed.sel-tr != "": VerticalLayout {
+                        spacing: 8px;
+                        Label { text: "Transition length " + round(Ed.sel-td * 10) / 10 + "s"; }
+                        ESlider { value: Ed.sel-td; lo: 0.2; hi: 2; step: 0.1; moved(v) => { Ed.set("td-live", v); } commit(v) => { Ed.set("td", v); } }
+                    }
                 }
                 Label { text: "Colour"; }
                 HorizontalLayout {
@@ -787,16 +1248,31 @@ export component EditorView inherits Rectangle {
                     Chip { text: "Vintage"; on: Ed.sel-look == "vintage"; clicked => { Ed.set("look", "vintage"); } }
                 }
                 Label { text: "Brightness " + round(Ed.sel-bri * 100); }
-                ESlider { value: Ed.sel-bri; lo: -0.6; hi: 0.6; step: 0.02; moved(v) => { Ed.set("bri-live", v); } commit(v) => { Ed.set("bri", v); } }
+                ESlider { value: Ed.sel-bri; lo: -0.6; hi: 0.6; step: 0.02; moved(v) => { Ed.set("bri-live", v); } commit(v) => { Ed.set("bri", v); } reset => { Ed.set("bri", 0); } }
                 Label { text: "Contrast " + round(Ed.sel-con * 100) + "%"; }
-                ESlider { value: Ed.sel-con; lo: 0.5; hi: 1.8; step: 0.02; moved(v) => { Ed.set("con-live", v); } commit(v) => { Ed.set("con", v); } }
+                ESlider { value: Ed.sel-con; lo: 0.5; hi: 1.8; step: 0.02; moved(v) => { Ed.set("con-live", v); } commit(v) => { Ed.set("con", v); } reset => { Ed.set("con", 1); } }
                 Label { text: "Saturation " + round(Ed.sel-sat * 100) + "%"; }
-                ESlider { value: Ed.sel-sat; lo: 0; hi: 2; step: 0.02; moved(v) => { Ed.set("sat-live", v); } commit(v) => { Ed.set("sat", v); } }
+                ESlider { value: Ed.sel-sat; lo: 0; hi: 2; step: 0.02; moved(v) => { Ed.set("sat-live", v); } commit(v) => { Ed.set("sat", v); } reset => { Ed.set("sat", 1); } }
                 HorizontalLayout {
                     spacing: 6px;
-                    Btn { text: "Same for all pieces"; small: true; clicked => { Ed.act("color-all"); } }
-                    Btn { text: "Reset"; small: true; clicked => { Ed.act("color-reset"); } }
+                    Btn { text: "Colour on all pieces"; small: true; horizontal-stretch: 1; clicked => { Ed.act("color-all"); } }
+                    Btn { text: "Reset colour"; small: true; horizontal-stretch: 1; clicked => { Ed.act("color-reset"); } }
                 }
+                // Echo: the piece's own Separate audio / Delete buttons
+                if !Ed.sel-freeze: Rectangle {
+                    height: sab.preferred-height;
+                    opacity: Ed.sel-amute ? 0.45 : 1;
+                    sab := Btn {
+                        width: parent.width;
+                        text: Ed.sel-amute ? "Audio is separated" : "Separate audio (U)";
+                        clicked => {
+                            if (!Ed.sel-amute) {
+                                Ed.act("audio-sep");
+                            }
+                        }
+                    }
+                }
+                Btn { text: "Delete piece"; clicked => { Ed.act("del"); } }
             }
             // ----- separated audio -----
             if Ed.sel-kind == "aud": VerticalLayout {
@@ -877,8 +1353,7 @@ export component EditorView inherits Rectangle {
                 if Ed.box-kind == "blur": VerticalLayout {
                     spacing: 8px;
                     Label { text: "Blur strength " + round(Ed.box-blur); }
-                    ESlider { value: Ed.box-blur; lo: 4; hi: 80; step: 1; moved(v) => { Ed.set("box-blur-live", v); } commit(v) => { Ed.set("box-blur", v); } }
-                    Label { text: "The preview shows a frosted box - the export really blurs it."; wrap: word-wrap; color: T.dim; }
+                    ESlider { value: Ed.box-blur; lo: 2; hi: 80; step: 1; moved(v) => { Ed.set("box-blur-live", v); } commit(v) => { Ed.set("box-blur", v); } }
                 }
                 if Ed.box-kind == "color": VerticalLayout {
                     spacing: 8px;
@@ -899,16 +1374,16 @@ export component EditorView inherits Rectangle {
                 Label { text: Ed.sel-info; wrap: word-wrap; }
                 Btn { text: Ed.box-kind == "image" ? "Delete sticker" : "Delete box"; clicked => { Ed.act("del"); } }
             }
-            // ----- a text / caption -----
-            if Ed.sel-kind == "txt" || Ed.sel-kind == "cap": VerticalLayout {
+            // ----- a text (a caption is edited in the captions list above) -----
+            if Ed.sel-kind == "txt": VerticalLayout {
                 spacing: 8px;
-                H3 { text: Ed.sel-kind == "cap" ? "Caption" : "Text"; }
+                H3 { text: "Text"; }
                 Field {
                     text: Ed.sel-text;
                     focus-seq: Ed.text-focus;
                     edited(s) => { Ed.set("text", s); }
                 }
-                if Ed.sel-kind == "txt": VerticalLayout {
+                VerticalLayout {
                     spacing: 8px;
                     Label { text: "Size " + round(Ed.sel-size * 1000) / 10 + "% · or drag a corner / scroll on the text"; wrap: word-wrap; }
                     ESlider {
@@ -928,8 +1403,35 @@ export component EditorView inherits Rectangle {
                         Swatch { c: #ff5c7a; on: Ed.sel-color == "ff5c7a"; clicked => { Ed.set("color", "ff5c7a"); } }
                         Swatch { c: #3ddc97; on: Ed.sel-color == "3ddc97"; clicked => { Ed.set("color", "3ddc97"); } }
                         Swatch { c: #4cc2ff; on: Ed.sel-color == "4cc2ff"; clicked => { Ed.set("color", "4cc2ff"); } }
+                        Swatch { c: #b388ff; on: Ed.sel-color == "b388ff"; clicked => { Ed.set("color", "b388ff"); } }
                         Swatch { c: #000000; on: Ed.sel-color == "000000"; clicked => { Ed.set("color", "000000"); } }
+                        // Echo's "Any colour" (outlined when the text has a colour that isn't a swatch)
+                        Rectangle {
+                            property <bool> own: Ed.sel-color != "ffffff" && Ed.sel-color != "ffd23f" && Ed.sel-color != "ff5c7a" && Ed.sel-color != "3ddc97" && Ed.sel-color != "4cc2ff" && Ed.sel-color != "b388ff" && Ed.sel-color != "000000";
+                            width: 30px;
+                            height: 26px;
+                            border-radius: 7px;
+                            border-width: self.own || Ed.pick-open ? 2px : 1px;
+                            border-color: self.own || Ed.pick-open ? T.accent : T.line;
+                            background: @linear-gradient(90deg, #ff5c7a 0%, #ffd23f 33%, #3ddc97 66%, #4cc2ff 100%);
+                            clip: true;
+                            Rectangle {
+                                x: 6px;
+                                y: 6px;
+                                width: parent.width - 12px;
+                                height: parent.height - 12px;
+                                border-radius: 4px;
+                                visible: parent.own;
+                                background: Ed.pick-hex != "" && parent.own ? hsv(Ed.pick-h, Ed.pick-s, Ed.pick-v) : transparent;
+                            }
+                            aca := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Ed.act("pick"); }
+                            }
+                            TipArea { text: "Any colour"; hover: aca.has-hover && !aca.pressed; }
+                        }
                     }
+                    if Ed.pick-open: ColorPick { }
                     Label { text: "Animation"; }
                     HorizontalLayout {
                         spacing: 4px;
@@ -945,46 +1447,6 @@ export component EditorView inherits Rectangle {
                     }
                     Label { text: Ed.sel-info + " · Ctrl+D duplicates"; wrap: word-wrap; }
                     Btn { text: "Delete text"; clicked => { Ed.act("del"); } }
-                }
-                if Ed.sel-kind == "cap": VerticalLayout {
-                    spacing: 8px;
-                    Label { text: "Caption style (all captions)"; }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Chip { text: "Classic"; on: Ed.cap-style == "classic"; clicked => { Ed.set("cap-style", "classic"); } }
-                        Chip { text: "Yellow"; on: Ed.cap-style == "yellow"; clicked => { Ed.set("cap-style", "yellow"); } }
-                        Chip { text: "LOUD"; on: Ed.cap-style == "loud"; clicked => { Ed.set("cap-style", "loud"); } }
-                    }
-                    SwitchRow { text: "Highlight the spoken word"; on: Ed.cap-hl; toggled => { Ed.set("cap-hl", Ed.cap-hl ? "0" : "1"); } }
-                    HorizontalLayout {
-                        spacing: 7px;
-                        alignment: start;
-                        Swatch { c: #ffd23f; on: Ed.cap-hl-color == "ffd23f"; clicked => { Ed.set("cap-hl-color", "ffd23f"); } }
-                        Swatch { c: #3ddc97; on: Ed.cap-hl-color == "3ddc97"; clicked => { Ed.set("cap-hl-color", "3ddc97"); } }
-                        Swatch { c: #ff5c7a; on: Ed.cap-hl-color == "ff5c7a"; clicked => { Ed.set("cap-hl-color", "ff5c7a"); } }
-                        Swatch { c: #4cc2ff; on: Ed.cap-hl-color == "4cc2ff"; clicked => { Ed.set("cap-hl-color", "4cc2ff"); } }
-                        Swatch { c: #ffffff; on: Ed.cap-hl-color == "ffffff"; clicked => { Ed.set("cap-hl-color", "ffffff"); } }
-                    }
-                    Label { text: "Position"; }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Chip { text: "Top"; clicked => { Ed.set("cap-pos", "0.15"); } }
-                        Chip { text: "Middle"; clicked => { Ed.set("cap-pos", "0.5"); } }
-                        Chip { text: "Bottom"; clicked => { Ed.set("cap-pos", "0.83"); } }
-                    }
-                    Label { text: "Lines per caption (or drag the caption box)"; wrap: word-wrap; }
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Chip { text: "1"; on: Ed.cap-lines == 1; clicked => { Ed.set("cap-lines", "1"); } }
-                        Chip { text: "2"; on: Ed.cap-lines == 2; clicked => { Ed.set("cap-lines", "2"); } }
-                        Chip { text: "3"; on: Ed.cap-lines == 3; clicked => { Ed.set("cap-lines", "3"); } }
-                    }
-                    Label { text: "Tip: drag a caption on the video to move just that one; drag the caption box to move all of them."; wrap: word-wrap; color: T.dim; }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Btn { text: "Save as .txt"; small: true; clicked => { Ed.act("cap-txt"); } }
-                        Btn { text: "Remove all"; small: true; danger: true; clicked => { Ed.act("cap-clear"); } }
-                    }
                 }
             }
         }
@@ -1045,7 +1507,7 @@ export component EditorView inherits Rectangle {
                 Tool { icon: "M5 6V4h14v2 M12 4v16 M9 20h6"; text: "Text"; tip: "Add text (T)"; clicked => { Ed.act("text"); } }
                 Tool { icon: "M6 6h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"; text: "Box"; tip: "Blur or colour box over part of the video (B)"; clicked => { Ed.act("box"); } }
                 Tool { icon: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M20 20l-4.5-4.5 M11 8v6 M8 11h6"; text: "Zoom"; tip: "Zoom in on a spot (Z)"; clicked => { Ed.act("zoomfx"); } }
-                Tool { icon: "M14 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8l7-7V6a3 3 0 0 0-3-3z M14 21v-4a3 3 0 0 1 3-3h4"; text: "Sticker"; tip: "Sticker, emoji or picture on the video"; clicked => { Ed.act("sticker"); } }
+                stkbtn := Tool { icon: "M14 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8l7-7V6a3 3 0 0 0-3-3z M14 21v-4a3 3 0 0 1 3-3h4"; text: "Sticker"; tip: "Sticker, emoji or picture on the video"; clicked => { Ed.act("sticker"); } }
                 Tool { icon: "M12 2v20 M4 7l16 10 M20 7L4 17"; text: "Freeze"; tip: "Freeze frame at the playhead (F)"; clicked => { Ed.act("freeze"); } }
                 Tool {
                     icon: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M10 10.5a2 2 0 1 0 0 3 M17 10.5a2 2 0 1 0 0 3";
@@ -1072,6 +1534,7 @@ export component EditorView inherits Rectangle {
                         thumb: T.accent;
                         value: Ed.zoom-frac;
                         step: 0.01;
+                        tip: "Timeline zoom"; // L35
                         moved(v) => { Ed.set("zoom", v); }
                     }
                 }
@@ -1202,8 +1665,18 @@ export component EditorView inherits Rectangle {
                     }
                 }
                 // trim handles (Echo's .eh, yellow while selected)
-                if s.sel && s.speed != 0: Rectangle { x: 0; width: 10px; background: T.hi; }
-                if s.sel && s.speed != 0: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+                if s.sel && s.speed != 0 && !s.rev: Rectangle { x: 0; width: 10px; background: T.hi; }
+                if s.sel && s.speed != 0 && !s.rev: Rectangle { x: parent.width - 10px; width: 10px; background: T.hi; }
+                // a transition from the piece before (Echo's .etr)
+                if s.tr: Rectangle {
+                    x: 2px;
+                    y: parent.height - 22px;
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: T.accent;
+                    Text { text: "⇄"; font-size: 11px; font-weight: 700; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                }
             }
             Rectangle {
                 border-radius: 8px;
@@ -1388,7 +1861,7 @@ export component EditorView inherits Rectangle {
                     fs.focus();
                     Ed.export-menu = false;
                     Ed.menu-open = false;
-                    Ed.tl(e.modifiers.control || e.modifiers.shift ? "cdown" : "down", self.mouse-x, self.mouse-y);
+                    Ed.tl(e.modifiers.control ? "cdown" : e.modifiers.shift ? "sdown" : "down", self.mouse-x, self.mouse-y);
                 } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                     Ed.tl("up", self.mouse-x, self.mouse-y);
                 }
@@ -1467,10 +1940,25 @@ export component EditorView inherits Rectangle {
     }
 
     // ---------- export menu ----------
+    // r2-layout (L39): any press outside closes it and goes on to what's under it (Echo) - the inspector, tools,
+    // Undo, 9:16 too; on the Export button it only closes (the button toggles)
+    if Ed.export-menu: TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                Ed.export-menu = false;
+                if (!(self.mouse-x + self.absolute-position.x >= expbtn.absolute-position.x
+                    && self.mouse-x + self.absolute-position.x < expbtn.absolute-position.x + expbtn.width
+                    && self.mouse-y + self.absolute-position.y >= expbtn.absolute-position.y
+                    && self.mouse-y + self.absolute-position.y < expbtn.absolute-position.y + expbtn.height)) {
+                    Over.pass(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, Over.btn-no(e.button));
+                }
+            }
+        }
+    }
     if Ed.export-menu: Rectangle {
         x: root.width - 12px - root.win-pad - self.width;
         y: 54px;
-        width: 300px;
+        width: 350px; // room for "Vertical 1080×1920 (centre crop - use 9:16 to place it)"
         height: em.preferred-height;
         background: T.panel;
         border-radius: 12px;
@@ -1486,8 +1974,8 @@ export component EditorView inherits Rectangle {
             for p in [
                 { k: "", n: "Export", d: "Same size as the clip" },
                 { k: "yt", n: "YouTube", d: "1080p, 60 FPS" },
-                { k: "tt", n: "TikTok / Shorts / Reels", d: "Vertical 1080×1920" },
-                { k: "dc", n: "Discord", d: "One export that fits your Discord size" },
+                { k: "tt", n: "TikTok / Shorts / Reels", d: Ed.vertical ? "Vertical 1080×1920" : "Vertical 1080×1920 (centre crop - use 9:16 to place it)" },
+                { k: "dc", n: "Discord", d: Ed.dc-text },
             ]: Rectangle {
                 height: 48px;
                 border-radius: 8px;
@@ -1538,12 +2026,15 @@ export component EditorView inherits Rectangle {
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
                 Ed.sticker-menu = false;
+                // r2-layout (L39): the click goes on to what's under it (Echo)
+                Over.pass(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, Over.btn-no(e.button));
             }
         }
     }
     if Ed.sticker-menu: Rectangle {
-        x: min(root.width - self.width - 12px, 560px);
-        y: root.height - root.tl-h - root.tools-h - self.height - 6px;
+        // r2-layout (L19): Echo's #estk - above the Sticker button, at its left edge, kept inside the window
+        x: max(8px, min(stkbtn.absolute-position.x - root.absolute-position.x, root.width - self.width - 8px));
+        y: max(8px, stkbtn.absolute-position.y - root.absolute-position.y - self.height - 8px);
         width: 9 * 40px + 2 * 10px;
         height: 4 * 40px + 2 * 10px + 46px;
         background: T.panel;
@@ -1588,6 +2079,8 @@ export component EditorView inherits Rectangle {
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
                 Ed.menu-open = false;
+                // r2-layout (L39): ...and goes on to what's under it (Echo), e.g. a right-click opens the menu there
+                Over.pass(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, Over.btn-no(e.button));
             }
         }
     }

@@ -6126,7 +6126,7 @@
       if (box) box.btn("Cancel", x => { x.textContent = "Cancelling…"; invoke("import_cancel").catch(() => {}); });
       // smooth: ffmpeg's position inside each file, not just one step per file (chat 30)
       let seen = false;
-      const show = q => { if (!box || !q || !q.total) return; if (!seen) { seen = true; ulog("drop: progress reaches the box"); } box.text(q.done < q.total ? `${q.done + 1} of ${q.total}: ${q.name} · ${Math.floor(q.pct || 0)}%` : "Done").pct(q.pct != null ? q.pct : q.done / q.total * 100); };
+      const show = q => { if (!box || !q || !q.total) return; if (!seen) { seen = true; ulog("drop: progress reaches the box"); } box.text(q.done < q.total ? `${q.done + 1} of ${q.total}: ${q.name} · ${(q.stage || "").startsWith("Checking") ? q.stage : (q.stage ? q.stage + " " : "") + Math.floor(q.pct || 0) + "%"}` : "Done").pct(q.pct != null ? q.pct : q.done / q.total * 100); };
       const un = await listen("import-progress", ev => show(ev.payload));
       // and ask for it twice a second, in case the events don't arrive (they didn't on Linux, chat 30)
       const poll = setInterval(() => invoke("import_status").then(show).catch(() => {}), 500);

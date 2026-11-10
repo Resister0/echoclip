@@ -281,7 +281,7 @@ pub enum Drag {
     /// the playhead (ruler / empty timeline)
     Head,
     /// texts on the video, moved by the drag distance (no jump on grab)
-    TextMove { starts: Vec<(usize, f64, f64)>, x0: f64, y0: f64, pushed: bool },
+    TextMove { starts: Vec<(usize, f64, f64)>, x0: f64, y0: f64, pushed: bool, free: bool },
     /// a text's corner handle: size follows the distance to its centre
     TextSize { i: usize, cx: f64, cy: f64, d0: f64, s0: f64, pushed: bool },
     /// the caption box: "" = move all captions, l/r = width, t/b = lines, corners = text size
@@ -351,6 +351,8 @@ pub struct Editor {
     pub cap_style: String,
     pub cap_hl: bool,
     pub cap_hl_color: String,
+    /// "Show caption box": the box shows without a caption selected (Echo's capShowBox, not saved)
+    pub cap_show_box: bool,
     pub normalize: bool,
     pub drag: Option<Drag>,
     pub geo: Geo,
@@ -430,6 +432,21 @@ impl Seg {
     }
     pub fn look(&self) -> String {
         self.extra.get("look").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    }
+    /// Play backwards (Echo's s.rev): the piece shows end -> start
+    pub fn rev(&self) -> bool {
+        self.extra.get("rev").and_then(|x| x.as_bool()) == Some(true)
+    }
+    /// previewed by stepping the picture by hand (Echo's isMan): freeze frame or reversed
+    pub fn man(&self) -> bool {
+        self.freeze() || self.rev()
+    }
+    /// transition from the piece before (Echo's s.tr: "" = cut, else an ffmpeg xfade name) + its length (s.td)
+    pub fn tr(&self) -> String {
+        self.extra.get("tr").and_then(|x| x.as_str()).unwrap_or("").to_string()
+    }
+    pub fn td(&self) -> f64 {
+        self.num("td", 0.5).clamp(0.1, 3.0)
     }
 }
 
@@ -590,6 +607,7 @@ impl Editor {
             cap_style: "classic".into(),
             cap_hl: true,
             cap_hl_color: "ffd23f".into(),
+            cap_show_box: false,
             normalize: false,
             drag: None,
             geo: Geo::default(),
@@ -651,7 +669,10 @@ impl Editor {
                 segs.push(Seg { at: s.at - l, ..s });
                 continue;
             }
-            if s0 < a {
+            if s0 < a && s.rev() && !s.freeze() {
+                // backwards: the part before a is the END of the source
+                segs.push(Seg { start: s.end - (a - s0) * s.speed, fo: 0.0, ..s.clone() });
+            } else if s0 < a {
                 // the part before a
                 segs.push(Seg { end: s.start + (a - s0) * s.speed, fo: 0.0, ..s.clone() });
             }
@@ -664,8 +685,8 @@ impl Editor {
             }
             if s1 > b {
                 // the part after b (lands at a)
-                let start = if s.freeze() { s.start } else { s.start + (b - s0).max(0.0) * s.speed };
-                let end = if s.freeze() { s.start + (s1 - b) } else { s.end };
+                let start = if s.freeze() || s.rev() { s.start } else { s.start + (b - s0).max(0.0) * s.speed };
+                let end = if s.freeze() { s.start + (s1 - b) } else if s.rev() { s.end - (b - s0).max(0.0) * s.speed } else { s.end };
                 let mut r = Seg { start, end, at: a, fi: 0.0, ..s.clone() };
                 r.extra.remove("tr");
                 segs.push(r);
@@ -808,7 +829,7 @@ impl Editor {
                 return (i, g.start, true);
             }
             if t < g.at + g.len() {
-                return (i, if g.freeze() { g.start } else { g.start + (t - g.at) * g.speed }, false);
+                return (i, if g.freeze() { g.start } else if g.rev() { g.end - (t - g.at) * g.speed } else { g.start + (t - g.at) * g.speed }, false);
             }
         }
         let l = self.p.segs.len().saturating_sub(1);
@@ -983,6 +1004,15 @@ impl Editor {
             return Err("Move the playhead inside a piece to cut");
         }
         self.push_hist();
+        if s.rev() {
+            // backwards: the first half shows end -> src, the second src -> start (Echo)
+            let a = Seg { start: src, fo: 0.0, ..s.clone() };
+            let mut bseg = Seg { end: src, at: t, fi: 0.0, ..s };
+            bseg.extra.remove("tr");
+            self.p.segs.splice(i..=i, [a, bseg]);
+            self.sel = Some(Sel::Seg(i + 1));
+            return Ok(());
+        }
         let a = Seg { end: src, fo: 0.0, ..s.clone() };
         let mut bseg = Seg { start: src, at: s.at + (src - s.start) / s.speed, fi: 0.0, ..s };
         bseg.extra.remove("tr");
@@ -1563,6 +1593,131 @@ impl Editor {
         self.p.texts.iter().filter(|t| t.cap).map(|t| format!("[{}] {}", fmt_t(t.start), t.raw.replace('\n', " "))).collect::<Vec<_>>().join("\n")
     }
 
+    /// the caption the caption box follows: the selected caption, else ("Show caption box") the first one in the
+    /// common spot
+    pub fn cap_ref(&self) -> Option<usize> {
+        if let Some(i) = self.sel_txt().filter(|&i| self.p.texts[i].cap) {
+            return Some(i);
+        }
+        if !self.cap_show_box {
+            return None;
+        }
+        self.p.texts.iter().position(|t| t.cap && !t.own).or_else(|| self.p.texts.iter().position(|t| t.cap))
+    }
+
+    /// a caption's text typed in the captions list (Echo's caplist oninput). The same number of words as `base`
+    /// (the words when the typing started) = every word keeps its own timing, so the spoken-word highlight stays in
+    /// sync; Shift+Enter starts a 2nd line. A word more or less = the words are spread over the caption's time (the
+    /// highlight keeps running; Echo dropped it).
+    pub fn set_cap_text(&mut self, i: usize, val: &str, base: Option<Vec<Word>>) {
+        let upper = cap_style(&self.cap_style).upper;
+        let Some(t) = self.p.texts.get_mut(i) else { return };
+        let up = |s: &str| if upper { s.to_uppercase() } else { s.to_string() };
+        let mut parts: Vec<String> = vec![];
+        let mut nls: Vec<bool> = vec![];
+        for (li, ln) in val.split('\n').enumerate() {
+            for (k, w) in ln.split_whitespace().enumerate() {
+                parts.push(w.to_string());
+                nls.push(li > 0 && k == 0);
+            }
+        }
+        let base = base.filter(|b| !b.is_empty()).unwrap_or_else(|| t.words.clone());
+        if base.is_empty() {
+            // a caption without spoken words (added by hand): just its text
+            t.raw = val.to_string();
+            t.text = up(val);
+            return;
+        }
+        if parts.is_empty() {
+            // emptied while retyping: the timings stay for the new words
+            t.words = base.iter().map(|w| Word { text: String::new(), raw: String::new(), ..w.clone() }).collect();
+            t.raw.clear();
+            t.text.clear();
+            return;
+        }
+        if parts.len() == base.len() {
+            t.words = base.iter().zip(parts.iter()).zip(nls.iter()).map(|((w, p), nl)| Word { text: up(p), raw: p.clone(), nl: *nl, ..w.clone() }).collect();
+        } else {
+            let n = parts.len() as f64;
+            let (s0, l) = (t.start, t.end - t.start);
+            t.words = parts.iter().zip(nls.iter()).enumerate().map(|(k, (w, nl))| Word { text: up(w), raw: w.clone(), start: s0 + l * k as f64 / n, end: s0 + l * (k + 1) as f64 / n, nl: *nl }).collect();
+        }
+        t.raw = cap_join(&t.words, true);
+        t.text = cap_join(&t.words, false);
+    }
+
+    /// "+ Add at playhead" (Echo's ecapadd): an empty caption for 1.5 s at the bottom
+    pub fn add_caption(&mut self) -> usize {
+        self.push_hist();
+        let st = cap_style(&self.cap_style);
+        let tt = self.t;
+        let c = Txt { text: if st.upper { "CAPTION".into() } else { "Caption".into() }, raw: "Caption".into(), start: tt, end: (tt + 1.5).min(self.total().max(tt + 0.5)),
+            x: 0.5, y: 0.83, size: st.size, color: st.color.into(), cap: true, own: false, words: vec![], hl: String::new(), anim: String::new() };
+        self.p.texts.push(c.clone());
+        self.msel.clear();
+        self.sel = Some(Sel::Txt(self.p.texts.len() - 1));
+        self.sort_texts();
+        self.sel_txt().unwrap_or(0)
+    }
+
+    /// "+ Line above" / "+ Line below" (Echo's stack): a second caption at the same time, one line above / below
+    pub fn stack_caption(&mut self, i: usize, dir: f64) -> Option<usize> {
+        let t = self.p.texts.get(i)?.clone();
+        self.push_hist();
+        let st = cap_style(&self.cap_style);
+        let gap_y = t.size * 1.25 * (1.0 + (t.text.split('\n').count() as f64 - 1.0) * 0.5);
+        let c = Txt { text: if st.upper { "CAPTION".into() } else { "Caption".into() }, raw: "Caption".into(), start: t.start, end: t.end, x: t.x, y: (t.y + dir * gap_y).clamp(0.03, 0.97),
+            size: t.size, color: t.color.clone(), cap: true, own: true, words: vec![], hl: String::new(), anim: t.anim.clone() };
+        self.p.texts[i].own = true;
+        self.p.texts.push(c);
+        self.msel.clear();
+        self.sel = Some(Sel::Txt(self.p.texts.len() - 1));
+        self.sort_texts();
+        self.sel_txt()
+    }
+
+    /// "Back to the other captions' spot"
+    pub fn cap_back(&mut self, i: usize) {
+        if i >= self.p.texts.len() {
+            return;
+        }
+        let o = self.p.texts.iter().enumerate().find(|(k, x)| *k != i && x.cap && !x.own).map(|(_, x)| (x.x, x.y));
+        self.push_hist();
+        let t = &mut self.p.texts[i];
+        t.own = false;
+        if let Some(o) = o {
+            (t.x, t.y) = o;
+        }
+    }
+
+    /// a caption's start / end typed or nudged in the list; the words move with the start (Echo). false = refused
+    pub fn set_cap_time(&mut self, i: usize, end: bool, v: f64) -> bool {
+        let Some(t) = self.p.texts.get_mut(i) else { return false };
+        let ok = v >= 0.0 && if end { v > t.start + 0.01 } else { v < t.end - 0.01 };
+        if !ok {
+            return false;
+        }
+        if end {
+            t.end = v;
+        } else {
+            let d = v - t.start;
+            for w in t.words.iter_mut() {
+                w.start += d;
+                w.end += d;
+            }
+            t.start = v;
+        }
+        self.sort_texts();
+        true
+    }
+
+    /// Echo's capIdx: captions in time order (indexes into texts)
+    pub fn cap_idx(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..self.p.texts.len()).filter(|&i| self.p.texts[i].cap).collect();
+        v.sort_by(|&a, &b| self.p.texts[a].start.partial_cmp(&self.p.texts[b].start).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    }
+
     // ---------- timeline mouse (x in content px incl. scroll; y inside the timeline area) ----------
     fn snap_t(&self, t: f64, l: f64, skip: Option<usize>) -> f64 {
         if !self.snap {
@@ -1635,7 +1790,8 @@ impl Editor {
         if y >= lay.video_y && y < lay.video_y + 64.0 {
             for (i, s) in self.p.segs.iter().enumerate() {
                 if t >= s.at && t < s.at + s.len() {
-                    return Some(('s', i, part(s.at, s.at + s.len())));
+                    // a reversed piece has no trim handles (Echo: isMan)
+                    return Some(('s', i, if s.rev() { 'm' } else { part(s.at, s.at + s.len()) }));
                 }
             }
         }
@@ -1822,16 +1978,21 @@ impl Editor {
         // piece / layer drags measure up / down from the window (the timeline grows when a layer row comes or goes)
         let ay = y + self.tl_top;
         match kind {
-            "down" | "cdown" => {
+            "down" | "cdown" | "sdown" => {
                 self.drag = None;
                 if y < ROW_RULER.1 {
+                    if kind == "sdown" {
+                        // Shift+drag on the ruler highlights a range (Echo)
+                        self.drag = Some(Drag::Range { x0: x, moved: false });
+                        return (true, false);
+                    }
                     self.drag = Some(Drag::Head);
                     self.t = ((x - LP) / self.pps).clamp(0.0, self.total());
                     return (true, true);
                 }
                 let hit = self.tl_hit(x, y);
                 let key_of = |k: char, i: usize| match k { 's' => Sel::Seg(i), 'a' => Sel::Aud(i), 'b' => Sel::Box(i), 'o' => Sel::Ov(i), _ => Sel::Txt(i) };
-                if kind == "cdown" {
+                if kind == "cdown" || kind == "sdown" {
                     match hit {
                         Some((k, i, _)) => {
                             // Ctrl/Shift+click toggles the block in the selection
@@ -2051,7 +2212,9 @@ impl Editor {
                                 s.at = at;
                             }
                             'r' => {
-                                let mut end = (orig.end + dx * orig.speed).clamp(orig.start + min_len * orig.speed, self.dur.max(orig.end));
+                                // the piece's own source length (another file's, not the clip's)
+                                let src_len = orig.src().and_then(|f| self.srcs.get(f)).map(|x| x.1).filter(|d| *d > 0.0).unwrap_or(self.dur);
+                                let mut end = (orig.end + dx * orig.speed).clamp(orig.start + min_len * orig.speed, src_len.max(orig.end));
                                 if let Some(nx) = self.p.segs.get(i + 1) {
                                     let lim = orig.start + (nx.at - orig.at) * orig.speed;
                                     end = end.min(lim.max(orig.start + min_len * orig.speed));
@@ -2081,14 +2244,16 @@ impl Editor {
                         }
                         let dx = (x - x0) / self.pps;
                         let tt = self.total();
+                        let l = end0 - start0;
+                        // Echo's snapT: texts / boxes / captions stick to the playhead and piece edges too
+                        let (sl, sr, sm) = (self.snap_t(start0 + dx, 0.0, None), self.snap_t(end0 + dx, 0.0, None), self.snap_t((start0 + dx).max(0.0), l, None));
                         if bx {
                             let Some(b) = self.p.boxes.get_mut(i) else { return (false, false) };
                             match mode {
-                                'l' => b.start = (start0 + dx).clamp(0.0, end0 - 0.2),
-                                'r' => b.end = (end0 + dx).clamp(start0 + 0.2, tt.max(end0)),
+                                'l' => b.start = sl.clamp(0.0, end0 - 0.2),
+                                'r' => b.end = sr.clamp(start0 + 0.2, tt.max(end0)),
                                 _ => {
-                                    let l = end0 - start0;
-                                    b.start = (start0 + dx).clamp(0.0, (tt - l).max(0.0));
+                                    b.start = sm.clamp(0.0, (tt - l).max(0.0));
                                     b.end = b.start + l;
                                 }
                             }
@@ -2096,11 +2261,10 @@ impl Editor {
                         }
                         let Some(t) = self.p.texts.get_mut(i) else { return (false, false) };
                         match mode {
-                            'l' => t.start = (start0 + dx).clamp(0.0, end0 - 0.2),
-                            'r' => t.end = (end0 + dx).clamp(start0 + 0.2, tt.max(end0)),
+                            'l' => t.start = sl.clamp(0.0, end0 - 0.2),
+                            'r' => t.end = sr.clamp(start0 + 0.2, tt.max(end0)),
                             _ => {
-                                let l = end0 - start0;
-                                let ns = (start0 + dx).clamp(0.0, (tt - l).max(0.0));
+                                let ns = sm.clamp(0.0, (tt - l).max(0.0));
                                 let d = ns - t.start;
                                 t.start = ns;
                                 t.end = ns + l;
@@ -2216,6 +2380,11 @@ impl Editor {
                 }
                 if let Some(Drag::Piece { pushed: true, .. }) = d {
                     self.normalize_segs();
+                    return (true, true);
+                }
+                if let Some(Drag::Piece { x0, pushed: false, .. }) = d {
+                    // a click on a piece: selected AND the playhead goes there (Echo's seekOut(clickT))
+                    self.t = ((x0 - LP) / self.pps).clamp(0.0, self.total());
                     return (true, true);
                 }
                 if let Some(Drag::TextTime { pushed: true, .. }) = d {

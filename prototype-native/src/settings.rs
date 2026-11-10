@@ -40,7 +40,7 @@ fn defaults() -> Value {
         "theme": if cfg!(target_os = "linux") { "system" } else { "" }, "theme_accent": "", "theme_bg": "", "theme_hi": "",
         "monitor": "", "mix_mode": "all", "vol_game": 1.0, "vol_discord": 1.0, "vol_browser": 1.0, "vol_music": 1.0,
         "mix_game": true, "mix_discord": true, "mix_browser": false, "mix_music": false, "mic_mono": false,
-        "cloud_free_after": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": true,
+        "cloud_free_after": false, "cloud_original": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": true,
         "capture": "screen", "codec": "h264", "ec_email": "", "cloud_accounts": [], "cloud_target": ""
     })
 }
@@ -80,6 +80,8 @@ pub struct Store {
     /// Chat B: microphones (name, label) found at start (lib_setup), and the last mic test's result
     pub mics: Vec<(String, String)>,
     pub mic_test: String,
+    /// gaps-settings: the device "Windows default" / "System default" is now (Echo's list_mics default)
+    pub mic_default: String,
 }
 
 impl Store {
@@ -93,7 +95,7 @@ impl Store {
                 v.entry(k).or_insert(dv);
             }
         }
-        Store { file, v, found, listening: String::new(), sec: "hotkeys".into(), query: String::new(), games: vec![], usage: vec![], total: 0, monitors: vec![], mics: vec![], mic_test: String::new() }
+        Store { file, v, found, listening: String::new(), sec: "hotkeys".into(), query: String::new(), games: vec![], usage: vec![], total: 0, monitors: vec![], mics: vec![], mic_test: String::new(), mic_default: String::new() }
     }
 
     /// Chat B: settings.json changed behind our back (Echo's recorder saved the cloud sign-in): read it again
@@ -263,7 +265,14 @@ impl Store {
                 self.write(&[(key, v)])
             }
         };
-        r.err()
+        match r {
+            // gaps-settings (Echo's changed()): applied at once + "Settings saved" (theme changes quietly)
+            Ok(()) => {
+                crate::lib_set::changed(key.starts_with("theme"));
+                None
+            }
+            Err(e) => Some(e),
+        }
     }
 
     fn hotkeys(&self) -> Vec<Value> {
@@ -324,6 +333,8 @@ impl Store {
         if let Err(e) = self.write(&w) {
             return Some(e);
         }
+        // gaps-settings: the new key works right away (not on the recorder's next 3 s look at the file)
+        crate::lib_set::changed(false);
         msg
     }
 
@@ -432,6 +443,8 @@ struct R {
     why: String,
     listen: bool,
     col: bool,
+    /// gaps-settings: a picture file shown in the row (a game's icon)
+    icon: String,
 }
 
 struct B {
@@ -480,6 +493,70 @@ pub fn bad_clips_dir(p: &str) -> Option<String> {
         return Some("That's a system folder - pick a folder of your own, e.g. Videos/EchoClips".into());
     }
     None
+}
+
+/// gaps-settings: the self-test's button + result lines (lib_set keeps the state). Settings = Echo's #stres (every
+/// check + a summary); setup = Echo's #sutest (only the problems in red, or one green line). opts: (kind, name, detail)
+fn self_test_row(r: &mut R, setup: bool) {
+    let (running, res) = crate::lib_set::self_test_state();
+    if running {
+        r.btn = "Testing… (6 s)".into();
+        if !setup {
+            r.opts = vec![opth("wait", "", "Recording a short test clip - play some sound and say something now")];
+        }
+        return;
+    }
+    r.opts = match res {
+        None => vec![],
+        Some(Err(e)) => vec![opth(if setup { "badline" } else { "bad" }, "", &e)],
+        Some(Ok(rows)) if setup => {
+            let bad: Vec<_> = rows.iter().filter(|x| !x.1).map(|(n, _, d)| opth("badline", "", &format!("✗ {n}: {d}"))).collect();
+            if bad.is_empty() {
+                vec![opth("okline", "", "✓ Everything works - you're ready to clip.")]
+            } else {
+                bad
+            }
+        }
+        Some(Ok(rows)) => {
+            let bad = rows.iter().filter(|x| !x.1).count();
+            let mut v: Vec<_> = rows.iter().map(|(n, ok, d)| opth(if *ok { "ok" } else { "bad" }, n, d)).collect();
+            v.push(opth("", "", &if bad > 0 { format!("{bad} problem{} found - details are in the log too.", if bad == 1 { "" } else { "s" }) } else { "Everything works.".into() }));
+            v
+        }
+    };
+}
+
+/// gaps-settings: Echo's game icon file (<Echo's data folder>/icons/<safe name>.png, recorder.rs safe_name), "" = none
+fn game_icon_file(name: &str) -> String {
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect();
+    let p = echo_core::recorder::app_dir_pub().join("icons").join(format!("{safe}.png"));
+    if p.is_file() {
+        p.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    }
+}
+
+thread_local! {
+    /// game icons already loaded: file -> (modified, picture)
+    static ICONS: std::cell::RefCell<std::collections::HashMap<String, (Option<std::time::SystemTime>, slint::Image)>> = Default::default();
+}
+fn icon_image(file: &str) -> slint::Image {
+    if file.is_empty() {
+        return slint::Image::default();
+    }
+    let t = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+    ICONS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((t0, img)) = c.get(file) {
+            if *t0 == t {
+                return img.clone();
+            }
+        }
+        let img = slint::Image::load_from_path(std::path::Path::new(file)).unwrap_or_default();
+        c.insert(file.to_string(), (t, img.clone()));
+        img
+    })
 }
 
 pub fn key_parts(keys: &str) -> Vec<String> {
@@ -536,12 +613,15 @@ impl Store {
         R { kind: "button", label: label.into(), sub: sub.into(), btn: btn.into(), act: act.into(), ..Default::default() }
     }
     fn hk(&self, id: &str, label: &str, sub: &str, keys: &str) -> R {
+        // gaps (10 Nov): Linux with KDE's portal - the key KDE really uses (Echo's keyShow; not for Mute mic / PTT)
+        let kde = if id == "mute" || id == "ptt" { None } else { crate::hdr_home::kde_show(keys) };
         R {
             kind: "hotkey",
             key: id.into(),
             label: label.into(),
             sub: sub.into(),
-            keys: key_parts(keys),
+            btn: if kde.as_ref().is_some_and(|k| k.is_empty()) { "No key in KDE".into() } else { String::new() },
+            keys: kde.unwrap_or_else(|| key_parts(keys)),
             listen: self.listening == id,
             act: format!("hkoff:{id}"),
             ..Default::default()
@@ -586,22 +666,41 @@ impl Store {
                     "5 · Save disk space (optional)",
                     vec![self.sw("shrink_old", "Shrink old clips", "Shrink clips older than 30 days to about half their size while the PC is idle. Favourites stay as they are.")],
                 ));
-                let mut imp: Vec<R> = crate::import::lines(std::path::Path::new(&self.s("clips_dir")))
-                    .into_iter()
-                    .enumerate()
-                    .map(|(k, (label, sub, btn))| self.button(&label, &sub, &btn, &format!("import:{k}")))
-                    .collect();
-                imp.push(self.button(
-                    if imp.is_empty() { "Clips from another app" } else { "Somewhere else?" },
-                    "Used Medal, SteelSeries Moments, Outplayed or something else? Echo copies your old clips in, with their dates and game folders. The old app's files aren't touched.",
-                    "Choose folder…",
-                    "import",
-                ));
-                out.push(bx("6 · Clips from another app (optional)", imp));
+                // gaps-settings: Echo's step "6 · Test it" (setupTest): only the problems in red, or one green line
+                let mut test = self.button("", "Play some sound and say something while it runs.", "Run self-test", "selftest");
+                self_test_row(&mut test, true);
+                out.push(bx("6 · Test it", vec![test]));
+                // Echo's drawSetupImport: the text, the apps found, then "Somewhere else?" / "Nothing found
+                // automatically." + [Choose folder…] [Remind me later]
+                let mut imp: Vec<R> = vec![R {
+                    kind: "info",
+                    sub: "Used Medal, SteelSeries Moments, Outplayed or something else? Echo copies your old clips in, with their dates and game folders. The old app's files aren't touched.".into(),
+                    ..Default::default()
+                }];
+                imp.extend(
+                    crate::import::lines(std::path::Path::new(&self.s("clips_dir")))
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, (label, sub, btn))| self.button(&label, &sub, &btn, &format!("import:{k}"))),
+                );
+                let mut more = self.button("", if imp.len() > 1 { "Somewhere else?" } else { "Nothing found automatically." }, "Choose folder…", "import");
+                more.btn2 = if crate::lib_set::import_reminder_set() { "Will remind you".into() } else { "Remind me later".into() };
+                more.act2 = "impremind".into();
+                imp.push(more);
+                out.push(bx("7 · Clips from another app (optional)", imp));
                 ("Welcome to Echo".into(), String::new(), out, String::new())
             }
             "hotkeys" => {
                 let mut rows = vec![];
+                // gaps (10 Nov): Linux with KDE's shortcut portal (Echo's renderHotkeys)
+                if crate::hdr_home::kde_on() {
+                    rows.push(R {
+                        kind: "info",
+                        label: "Keys are set in KDE".into(),
+                        sub: format!("{}. Echo shows the keys KDE uses.", crate::hdr_home::KDE_TIP),
+                        ..Default::default()
+                    });
+                }
                 for (i, h) in self.hotkeys().iter().enumerate() {
                     let mut r = self.hk(&format!("hk:{i}"), "Clip", "Save the previous moments of gameplay", h["keys"].as_str().unwrap_or(""));
                     r.opts = LENGTHS.iter().map(|s| opt(&s.to_string(), &crate::library::fmt_len(*s))).collect();
@@ -730,7 +829,7 @@ impl Store {
                 }
                 let curmon = self.s("monitor");
                 if !curmon.is_empty() && !mons.iter().any(|m| m.0 == curmon) {
-                    mons.push(opt(&curmon, &curmon));
+                    mons.push(opt(&curmon, &format!("{curmon} (not connected)")));
                 }
                 let mut cap = vec![self.sel("monitor", "Monitor", "HDR monitors are converted to normal colours automatically.", mons)];
                 if cfg!(windows) {
@@ -766,13 +865,16 @@ impl Store {
                     r
                 };
                 let mic_why = "The microphone is off";
-                let mut mics = vec![opt("", if cfg!(windows) { "Windows default" } else { "System default" })];
+                // Echo's loadMics: "Windows default (<device>)", a saved mic that's unplugged = "<name> (not connected)"
+                let sys = if cfg!(windows) { "Windows default" } else { "System default" };
+                let sys = if self.mic_default.is_empty() { sys.to_string() } else { format!("{sys} ({})", self.mic_default) };
+                let mut mics = vec![opt("", &sys)];
                 let curmic = self.s("mic_device");
                 for (n, l) in &self.mics {
                     mics.push(opt(n, l));
                 }
                 if !curmic.is_empty() && !self.mics.iter().any(|m| m.0 == curmic) {
-                    mics.push(opt(&curmic, &curmic));
+                    mics.push(opt(&curmic, &format!("{} (not connected)", echo_core::recorder::mic_label(&curmic))));
                 }
                 let src = vec![
                     self.pct_slider("desktop_volume", "Desktop audio", "Everything playing on your default output device", 2.0, Some("desktop_audio")),
@@ -856,7 +958,14 @@ impl Store {
                     .iter()
                     .map(|n| {
                         let (rec, fol) = rule(n);
-                        R { kind: "game", key: n.clone(), label: n.clone(), value: n.chars().next().unwrap_or('?').to_uppercase().to_string(), on: rec, on2: fol, act: format!("gameremove:{n}"), ..Default::default() }
+                        let mut r = R { kind: "game", key: n.clone(), label: n.clone(), value: n.chars().next().unwrap_or('?').to_uppercase().to_string(), on: rec, on2: fol, act: format!("gameremove:{n}"), ..Default::default() };
+                        // gaps-settings: Echo's game icon (g.icon) and, for GTA V clips, [Move to FiveM]
+                        r.icon = game_icon_file(n);
+                        if n == "GTA V" && !crate::lib_set::gta_clips().is_empty() {
+                            r.btn = "Move to FiveM".into();
+                            r.act2 = "fivem".into();
+                        }
+                        r
                     })
                     .collect();
                 if list.is_empty() {
@@ -917,7 +1026,7 @@ impl Store {
                     opts: ["discord_free_mb", "discord_basic_mb", "discord_nitro_mb", "discord_custom_mb"].iter().map(|k| opt(k, &self.s(k))).collect(),
                     ..Default::default()
                 };
-                let st = vec![
+                let mut st = vec![
                     path,
                     self.sel(
                         "max_storage_gb",
@@ -927,6 +1036,16 @@ impl Store {
                     ),
                     cleanup,
                     shrink,
+                ];
+                // gaps-settings: Echo's #av1row, only when the graphics card makes AV1 (av1_ready, probed 15 s after start)
+                if crate::lib_set::av1_ok() {
+                    st.push(self.sw(
+                        "shrink_av1",
+                        "Shrink with AV1",
+                        "Your graphics card can make AV1 files: the same quality at about half the size. Copies, share links and cloud uploads still go out as H.264, so they play on every phone and PC.",
+                    ));
+                }
+                st.extend([
                     self.sw("name_by_game", "Name clips after the game", "\"Valorant 2026-10-31 …\" instead of \"Clip 2026-10-31 …\", based on the window in front when you press the hotkey"),
                     self.sw("game_folders", "Game folders", "Save each game's clips in its own folder (…\\Valorant\\…). Clips outside a game stay in the main folder."),
                     self.button(
@@ -949,7 +1068,7 @@ impl Store {
                     ),
                     limits,
                     R { kind: "button", label: "Currently used".into(), vtext: crate::library::fmt_size(self.total), ..Default::default() },
-                ];
+                ]);
                 // other apps' clip folders, read again each time (William: counts must follow clips deleted there)
                 let mut imp: Vec<R> = crate::import::lines(std::path::Path::new(&self.s("clips_dir")))
                     .into_iter()
@@ -997,12 +1116,19 @@ impl Store {
                             sub,
                             num,
                             vtext: if err { "err".into() } else { String::new() },
-                            opts: vec![
-                                if paid { opt("ecmanage", "Manage plan") } else { opt("ecplans", "Upgrade") },
-                                opt("ecspace", "Manage space"),
-                                opt("ecsignout", "Sign out"),
-                                opth("ecdelete", "Delete account…", "sm"),
-                            ],
+                            opts: {
+                                let mut o = vec![
+                                    if paid { opt("ecmanage", "Manage plan") } else { opt("ecplans", "Upgrade") },
+                                    opt("ecspace", "Manage space"),
+                                    opt("ecsignout", "Sign out"),
+                                    opth("ecdelete", "Delete account…", "sm"),
+                                ];
+                                // William (10 Nov): paid users see the plans too ("Plans" next to Manage plan)
+                                if paid {
+                                    o.insert(1, opt("ecplans", "Plans"));
+                                }
+                                o
+                            },
                             ..Default::default()
                         }];
                         if crate::cloud::plans_state() != "" {
@@ -1057,7 +1183,7 @@ impl Store {
                 if own.is_empty() {
                     own.push(self.button(
                         "Not connected",
-                        "Add one or more clouds. When one is full, new clips go to the one with the most free space. Filen: 10 GB free. MEGA: 20 GB free. Google Drive: 15 GB free (or your Google One space). Or use your own server.",
+                        "Add one or more clouds. When one is full, new clips go to the one with the most free space. Filen: 10 GB free. MEGA: 20 GB free. Google Drive: 15 GB free (or your Google One space). Or use your own server / NAS.",
                         "",
                         "",
                     ));
@@ -1066,9 +1192,24 @@ impl Store {
                     kind: "buttons",
                     label: "Add a cloud".into(),
                     sub: "You can add several accounts, also two of the same service".into(),
-                    opts: vec![opt("cloud:filen", "Filen"), opt("cloud:gdrive", "Google Drive"), opt("cloud:mega", "MEGA"), opt("cloud:pcloud", "pCloud"), opt("cloud:own", "Own server")],
+                    opts: vec![opt("cloud:filen", "Filen"), opt("cloud:gdrive", "Google Drive"), opt("cloud:mega", "MEGA"), opt("cloud:pcloud", "pCloud"), opt("cloud:own", "Own server…")],
                     ..Default::default()
                 });
+                // r2-texts L42: Echo's #megarow - the login fields of the cloud being added (cloud.rs open_form)
+                if let Some((t, h)) = crate::cloud::login_info() {
+                    own.push(R { kind: "login", label: t, sub: h, ..Default::default() });
+                }
+                // gaps-settings: Echo's drawCloudLock (the health line points here) - above the cloud list
+                if echo_core::recorder::CLOUD_LOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+                    let mut lock = self.button(
+                        "Echo can't unlock your cloud logins",
+                        "The password that protects them on this PC is gone (for example when the Flatpak version of Echo signed in to a cloud too). Uploads, downloads and the cloud list don't work until you connect again. Your clips stay where they are - in the clouds and on this PC.",
+                        "Sign out and start over",
+                        "cloudlock",
+                    );
+                    lock.key = "red".into();
+                    own.insert(0, lock);
+                }
                 let mut sync = vec![self.sel(
                     "cloud_upload",
                     "Upload automatically",
@@ -1089,7 +1230,13 @@ impl Store {
                     sync.push(self.sel("cloud_target", "Upload new clips to", "With several clouds. Echo Cloud first gives you share links that play in Discord; when it's full, clips go to your other clouds.", o));
                 }
                 sync.extend([
-                    self.sw("cloud_free_after", "Free up space after uploading", "Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud)"),
+                    self.sw("cloud_free_after", "Free up space after uploading", "Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud - from Echo Cloud as its smaller copy, unless Original quality is on)"),
+                    // cloud-savings (10 Nov 2026): off by default, can become a paid-plan perk later
+                    self.sw(
+                        "cloud_original",
+                        "Original quality in Echo Cloud",
+                        "Off: Echo Cloud gets a smaller copy that looks the same (H.264, up to 1080p, the sound players hear) and uses much less space. The clip on this PC stays as it is. Your own clouds always get the original.",
+                    ),
                     self.sel(
                         "link_days",
                         "Share links expire",
@@ -1113,16 +1260,15 @@ impl Store {
                 )
             }
             "profile" => {
-                let email = self.s("ec_email");
-                let acct = if email.is_empty() {
-                    self.button("Not signed in", "Sign in with your email to get a profile page, share links with view counts and 10 GB of Echo Cloud.", "Sign in", "ecsignin")
-                } else {
-                    self.button(&email, "Your Echo Profile", "Sign out", "ecsignout")
-                };
+                // gaps-settings: Echo moves its whole Echo Cloud box here (chat 30, h3 "Sign in"): email-code sign-in,
+                // usage bar, Upgrade / Manage plan, Manage space, Sign out, Delete account…, plan cards. Same rows as
+                // Settings > Cloud (taken from there, so both stay one box). The section keeps William's name
+                // "Echo Profile".
+                let rows: Vec<R> = self.section("cloud").2.into_iter().next().map(|b| b.rows).unwrap_or_default();
                 (
                     "Echo Profile".into(),
                     "One free account for everything: your profile page, share links with view counts and 10 GB of Echo Cloud backup. Signing in here also signs you in under Cloud, and the other way round.".into(),
-                    vec![bx("Account", vec![acct])], // the profile itself: lib_profile.slint (ProfilePanel) under it
+                    vec![bx("Sign in", rows)], // the profile itself: lib_profile.slint (ProfilePanel) under it
                     String::new(),
                 )
             }
@@ -1138,6 +1284,9 @@ impl Store {
                             opt("theme_bg", &self.s("theme_bg")),
                             opt("theme_hi", &self.s("theme_hi")),
                         ],
+                        // gaps-settings: Echo's themeReset (theme + the three colours cleared)
+                        btn: "Reset".into(),
+                        act: "themereset".into(),
                         ..Default::default()
                     });
                 }
@@ -1162,8 +1311,19 @@ impl Store {
                 )
             }
             _ => {
+                // gaps-settings: Echo's #updstate under the version ("Checking…", "You have the newest version.", …)
+                let (upd_sub, upd_btn) = crate::setup::upd_state();
                 let about = vec![
-                    self.button(&format!("Echo {}", crate::lib_set::app_version()), "Echo checks for updates by itself and shows a card in the sidebar when one is ready.", "Check for updates", "updates"),
+                    self.button(&format!("Echo {}", crate::lib_set::app_version()), &upd_sub, &upd_btn, "updates"),
+                    // r2-perf: lives in native_ui.json (perf.rs), not settings.json
+                    R {
+                        kind: "switch",
+                        key: "send_perf".into(),
+                        label: "Send anonymous performance numbers".into(),
+                        sub: "With the update check: how much CPU and memory Echo used, your PC's model names (processor, graphics card, RAM, system) and recording settings. No ID, nothing about you.".into(),
+                        on: crate::perf::enabled(),
+                        ..Default::default()
+                    },
                     self.button("New to Echo?", "A quick walk past the most useful buttons.", "Show me around", "tour"),
                     self.button("Something wrong, or an idea?", "Goes straight to the person who makes Echo. You can attach Echo's log so problems are easier to find.", "Send feedback", "feedback"),
                     R {
@@ -1236,8 +1396,11 @@ impl Store {
                     "Runs offline on your PC. Downloaded the first time you use Captions in the editor.",
                     vec![opt("base", "Fast (~150 MB)"), opt("small", "Accurate (~470 MB)")],
                 )];
+                // gaps-settings: Echo's #stres - the results under the row instead of a dialog
+                let mut test = self.button("Self-test", "Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.", "Run self-test", "selftest");
+                self_test_row(&mut test, false);
                 let mut tr = vec![
-                    self.button("Self-test", "Records about 6 seconds and checks the video and every audio track. Play some sound and say something while it runs.", "Run self-test", "selftest"),
+                    test,
                     self.button(
                         "Send log",
                         "Uploads Echo's log and settings (passwords, keys and email addresses left out) and copies a private link - paste it into Discord for whoever helps you. Links stop working after 14 days.",
@@ -1349,6 +1512,7 @@ fn to_boxes(b: Vec<B>) -> Vec<PBox> {
                         why: r.why.into(),
                         listen: r.listen,
                         col: r.col,
+                        icon: icon_image(&r.icon),
                     })
                     .collect::<Vec<_>>(),
             )
@@ -1469,7 +1633,26 @@ pub fn system_light() -> bool {
         if t.elapsed().as_secs() < 60 {
             return v;
         }
+        // PORT_LEFTOVERS L54: on Linux the check runs gsettings / kreadconfig (processes): after the first answer
+        // it runs on a worker - the UI keeps the last answer and the theme follows when the desktop changed
+        if cfg!(not(windows)) {
+            *g = Some((std::time::Instant::now(), v));
+            drop(g);
+            std::thread::spawn(move || {
+                let nv = ask_light();
+                *C.lock().unwrap_or_else(|e| e.into_inner()) = Some((std::time::Instant::now(), nv));
+                if nv != v {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        if let Some(a) = crate::UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())) {
+                            crate::apply_theme(&a, &Store::load());
+                        }
+                    });
+                }
+            });
+            return v;
+        }
     }
+    // the first answer (start-up, before the window shows) and Windows (one registry read) ask right here
     let v = ask_light();
     *g = Some((std::time::Instant::now(), v));
     v
@@ -1630,28 +1813,15 @@ pub fn combo(text: &str, ctrl: bool, alt: bool, shift: bool, meta: bool, single:
     Some(parts.join("+"))
 }
 
-/// Windows: the monitors (device name, label) like Echo's monitor list
+/// Windows: the monitors (device name, label) - Echo's own list_monitors (gpucap, the list the recorder picks
+/// from): "Monitor 1 · 2560×1440 · main · HDR"
 #[cfg(windows)]
 pub fn monitors() -> Vec<(String, String)> {
-    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
-    unsafe extern "system" fn cb(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
-        let out = &mut *(data as *mut Vec<(String, String)>);
-        let mut mi: MONITORINFOEXW = std::mem::zeroed();
-        mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-        if GetMonitorInfoW(m, &mut mi as *mut MONITORINFOEXW as *mut _) != 0 {
-            let len = mi.szDevice.iter().position(|c| *c == 0).unwrap_or(mi.szDevice.len());
-            let dev = String::from_utf16_lossy(&mi.szDevice[..len]);
-            let r = mi.monitorInfo.rcMonitor;
-            let main = mi.monitorInfo.dwFlags & 1 != 0;
-            let n = out.len() + 1;
-            out.push((dev, format!("Monitor {n} · {}x{}{}", r.right - r.left, r.bottom - r.top, if main { " (main)" } else { "" })));
-        }
-        1
-    }
-    let mut v: Vec<(String, String)> = vec![];
-    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(cb), &mut v as *mut _ as LPARAM) };
-    v
+    echo_core::gpucap::list_monitors()
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| (m.name, format!("Monitor {} · {}×{}{}{}", i + 1, m.width, m.height, if m.primary { " · main" } else { "" }, if m.hdr { " · HDR" } else { "" })))
+        .collect()
 }
 #[cfg(not(windows))]
 pub fn monitors() -> Vec<(String, String)> {

@@ -1,0 +1,91 @@
+// Echo's #otd (chat 21 "small touches"): "On this day · A year ago: <clip>" [Watch] [✕] above the library grid,
+// once a day. ✕ = "Hide for today" / "Don't show "On this day" again". Rust: hdr_home.rs (charm).
+import { T, Ic, Icon, IconBtn, Btn, MenuRow } from "theme.slint";
+
+export global Otd {
+    in-out property <bool> show;
+    in-out property <string> text;   // "A year ago: FiveM 2025-11-10 21-04-11"
+    callback act(string);            // "watch" / "today" / "never"
+}
+
+// margin 8 28 4; padding 8 8 8 14; radius 12; accent gradient + accent border
+export component OtdBar inherits VerticalLayout {
+    padding-left: 28px;
+    padding-right: 28px;
+    padding-top: 8px;
+    padding-bottom: 4px;
+    Rectangle {
+        height: 44px;
+        border-radius: 12px;
+        background: @linear-gradient(90deg, T.accent.with-alpha(0.13) 0%, T.accent.with-alpha(0) 70%);
+        border-width: 1px;
+        border-color: T.accent.with-alpha(0.25);
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 8px;
+            spacing: 10px;
+            Text {
+                text: "ON THIS DAY";
+                font-size: 11px;
+                font-weight: 700 + T.fw;
+                letter-spacing: 0.66px;
+                color: T.accent2;
+                vertical-alignment: center;
+            }
+            Text {
+                text: Otd.text;
+                font-size: 13px;
+                color: T.muted;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Btn {
+                y: (parent.height - self.height) / 2;
+                height: 30px;
+                text: "Watch";
+                clicked => { Otd.act("watch"); }
+            }
+            xb := IconBtn {
+                y: (parent.height - self.height) / 2;
+                size: 28px;
+                icon: Ic.x;
+                tip: "Hide";
+                clicked => { pop.show(); }
+            }
+        }
+        pop := PopupWindow {
+            x: parent.width - self.width;
+            y: parent.height + 6px;
+            width: 290px;
+            height: pl.preferred-height;
+            close-policy: close-on-click-outside;
+            Rectangle {
+                background: T.panel;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: T.line;
+                drop-shadow-blur: 40px;
+                drop-shadow-offset-y: 14px;
+                drop-shadow-color: #000000aa;
+                pl := VerticalLayout {
+                    padding: 6px;
+                    MenuRow {
+                        text: "Hide for today";
+                        clicked => {
+                            pop.close();
+                            Otd.act("today");
+                        }
+                    }
+                    MenuRow {
+                        text: "Don't show \"On this day\" again";
+                        clicked => {
+                            pop.close();
+                            Otd.act("never");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

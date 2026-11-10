@@ -103,12 +103,14 @@ pub enum Ev {
     Toast(String),
     /// a clip was saved / a recording stopped: library refresh, the "Saving clip…" box ends
     Saved(Result<String, String>),
-    /// "Saving clip…" box (seconds)
-    Saving(u32),
+    /// "Saving clip…" box (seconds) + the library's "Saving clip…" card (folder the clip goes to, Echo's save_target)
+    Saving(u32, String),
     /// Settings changed on disk: header hotkey chips
     Settings,
     /// tray / second launch: bring the window up
     Show,
+    /// tray "Update to Echo X": download + install the pending update (setup.rs)
+    Update,
     Quit,
 }
 pub fn push(e: Ev) {
@@ -144,6 +146,7 @@ pub fn early_env() {
         if std::env::var_os("USERPROFILE").is_none() {
             std::env::set_var("USERPROFILE", &home);
         }
+        crate::linux::early();
     }
 }
 
@@ -211,6 +214,8 @@ pub fn wire(app: &AppWindow) {
         std::thread::spawn(|| {
             let Some(r) = rec() else { return };
             r.secure_cloud();
+            #[cfg(target_os = "linux")]
+            crate::linux::flatpak_wait(); // Flatpak: Welcome screen -> shortcut dialog -> screen-share dialog
             start_rec(r);
             watch_loop();
         });
@@ -218,6 +223,8 @@ pub fn wire(app: &AppWindow) {
         crate::popup::keeper();
     }
     crate::tray::start();
+    #[cfg(target_os = "linux")]
+    crate::linux::wire(app); // "Echo needs ffmpeg" when there is none
     crate::copy::wire(app);
     crate::titlebar::wire(app);
     // UI side: drain events + header status every 0.5 s
@@ -258,6 +265,11 @@ pub fn wire(app: &AppWindow) {
         if what == "mic" {
             a.set_rec_mic_off(!recorder::MIC_MUTED.load(Ordering::Relaxed));
         }
+        // gaps (10 Nov): Echo's #longbtn - its toasts, then the new recording opens in the player (hdr_home.rs)
+        if what == "long" {
+            crate::hdr_home::record_click(&a);
+            return;
+        }
         std::thread::spawn(move || match what.as_str() {
             "save" => { let _ = do_save(None); }
             "long" => { let _ = do_session(); }
@@ -276,18 +288,48 @@ pub fn wire(app: &AppWindow) {
     });
 }
 
+/// the library's "Saving clip…" card: its row + text (also called from the 3 s disk sync, which ends it)
+pub fn saving_card(a: &AppWindow, l: &crate::library::LibModel) {
+    l.saving_expire();
+    l.rebuild_rows();
+    let (line, done) = l.saving_text();
+    let g = a.global::<crate::Lib>();
+    g.set_saving_line(line.into());
+    g.set_saving_done(done);
+}
+
 fn handle(a: &AppWindow, e: Ev) {
     match e {
         Ev::Toast(s) => crate::toast(a, s),
-        Ev::Saving(secs) => {
+        Ev::Saving(secs, folder) => {
             a.set_rec_saving(format!("Saving the last {}…", fmt_len(secs)).into());
+            if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
+                *l.saving.borrow_mut() = Some(crate::library::SavingPh { secs, at: Instant::now(), folder, path: None });
+                saving_card(a, &l);
+            }
         }
         Ev::Saved(r) => {
             a.set_rec_saving("".into());
+            if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
+                {
+                    let mut s = l.saving.borrow_mut();
+                    let saved = match &r { Ok(p) if !p.is_empty() => Some(std::path::PathBuf::from(p)), _ => None };
+                    // saved: "Almost ready…" until the disk sync puts the clip in the list; failed: gone now
+                    match (saved, s.is_some()) {
+                        (Some(p), true) => { if let Some(ph) = s.as_mut() { ph.path = Some(p); } }
+                        _ => *s = None,
+                    }
+                }
+                saving_card(a, &l);
+            }
             match r {
                 Ok(p) if !p.is_empty() => {
-                    crate::toast(a, "Clip saved");
+                    if !crate::hdr_home::quiet_saved() {
+                        crate::toast(a, "Clip saved");
+                    }
                     let _ = p; // the library picks the new file up within 3 s (disk sync)
+                    #[cfg(target_os = "linux")]
+                    crate::linux::clip_saved(a); // one-time KDE Do Not Disturb tip
                 }
                 Ok(_) => {}
                 Err(e) => crate::toast(a, e),
@@ -295,6 +337,11 @@ fn handle(a: &AppWindow, e: Ev) {
         }
         Ev::Settings => settings_hook(a),
         Ev::Show => show_window(a),
+        Ev::Update => {
+            // the download progress box is in the window: show it
+            show_window(a);
+            crate::setup::install(a);
+        }
         Ev::Quit => quit(),
     }
 }
@@ -411,6 +458,47 @@ fn draw_status(a: &AppWindow) {
     } else {
         "Settings → App → Restart recorder".to_string()
     }.into());
+    // William (10 Nov): compact status card - "GPU" / "CPU" on the right, the cloud's usage in the bar
+    a.set_rail_tag(if !on { "" } else if mode == "gpu" { "GPU" } else { "CPU" }.into());
+    // William (10 Nov): each connected cloud on its own (they were added together): the card shows the first one
+    // (Echo Cloud when there is one), the hover panel all of them
+    match crate::cloud::usages_for_sidebar(a).filter(|v| !v.is_empty()) {
+        Some(list) => {
+            let short = |b: u64| {
+                let b = b as f64;
+                if b >= 1e12 {
+                    format!("{:.1} TB", b / 1e12)
+                } else if b >= 1e10 {
+                    format!("{:.0} GB", b / 1e9)
+                } else if b >= 1e9 {
+                    format!("{:.1} GB", b / 1e9)
+                } else {
+                    format!("{:.0} MB", b / 1e6)
+                }
+            };
+            let text = |used: u64, total: u64, err: &str| {
+                if !err.is_empty() && used == 0 && total == 0 {
+                    "space unknown right now".to_string()
+                } else if total > 0 {
+                    format!("{} of {}", short(used), short(total))
+                } else {
+                    format!("{} used", short(used))
+                }
+            };
+            let frac = |used: u64, total: u64| if total > 0 { used as f32 / total as f32 } else { 0.0 };
+            let (n0, u0, t0, e0) = &list[0];
+            a.set_cloud_on(true);
+            a.set_cloud_name(n0.as_str().into());
+            a.set_cloud_frac(frac(*u0, *t0));
+            a.set_cloud_text(text(*u0, *t0, e0).into());
+            let rows: Vec<crate::CloudUse> = list
+                .iter()
+                .map(|(n, u, t, e)| crate::CloudUse { name: n.as_str().into(), text: text(*u, *t, e).into(), frac: frac(*u, *t) })
+                .collect();
+            a.set_cloud_uses(slint::ModelRc::new(slint::VecModel::from(rows)));
+        }
+        None => a.set_cloud_on(false),
+    }
     {
         let mut out: Vec<(i32, String)> = vec![];
         if recorder::CLOUD_LOCKED.load(Ordering::Relaxed) {
@@ -421,16 +509,15 @@ fn draw_status(a: &AppWindow) {
                 a.set_rail_health("".into());
             }
         } else {
-            if let Some(age) = r.buffer_age().filter(|a| *a > 8.0) {
+            // r2-threads (L12): the buffer folder and free space are read on a worker every 4 s (Echo's get_status)
+            let (age, free) = crate::bgwork::health(r, std::path::Path::new(&cfg.clips_dir));
+            if let Some(age) = age.filter(|a| *a > 8.0) {
                 out.push((2, format!("Stalled - no new video for {} s (Settings → App → Restart)", age.round())));
             }
-            #[cfg(windows)]
-            let free = echo_core::winutil::disk_free(&cfg.clips_dir);
-            #[cfg(not(windows))]
-            let free = echo_core::linuxutil::disk_free(&cfg.clips_dir);
             if free > 0 && free < 5_000_000_000 {
                 out.push((if free < 1_500_000_000 { 2 } else { 1 }, format!("Low disk space - {} left", crate::library::fmt_size(free))));
             }
+            out.extend(crate::cloud_live::health_lines(a, r)); // gaps-cloud (row 26): GPU busy, cloud busy, cloud usage
             if out.is_empty() {
                 out.push((0, if free > 0 { format!("✓ Healthy · {} free", crate::library::fmt_size(free)) } else { "✓ Healthy".into() }));
             }
@@ -549,7 +636,7 @@ pub fn do_save(seconds: Option<u32>) -> Result<String, String> {
     recorder::play_sound(Sound::Saved, &cfg, false);
     let secs = seconds.unwrap_or_else(|| cfg.hotkeys.first().map(|h| h.seconds).unwrap_or(30));
     toast("Saving clip…", &format!("Last {}", fmt_len(secs)), true);
-    push(Ev::Saving(secs));
+    push(Ev::Saving(secs, rec.save_target(secs)));
     let r = rec.save(seconds);
     match &r {
         Ok(p) => {
@@ -684,6 +771,11 @@ fn autostart(on: bool) {
         echo_core::winutil::set_run_entry("Clipper", None);
     }
     #[cfg(target_os = "linux")]
+    if echo_core::linuxutil::in_flatpak() {
+        crate::linux::flatpak_autostart(on); // ~/.config/autostart is outside the sandbox: the Background portal
+        return;
+    }
+    #[cfg(target_os = "linux")]
     {
         let dir = std::env::var("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")).join("autostart");
@@ -702,18 +794,29 @@ fn autostart(on: bool) {
 fn settings_mtime() -> Option<SystemTime> {
     std::fs::metadata(Settings::path()).and_then(|m| m.modified()).ok()
 }
-fn settings_changed(rec: &Recorder) {
+fn settings_changed(rec: &Recorder) -> bool {
+    // gaps-settings: the Settings page applies at once too (apply_settings_now) - one at a time with the watch loop
+    static APPLYING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = APPLYING.lock().unwrap_or_else(|e| e.into_inner());
     let new = Settings::load();
     register_hotkeys(&new);
     echo_core::pad::set_combo(new.pad_buttons);
     autostart(new.start_with_windows);
     SYNC_SOON.store(true, Ordering::Relaxed);
-    if rec.apply(new) {
+    let restart = rec.apply(new);
+    if restart {
         recorder::log_line("settings changed - restarting the recorder");
         rec.stop();
         start_rec(rec);
     }
     push(Ev::Settings);
+    restart
+}
+/// gaps-settings (Echo's set_settings): the Settings page wrote settings.json - take it now, not on the watch loop's
+/// next look (new hotkeys work at once). true = the recorder restarts. Worker thread (a restart takes a moment);
+/// only the Echo that records.
+pub fn apply_settings_now() -> bool {
+    rec_for_recording().is_some_and(settings_changed)
 }
 
 // ---------- self-healing watch loop (Echo's main.rs, Windows + Linux in one) ----------
@@ -956,6 +1059,9 @@ pub fn accent() -> Option<(slint::Color, slint::Color)> {
     })
 }
 
+/// L14: one montage at a time (a double click made two)
+static COMBINING: AtomicBool = AtomicBool::new(false);
+
 /// Selection bar "Combine": Echo's montage (one clip from the picked ones, in time order) with a progress box.
 pub fn combine_ui(a: &AppWindow, paths: Vec<String>) {
     let Some(r) = rec() else { return };
@@ -963,6 +1069,10 @@ pub fn combine_ui(a: &AppWindow, paths: Vec<String>) {
         crate::toast(a, "Select at least 2 clips to combine");
         return;
     }
+    if COMBINING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    a.set_combine_busy(true); // L15: disabled look while it runs
     let id = crate::prog_box(&format!("Combining {} clips", paths.len()));
     crate::prog_set(id, None, Some("Making the montage…"), None);
     std::thread::spawn(move || {
@@ -972,7 +1082,9 @@ pub fn combine_ui(a: &AppWindow, paths: Vec<String>) {
         }
         let _ = slint::invoke_from_event_loop(move || {
             crate::prog_done(id, 0);
+            COMBINING.store(false, Ordering::Relaxed);
             if let Some(a) = crate::UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())) {
+                a.set_combine_busy(false);
                 match res {
                     Ok(p) => crate::toast(&a, format!("Montage saved - {}", std::path::Path::new(&p).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())),
                     Err(e) => crate::toast(&a, format!("Couldn't combine: {e}")),

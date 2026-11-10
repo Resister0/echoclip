@@ -1,7 +1,7 @@
 //! Editor wiring: opening / closing, the Ed global (models + inspector), mouse + keys, the 60 Hz playback tick,
 //! captions and export jobs. The edit itself lives in editor.rs / edrender.rs.
 use crate::editor::{fmt_t, Editor, Proj, Sel, LP};
-use crate::{confirm_box, library, log_to, prog_box, prog_done, prog_set, sheets, toast, AppWindow, Ed, EdAud, EdMenu, EdSeg, EdTick, EdTxt, Play, Player, LIB};
+use crate::{confirm_box, library, log_to, prog_box, prog_done, prog_set, sheets, toast, AppWindow, Ed, EdAud, EdCap, EdMenu, EdSeg, EdTick, EdTxt, Play, Player, LIB};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -21,21 +21,116 @@ thread_local! {
     static PL: RefCell<Option<Rc<RefCell<Player>>>> = const { RefCell::new(None) };
     static TICK_KEY: std::cell::Cell<Option<(u64, i64)>> = const { std::cell::Cell::new(None) };
     static PLAY: RefCell<Option<Rc<dyn Fn(i32)>>> = const { RefCell::new(None) };
+    /// the captions list (Echo's #caplist)
+    static CAPS: Rc<VecModel<EdCap>> = Rc::new(VecModel::default());
+    /// the next push only updates the captions list's rows in place (typing / wheel in a row: a rebuild would take
+    /// the keyboard away)
+    static CAPS_SOFT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// a caption's words when typing in its row started (texts index, start time, words): same word count = same
+    /// timings, even after a word was half retyped
+    static CAP_BASE: RefCell<Option<(usize, f64, Vec<crate::editor::Word>)>> = const { RefCell::new(None) };
+    /// r2-threads (L30): the editor is opening (ffprobe on a worker)
+    static OPENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// r2-threads (L30): the player's trim + cuts waiting for the editor to finish opening
+    static CARRY: RefCell<Option<(PathBuf, crate::pl_cuts::Carry)>> = const { RefCell::new(None) };
+    /// last wheel nudge on a caption time (one undo step per wheel burst)
+    static NUDGE_AT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// "Part highlighted - X cuts it ..." once per session (Echo's rngHinted)
+    static RNG_HINTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// an action to run once the editor is open (Home "Add captions"), with when it was asked
+    static PENDING: RefCell<Option<(String, Instant)>> = const { RefCell::new(None) };
+    /// the clips folder (projects + card pictures go to its .thumbs, like Echo's save_project)
+    static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
 }
 
 fn elog(line: String) {
     log_to(&mut Vec::new(), line);
 }
 
-/// prototype's own project folder (it never writes into Echo's .thumbs; Echo's projects are read from there too)
+/// where projects are saved: next to the clip cache, <clips>/.thumbs/<name>.project.json (Echo's save_project), so
+/// either app finds them and they live as long as the clips
 fn proj_dir() -> PathBuf {
+    ROOT.with(|r| r.borrow().join(".thumbs"))
+}
+
+/// before 10 Nov 2026 the prototype saved projects in %TEMP% - still read from there
+fn old_proj_dir() -> PathBuf {
     std::env::temp_dir().join("echo-proto-projects")
 }
 
 fn find_project(clip: &Path) -> Option<serde_json::Value> {
-    let own = crate::editor::project_path(&proj_dir(), clip);
     let echo = clip.ancestors().map(|d| d.join(".thumbs")).find(|d| d.is_dir()).map(|d| crate::editor::project_path(&d, clip));
-    [Some(own), echo].into_iter().flatten().find_map(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok())
+    [Some(crate::editor::project_path(&proj_dir(), clip)), echo, Some(crate::editor::project_path(&old_proj_dir(), clip))]
+        .into_iter().flatten().find_map(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Echo's fmtMs: m:ss.mmm
+fn fmt_ms(t: f64) -> String {
+    let t = t.max(0.0);
+    let m = (t / 60.0).floor();
+    format!("{}:{:06.3}", m as u64, t - m * 60.0)
+}
+
+/// Echo's parseTime: "1:02.345", "62.345" or "62" (a comma works as the dot)
+fn parse_time(v: &str) -> Option<f64> {
+    let v = v.trim().replace(',', ".");
+    let (m, s) = match v.split_once(':') {
+        Some((m, s)) => (m.parse::<u64>().ok()?, s),
+        None => (0, v.as_str()),
+    };
+    let s = s.parse::<f64>().ok().filter(|x| *x >= 0.0 && x.is_finite())?;
+    Some(m as f64 * 60.0 + s)
+}
+
+/// Echo's fmtMb: 20 -> "20 MB", 1000 -> "1 GB"
+fn fmt_mb(mb: f64) -> String {
+    if mb >= 1000.0 { format!("{} GB", mb / 1000.0) } else { format!("{mb} MB") }
+}
+
+/// run an editor action once the editor is open (Home "Add captions": the editor may first ask "Edit the
+/// project?", and opens a moment later). Echo waited 700 ms; here it waits for the editor itself.
+pub fn act_when_open(a: &AppWindow, cmd: &str) {
+    if ED.with(|e| e.borrow().is_some()) {
+        run_soon(a, cmd.to_string());
+    } else {
+        PENDING.with(|p| *p.borrow_mut() = Some((cmd.to_string(), Instant::now())));
+    }
+}
+
+fn run_soon(a: &AppWindow, cmd: String) {
+    let w = a.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(250), move || {
+        if let Some(a) = w.upgrade() {
+            if a.global::<Ed>().get_open() {
+                a.global::<Ed>().invoke_act(cmd.into());
+            }
+        }
+    });
+}
+
+/// h 0..360, s / v 0..1 -> "rrggbb"
+fn hsv_hex(h: f64, s: f64, v: f64) -> String {
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 { 0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x), 3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x) };
+    let m = v - c;
+    let k = |q: f64| ((q + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    format!("{:02x}{:02x}{:02x}", k(r), k(g), k(b))
+}
+
+/// "rrggbb" -> (h, s, v)
+fn hex_hsv(hex: &str) -> Option<(f64, f64, f64)> {
+    let h: String = hex.trim().trim_start_matches('#').chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if h.len() != 6 {
+        return None;
+    }
+    let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map(|x| x as f64 / 255.0).unwrap_or(0.0);
+    let (r, g, b) = (p(0), p(2), p(4));
+    let mx = r.max(g).max(b);
+    let d = mx - r.min(g).min(b);
+    let hue = if d < 1e-9 { 0.0 } else if mx == r { 60.0 * ((g - b) / d).rem_euclid(6.0) } else if mx == g { 60.0 * ((b - r) / d + 2.0) } else { 60.0 * ((r - g) / d + 4.0) };
+    Some((hue, if mx > 0.0 { d / mx } else { 0.0 }, mx))
 }
 
 fn with_ed<R>(f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
@@ -78,11 +173,11 @@ pub fn push(a: &AppWindow, e: &Editor) {
         };
         shape_eq(ms, e.p.segs.iter().enumerate().map(|(i, s)| {
             let look = match s.look().as_str() { "vivid" => "Vivid", "punch" => "Punchy", "warm" => "Warm", "cool" => "Cool", "cinema" => "Cinematic", "bw" => "B&W", "vintage" => "Vintage", _ => "" };
-            let lab: Vec<String> = [if s.speed != 1.0 && !s.freeze() { format!("{}x", s.speed) } else { String::new() }, if s.freeze() { "Freeze".into() } else { String::new() }, look.to_string(), if s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true) { "audio separated".into() } else { String::new() }]
+            let lab: Vec<String> = [if s.speed != 1.0 && !s.freeze() { format!("{}x", s.speed) } else { String::new() }, if s.freeze() { "Freeze".into() } else { String::new() }, if s.rev() && !s.freeze() { "Reverse".into() } else { String::new() }, look.to_string(), if s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true) { "audio separated".into() } else { String::new() }]
                 .into_iter().filter(|x| !x.is_empty()).collect();
             EdSeg { at: s.at as f32, len: s.len() as f32, start: s.start as f32, speed: if s.freeze() { 0.0 } else { s.speed as f32 }, sel: e.is_sel(Sel::Seg(i)), fi: s.fi as f32, fo: s.fo as f32,
                 label: if let Some(f) = s.src() { let n = Path::new(f).file_name().unwrap_or_default().to_string_lossy().to_string(); if lab.is_empty() { n } else { format!("{n} · {}", lab.join(" · ")) } } else { lab.join(" · ") }.into(),
-                drag: dragging == Some(i), other: s.src().is_some(), row: 0, down: false }
+                drag: dragging == Some(i), other: s.src().is_some(), row: 0, down: false, rev: s.rev() && !s.freeze(), tr: i > 0 && !s.tr().is_empty() }
         }).collect());
         let lay = e.layout();
         // layers: a dragged block below row 1 will drop back onto the main track (faded, Echo)
@@ -95,7 +190,7 @@ pub fn push(a: &AppWindow, e: &Editor) {
             let label = [Some(format!("Layer {}", o.row)), name, (o.speed != 1.0).then(|| format!("{}x", o.speed)), (!o.sound).then(|| "no sound".to_string())]
                 .into_iter().flatten().collect::<Vec<_>>().join(" · ");
             EdSeg { at: o.at as f32, len: o.len() as f32, start: o.start as f32, speed: o.speed as f32, sel: e.is_sel(Sel::Ov(i)), fi: 0.0, fo: 0.0, label: label.into(),
-                drag: lay_drag == Some(i), other: o.src().is_some(), row: (lay.ov_rows as i32 - o.row as i32).max(0), down: lay_drag == Some(i) && lay_down }
+                drag: lay_drag == Some(i), other: o.src().is_some(), row: (lay.ov_rows as i32 - o.row as i32).max(0), down: lay_drag == Some(i) && lay_down, rev: false, tr: false }
         }).collect()));
         g.set_ov_rows(lay.ov_rows as i32);
         g.set_video_y(lay.video_y as f32);
@@ -142,6 +237,33 @@ pub fn push(a: &AppWindow, e: &Editor) {
     g.set_cap_hl_color(e.cap_hl_color.clone().into());
     g.set_cap_lines(e.p.cap_lines as i32);
     g.set_cap_w(e.p.cap_w as f32);
+    // the captions panel (Echo's capPanel): list, size, box, this caption
+    {
+        let idx = e.cap_idx();
+        g.set_cap_count(idx.len() as i32);
+        let first = idx.first().map(|&i| &e.p.texts[i]);
+        g.set_cap_size(first.map(|t| t.size).unwrap_or(0.065) as f32);
+        g.set_cap_show_box(e.cap_show_box);
+        let rows: Vec<EdCap> = idx.iter().map(|&i| {
+            let t = &e.p.texts[i];
+            EdCap { i: i as i32, a: fmt_ms(t.start).into(), b: fmt_ms(t.end).into(), text: t.raw.clone().into(), sel: e.is_sel(Sel::Txt(i)), on: e.t >= t.start && e.t < t.end }
+        }).collect();
+        CAPS.with(|m| {
+            let soft = CAPS_SOFT.with(|c| c.replace(false));
+            let same = m.row_count() == rows.len() && rows.iter().enumerate().all(|(k, r)| m.row_data(k).is_some_and(|o| o.i == r.i && o.a == r.a && o.b == r.b && o.text == r.text));
+            if soft || same {
+                shape_eq(m, rows);
+            } else {
+                // texts / times changed from elsewhere (undo, style, a time typed): fresh rows, so every box shows it
+                m.set_vec(rows);
+            }
+        });
+        if let Some(t) = e.sel_txt().map(|i| &e.p.texts[i]).filter(|t| t.cap) {
+            g.set_cap_own(t.own);
+            g.set_cap_y(t.y as f32);
+            g.set_cap_anim(t.anim.clone().into());
+        }
+    }
     g.set_rng_on(e.rng.is_some());
     if let Some((ra, rb)) = e.rng {
         g.set_rng_a(ra as f32);
@@ -186,6 +308,13 @@ pub fn push(a: &AppWindow, e: &Editor) {
             g.set_sel_bri(s.num("bri", 0.0) as f32);
             g.set_sel_con(s.num("con", 1.0) as f32);
             g.set_sel_sat(s.num("sat", 1.0) as f32);
+            // Play backwards + the transition from the piece before (only the 2nd piece on; "only when they touch")
+            g.set_sel_rev(s.rev());
+            g.set_sel_tr(s.tr().into());
+            g.set_sel_td(s.td() as f32);
+            g.set_sel_has_prev(i > 0);
+            g.set_sel_near(i > 0 && { let p = &e.p.segs[i - 1]; (p.at + p.len() - s.at).abs() < 0.03 });
+            g.set_sel_amute(s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true));
             g.set_sel_info(if s.freeze() { format!("Shows the picture at {} of the clip", fmt_t(s.start)) } else { format!("Source {} – {} · plays {:.1}s", fmt_t(s.start), fmt_t(s.end), s.len()) }.into());
         }
         Some(Sel::Aud(i)) if i < e.p.audio.len() => {
@@ -228,9 +357,24 @@ pub fn push(a: &AppWindow, e: &Editor) {
             g.set_sel_color(t.color.clone().into());
             g.set_sel_anim(t.anim.clone().into());
             g.set_sel_size(t.size as f32);
-            g.set_sel_info(format!("{} – {} · drag it on the video{}", fmt_t(t.start), fmt_t(t.end), if t.cap { "" } else { " · corners or the mouse wheel = size" }).into());
+            g.set_sel_info(format!("Shows {} – {} · drag it on the video to move{}", fmt_t(t.start), fmt_t(t.end), if t.cap { "" } else { " (it snaps to the middle; hold Alt to place freely)" }).into());
+            // the colour picker follows the text (not while it is being dragged: then they are the same already)
+            if !t.cap && g.get_pick_hex().as_str() != t.color {
+                if let Some((h, s, v)) = hex_hsv(&t.color) {
+                    g.set_pick_h(h as f32);
+                    g.set_pick_s(s as f32);
+                    g.set_pick_v(v as f32);
+                }
+                g.set_pick_hex(t.color.clone().into());
+            }
+            if t.cap {
+                g.set_pick_open(false);
+            }
         }
-        _ => g.set_sel_kind("".into()),
+        _ => {
+            g.set_sel_kind("".into());
+            g.set_pick_open(false);
+        }
     }
     time(a, e);
     a.window().request_redraw();
@@ -244,6 +388,18 @@ fn time(a: &AppWindow, e: &Editor) {
     g.set_time_text(format!("{} / {}", fmt_t(e.t), fmt_t(e.total())).into());
     g.set_t_text(fmt_t(e.t).into());
     g.set_scroll(e.scroll as f32);
+    // the caption showing right now is lit in the list (Echo's markCapRows)
+    CAPS.with(|m| {
+        for k in 0..m.row_count() {
+            if let Some(mut r) = m.row_data(k) {
+                let on = e.p.texts.get(r.i as usize).is_some_and(|t| e.t >= t.start && e.t < t.end);
+                if r.on != on {
+                    r.on = on;
+                    m.set_row_data(k, r);
+                }
+            }
+        }
+    });
 }
 
 fn view_w(a: &AppWindow) -> f64 {
@@ -323,15 +479,20 @@ pub fn open(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn Fn
             if let Some(oi) = oidx.filter(|&oi| oi != idx) {
                 let (w, p2, play2) = (a.as_weak(), p.clone(), play.clone());
                 crate::ask(a, "Edit the project?", &format!("\"{}\" was made in the editor. Open its project to change the pieces, texts and captions again - or edit the exported video as it is.", c.shown),
-                    &[("Edit the video", "video", ""), ("Open project", "proj", "primary")], None, "proj", move |a, v, _| {
+                    &[("Edit the video", "video", ""), ("Open project", "proj", "delb")], None, "proj", move |a, v, _| {
                         let _ = &w;
                         match v.as_str() {
                             "proj" => open_with(a, &p2, oi, &play2, Some(pj)),
                             "video" => open_with(a, &p2, idx, &play2, None),
-                            _ => {}
+                            // cancelled: a waiting Home "Add captions" goes too
+                            _ => PENDING.with(|p| *p.borrow_mut() = None),
                         }
                     });
                 return;
+            }
+            if oidx.is_none() && pj.get("clip").is_some() {
+                // Echo: the project's clip was deleted / moved - edit the exported file as it is
+                toast(a, "The original clip of this project is gone - editing the exported video");
             }
         }
     }
@@ -342,6 +503,11 @@ pub fn open(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn Fn
 /// step: Ctrl+Z gives the whole clip back) and the play head lands where the player was. Skipped when the editor
 /// opened a project instead (or asked first): those pieces aren't the plain clip.
 pub fn carry_in(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, cv: crate::pl_cuts::Carry) {
+    // r2-threads (L30): the editor is still opening (ffprobe on a worker): this runs once it's open
+    if OPENING.with(|o| o.get()) {
+        CARRY.with(|x| *x.borrow_mut() = Some((clip.to_path_buf(), cv)));
+        return;
+    }
     let done = with_ed(|e| {
         let fresh = e.clip == clip && e.p.segs.len() == 1 && e.p.segs[0].at.abs() < 1e-6 && e.p.segs[0].start.abs() < 1e-6 && e.p.texts.is_empty();
         if !fresh {
@@ -394,17 +560,67 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
             Some(r) => play(r),
             None => {
                 toast(a, "That clip isn't in the current view - open it from the library");
+                PENDING.with(|p| *p.borrow_mut() = None);
                 return;
             }
         }
         p.borrow_mut().start_paused = true;
     }
+    // r2-threads (L30): ffprobe (the clip + a saved project's other files) runs on a worker, the editor opens when
+    // it's back (a second open meanwhile is ignored)
+    if OPENING.with(|o| o.replace(true)) {
+        return;
+    }
     let ff = sheets::ffmpeg();
-    let (w, h, _, tracks) = ff.as_ref().map(|f| crate::edrender::probe(f, &c.path)).unwrap_or((1920, 1080, true, 1));
+    let others: Vec<String> = pj
+        .as_ref()
+        .map(|pj| {
+            let mut t = Editor::new(c.path.clone(), String::new(), c.dur.unwrap_or(1.0).max(0.1), 16, 16);
+            t.load_project(pj);
+            t.other_files()
+        })
+        .unwrap_or_default();
+    let (aw, p2, clip) = (a.as_weak(), p.clone(), c.path.clone());
+    crate::lib_net::bg(
+        move || {
+            let main = ff.as_ref().map(|f| crate::edrender::probe(f, &clip)).unwrap_or((1920, 1080, true, 1));
+            let srcs: Vec<(String, (bool, f64))> = match ff.as_ref() {
+                Some(ff) => others
+                    .into_iter()
+                    .map(|f| {
+                        let (_, _, au, _) = crate::edrender::probe(ff, Path::new(&f));
+                        let d = crate::pl_media::duration(ff, Path::new(&f)).unwrap_or(0.0);
+                        (f, (au, d))
+                    })
+                    .collect(),
+                None => vec![],
+            };
+            (main, srcs)
+        },
+        move |(main, srcs)| {
+            OPENING.with(|o| o.set(false));
+            if let Some(a) = aw.upgrade() {
+                open_rest(&a, &p2, idx, pj, from_player, main, srcs);
+            }
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serde_json::Value>, from_player: bool, main: (u32, u32, bool, u32), srcs: Vec<(String, (bool, f64))>) {
+    let Some(lib) = LIB.with(|l| l.borrow().clone()) else { return };
+    if idx >= lib.len() {
+        return;
+    }
+    let c = lib.clip(idx);
+    let ff = sheets::ffmpeg();
+    let (w, h, _, tracks) = main;
     let dur = c.dur.unwrap_or(p.borrow().duration).max(0.1);
     let mut e = Editor::new(c.path.clone(), c.shown.clone(), dur, w.max(16), h.max(16));
     e.from_player = from_player;
     e.tracks = tracks;
+    // "Even out loudness" is remembered between editor sessions (Echo: localStorage "normalize")
+    e.normalize = crate::lib_fx::ui_get("ed_normalize").as_bool().unwrap_or(false);
     // how loud each track is (for U: only rows that have sound) - measured in the background like Echo's track_levels
     if let (Some(ff), true) = (ff.clone(), tracks >= 2) {
         let (clip, w) = (c.path.clone(), a.as_weak());
@@ -422,13 +638,7 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
     }
     if let Some(pj) = pj.as_ref() {
         e.load_project(pj);
-        if let Some(ff) = ff.as_ref() {
-            for f in e.other_files() {
-                let (_, _, au, _) = crate::edrender::probe(ff, Path::new(&f));
-                let d = crate::pl_media::duration(ff, Path::new(&f)).unwrap_or(0.0);
-                e.srcs.insert(f, (au, d));
-            }
-        }
+        e.srcs.extend(srcs); // r2-threads (L30): probed on the worker
         toast(a, "Project opened - export again when you're done");
     }
     e.tl_w = view_w(a);
@@ -457,6 +667,15 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
     g.set_busy(false);
     g.set_listening(false);
     g.set_export_menu(false);
+    g.set_pick_open(false);
+    g.set_export_pct(0.0);
+    // Echo's export menu: "One export that fits under 10 MB, copied for pasting"
+    g.set_dc_text(format!("One export that fits under {}, copied for pasting", fmt_mb(crate::edrender::discord_mb())).into());
+    CAPS.with(|m| {
+        m.set_vec(vec![]);
+        g.set_caps(ModelRc::from(m.clone()));
+    });
+    CAP_BASE.with(|c| *c.borrow_mut() = None);
     push(a, &e);
     ED.with(|x| *x.borrow_mut() = Some(e));
     g.set_open(true);
@@ -468,6 +687,16 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
         }
     });
     elog(format!("editor: opened {}{}", c.name, if from_player { " (from the player)" } else { "" }));
+    // r2-threads (L30): the player's trim + cuts that waited for the editor to open (carry_in)
+    if let Some((clip, cv)) = CARRY.with(|x| x.borrow_mut().take()) {
+        carry_in(a, p, &clip, cv);
+    }
+    // Home "Add captions" asked before the editor was open (it may have asked "Edit the project?" first)
+    if let Some((cmd, at)) = PENDING.with(|p| p.borrow_mut().take()) {
+        if at.elapsed() < Duration::from_secs(120) {
+            run_soon(a, cmd);
+        }
+    }
 }
 
 pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
@@ -489,9 +718,6 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
         for k in ["brightness", "contrast", "saturation", "gamma", "video-zoom", "video-pan-x", "video-pan-y"] {
             m.set(k, "0");
         }
-        if had_vf {
-            m.command(&["vf", "clr", ""]);
-        }
         if had_af {
             let pos = m.get_f64("time-pos").unwrap_or(0.0);
             m.set("lavfi-complex", "");
@@ -499,6 +725,16 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
         }
         if hw_copied {
             m.set("hwdec", &p.borrow().hwdec.clone());
+        }
+        // AFTER the decoder is back: the player's own filter for its kind of frames (Linux, see mpv::base_vf) -
+        // the GPU filter on in-memory frames would fail
+        if had_vf || hw_copied {
+            let base = crate::mpv::with_base_vf("", crate::mpv::hwdec_copies(&p.borrow().hwdec));
+            if base.is_empty() {
+                m.command(&["vf", "clr", ""]);
+            } else {
+                m.command(&["vf", "set", &base]);
+            }
         }
         // a piece from another file was showing: the player gets its clip back
         if let Some(c) = other_loaded {
@@ -527,6 +763,7 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
 pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>, clips_root: PathBuf) {
     PL.with(|x| *x.borrow_mut() = Some(player.clone()));
     PLAY.with(|x| *x.borrow_mut() = Some(play.clone()));
+    ROOT.with(|r| *r.borrow_mut() = clips_root.clone());
     let g = app.global::<Ed>();
     {
         let (w, p) = (app.as_weak(), player.clone());
@@ -597,6 +834,7 @@ pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>
                                     }
                                     items.push(sep());
                                     items.push(item("Freeze frame here", "F", format!("seekthen:{t:.3}:freeze"), sg.freeze()));
+                                    items.push(item(if sg.rev() { "Play forwards" } else { "Play backwards" }, "", "rev".into(), sg.freeze()));
                                 }
                                 if k == 'o' {
                                     items.push(sep());
@@ -635,7 +873,7 @@ pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>
                     }
                     k => {
                         let playing = e.playing;
-                        if (k == "down" || k == "cdown") && playing {
+                        if (k == "down" || k == "cdown" || k == "sdown") && playing {
                             if let Some(m) = p.borrow().mpv.as_ref() {
                                 e.pause(m);
                             }
@@ -673,13 +911,10 @@ pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>
                     }
                     return false;
                 }
-                if kind == "down" && e.playing {
+                if kind.ends_with("down") && e.playing {
                     if let Some(m) = p.borrow().mpv.as_ref() {
                         e.pause(m);
                     }
-                }
-                if kind == "down" && !e.msel.is_empty() {
-                    e.msel.clear();
                 }
                 e.stage_mouse(kind.as_str(), x as f64 * k, y as f64 * k)
             });
@@ -731,13 +966,22 @@ pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>
     crate::idle::keep(timer); // pauses while Echo is hidden in the tray
 }
 
-fn add_sticker(a: &AppWindow, p: PathBuf) {
-    let (iw, ih) = sheets::ffmpeg().map(|ff| crate::pl_sticker::picture_size(&ff, &p)).unwrap_or((1, 1));
-    with_ed(|e| {
-        e.add_sticker(&p, iw, ih);
-        push(a, e);
-    });
-    toast(a, "Sticker added - drag it on the video, corners to resize, its block on the timeline sets when");
+/// pub(crate): gaps-library row 1 - pictures / GIFs dropped on the editor become stickers (drop.rs)
+pub(crate) fn add_sticker(a: &AppWindow, p: PathBuf) {
+    // r2-threads (L30): the picture's size (ffprobe) is read on a worker
+    let ff = sheets::ffmpeg();
+    let (w, p2) = (a.as_weak(), p.clone());
+    crate::lib_net::bg(
+        move || ff.map(|ff| crate::pl_sticker::picture_size(&ff, &p2)).unwrap_or((1, 1)),
+        move |(iw, ih)| {
+            let Some(a) = w.upgrade() else { return };
+            with_ed(|e| {
+                e.add_sticker(&p, iw, ih);
+                push(&a, e);
+            });
+            toast(&a, "Sticker added - drag it on the video, corners to resize, its block on the timeline sets when");
+        },
+    );
 }
 
 /// Media: pick a video or a sound (file dialog on a worker thread), then it goes onto the timeline
@@ -781,6 +1025,37 @@ fn media_pick(a: &AppWindow) {
     });
 }
 
+/// gaps-library row 1: a video or sound dropped on the editor goes onto the timeline - media_pick without the dialog
+pub(crate) fn add_media_file(a: &AppWindow, path: PathBuf) {
+    let Some(ff) = sheets::ffmpeg() else {
+        toast(a, "Adding files needs ffmpeg (Echo's copy wasn't found)");
+        return;
+    };
+    let w = a.as_weak();
+    std::thread::spawn(move || {
+        let (vw, _, au, _) = crate::edrender::probe(&ff, &path);
+        let dur = crate::pl_media::duration(&ff, &path);
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(a) = w.upgrade() else { return };
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let Some(dur) = dur else {
+                toast(&a, format!("{name}: couldn't read it"));
+                return;
+            };
+            let r = with_ed(|e| {
+                let r = e.add_media(&path, au, vw > 0, dur);
+                push(&a, e);
+                r
+            });
+            match r {
+                Some(Ok(m)) | Some(Err(m)) => toast(&a, m),
+                None => {}
+            }
+            elog(format!("editor: media dropped {}", path.display()));
+        });
+    });
+}
+
 /// put the keyboard into the inspector's text box (it only exists once the text is selected: next frame)
 fn focus_text(a: &AppWindow) {
     let w = a.as_weak();
@@ -818,10 +1093,66 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
     }
     if cmd == "blur" {
         LIVE.with(|l| *l.borrow_mut() = None);
+        CAP_BASE.with(|c| *c.borrow_mut() = None);
         a.invoke_focus_editor();
         return;
     }
     a.global::<Ed>().set_menu_open(false);
+    CAP_BASE.with(|c| *c.borrow_mut() = None);
+    // the captions list: a row (select + playhead there, again = deselect), its play button, its ×
+    if let Some((what, i)) = cmd.split_once(':').filter(|(w, _)| matches!(*w, "cap-row" | "cap-sel" | "cap-play" | "cap-del")).and_then(|(w, i)| i.parse::<usize>().ok().map(|i| (w, i))) {
+        with_ed(|e| {
+            if i >= e.p.texts.len() {
+                return;
+            }
+            if let Some(m) = p.borrow().mpv.as_ref() {
+                e.pause(m);
+            }
+            match what {
+                // cap-sel: its text box got the keyboard - selected (never deselected)
+                "cap-row" | "cap-sel" => {
+                    e.msel.clear();
+                    if e.sel == Some(Sel::Txt(i)) && what == "cap-row" {
+                        e.sel = None;
+                    } else {
+                        e.sel = Some(Sel::Txt(i));
+                        e.t = e.p.texts[i].start.min(e.total());
+                    }
+                }
+                "cap-play" => {
+                    e.t = e.p.texts[i].start.min(e.total());
+                }
+                _ => {
+                    e.push_hist();
+                    e.p.texts.remove(i);
+                    e.sel = None;
+                    e.msel.clear();
+                }
+            }
+            seek(p, e, true);
+            if what == "cap-play" {
+                if let Some(m) = p.borrow().mpv.as_ref() {
+                    e.play(m);
+                }
+            }
+            push(a, e);
+        });
+        return;
+    }
+    // the text colour picker ("Any colour"): opens on the selected text's colour
+    if cmd == "pick" {
+        let g = a.global::<Ed>();
+        if !g.get_pick_open() {
+            if let Some((h, s, v)) = hex_hsv(g.get_sel_color().as_str()) {
+                g.set_pick_h(h as f32);
+                g.set_pick_s(s as f32);
+                g.set_pick_v(v as f32);
+            }
+            g.set_pick_hex(g.get_sel_color());
+        }
+        g.set_pick_open(!g.get_pick_open());
+        return;
+    }
     // the timeline menu's actions
     if let Some(rest) = cmd.strip_prefix("seekthen:") {
         if let Some((t, then)) = rest.split_once(':') {
@@ -1043,15 +1374,49 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 });
                 reseek = false;
             }
+            // Echo: I = from the playhead to the end (or takes the highlight away); O = up to the playhead, keeping
+            // the start (so I, move, O gives a part) - O again at the same spot takes it away
             "rng-in" | "rng-out" => {
-                if e.rng.is_some() {
+                let (t, tt) = (e.t, e.total());
+                if cmd == "rng-in" && e.rng.is_some() {
+                    e.rng = None;
+                } else if cmd == "rng-out" && e.rng.is_some_and(|(_, b)| (b - t).abs() < 0.05) {
                     e.rng = None;
                 } else {
-                    let (t, tt) = (e.t, e.total());
-                    if cmd == "rng-in" { e.set_rng(t, tt) } else { e.set_rng(0.0, t) }
-                    if e.rng.is_some() {
-                        msg = Some("Part highlighted - X cuts it · I, Esc or ✕ clears it".into());
+                    match (cmd, e.rng) {
+                        ("rng-in", _) => e.set_rng(t, tt),
+                        (_, Some((ra, _))) => e.set_rng(ra.min(t - 0.1), t),
+                        _ => e.set_rng(0.0, t),
                     }
+                    if e.rng.is_some() && !RNG_HINTED.with(|h| h.replace(true)) {
+                        msg = Some("Part highlighted - X cuts it · I, Esc, ✕ or a click outside it clears it".into());
+                    }
+                }
+                reseek = false;
+            }
+            "rev" => {
+                // Play backwards / forwards (the timeline menu)
+                if let Some(i) = e.sel_seg().filter(|&i| !e.p.segs[i].freeze()) {
+                    e.push_hist();
+                    let s = &mut e.p.segs[i];
+                    if s.rev() { s.extra.remove("rev"); } else { s.extra.insert("rev".into(), serde_json::json!(true)); }
+                }
+            }
+            "cap-add" => {
+                e.add_caption();
+                focus_text(a);
+                reseek = false;
+            }
+            "cap-above" | "cap-below" => {
+                if let Some(i) = e.sel_txt().filter(|&i| e.p.texts[i].cap) {
+                    e.stack_caption(i, if cmd == "cap-above" { -1.0 } else { 1.0 });
+                    focus_text(a);
+                }
+                reseek = false;
+            }
+            "cap-back" => {
+                if let Some(i) = e.sel_txt().filter(|&i| e.p.texts[i].cap) {
+                    e.cap_back(i);
                 }
                 reseek = false;
             }
@@ -1061,9 +1426,10 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
             }
             "rng-cut" => {
                 if e.rng.is_none() {
-                    msg = Some("Highlight a part first: drag on empty timeline space, or I / O".into());
+                    msg = Some("Highlight a part first (I / O, or Shift+drag on the ruler)".into());
                 } else {
                     e.cut_range();
+                    msg = Some("Cut - Ctrl+Z to undo".into());
                 }
             }
             "cap-clear" => {
@@ -1110,7 +1476,152 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
                 }
             }
         };
+        if key != "cap-text" {
+            CAP_BASE.with(|c| *c.borrow_mut() = None);
+        }
+        // "<texts index>|<rest>" from a captions-list row
+        let row = || val.split_once('|').and_then(|(i, r)| i.parse::<usize>().ok().map(|i| (i, r)));
+        let cap_ok = |e: &Editor, i: usize| e.p.texts.get(i).is_some_and(|t| t.cap);
         match key {
+            // ----- the captions panel (Echo's capPanel) -----
+            "cap-size-live" | "cap-size" => {
+                live(e);
+                for t in e.p.texts.iter_mut().filter(|t| t.cap) {
+                    t.size = num.clamp(0.03, 0.15);
+                }
+                e.rechunk_caps();
+                if key == "cap-size" {
+                    commit(e);
+                }
+            }
+            "cap-w-live" | "cap-w" => {
+                live(e);
+                e.p.cap_w = num.clamp(0.15, 1.0);
+                e.rechunk_caps();
+                if key == "cap-w" {
+                    commit(e);
+                }
+            }
+            "cap-box" => e.cap_show_box = val == "1",
+            "cap-y-live" | "cap-y" => {
+                if let Some(i) = e.sel_txt().filter(|&i| e.p.texts[i].cap) {
+                    live(e);
+                    let t = &mut e.p.texts[i];
+                    t.y = num.clamp(0.03, 0.97);
+                    t.own = true;
+                    if key == "cap-y" {
+                        commit(e);
+                    }
+                }
+            }
+            "cap-anim" => {
+                e.push_hist();
+                for t in e.p.texts.iter_mut().filter(|t| t.cap) {
+                    t.anim = val.into();
+                }
+            }
+            "cap-text" => {
+                if let Some((i, txt)) = row().filter(|(i, _)| cap_ok(e, *i)) {
+                    let start = e.p.texts[i].start;
+                    // the first letter typed in this row = one undo step; the words as they were then
+                    let base = CAP_BASE.with(|c| {
+                        let mut c = c.borrow_mut();
+                        match c.as_ref() {
+                            Some((k, s, w)) if *k == i && *s == start => Some(w.clone()),
+                            _ => {
+                                *c = Some((i, start, e.p.texts[i].words.clone()));
+                                None
+                            }
+                        }
+                    });
+                    if base.is_none() {
+                        e.push_hist();
+                    }
+                    let base = base.or_else(|| CAP_BASE.with(|c| c.borrow().as_ref().map(|x| x.2.clone())));
+                    e.set_cap_text(i, txt, base);
+                    CAPS_SOFT.with(|c| c.set(true));
+                }
+            }
+            "cap-start" | "cap-end" => {
+                if let Some((i, v)) = row().filter(|(i, _)| cap_ok(e, *i)) {
+                    let before = e.p.clone();
+                    let ok = parse_time(v).is_some_and(|v| e.set_cap_time(i, key == "cap-end", v));
+                    if ok && before != e.p {
+                        e.hist.push(before);
+                        e.fut.clear();
+                    }
+                    // a fresh list: the box shows the time as it is now (m:ss.mmm), or the old one when refused
+                    CAPS.with(|m| m.set_vec(vec![]));
+                }
+            }
+            "cap-nudge" => {
+                // the mouse wheel on a time: 10 ms a notch (Shift: 100 ms), one undo step per wheel burst
+                let mut it = val.split('|');
+                if let (Some(i), Some(f), Some(d)) = (it.next().and_then(|x| x.parse::<usize>().ok()), it.next(), it.next().and_then(|x| x.parse::<f64>().ok())) {
+                    if cap_ok(e, i) {
+                        if !NUDGE_AT.with(|c| c.replace(Some(Instant::now()))).is_some_and(|t| t.elapsed() < Duration::from_millis(700)) {
+                            e.push_hist();
+                        }
+                        let end = f == "end";
+                        let cur = if end { e.p.texts[i].end } else { e.p.texts[i].start };
+                        if e.set_cap_time(i, end, cur + d) {
+                            let s = if end { e.p.texts.iter().find(|t| t.cap && t.end == cur + d).map(|t| t.start) } else { Some(cur + d) };
+                            if let Some(s) = s {
+                                e.t = s.clamp(0.0, e.total());
+                                seek(p, e, true);
+                            }
+                        }
+                        CAPS_SOFT.with(|c| c.set(true));
+                    }
+                }
+            }
+            // ----- a piece: Play backwards, transition from the piece before -----
+            "rev" => {
+                if let Some(i) = e.sel_seg().filter(|&i| !e.p.segs[i].freeze()) {
+                    e.push_hist();
+                    let s = &mut e.p.segs[i];
+                    if val == "1" { s.extra.insert("rev".into(), serde_json::json!(true)); } else { s.extra.remove("rev"); }
+                    seek(p, e, true);
+                }
+            }
+            "tr" => {
+                if let Some(i) = e.sel_seg().filter(|&i| i > 0) {
+                    e.push_hist();
+                    let s = &mut e.p.segs[i];
+                    if val.is_empty() {
+                        s.extra.remove("tr");
+                    } else {
+                        s.extra.insert("tr".into(), serde_json::json!(val));
+                        s.extra.entry("td").or_insert(serde_json::json!(0.5));
+                        // Echo: shows it - the playhead just before the piece
+                        e.t = (e.p.segs[i].at - 0.3).max(0.0);
+                        seek(p, e, true);
+                    }
+                }
+            }
+            "td-live" | "td" => {
+                if let Some(i) = e.sel_seg() {
+                    live(e);
+                    e.p.segs[i].extra.insert("td".into(), serde_json::json!((num * 10.0).round() / 10.0));
+                    if key == "td" {
+                        commit(e);
+                    }
+                }
+            }
+            // ----- the text colour picker ("Any colour"): "h,s,v" while dragging, "pick-end" on release -----
+            "pick" | "pick-end" => {
+                if let Some(i) = e.sel_txt().filter(|&i| !e.p.texts[i].cap) {
+                    let mut it = val.split(',').map(|x| x.parse::<f64>().unwrap_or(0.0));
+                    let (h, s, v) = (it.next().unwrap_or(0.0), it.next().unwrap_or(0.0), it.next().unwrap_or(1.0));
+                    live(e);
+                    let hex = hsv_hex(h, s.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+                    a.global::<Ed>().set_pick_hex(hex.clone().into());
+                    e.p.texts[i].color = hex;
+                    if key == "pick-end" {
+                        commit(e);
+                    }
+                }
+            }
             "speed" => {
                 if let Some(i) = e.sel_seg() {
                     e.set_speed(i, num);
@@ -1187,26 +1698,33 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
             "text" => {
                 if let Some(i) = e.sel_txt() {
                     live(e);
-                    let t = &mut e.p.texts[i];
-                    if t.cap && !t.words.is_empty() {
-                        // edited caption: its words spread evenly over its time
-                        let parts: Vec<&str> = val.split_whitespace().collect();
-                        let n = parts.len().max(1) as f64;
-                        let (s0, l) = (t.start, t.end - t.start);
-                        let upper = e.cap_style == "loud";
-                        t.words = parts.iter().enumerate().map(|(k, w)| crate::editor::Word { text: if upper { w.to_uppercase() } else { w.to_string() }, raw: w.to_string(), start: s0 + l * k as f64 / n, end: s0 + l * (k + 1) as f64 / n, nl: false }).collect();
-                        t.raw = val.to_string();
-                        t.text = if upper { val.to_uppercase() } else { val.to_string() };
+                    if e.p.texts[i].cap {
+                        // a caption: same word count = same word timings (captions list)
+                        e.set_cap_text(i, val, None);
                     } else {
+                        let t = &mut e.p.texts[i];
                         t.text = val.to_string();
                         t.raw = val.to_string();
                     }
                 }
             }
             "color" | "anim" => {
-                if let Some(i) = e.sel_txt() {
+                // a colour: a swatch, or "#rrggbb" typed in the colour picker
+                let hex: String = val.trim().trim_start_matches('#').chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_lowercase();
+                if let Some(i) = e.sel_txt().filter(|_| key == "anim" || hex.len() == 6) {
                     e.push_hist();
-                    if key == "color" { e.p.texts[i].color = val.into() } else { e.p.texts[i].anim = val.into() }
+                    if key == "color" {
+                        e.p.texts[i].color = hex.clone();
+                        a.global::<Ed>().set_pick_hex(hex.clone().into());
+                        if let Some((h, s, v)) = hex_hsv(&hex) {
+                            let g = a.global::<Ed>();
+                            g.set_pick_h(h as f32);
+                            g.set_pick_s(s as f32);
+                            g.set_pick_v(v as f32);
+                        }
+                    } else {
+                        e.p.texts[i].anim = val.into()
+                    }
                 }
             }
             "cap-style" => {
@@ -1239,7 +1757,10 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
                 e.rechunk_caps();
                 msg = Some(format!("Captions now use up to {} line{}", e.p.cap_lines, if e.p.cap_lines > 1 { "s" } else { "" }));
             }
-            "normalize" => e.normalize = val == "1",
+            "normalize" => {
+                e.normalize = val == "1";
+                crate::lib_fx::ui_set("ed_normalize", serde_json::json!(e.normalize)); // remembered (Echo)
+            }
             "bri-live" | "bri" | "con-live" | "con" | "sat-live" | "sat" => {
                 if let Some(i) = e.sel_seg() {
                     live(e);
@@ -1360,19 +1881,18 @@ fn key(a: &AppWindow, p: &Rc<RefCell<Player>>, t: &str, ctrl: bool, shift: bool,
             a.global::<Ed>().set_export_menu(false);
             return true;
         }
-        if with_ed(|e| e.rng.take().is_some()).unwrap_or(false) {
-            with_ed(|e| push(a, e));
+        if a.global::<Ed>().get_pick_open() {
+            a.global::<Ed>().set_pick_open(false);
             return true;
         }
-        if with_ed(|e| e.sel.is_some() || !e.msel.is_empty()).unwrap_or(false) {
-            with_ed(|e| {
-                e.sel = None;
-                e.msel.clear();
-                push(a, e);
-            });
-            return true;
-        }
-        "back"
+        // Echo: Esc only deselects / clears the highlight - the editor stays open (Back leaves it)
+        with_ed(|e| {
+            e.rng = None;
+            e.sel = None;
+            e.msel.clear();
+            push(a, e);
+        });
+        return true;
     } else if is(Key::LeftArrow) || is(Key::RightArrow) || is(Key::Home) || is(Key::End) {
         with_ed(|e| {
             let step = if shift { 0.1 } else { 2.0 }; // Echo: arrows 2 s, Shift 0.1 s
@@ -1447,6 +1967,10 @@ fn captions(a: &AppWindow, p: &Rc<RefCell<Player>>, confirmed: bool) {
 
 // ---------- export ----------
 fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
+    // L14: one export at a time (Export range had no busy check - a 2nd click started a 2nd ffmpeg)
+    if a.global::<Ed>().get_busy() {
+        return;
+    }
     let Some(ff) = sheets::ffmpeg() else {
         toast(a, "Export needs ffmpeg (Echo's copy wasn't found)");
         return;
@@ -1477,21 +2001,37 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
     a.global::<Ed>().set_busy(true);
     let pb = prog_box(if range { "Exporting the highlighted part…" } else if preset == "tt" { "Exporting for TikTok…" } else if preset == "yt" { "Exporting for YouTube…" } else { "Exporting video…" });
     prog_set(pb, None, None, Some(0.0));
+    a.global::<Ed>().set_export_pct(0.0);
     let (w, root2) = (a.as_weak(), root.to_path_buf());
+    let tdir = proj_dir();
+    let dc = preset == "dc";
     std::thread::spawn(move || {
         let last = std::sync::Mutex::new(Instant::now() - Duration::from_secs(1));
+        let t0 = Instant::now();
         let r = crate::edrender::run_export(&plan, &|f| {
             let mut l = last.lock().unwrap();
             if l.elapsed() > Duration::from_millis(200) || f >= 1.0 {
                 *l = Instant::now();
-                let _ = slint::invoke_from_event_loop(move || prog_set(pb, None, Some(&format!("{:.0}%", f * 100.0)), Some((f * 100.0) as f32)));
+                // Echo's exportProgress: "NN% · about N s left" (once it can tell), and the Export button fills
+                let secs = t0.elapsed().as_secs_f64();
+                let left = (f > 0.03).then(|| (secs * (1.0 - f) / f).round().max(0.0) as u64);
+                let txt = match left {
+                    Some(s) if s > 2 => format!("{:.0}% · about {} left", f * 100.0, if s < 60 { format!("{s} s") } else { format!("{} min", (s as f64 / 60.0).round()) }),
+                    _ => format!("{:.0}%", f * 100.0),
+                };
+                let w2 = w.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    prog_set(pb, None, Some(&txt), Some((f * 100.0) as f32));
+                    if let Some(a) = w2.upgrade() {
+                        a.global::<Ed>().set_export_pct((f * 100.0) as f32);
+                    }
+                });
             }
         }, &|l| {
             let _ = slint::invoke_from_event_loop(move || elog(l));
         });
-        // its card picture (prototype's temp folder, like trimmed copies) + length
+        // its card picture in the clip cache (<clips>/.thumbs/<name>.jpg, Echo's thumb) + length
         let extra = r.as_ref().ok().map(|out| {
-            let tdir = std::env::temp_dir().join("echo-proto-thumbs");
             let _ = std::fs::create_dir_all(&tdir);
             let thumb = tdir.join(format!("{}.jpg", out.file_stem().unwrap_or_default().to_string_lossy()));
             let _ = crate::edrender::hidden_cmd(&plan.ff).args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i"]).arg(out).args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"]).arg(&thumb).stdin(std::process::Stdio::null()).output();
@@ -1502,10 +2042,15 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
             let Some(a) = w.upgrade() else { return };
             a.global::<Ed>().set_busy(false);
             with_ed(|e| e.busy = false);
+            a.global::<Ed>().set_export_pct(0.0);
             match r {
                 Ok(out) => {
+                    // the project next to the clip cache (Echo's save_project): "Edit" on the export finds it, in
+                    // either app
                     let _ = std::fs::create_dir_all(proj_dir());
-                    let _ = std::fs::write(crate::editor::project_path(&proj_dir(), &out), &proj);
+                    if let Err(x) = std::fs::write(crate::editor::project_path(&proj_dir(), &out), &proj) {
+                        elog(format!("editor: couldn't save the project: {x}"));
+                    }
                     elog(format!("editor: exported {}", out.display()));
                     let mut new_idx = None;
                     if let (Some(lib), Some((thumb, len))) = (LIB.with(|l| l.borrow().clone()), extra) {
@@ -1535,6 +2080,15 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
                     let row = new_idx.and_then(|i| LIB.with(|l| l.borrow().as_ref().and_then(|l| l.view_row_of(i))));
                     if let (Some(r), Some(play)) = (row, PLAY.with(|x| x.borrow().clone())) {
                         play(r as i32);
+                    }
+                    if dc {
+                        // Discord: it already fits - the finished file goes on the clipboard (Echo's copySized)
+                        let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                        match crate::copy::clipboard_file(&out) {
+                            Ok(()) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", library::fmt_size(size))),
+                            Err(x) => toast(&a, format!("Exported as \"{}\", but {x}", out.file_stem().unwrap_or_default().to_string_lossy())),
+                        }
+                        return;
                     }
                     toast(&a, format!("Exported as \"{}\" - press Edit on it later to change the project again", out.file_stem().unwrap_or_default().to_string_lossy()));
                 }

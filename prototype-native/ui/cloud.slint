@@ -1,6 +1,6 @@
 // Chat B (item 11): Echo's cloud menu (Copy share link + "Expires" chips, Upload / Free up space / Download /
 // Delete from the cloud / Stop sharing) and the Echo Cloud space manager (#ecm). Rust: src/cloud.rs.
-import { T, Btn } from "theme.slint";
+import { T, Btn, Ic, Icon, IconBtn, MenuRow } from "theme.slint";
 
 export struct CmItem {
     label: string,
@@ -15,6 +15,11 @@ export global Cm {
     in property <bool> chips;      // the "Expires" row under Copy share link
     in property <int> def-days;    // the default lifetime (Settings > Cloud), highlighted
     callback pick(string);
+    // r2-layout (L18): where the menu opened without a button click goes - under the hovered card's cloud button
+    // (Echo's cloudMenu(anchor): left edge, 4 px below). ax < 0 = centred.
+    in-out property <length> ax: -1px;
+    in-out property <length> ay;
+    in-out property <length> atop;   // the button's top (the menu goes above it when there's no room below)
 }
 
 export struct EcmRow {
@@ -25,10 +30,23 @@ export struct EcmRow {
     size: float,
     local: bool,
     on: bool,
+    thumb: image,   // Echo's .tt picture (local .thumbs/<name>.jpg, or fetched for cloud-only clips) - set later
+    has-thumb: bool,
+    st: string,     // gaps-cloud (row 27): Echo's ecmState - "pc" / "only" / "cp" (share copy) - the row's pill
+}
+
+// cleanup (William, 10 Nov 2026): a "Free up space" chip in the space manager - a category and what it frees
+export struct EcmCat {
+    key: string,    // "exp" / "old" / "pair" / "pc" (also a Show value)
+    label: string,  // "Share link expired"
+    info: string,   // "3 · 420 MB" / "none"
+    n: int,
 }
 
 export global Ecm {
     in-out property <bool> open;
+    in property <[EcmCat]> cats;
+    callback cat(string);           // a chip: show that category, tick only its safe files
     in property <string> sub;
     in property <float> used;      // 0..1
     in property <[EcmRow]> rows;
@@ -37,11 +55,38 @@ export global Ecm {
     in-out property <string> show: "all";
     in-out property <string> sort: "new";
     in-out property <bool> dl-first: true;
+    // gaps-cloud (row 27): a download / delete is running (buttons off), the empty-list text, every row ticked,
+    // the "Download cloud-only clips…" box shown
+    in property <bool> busy;
+    in property <string> empty;
+    in-out property <bool> all-on;
+    in property <bool> show-dl: true;
     callback toggle(int);
     callback all(bool);
     callback refill();
     callback download();
     callback delete();
+    // PORT_LEFTOVERS L17: closed (keys go back to the page behind); Rust bumps refocus after a dialog above it
+    callback closed();
+    in-out property <int> refocus;
+}
+
+// PORT_LEFTOVERS L42: Echo's #megarow in Settings > Cloud - the login fields of the cloud being added, inline
+// (it was one dialog per field). Rust: cloud.rs open_form / Login callbacks; settings.slint draws the row.
+export struct LoginField {
+    key: string,    // user / pass / code / url / host / port / path / bucket / pick
+    ph: string,     // placeholder (button: its text)
+    kind: string,   // "" text, "password", "button"
+    w: length,
+    value: string,
+}
+
+export global Login {
+    in property <[LoginField]> fields;
+    in-out property <bool> want-focus;   // the first field takes the keys once (set when the form opens)
+    callback edited(string, string);
+    callback go();
+    callback pick();
 }
 
 component Row inherits Rectangle {
@@ -87,13 +132,93 @@ component Chip inherits Rectangle {
     }
 }
 
+// The menu itself. William (9 Nov 2026): a small drop-down under the cloud / Share button like the Copy menu (each
+// button has its own PopupWindow with this inside - a click outside only closes it, Slint doesn't pass it on).
+// done() = the button's popup closes before the pick runs.
+export component CloudMenuBody inherits Rectangle {
+    callback done();
+    // wide enough for the "Expires" chips (they ran out of the old 300 px box)
+    width: max(280px, chips.preferred-width + 12px);
+    height: col.preferred-height;
+    background: T.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.line;
+    drop-shadow-blur: 40px;
+    drop-shadow-offset-y: 14px;
+    drop-shadow-color: #000000aa;
+    TouchArea { }
+    col := VerticalLayout {
+        padding: 6px;
+        spacing: 2px;
+        Text {
+            text: Cm.title;
+            font-size: 11.5px;
+            color: T.dim;
+            overflow: elide;
+            height: 26px;
+            vertical-alignment: center;
+            x: 12px;
+            width: parent.width - 24px;
+        }
+        for it[i] in Cm.items: Row {
+            visible: i == 0;
+            height: i == 0 ? 34px : 0px;
+            it: it;
+            clicked => { root.done(); Cm.pick(it.value); }
+        }
+        chips := HorizontalLayout {
+            visible: Cm.chips;
+            height: Cm.chips ? 32px : 0px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 6px;
+            spacing: 6px;
+            Text {
+                text: "Expires";
+                font-size: 12px;
+                color: T.dim;
+                vertical-alignment: center;
+            }
+            Chip { text: "Never"; on: Cm.def-days == 0; clicked => { root.done(); Cm.pick("link:0"); } }
+            Chip { text: "1 day"; on: Cm.def-days == 1; clicked => { root.done(); Cm.pick("link:1"); } }
+            Chip { text: "7 days"; on: Cm.def-days == 7; clicked => { root.done(); Cm.pick("link:7"); } }
+            Chip { text: "30 days"; on: Cm.def-days == 30; clicked => { root.done(); Cm.pick("link:30"); } }
+        }
+        Rectangle {
+            visible: Cm.items.length > 1;
+            height: Cm.items.length > 1 ? 1px : 0px;
+            background: T.line;
+        }
+        for it[i] in Cm.items: Row {
+            visible: i > 0;
+            height: i > 0 ? 34px : 0px;
+            it: it;
+            clicked => { root.done(); Cm.pick(it.value); }
+        }
+    }
+}
+
+// Menu opened without a button (L key, Home "Share a link", ...): centred, no darkened screen. The transparent
+// layer takes clicks outside so they only close the menu.
 export component CloudMenuLayer inherits Rectangle {
     visible: Cm.open;
-    background: #00000060;
+    // r2-layout (L18): the keys go to the menu while it's open (Esc closes it; Del / E / F no longer reach the clip
+    // behind); afterwards back to the page
+    callback closed();
+    changed visible => {
+        if (self.visible) {
+            fs.focus();
+        } else {
+            Cm.ax = -1px;
+            root.closed();
+        }
+    }
     TouchArea {
         clicked => { Cm.open = false; }
+        scroll-event(e) => { accept }
     }
-    FocusScope {
+    fs := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.Escape) {
                 Cm.open = false;
@@ -101,57 +226,10 @@ export component CloudMenuLayer inherits Rectangle {
             accept
         }
     }
-    Rectangle {
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        width: 300px;
-        height: col.preferred-height;
-        background: T.panel;
-        border-radius: 12px;
-        border-width: 1px;
-        border-color: T.line;
-        drop-shadow-blur: 30px;
-        drop-shadow-color: #0009;
-        TouchArea { }
-        col := VerticalLayout {
-            padding: 6px;
-            spacing: 2px;
-            Text {
-                text: Cm.title;
-                font-size: 12px;
-                color: T.dim;
-                overflow: elide;
-                height: 26px;
-                vertical-alignment: center;
-                x: 12px;
-                width: parent.width - 24px;
-            }
-            for it[i] in Cm.items: VerticalLayout {
-                Row {
-                    it: it;
-                    clicked => { Cm.pick(it.value); }
-                }
-                if i == 0 && Cm.chips: HorizontalLayout {
-                    padding-left: 12px;
-                    padding-bottom: 6px;
-                    spacing: 6px;
-                    Text {
-                        text: "Expires";
-                        font-size: 12px;
-                        color: T.dim;
-                        vertical-alignment: center;
-                    }
-                    Chip { text: "Never"; on: Cm.def-days == 0; clicked => { Cm.pick("link:0"); } }
-                    Chip { text: "1 day"; on: Cm.def-days == 1; clicked => { Cm.pick("link:1"); } }
-                    Chip { text: "7 days"; on: Cm.def-days == 7; clicked => { Cm.pick("link:7"); } }
-                    Chip { text: "30 days"; on: Cm.def-days == 30; clicked => { Cm.pick("link:30"); } }
-                }
-                if i == 0 && Cm.items.length > 1: Rectangle {
-                    height: 1px;
-                    background: T.line;
-                }
-            }
-        }
+    body := CloudMenuBody {
+        x: Cm.ax < 0 ? (root.width - self.width) / 2 : max(8px, min(Cm.ax, root.width - self.width - 8px));
+        y: Cm.ax < 0 ? (root.height - self.height) / 2
+            : Cm.ay + self.height <= root.height - 8px ? Cm.ay : max(8px, Cm.atop - self.height - 4px);
     }
 }
 
@@ -172,48 +250,125 @@ component Check inherits Rectangle {
     }
 }
 
+// a <select>: the picked option + an arrow; a click opens the list (SpaceLayer draws it - PORT_LEFTOVERS L17, it
+// used to step to the next value)
 component Sel inherits Rectangle {
-    in property <[string]> keys;
-    in property <[string]> labels;
-    in-out property <string> value;
-    callback changed-to();
+    in property <string> label;
+    in property <bool> open;
+    callback clicked();
     height: 30px;
     width: 170px;
     border-radius: 8px;
     background: T.panel2;
     border-width: 1px;
-    border-color: T.line;
-    property <int> at: 0;
+    border-color: ta.has-hover || root.open ? T.hover : T.line;
     Text {
         x: 10px;
-        text: root.labels[root.idx()] + "  ▾";
+        // (the arrow is drawn: the font has no "▾" - it showed as an empty box)
+        text: root.label;
         font-size: 12.5px;
         color: T.text;
         vertical-alignment: center;
     }
-    function idx() -> int {
-        root.value == root.keys[1] ? 1 : root.value == root.keys[2] ? 2 : root.value == root.keys[3] ? 3 : 0
+    Icon {
+        x: parent.width - 24px;
+        y: (parent.height - 14px) / 2;
+        width: 14px;
+        height: 14px;
+        commands: Ic.down;
+        stroke: T.muted;
     }
-    TouchArea {
+    ta := TouchArea {
         mouse-cursor: pointer;
-        // click = next choice (small, always visible - like Echo's selects)
-        clicked => {
-            root.value = root.keys[Math.mod(root.idx() + 1, root.keys.length)];
-            root.changed-to();
+        clicked => { root.clicked(); }
+    }
+}
+
+// cleanup: one "Free up space" chip - the category, what it frees; lit while the list shows it (click again = all)
+component CatChip inherits Rectangle {
+    in property <EcmCat> c;
+    property <bool> on: Ecm.show == c.key;
+    callback clicked;
+    horizontal-stretch: 1;
+    height: 30px;
+    border-radius: 8px;
+    background: on ? T.accent.with-alpha(0.18) : ta.has-hover ? T.panel2 : transparent;
+    border-width: 1px;
+    border-color: on ? T.accent : T.line;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        Text {
+            text: root.c.label;
+            font-size: 12.5px;
+            font-weight: 600 + T.fw;
+            color: root.c.n > 0 ? T.text : T.muted;
+            vertical-alignment: center;
+            overflow: elide;
         }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: root.c.info;
+            font-size: 12px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
 export component SpaceLayer inherits Rectangle {
     visible: Ecm.open;
-    background: #000000d0;
-    TouchArea {
-        clicked => { Ecm.open = false; }
+    // Echo's #ecm: background #000a, 28 px around the panel
+    background: #000000aa;
+    // the open Show / Sort list: "" closed, "show" / "sort"; where (layer coordinates) and how wide its select is
+    property <string> dd;
+    property <length> dd-x;
+    property <length> dd-y;
+    property <length> dd-w;
+    // cleanup: + the chips' categories ("pc" is "Also on this PC")
+    property <[string]> show-keys: ["all", "pc", "only", "cp", "exp", "old", "pair"];
+    property <[string]> show-labels: ["Everything", "Also on this PC", "Only in the cloud", "Share copies", "Share link expired", "Not watched in 90+ days", "Original + edit"];
+    property <[string]> sort-keys: ["new", "old", "big"];
+    property <[string]> sort-labels: ["Newest first", "Oldest first", "Biggest first"];
+    // keys go to the manager when it opens and after a dialog above it closes (Esc closes it, like Echo)
+    property <bool> is-open: Ecm.open;
+    property <int> rf: Ecm.refocus;
+    changed is-open => {
+        if (self.is-open) {
+            fs.focus();
+        } else {
+            self.dd = "";
+        }
     }
-    FocusScope {
+    changed rf => {
+        if (Ecm.open) {
+            fs.focus();
+        }
+    }
+    function close() {
+        Ecm.open = false;
+        Ecm.closed();
+    }
+    function label-of(keys: [string], labels: [string], v: string) -> string {
+        v == keys[1] ? labels[1] : v == keys[2] ? labels[2] : v == keys[3] ? labels[3] : keys.length > 4 && v == keys[4] ? labels[4]
+            : keys.length > 5 && v == keys[5] ? labels[5] : keys.length > 6 && v == keys[6] ? labels[6] : labels[0]
+    }
+    TouchArea {
+        clicked => { root.close(); }
+    }
+    fs := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.Escape) {
-                Ecm.open = false;
+                if (root.dd != "") {
+                    root.dd = "";
+                } else {
+                    root.close();
+                }
             }
             accept
         }
@@ -221,15 +376,16 @@ export component SpaceLayer inherits Rectangle {
     Rectangle {
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
-        width: min(760px, root.width - 40px);
-        height: min(root.height - 60px, 680px);
+        // Echo: up to 860 px wide, as tall as its content (at most the window minus the 28 px around it)
+        width: min(860px, root.width - 56px);
+        height: min(root.height - 56px, body.preferred-height);
         background: T.panel;
         border-radius: 14px;
         border-width: 1px;
         border-color: T.line;
         clip: true;
         TouchArea { }
-        VerticalLayout {
+        body := VerticalLayout {
             padding: 20px;
             spacing: 10px;
             HorizontalLayout {
@@ -260,9 +416,32 @@ export component SpaceLayer inherits Rectangle {
                         }
                     }
                 }
-                Btn {
-                    text: "✕";
-                    clicked => { Ecm.open = false; }
+                // drawn x (the font has no "✕" - it showed as an empty box)
+                IconBtn {
+                    icon: Ic.x;
+                    tip: "Close";
+                    clicked => { root.close(); }
+                }
+            }
+            // cleanup: "Free up space" - a chip per category with what it frees (2 x 2, they don't fit in one row)
+            if Ecm.cats.length >= 4: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "FREE UP SPACE";
+                    font-size: 11px;
+                    font-weight: 700 + T.fw;
+                    letter-spacing: 1px;
+                    color: T.dim;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    CatChip { c: Ecm.cats[0]; clicked => { root.dd = ""; Ecm.cat(Ecm.cats[0].key); } }
+                    CatChip { c: Ecm.cats[1]; clicked => { root.dd = ""; Ecm.cat(Ecm.cats[1].key); } }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    CatChip { c: Ecm.cats[2]; clicked => { root.dd = ""; Ecm.cat(Ecm.cats[2].key); } }
+                    CatChip { c: Ecm.cats[3]; clicked => { root.dd = ""; Ecm.cat(Ecm.cats[3].key); } }
                 }
             }
             HorizontalLayout {
@@ -270,10 +449,9 @@ export component SpaceLayer inherits Rectangle {
                 selall := Rectangle {
                     width: 150px;
                     height: 30px;
-                    property <bool> allon;
                     HorizontalLayout {
                         spacing: 8px;
-                        Check { y: 6px; on: selall.allon; }
+                        Check { y: 6px; on: Ecm.all-on; }
                         Text {
                             text: "Select all shown";
                             font-size: 12.5px;
@@ -284,31 +462,49 @@ export component SpaceLayer inherits Rectangle {
                     TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
-                            parent.allon = !parent.allon;
-                            Ecm.all(parent.allon);
+                            Ecm.all(!Ecm.all-on);
                         }
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Sel {
-                    keys: ["all", "pc", "only", "cp"];
-                    labels: ["Everything", "Also on this PC", "Only in the cloud", "Share copies"];
-                    value <=> Ecm.show;
-                    changed-to => { Ecm.refill(); }
+                shw := Sel {
+                    width: 196px; // cleanup: room for "Not watched in 90+ days"
+                    label: root.label-of(root.show-keys, root.show-labels, Ecm.show);
+                    open: root.dd == "show";
+                    clicked => {
+                        root.dd = root.dd == "show" ? "" : "show";
+                        root.dd-x = shw.absolute-position.x - root.absolute-position.x;
+                        root.dd-y = shw.absolute-position.y - root.absolute-position.y + shw.height + 4px;
+                        root.dd-w = shw.width;
+                    }
                 }
-                Sel {
-                    keys: ["new", "old", "big", "new"];
-                    labels: ["Newest first", "Oldest first", "Biggest first", "Newest first"];
-                    value <=> Ecm.sort;
-                    changed-to => { Ecm.refill(); }
+                srt := Sel {
+                    label: root.label-of(root.sort-keys, root.sort-labels, Ecm.sort);
+                    open: root.dd == "sort";
+                    clicked => {
+                        root.dd = root.dd == "sort" ? "" : "sort";
+                        root.dd-x = srt.absolute-position.x - root.absolute-position.x;
+                        root.dd-y = srt.absolute-position.y - root.absolute-position.y + srt.height + 4px;
+                        root.dd-w = srt.width;
+                    }
                 }
             }
             Rectangle {
                 vertical-stretch: 1;
+                // as tall as the list (Echo's panel follows its content), at least room for the empty-list text
+                min-height: 80px;
+                preferred-height: max(80px, lst.preferred-height + 2px);
                 border-radius: 10px;
                 border-width: 1px;
                 border-color: T.line;
                 clip: true;
+                if Ecm.empty != "": Text {
+                    text: Ecm.empty;
+                    font-size: 13px;
+                    color: T.muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
                 fl := Flickable {
                     width: parent.width;
                     height: parent.height;
@@ -318,20 +514,55 @@ export component SpaceLayer inherits Rectangle {
                         width: fl.width;
                         height: self.preferred-height;
                         for r[i] in Ecm.rows: Rectangle {
-                            height: 48px;
+                            height: 56px;
                             background: rta.has-hover ? T.panel2 : transparent;
                             HorizontalLayout {
                                 padding-left: 12px;
                                 padding-right: 12px;
                                 spacing: 10px;
-                                Check { y: 15px; on: r.on; }
+                                Check { y: 19px; on: r.on; }
+                                // Echo's .tt: the clip's picture (16:9), dark until it arrives
+                                Rectangle {
+                                    y: 6px;
+                                    width: 78px;
+                                    height: 44px;
+                                    border-radius: 6px;
+                                    background: #0a0a0c;
+                                    clip: true;
+                                    if r.has-thumb: Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: r.thumb;
+                                        image-fit: cover;
+                                    }
+                                }
                                 VerticalLayout {
                                     alignment: center;
-                                    Text {
-                                        text: r.name;
-                                        font-size: 13px;
-                                        color: T.text;
-                                        overflow: elide;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: r.name;
+                                            font-size: 13px;
+                                            color: T.text;
+                                            overflow: elide;
+                                            horizontal-stretch: 0;
+                                        }
+                                        // Echo's .st pills: ON THIS PC / ONLY IN THE CLOUD / ITS SHARE LINK STOPS
+                                        Rectangle {
+                                            width: pill.preferred-width + 12px;
+                                            height: 17px;
+                                            y: 1px;
+                                            border-radius: 5px;
+                                            background: r.st == "pc" ? #22c55e26 : r.st == "only" ? #f59e0b26 : #ef444426;
+                                            pill := Text {
+                                                text: r.st == "pc" ? "ON THIS PC" : r.st == "only" ? "ONLY IN THE CLOUD" : "ITS SHARE LINK STOPS";
+                                                font-size: 10px;
+                                                font-weight: 700 + T.fw;
+                                                color: r.st == "pc" ? #4ade80 : r.st == "only" ? #fbbf24 : #f87171;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
                                     }
                                     Text {
                                         text: r.sub;
@@ -354,6 +585,7 @@ export component SpaceLayer inherits Rectangle {
                 Rectangle {
                     width: 290px;
                     height: 30px;
+                    opacity: Ecm.show-dl ? 1 : 0;
                     HorizontalLayout {
                         spacing: 8px;
                         Check { y: 6px; on: Ecm.dl-first; }
@@ -365,6 +597,7 @@ export component SpaceLayer inherits Rectangle {
                         }
                     }
                     TouchArea {
+                        enabled: Ecm.show-dl;
                         mouse-cursor: pointer;
                         clicked => { Ecm.dl-first = !Ecm.dl-first; }
                     }
@@ -376,14 +609,55 @@ export component SpaceLayer inherits Rectangle {
                     color: T.muted;
                     vertical-alignment: center;
                 }
+                // Echo: both buttons off with nothing ticked or while a download / delete runs
                 Btn {
                     text: "Download";
-                    clicked => { if (Ecm.any) { Ecm.download(); } }
+                    opacity: Ecm.any && !Ecm.busy ? 1 : 0.5;
+                    clicked => { if (Ecm.any && !Ecm.busy) { Ecm.download(); } }
                 }
                 Btn {
                     text: "Delete from Echo Cloud";
-                    primary: Ecm.any;
-                    clicked => { if (Ecm.any) { Ecm.delete(); } }
+                    primary: Ecm.any && !Ecm.busy;
+                    opacity: Ecm.any && !Ecm.busy ? 1 : 0.5;
+                    clicked => { if (Ecm.any && !Ecm.busy) { Ecm.delete(); } }
+                }
+            }
+        }
+    }
+    // the open Show / Sort list (Echo's <select>s): under its select, a click outside only closes it
+    if root.dd != "": Rectangle {
+        TouchArea {
+            clicked => { root.dd = ""; }
+        }
+        ddl := Rectangle {
+            property <bool> show: root.dd == "show";
+            width: max(root.dd-w, 200px);
+            height: dl.preferred-height;
+            x: min(root.dd-x, root.width - self.width - 8px);
+            y: min(root.dd-y, root.height - self.height - 8px);
+            background: T.panel;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: T.line;
+            drop-shadow-blur: 30px;
+            drop-shadow-offset-y: 10px;
+            drop-shadow-color: #000000aa;
+            TouchArea { }
+            dl := VerticalLayout {
+                padding: 6px;
+                for k[i] in (ddl.show ? root.show-keys : root.sort-keys): MenuRow {
+                    text: ddl.show ? root.show-labels[i] : root.sort-labels[i];
+                    tick-room: true;
+                    on: k == (ddl.show ? Ecm.show : Ecm.sort);
+                    clicked => {
+                        if (root.dd == "show") {
+                            Ecm.show = k;
+                        } else {
+                            Ecm.sort = k;
+                        }
+                        root.dd = "";
+                        Ecm.refill();
+                    }
                 }
             }
         }

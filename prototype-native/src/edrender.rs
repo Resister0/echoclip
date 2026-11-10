@@ -77,13 +77,11 @@ pub fn text_size(t: &Txt, px: f64) -> (f64, f64) {
 }
 
 impl Editor {
-    /// the caption box (when a caption is selected): (x, y, w, h, line height) in OSD px, centred like Echo's
+    /// the caption box (when a caption is selected, or always with "Show caption box"): (x, y, w, h, line height)
+    /// in OSD px, centred like Echo's
     pub fn cap_box_rect(&self) -> Option<(f64, f64, f64, f64, f64)> {
-        let i = self.sel_txt()?;
+        let i = self.cap_ref()?;
         let p = &self.p.texts[i];
-        if !p.cap {
-            return None;
-        }
         let g = self.geo;
         let (fx, fw, fh) = g.frame(self.p.vertical);
         let line_h = p.size * fh * 1.2;
@@ -256,10 +254,12 @@ impl Editor {
                 }
                 self.hw_copied = true;
             }
-            if vf.is_empty() {
+            // Linux: Echo's base filter (crate::mpv::base_vf) stays last
+            let full = crate::mpv::with_base_vf(&vf, self.hw_copied);
+            if full.is_empty() {
                 m.command(&["vf", "clr", ""]);
             } else {
-                m.command(&["vf", "set", &vf]);
+                m.command(&["vf", "set", &full]);
             }
             self.last_vf = vf;
         }
@@ -348,8 +348,18 @@ impl Editor {
             ev.push(rect(g.cx, g.cy, g.cw, g.ch, black, 0));
         } else if let Some(s) = self.p.segs.get(self.cur) {
             let k = fade_gain(s.at, s.len(), s.fi, s.fo, self.t);
-            if k < 0.995 {
-                ev.push(rect(g.cx, g.cy, g.cw, g.ch, black, (k * 255.0).round() as u8));
+            // rough transition preview, like Echo's (a dip; the export does the real blend)
+            let tr = s.tr();
+            let mut dip = 0.0f64;
+            if self.cur > 0 && !tr.is_empty() {
+                let q = (self.t - s.at) / s.td().max(0.1);
+                if (0.0..1.0).contains(&q) {
+                    dip = if tr == "fadeblack" { 1.0 - q } else { (1.0 - q) * 0.45 };
+                }
+            }
+            let o = (1.0 - k).max(dip).clamp(0.0, 1.0);
+            if o > 0.005 {
+                ev.push(rect(g.cx, g.cy, g.cw, g.ch, black, ((1.0 - o) * 255.0).round() as u8));
             }
         }
         if self.p.vertical.is_some() {
@@ -398,7 +408,7 @@ impl Editor {
         }
         let sel = self.sel_txt();
         for (i, t) in self.p.texts.iter().enumerate() {
-            let is_sel = sel == Some(i);
+            let is_sel = sel == Some(i) || self.msel.contains(&Sel::Txt(i));
             let inside = self.t >= t.start && self.t <= t.end;
             if (!is_sel || t.cap) && !inside {
                 continue;
@@ -446,9 +456,25 @@ impl Editor {
         let g = self.geo;
         let (fx, fw, fh) = g.frame(self.p.vertical);
         let tol = 9.0 * g.sf;
+        // "cdown" = Ctrl / Shift held (a text joins / leaves the selection), "adown" = Alt (place without the
+        // snap to the middle) - Echo's stage
+        let text_hit = |e: &Editor| -> Option<usize> {
+            let sel = e.sel_txt();
+            (0..e.p.texts.len()).rev().find(|&i| {
+                let t = &e.p.texts[i];
+                let on = (e.t >= t.start && e.t <= t.end) || (sel == Some(i) && !t.cap);
+                let (rx, ry, rw, rh) = e.text_rect(t);
+                on && x >= rx && x <= rx + rw && y >= ry && y <= ry + rh
+            })
+        };
         match kind {
-            "down" => {
+            "down" | "cdown" | "adown" => {
                 self.drag = None;
+                // a plain click outside the selected texts ends the multi-selection
+                let had_msel = !self.msel.is_empty();
+                if kind != "cdown" && !text_hit(self).is_some_and(|i| self.msel.contains(&Sel::Txt(i))) {
+                    self.msel.clear();
+                }
                 // 1. the caption box (shown while a caption is selected)
                 if let Some((bx, by, bw, bh, _)) = self.cap_box_rect() {
                     let near = |a: f64, b: f64| (a - b).abs() <= tol;
@@ -466,9 +492,9 @@ impl Editor {
                             (_, _, _, true) => "b",
                             _ => "",
                         };
-                        let i = self.sel_txt().unwrap();
+                        let i = self.cap_ref().unwrap_or(0);
                         let p = &self.p.texts[i];
-                        let starts = self.p.texts.iter().enumerate().filter(|(_, t)| t.cap).map(|(k, t)| (k, t.x, t.y)).collect();
+                        let starts =self.p.texts.iter().enumerate().filter(|(_, t)| t.cap).map(|(k, t)| (k, t.x, t.y)).collect();
                         self.drag = Some(Drag::CapBox { edge: edge.into(), x0: x, y0: y, starts, s0: p.size, w0: self.p.cap_w, cx: fx + p.x * fw, cy: g.cy + p.y * fh, pushed: false });
                         return true;
                     }
@@ -496,20 +522,33 @@ impl Editor {
                         }
                     }
                 }
-                // 3. a text on screen (top-most first)
-                let sel = self.sel_txt();
-                for i in (0..self.p.texts.len()).rev() {
-                    let t = &self.p.texts[i];
-                    let on = (self.t >= t.start && self.t <= t.end) || (sel == Some(i) && !t.cap);
-                    if !on {
-                        continue;
+                // 3. a text on screen (top-most first); Ctrl / Shift+click toggles it in the selection, dragging one
+                // of several selected texts moves them all
+                if let Some(i) = text_hit(self) {
+                    let key = Sel::Txt(i);
+                    if kind == "cdown" {
+                        let mut v = std::mem::take(&mut self.msel);
+                        if let Some(s) = self.sel.take() {
+                            if !v.contains(&s) {
+                                v.push(s);
+                            }
+                        }
+                        let off = v.contains(&key);
+                        v.retain(|s| *s != key);
+                        if !off {
+                            v.push(key);
+                        }
+                        self.set_msel(v);
+                        if off {
+                            return true;
+                        }
+                    } else if !self.msel.contains(&key) {
+                        self.sel = Some(key);
                     }
-                    let (rx, ry, rw, rh) = self.text_rect(t);
-                    if x >= rx && x <= rx + rw && y >= ry && y <= ry + rh {
-                        self.sel = Some(Sel::Txt(i));
-                        self.drag = Some(Drag::TextMove { starts: vec![(i, t.x, t.y)], x0: x, y0: y, pushed: false });
-                        return true;
-                    }
+                    let group: Vec<usize> = if self.msel.len() > 1 { self.msel.iter().filter_map(|s| if let Sel::Txt(k) = s { Some(*k) } else { None }).collect() } else { vec![i] };
+                    let starts = group.iter().filter_map(|&k| self.p.texts.get(k).map(|t| (k, t.x, t.y))).collect();
+                    self.drag = Some(Drag::TextMove { starts, x0: x, y0: y, pushed: false, free: kind == "adown" });
+                    return true;
                 }
                 // 3b. a box on screen (the selected one first)
                 let selb = self.sel_box();
@@ -549,7 +588,7 @@ impl Editor {
                 }
                 let had = self.sel.is_some();
                 self.sel = None;
-                had
+                had || had_msel
             }
             "move" => {
                 let Some(d) = self.drag.clone() else { return false };
@@ -559,7 +598,7 @@ impl Editor {
                     }
                 };
                 match d {
-                    Drag::TextMove { starts, x0, y0, pushed } => {
+                    Drag::TextMove { starts, x0, y0, pushed, free } => {
                         if !pushed && (x - x0).abs() + (y - y0).abs() < 3.0 {
                             return false;
                         }
@@ -570,15 +609,15 @@ impl Editor {
                             if let Some(t) = self.p.texts.get_mut(i) {
                                 t.x = (sx + dx).clamp(0.0, 1.0);
                                 t.y = (sy + dy).clamp(0.0, 1.0);
-                                if one && (t.x - 0.5).abs() < 0.012 {
-                                    t.x = 0.5; // snaps to the middle
+                                if one && !free && (t.x - 0.5).abs() < 0.012 {
+                                    t.x = 0.5; // snaps to the middle (hold Alt to place it freely)
                                 }
                                 if t.cap {
                                     t.own = true;
                                 }
                             }
                         }
-                        self.drag = Some(Drag::TextMove { starts, x0, y0, pushed: true });
+                        self.drag = Some(Drag::TextMove { starts, x0, y0, pushed: true, free });
                         true
                     }
                     Drag::TextSize { i, cx, cy, d0, s0, pushed } => {
@@ -605,7 +644,7 @@ impl Editor {
                         } else if e == "l" || e == "r" {
                             self.p.cap_w = ((x - cx).abs() * 2.0 / fw).clamp(0.15, 1.0);
                         } else if e == "t" || e == "b" {
-                            let line_h = self.sel_txt().map(|i| self.p.texts[i].size).unwrap_or(s0) * fh * 1.2;
+                            let line_h = self.cap_ref().map(|i| self.p.texts[i].size).unwrap_or(s0) * fh * 1.2;
                             self.p.cap_lines = (((y - cy).abs() * 2.0 - 8.0) / line_h).round().clamp(1.0, 3.0) as u32;
                         } else {
                             let (dx, dy) = ((x - x0) / fw, (y - y0) / fh);
@@ -741,7 +780,8 @@ impl Editor {
         } else {
             m.command(&["seek", &format!("{at:.3}"), if exact { "absolute+exact" } else { "absolute+keyframes" }]);
         }
-        let man = s.freeze();
+        // freeze frame / reversed piece: mpv stays paused, tick() steps the picture by hand (Echo's isMan)
+        let man = s.man();
         m.set("speed", &format!("{:.4}", if man { 1.0 } else { s.speed }));
         m.set("pause", if self.playing && !gap && !man { "no" } else { "yes" });
         self.seek_at = Some(Instant::now());
@@ -770,8 +810,10 @@ impl Editor {
             return false;
         }
         let total = self.total();
-        if !self.gap && self.p.segs.get(self.cur).is_some_and(|s| s.freeze()) {
-            // freeze frame: the picture stands, the clock runs by itself
+        if !self.gap && self.p.segs.get(self.cur).is_some_and(|s| s.man()) {
+            // freeze frame: the picture stands, the clock runs by itself. Reversed piece: the same clock, and the
+            // picture is stepped backwards by exact seeks (one at a time - Echo: `!v.seeking`). Silent; the export
+            // plays its sound backwards.
             let s = self.p.segs[self.cur].clone();
             self.t += dt;
             if self.t >= total {
@@ -779,6 +821,10 @@ impl Editor {
                 self.pause(m);
             } else if self.t >= s.at + s.len() {
                 self.seek_out(m, true);
+            } else if s.rev() && self.seek_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(40)) && m.get("seeking").as_deref() != Some("yes") {
+                let src = (s.end - (self.t - s.at) * s.speed).clamp(s.start, s.end - 0.01);
+                m.command(&["seek", &format!("{src:.3}"), "absolute+exact"]);
+                self.seek_at = Some(Instant::now());
             }
             return true;
         }
@@ -927,11 +973,28 @@ impl Editor {
         const VF: &str = "fps=60,setsar=1,format=yuv420p";
         const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
         let audio = has_audio && !self.p.mute;
+        // reversed pieces: files made before the export (run_export), inputs after the stickers (Echo's reverse_piece)
+        let revs = self.rev_jobs(has_audio);
+        let rev_inp = |s: &crate::editor::Seg| revs.iter().position(|r| r.start == s.start && r.end == s.end && r.src == s.src().map(PathBuf::from).unwrap_or_else(|| self.clip.clone())).map(|r| 1 + files.len() + sticks.len() + r);
         let mut g: Vec<String> = vec![];
         let mut units: Vec<(String, String)> = vec![];
+        // Echo's render_edit: a transition blends the end of one unit into the next (xfade + acrossfade); the piece
+        // before runs on for the transition's length (a handle), so the timing after it stays the same
+        let mut unit_len = 0.0f64; // output length of the last unit
+        let mut last_piece = false;
         let mut pos = 0.0f64;
+        let speed_of = |s: &crate::editor::Seg| if s.freeze() { 1.0 } else { s.speed.clamp(0.1, 4.0) };
+        let len_of = |s: &crate::editor::Seg| (s.end - s.start) / speed_of(s);
+        // transition length into piece k (0 = hard cut); the pieces must touch
+        let tr_len = |k: usize, gap: f64| -> f64 {
+            let s = segs[k];
+            if k == 0 || s.tr().is_empty() || gap > 0.02 {
+                return 0.0;
+            }
+            s.td().max(0.1).min(len_of(s) / 2.0).min(len_of(segs[k - 1]) / 2.0).min(3.0)
+        };
         for (i, s) in segs.iter().enumerate() {
-            let sp = s.speed.clamp(0.1, 4.0);
+            let sp = speed_of(s);
             let gap = s.at - pos;
             if gap > 0.02 {
                 g.push(format!("color=c=black:s={w}x{h}:r=60:d={gap:.3},{VF}[gv{i}]"));
@@ -939,31 +1002,67 @@ impl Editor {
                     g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={gap:.3},{AF}[ga{i}]"));
                 }
                 units.push((format!("gv{i}"), format!("ga{i}")));
+                unit_len = gap;
+                last_piece = false;
             }
-            let slen = (s.end - s.start) / sp;
+            let slen = len_of(s);
+            // a transition into the NEXT piece needs this one to run on a little
+            let ext = match segs.get(i + 1) {
+                Some(nx) => tr_len(i + 1, nx.at - (pos.max(s.at) + slen)),
+                None => 0.0,
+            };
+            let total = slen + ext;
             let gr = grade(s);
             let vf = fades("fade", s.fi, s.fo, slen);
             let af = fades("afade", s.fi, s.fo, slen);
             let k = inp(s.src());
-            if s.freeze() {
-                let total = s.end - s.start;
-                g.push(format!("[{k}:v]trim=start={:.3}:duration=0.25,setpts=PTS-STARTPTS,{}{VF},trim=end_frame=1,tpad=stop_mode=clone:stop_duration={total:.3},trim=duration={total:.3},setpts=PTS-STARTPTS{gr}{vf}[v{i}]", s.start, fit(k)));
-                if audio {
-                    g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={total:.3},{AF}[a{i}]"));
-                }
-                units.push((format!("v{i}"), format!("a{i}")));
-                pos = pos.max(s.at) + total;
-                continue;
-            }
-            g.push(format!("[{k}:v]trim=start={:.3}:end={:.3},setpts=(PTS-STARTPTS)/{sp:.4},{}{VF}{gr}{vf}[v{i}]", s.start, s.end, fit(k)));
             let amute = s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true);
             let src_sound = k == 0 || s.src().and_then(|f| self.srcs.get(f)).is_some_and(|x| x.0);
-            if audio && !amute && src_sound {
-                g.push(format!("[{k}:a:0]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS,{},{AF}{af}[a{i}]", s.start, s.end, atempo(sp)));
-            } else if audio {
-                g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={slen:.3},{AF}[a{i}]"));
+            let mut silent = amute || !src_sound;
+            if s.freeze() {
+                g.push(format!("[{k}:v]trim=start={:.3}:duration=0.25,setpts=PTS-STARTPTS,{}{VF},trim=end_frame=1,tpad=stop_mode=clone:stop_duration={total:.3},trim=duration={total:.3},setpts=PTS-STARTPTS{gr}{vf}[v{i}]", s.start, fit(k)));
+                silent = true;
+            } else if let Some(r) = s.rev().then(|| rev_inp(s)).flatten() {
+                let pad = if ext > 0.0 { format!(",tpad=stop_mode=clone:stop_duration={ext:.3}") } else { String::new() };
+                g.push(format!("[{r}:v]setpts=(PTS-STARTPTS)/{sp:.4},{}{VF}{pad}{gr}{vf}[v{i}]", fit(k)));
+                if audio && !silent && revs[r - 1 - files.len() - sticks.len()].audio {
+                    let ap = if ext > 0.0 { format!(",apad=whole_dur={total:.3},atrim=duration={total:.3}") } else { String::new() };
+                    g.push(format!("[{r}:a]asetpts=PTS-STARTPTS,{},{AF}{ap}{af}[a{i}]", atempo(sp)));
+                } else {
+                    silent = true;
+                }
+            } else {
+                // the source's own length (handles can't run past it - the last frame is held instead)
+                let s_dur = match s.src() { Some(f) => self.srcs.get(f).map(|x| x.1).unwrap_or(0.0), None => self.dur };
+                let end2 = if s_dur > 0.0 { (s.end + ext * sp).min(s_dur.max(s.end)) } else { s.end + ext * sp };
+                let short = ext - (end2 - s.end) / sp;
+                let pad = if short > 0.01 { format!(",tpad=stop_mode=clone:stop_duration={short:.3}") } else { String::new() };
+                g.push(format!("[{k}:v]trim=start={:.3}:end={end2:.3},setpts=(PTS-STARTPTS)/{sp:.4},{}{VF}{pad}{gr}{vf}[v{i}]", s.start, fit(k)));
+                if audio && !silent {
+                    // another file's sound can be a little shorter than its picture: padded to the exact length
+                    let ap = if ext > 0.0 || k > 0 { format!(",apad=whole_dur={total:.3},atrim=duration={total:.3}") } else { String::new() };
+                    g.push(format!("[{k}:a:0]atrim=start={:.3}:end={end2:.3},asetpts=PTS-STARTPTS,{},{AF}{ap}{af}[a{i}]", s.start, atempo(sp)));
+                }
             }
-            units.push((format!("v{i}"), format!("a{i}")));
+            if audio && silent {
+                g.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={total:.3},{AF}[a{i}]"));
+            }
+            let td = tr_len(i, gap);
+            if td > 0.0 && last_piece {
+                // blend with the unit before (it ran on for `td` past its end)
+                let (pv, pa) = units.pop().unwrap_or_default();
+                let kind: String = s.tr().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                g.push(format!("[{pv}][v{i}]xfade=transition={kind}:duration={td:.3}:offset={unit_len:.3}[xv{i}]"));
+                if audio {
+                    g.push(format!("[{pa}][a{i}]acrossfade=d={td:.3}:c1=tri:c2=tri[xa{i}]"));
+                }
+                units.push((format!("xv{i}"), format!("xa{i}")));
+                unit_len += slen;
+            } else {
+                units.push((format!("v{i}"), format!("a{i}")));
+                unit_len = slen;
+            }
+            last_piece = true;
             pos = pos.max(s.at) + slen;
         }
         // layers may run past the main track: pad with black + silence underneath them (Echo)
@@ -1235,6 +1334,86 @@ pub struct ExportPlan {
     pub kbps: u64,
     /// Discord: the bitrate is a hard budget (also for libx264), audio 128k
     pub sized: bool,
+    /// reversed pieces made before the export (their files are already in `inputs`)
+    pub revs: Vec<RevJob>,
+}
+
+/// a piece played backwards, rendered to its own file before the export (Echo's reverse_piece)
+#[derive(Clone, Debug)]
+pub struct RevJob {
+    pub src: PathBuf,
+    pub start: f64,
+    pub end: f64,
+    pub audio: bool,
+    pub out: PathBuf,
+}
+
+impl Editor {
+    /// the main track's reversed pieces, in order (export inputs after the other files and the stickers). Cached in
+    /// %TEMP%\echo-proto-reverse by file + span, so the next export of the same edit is quick.
+    pub fn rev_jobs(&self, has_audio: bool) -> Vec<RevJob> {
+        use std::hash::{Hash, Hasher};
+        let dir = std::env::temp_dir().join("echo-proto-reverse");
+        let mut v: Vec<RevJob> = vec![];
+        for s in self.p.segs.iter().filter(|s| s.rev() && !s.freeze() && s.end - s.start >= 0.05) {
+            let src = s.src().map(PathBuf::from).unwrap_or_else(|| self.clip.clone());
+            let audio = match s.src() { Some(f) => self.srcs.get(f).is_some_and(|x| x.0), None => has_audio };
+            if v.iter().any(|r| r.src == src && r.start == s.start && r.end == s.end) {
+                continue;
+            }
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            src.hash(&mut h);
+            std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0).hash(&mut h);
+            let key = format!("{:016x}_{:.0}_{:.0}{}", h.finish(), s.start * 1000.0, s.end * 1000.0, if audio { "" } else { "_v" });
+            v.push(RevJob { src, start: s.start, end: s.end, audio, out: dir.join(format!("{key}.mp4")) });
+        }
+        v
+    }
+}
+
+/// Echo's reverse_piece: 2 s parts, each reversed in memory (ffmpeg's reverse / areverse), joined last-first
+fn reverse_piece(ff: &Path, j: &RevJob, log: &dyn Fn(String)) -> Result<(), String> {
+    let dir = j.out.parent().map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = j.out.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let t0 = Instant::now();
+    let mut list = String::new();
+    let mut parts: Vec<PathBuf> = vec![];
+    let mut t = j.end;
+    let mut ok = true;
+    while t > j.start + 0.01 {
+        let a = (t - 2.0).max(j.start);
+        let part = dir.join(format!("{stem}_{}.mp4", parts.len()));
+        let mut c = hidden_cmd(ff);
+        c.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{a:.3}"), "-t", &format!("{:.3}", t - a), "-i"]).arg(&j.src)
+            .args(["-map", "0:v:0", "-vf", "reverse", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14"]);
+        if j.audio {
+            c.args(["-map", "0:a:0", "-af", "areverse", "-c:a", "aac", "-b:a", "192k"]);
+        }
+        ok = c.arg(&part).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        parts.push(part.clone());
+        if !ok {
+            break;
+        }
+        list += &format!("file '{}'\n", part.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"));
+        t = a;
+    }
+    let lf = dir.join(format!("{stem}.txt"));
+    let tmp = dir.join(format!("{stem}.part.mp4"));
+    if ok {
+        ok = std::fs::write(&lf, list).is_ok()
+            && hidden_cmd(ff).args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&lf).args(["-c", "copy", "-f", "mp4"]).arg(&tmp)
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+            && std::fs::rename(&tmp, &j.out).is_ok();
+    }
+    for p in parts.iter().chain([&lf, &tmp]) {
+        let _ = std::fs::remove_file(p);
+    }
+    if !ok {
+        return Err("could not play a piece backwards - see the log".into());
+    }
+    log(format!("editor: reversed a {:.1}s piece in {:.1}s", j.end - j.start, t0.elapsed().as_secs_f32()));
+    Ok(())
 }
 
 /// the Discord size Echo's settings pick (Copy default; "full" -> Discord Free), in MB
@@ -1247,7 +1426,9 @@ pub fn discord_mb() -> f64 {
 
 impl Editor {
     pub fn export_plan(&self, ff: &Path, preset: &str) -> Result<ExportPlan, String> {
-        let (w, h, has_audio, _) = probe(ff, &self.clip);
+        // r2-threads (L30): the size / sound tracks ffprobe found when the editor opened (on a worker); probed again
+        // only when that failed (the Export click ran ffprobe on the UI thread)
+        let (w, h, has_audio, _) = if self.w > 16 && self.h > 16 { (self.w, self.h, self.tracks > 0, self.tracks) } else { probe(ff, &self.clip) };
         let (w, h) = if w > 0 && h > 0 { (w, h) } else { (self.w.max(16), self.h.max(16)) };
         let tmp = std::env::temp_dir().join("echo-proto-edit");
         let _ = std::fs::create_dir_all(&tmp);
@@ -1297,7 +1478,11 @@ impl Editor {
             };
             inputs.push((args, PathBuf::from(src)));
         }
-        Ok(ExportPlan { ff: ff.to_path_buf(), src: self.clip.clone(), inputs, out, graph_ass, graph_plain: (gp, lp), ass_file, ass_text, audio, total, kbps, sized })
+        let revs = self.rev_jobs(has_audio);
+        for r in &revs {
+            inputs.push((vec![], r.out.clone()));
+        }
+        Ok(ExportPlan { ff: ff.to_path_buf(), src: self.clip.clone(), inputs, out, graph_ass, graph_plain: (gp, lp), ass_file, ass_text, audio, total, kbps, sized, revs })
     }
 }
 
@@ -1363,6 +1548,10 @@ pub fn run_export(plan: &ExportPlan, progress: &dyn Fn(f64), log: &dyn Fn(String
             || (plan.sized && run(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b]))
             || (!plan.sized && run(graph, last, &["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]))
     };
+    // Play backwards: those pieces first (cached)
+    for r in plan.revs.iter().filter(|r| !r.out.exists()) {
+        reverse_piece(&plan.ff, r, log)?;
+    }
     let mut ok = false;
     if let Some((g, l)) = &plan.graph_ass {
         std::fs::write(&plan.ass_file, &plan.ass_text).map_err(|e| e.to_string())?;
@@ -1392,9 +1581,16 @@ fn whisper_dir() -> PathBuf {
     if let Ok(d) = std::env::var("ECHO_WHISPER_DIR") {
         return PathBuf::from(d);
     }
-    #[cfg(windows)]
-    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_default();
-    #[cfg(not(windows))]
+    // r2-threads (L31): echo_core's folder on every system ($APPDATA/Clipper/whisper - on Linux rec_core::early_env
+    // sets APPDATA = ~/.config), so captions_ready and the download Echo made match what transcribe uses
+    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+    base.join("Clipper").join("whisper")
+}
+
+/// r2-threads (L31): where this app downloaded whisper on Linux before (~/.local/share/Clipper/whisper) - still
+/// looked in, so an earlier download isn't fetched again
+#[cfg(not(windows))]
+fn old_whisper_dir() -> PathBuf {
     let base = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"));
     base.join("Clipper").join("whisper")
 }
@@ -1430,7 +1626,10 @@ pub fn whisper_cli() -> Option<PathBuf> {
     }
     // whisper-cli first in EVERY folder: in new releases main.exe (same folder, sorts first) is only a stub that
     // prints "deprecated" and exits - that was the empty "whisper failed:" on Windows (native chat 6)
-    find_file(&whisper_dir(), &["whisper-cli.exe", "whisper-cli"], 3).or_else(|| find_file(&whisper_dir(), &["main.exe"], 3))
+    let found = find_file(&whisper_dir(), &["whisper-cli.exe", "whisper-cli"], 3).or_else(|| find_file(&whisper_dir(), &["main.exe"], 3));
+    #[cfg(not(windows))]
+    let found = found.or_else(|| find_file(&old_whisper_dir(), &["whisper-cli"], 3)); // r2-threads (L31)
+    found
 }
 
 pub fn whisper_model() -> Option<PathBuf> {
@@ -1438,7 +1637,13 @@ pub fn whisper_model() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let m = whisper_dir().join("models");
-    ["ggml-small.bin", "ggml-base.bin"].iter().map(|n| m.join(n)).find(|p| p.exists())
+    let found = ["ggml-small.bin", "ggml-base.bin"].iter().map(|n| m.join(n)).find(|p| p.exists());
+    #[cfg(not(windows))]
+    let found = found.or_else(|| {
+        let m = old_whisper_dir().join("models"); // r2-threads (L31): an earlier download of this app
+        ["ggml-small.bin", "ggml-base.bin"].iter().map(|n| m.join(n)).find(|p| p.exists())
+    });
+    found
 }
 
 /// first-time download (Windows: whisper.cpp's release zip + the base model, with the curl.exe / tar.exe Windows

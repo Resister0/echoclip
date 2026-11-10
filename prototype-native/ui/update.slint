@@ -17,6 +17,7 @@ export global Upd {
     in-out property <[UpdOld]> older;        // shown after the link is clicked
     in-out property <string> all;            // the link after the older list
     in-out property <bool> older-on;
+    in-out property <bool> busy;             // gaps-settings: "Updating…" - the button does nothing until it fails
     callback clicked();
     callback all-clicked();
 }
@@ -97,12 +98,21 @@ export component UpdCard inherits Rectangle {
                 }
             }
         }
-        Btn {
-            width: root.width - 26px;
+        // gaps-settings: Echo's button:disabled while "Updating…"
+        Rectangle {
             height: 32px;
-            text: Upd.btn;
-            primary: Upd.primary;
-            clicked => { Upd.clicked(); }
+            opacity: Upd.busy ? 0.55 : 1;
+            Btn {
+                width: root.width - 26px;
+                height: 32px;
+                text: Upd.btn;
+                primary: Upd.primary;
+                clicked => {
+                    if (!Upd.busy) {
+                        Upd.clicked();
+                    }
+                }
+            }
         }
     }
 }

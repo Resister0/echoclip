@@ -8,5 +8,5 @@ Icon=link.echoclip.Echo
 Terminal=false
 Categories=AudioVideo;Video;Recorder;
 Keywords=clip;clipping;clips;replay;instant replay;replay buffer;highlights;game recording;game recorder;screen recorder;record gameplay;gameplay;capture;share clips;steam deck;
-StartupWMClass=link.echoclip.Echo
+StartupWMClass=echo
 SingleMainWindow=true

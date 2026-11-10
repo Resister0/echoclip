@@ -66,9 +66,12 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
                 return true;
             }
             crate::confirm_box(a, "Clean up now?", &format!("Clips older than {days} days go to the {}. Favourites are kept.", bin()), "Clean up", move |a| {
-                let n = cleanup(days);
-                lib_changed(a);
-                crate::toast(a, if n == 0 { "Nothing to clean up".to_string() } else { format!("{n} old clip{} moved to the {}", if n == 1 { "" } else { "s" }, bin()) });
+                let w = a.as_weak();
+                cleanup(days, move |n| {
+                    let Some(a) = w.upgrade() else { return };
+                    lib_changed(&a);
+                    crate::toast(&a, if n == 0 { "Nothing to clean up".to_string() } else { format!("{n} old clip{} moved to the {}", if n == 1 { "" } else { "s" }, bin()) });
+                });
             });
         }
         "import" => {
@@ -88,9 +91,13 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
             });
         }
         "sortclips" => {
-            let n = sort_into_folders(&store.borrow());
-            lib_changed(a);
-            crate::toast(a, if n == 0 { "Nothing to sort - clips are already in their game folders".to_string() } else { format!("Sorted {n} clip{} into game folders", if n == 1 { "" } else { "s" }) });
+            // r2-threads (L13): the files move on a worker
+            let w = a.as_weak();
+            sort_into_folders(&store.borrow(), move |n| {
+                let Some(a) = w.upgrade() else { return };
+                lib_changed(&a);
+                crate::toast(&a, if n == 0 { "Nothing to sort".to_string() } else { format!("Moved {n} clip{} into game folders", if n == 1 { "" } else { "s" }) });
+            });
         }
         "hometips" => {
             // Echo's "Show again": skips + hide forgotten (the "copied once" mark stays, like Echo's echo_copied)
@@ -104,9 +111,82 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
             }
             crate::toast(a, "The Get started line is back on Home");
         }
-        "feedback" => feedback(a),
+        "feedback" => feedback(a, &store.borrow().s("ec_email")),
         "sendlog" => send_log(a, &store.borrow()),
-        "selftest" => self_test(a),
+        "selftest" => self_test(a, r),
+        // gaps-settings: Echo's themeReset - back to the normal theme, own colours cleared (quietly, like Echo)
+        "themereset" => {
+            let e = || json!("");
+            match store.borrow_mut().write(&[("theme", e()), ("theme_accent", e()), ("theme_bg", e()), ("theme_hi", e())]) {
+                Ok(()) => changed(true),
+                Err(e) => crate::toast(a, e),
+            }
+            r();
+        }
+        // gaps-settings: Echo's drawCloudLock button
+        "cloudlock" => {
+            let (store, r) = (store.clone(), r.clone());
+            crate::confirm_box(
+                a,
+                "Start over with the cloud?",
+                "Echo signs out of every cloud and forgets the locked logins. Then connect Google Drive / Echo Cloud again - nothing is deleted from the clouds.",
+                "Start over",
+                move |a| {
+                    let Some(rc) = crate::rec_core::rec() else { return };
+                    let w = a.as_weak();
+                    crate::lib_net::bg(
+                        move || rc.cloud_disconnect(),
+                        move |_| {
+                            echo_core::recorder::CLOUD_LOCKED.store(false, std::sync::atomic::Ordering::Relaxed);
+                            store.borrow_mut().reload();
+                            r();
+                            if let Some(a) = w.upgrade() {
+                                crate::cloud::load_info(&a);
+                                crate::toast(&a, "Signed out - connect your clouds again");
+                            }
+                        },
+                    );
+                },
+            );
+        }
+        // gaps-settings: Echo's [Move to FiveM] on the GTA V game row
+        "fivem" => {
+            let ids = gta_clips();
+            if ids.is_empty() {
+                return true;
+            }
+            let n = ids.len();
+            let r = r.clone();
+            crate::confirm_box(
+                a,
+                &format!("Move {n} GTA V clip{} to FiveM?", if n == 1 { "" } else { "s" }),
+                "For FiveM clips that were filed as GTA V (other apps call FiveM \"Grand Theft Auto V Legacy\"). Clips you make in GTA V itself later still go to GTA V.",
+                "Move",
+                move |a| {
+                    let Some(l) = lib() else { return };
+                    // r2-threads (L13): the files move on a worker
+                    let w = a.as_weak();
+                    l.move_clips_bg(&ids, "FiveM", move |moved, err| {
+                        let Some(a) = w.upgrade() else { return };
+                        let a = &a;
+                        lib_changed(a);
+                        r();
+                        match err {
+                            Some(e) => crate::toast(a, e),
+                            None => crate::toast(a, format!("Moved {moved} clip{} to FiveM", if moved == 1 { "" } else { "s" })),
+                        }
+                    });
+                },
+            );
+        }
+        // gaps-settings: setup step 7 "Remind me later" (Echo's echo_impremind: 3 days, then once while Echo is open)
+        "impremind" => {
+            if !import_reminder_set() {
+                let due = chrono::Utc::now().timestamp_millis() + 3 * 86_400_000;
+                crate::lib_fx::ui_set("impremind", json!(due));
+            }
+            r();
+        }
         _ if act.starts_with("sound:") => {
             crate::lib_sound::play(&act[6..], &store.borrow().v, true);
         }
@@ -137,6 +217,7 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
                         crate::toast(&a, "Use at least 2 buttons together, so you don't save by accident");
                     } else {
                         let _ = store.borrow_mut().write(&[("pad_buttons", json!(bits))]);
+                        changed(true); // gaps-settings: the combo works at once
                         crate::toast(&a, format!("Controller: {names} saves a clip"));
                     }
                     r();
@@ -242,9 +323,12 @@ pub fn after_set(a: &AppWindow, store: &Rc<RefCell<Store>>, key: &str) {
                     let w = a.as_weak();
                     slint::Timer::single_shot(Duration::from_secs(4), move || {
                         if let Some(a) = w.upgrade() {
-                            if enforce_storage(gb) > 0 {
-                                lib_changed(&a);
-                            }
+                            let w2 = a.as_weak();
+                            enforce_storage(gb, move |n| {
+                                if let Some(a) = w2.upgrade().filter(|_| n > 0) {
+                                    lib_changed(&a);
+                                }
+                            });
                         }
                     });
                 }
@@ -292,7 +376,9 @@ fn set_sound(store: &Rc<RefCell<Store>>, k: &str, file: Option<&str>) {
             m.remove(k);
         }
     }
-    let _ = store.borrow_mut().write(&[("sound_files", Value::Object(m))]);
+    if store.borrow_mut().write(&[("sound_files", Value::Object(m))]).is_ok() {
+        changed(true); // gaps-settings: the recorder plays the new sound from the next save on
+    }
 }
 
 // ---------- storage jobs ----------
@@ -301,8 +387,9 @@ fn favs() -> std::collections::HashSet<String> {
 }
 
 /// Echo's cleanup_old: clips older than `days` (file time) to the Recycle Bin / Trash, favourites kept
-pub fn cleanup(days: u64) -> usize {
-    let Some(l) = lib() else { return 0 };
+/// r2-threads (L5): the files go on a worker; `done(n)` on the UI thread
+pub fn cleanup(days: u64, done: impl FnOnce(usize) + 'static) {
+    let Some(l) = lib() else { return done(0) };
     let cutoff = SystemTime::now() - Duration::from_secs(days * 86400);
     let favs = favs();
     let ids: Vec<usize> = (0..l.len()).filter(|&i| {
@@ -310,11 +397,12 @@ pub fn cleanup(days: u64) -> usize {
         !c.gone.get() && c.mtime < cutoff && !favs.contains(&c.name) && !c.folder.eq_ignore_ascii_case("Screenshots")
     }).collect();
     if ids.is_empty() {
-        return 0;
+        return done(0);
     }
-    let (n, _) = l.delete_clips(&ids);
-    crate::lib_net::log_line(&format!("cleanup: {n} clips older than {days} days sent to the {}", bin()));
-    n
+    l.delete_clips_bg(&ids, |_, _| {}, move |n, _| {
+        crate::lib_net::log_line(&format!("cleanup: {n} clips older than {days} days sent to the {}", bin()));
+        done(n);
+    });
 }
 
 /// (clip ids oldest first, total bytes) of the library
@@ -327,11 +415,12 @@ fn over_limit(_gb: u64) -> (Vec<usize>, u64) {
 }
 
 /// Echo's enforce_storage: the oldest clips go while the folder is over the limit (the newest always stays)
-pub fn enforce_storage(gb: u64) -> usize {
+/// r2-threads (L5): the files go on a worker; `done(n)` on the UI thread
+pub fn enforce_storage(gb: u64, done: impl FnOnce(usize) + 'static) {
     if gb == 0 {
-        return 0;
+        return done(0);
     }
-    let Some(l) = lib() else { return 0 };
+    let Some(l) = lib() else { return done(0) };
     let limit = gb * 1_000_000_000;
     let (ids, mut total) = over_limit(gb);
     let mut del = vec![];
@@ -343,18 +432,19 @@ pub fn enforce_storage(gb: u64) -> usize {
         del.push(i);
     }
     if del.is_empty() {
-        return 0;
+        return done(0);
     }
-    let (n, _) = l.delete_clips(&del);
-    crate::lib_net::log_line(&format!("storage: {n} oldest clips removed (limit {gb} GB)"));
-    n
+    l.delete_clips_bg(&del, |_, _| {}, move |n, _| {
+        crate::lib_net::log_line(&format!("storage: {n} oldest clips removed (limit {gb} GB)"));
+        done(n);
+    });
 }
 
 /// Echo's sort_into_folders: clips in the main folder / "Exported Clips"… with a game in their name move into
 /// that game's folder (folder_alias followed)
-fn sort_into_folders(st: &Store) -> usize {
+fn sort_into_folders(st: &Store, done: impl FnOnce(usize) + 'static) {
     const LOOSE: &[&str] = &["", "exported clips", "shared clips", "clips", "videos", "highlights", "exports"];
-    let Some(l) = lib() else { return 0 };
+    let Some(l) = lib() else { return done(0) };
     let alias = st.v.get("folder_alias").and_then(|v| v.as_object()).cloned().unwrap_or_default();
     let not: Vec<String> = st.v.get("not_games").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_lowercase())).collect()).unwrap_or_default();
     let mut by: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
@@ -370,41 +460,135 @@ fn sort_into_folders(st: &Store) -> usize {
         }
         by.entry(g).or_default().push(i);
     }
-    let mut n = 0;
-    for (g, ids) in by {
-        n += l.move_clips(&ids, &g).0;
-    }
-    n
+    // r2-threads (L13): one worker for all the game folders
+    l.move_many_bg(by.into_iter().map(|(g, ids)| (ids, g)).collect(), move |n, _| done(n));
 }
 
 /// Background jobs (auto-delete every 6 h, shrink old clips while idle, start with Windows) run in Chat A's
 /// rec_core.rs with Echo's own recorder.rs code (cleanup_old / shrink_old_clips / autostart) - not here.
-pub fn wire(_app: &AppWindow, _store: Rc<RefCell<Store>>) {}
+/// gaps-settings: the window for the "Settings saved" toasts + the import reminder (main.rs calls this twice: once)
+pub fn wire(app: &AppWindow, _store: Rc<RefCell<Store>>) {
+    if APP.with(|x| x.borrow().is_some()) {
+        return;
+    }
+    APP.with(|x| *x.borrow_mut() = Some(app.as_weak()));
+    // Echo's "Remind me later" (setup step 7): 60 s after a start once it's due, a question while Echo is open
+    let w = app.as_weak();
+    slint::Timer::single_shot(Duration::from_secs(60), move || {
+        let Some(a) = w.upgrade() else { return };
+        let due = crate::lib_fx::ui_get("impremind").as_i64().unwrap_or(0);
+        if due == 0 || chrono::Utc::now().timestamp_millis() < due || !a.window().is_visible() {
+            return;
+        }
+        crate::lib_fx::ui_set("impremind", Value::Null);
+        crate::ask(
+            &a,
+            "Bring in your old clips?",
+            "You asked Echo to remind you: clips from Medal, SteelSeries Moments, Outplayed or any folder can be copied in, with their dates and game folders.",
+            &[("Not now", "", ""), ("Show me", "go", "primary")],
+            None,
+            "go",
+            |a, v, _| {
+                if v == "go" {
+                    a.invoke_page("Settings".into());
+                    a.global::<crate::S>().invoke_pick("storage".into());
+                }
+            },
+        );
+    });
+}
+
+thread_local! {
+    static APP: RefCell<Option<slint::Weak<AppWindow>>> = const { RefCell::new(None) };
+    /// Echo's changed(): 450 ms after the last change, one apply + one toast
+    static SAVE_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    /// a save is waiting: Some(quiet) - quiet = no toast unless the recorder restarts
+    static SAVE_QUIET: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// self-test: running, last result (rows of (name, ok, detail) / error)
+    static SELFTEST: RefCell<(bool, Option<Result<Vec<(String, bool, String)>, String>>)> = const { RefCell::new((false, None)) };
+}
+
+/// gaps-settings (Echo's changed()): a setting was written - the recorder takes it at once (new hotkeys work right
+/// away, no wait for its 3 s look at the file) and a toast says "Settings saved" or "Saved · recorder restarting with
+/// new settings". Changes within 450 ms are one save (sliders). `quiet` = no toast unless the recorder restarts.
+pub fn changed(quiet: bool) {
+    SAVE_QUIET.with(|q| q.set(Some(q.get().map_or(quiet, |p| p && quiet))));
+    SAVE_TIMER.with(|t| {
+        // the same timer, started again: changes within 450 ms are one save
+        t.borrow_mut().get_or_insert_with(slint::Timer::default).start(slint::TimerMode::SingleShot, Duration::from_millis(450), || {
+            let quiet = SAVE_QUIET.with(|q| q.take()).unwrap_or(true);
+            crate::lib_net::bg(crate::rec_core::apply_settings_now, move |restarted| {
+                let Some(a) = APP.with(|x| x.borrow().as_ref().and_then(|w| w.upgrade())) else { return };
+                if restarted {
+                    crate::toast(&a, "Saved · recorder restarting with new settings");
+                } else if !quiet {
+                    crate::toast(&a, "Settings saved");
+                }
+            });
+        });
+    });
+}
+
+/// gaps-settings: this PC's graphics card encodes AV1 (lib_cards probes Echo's av1_ready 15 s after start)
+pub fn av1_ok() -> bool {
+    APP.with(|x| x.borrow().as_ref().and_then(|w| w.upgrade())).is_some_and(|a| a.global::<crate::Lib>().get_av1_ok())
+}
+
+/// gaps-settings: the clips filed as GTA V on this PC (Echo's Move to FiveM)
+pub fn gta_clips() -> Vec<usize> {
+    let Some(l) = lib() else { return vec![] };
+    (0..l.len())
+        .filter(|&i| {
+            let c = l.clip(i);
+            !c.gone.get() && c.cloud.is_none() && c.folder == "GTA V"
+        })
+        .collect()
+}
+
+/// gaps-settings: "Remind me later" was clicked and the reminder hasn't come yet
+pub fn import_reminder_set() -> bool {
+    crate::lib_fx::ui_get("impremind").as_i64().is_some_and(|d| d > chrono::Utc::now().timestamp_millis())
+}
+
+/// for settings.rs: (running, last result) of the self-test
+pub fn self_test_state() -> (bool, Option<Result<Vec<(String, bool, String)>, String>>) {
+    SELFTEST.with(|s| s.borrow().clone())
+}
 
 // ---------- feedback + log ----------
 pub fn app_version() -> String {
     option_env!("ECHO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
 }
 
-fn feedback(a: &AppWindow) {
+/// gaps-settings: Echo's sendFeedback - message (several lines), "Your email, if you'd like an answer (optional)"
+/// (filled with the Echo Cloud email) and "Attach Echo's log…" (on). dialog.slint's form fields.
+fn feedback(a: &AppWindow, email: &str) {
     crate::ask(
         a,
         "Send feedback",
-        "Something wrong, or an idea? It goes straight to the person who makes Echo (Echo's log is attached so problems are easier to find).",
+        "What happened, or what would make Echo better?",
         &[("Cancel", "", ""), ("Send", "ok", "primary")],
-        Some("What happened, or what would you like?"),
-        "ok",
+        Some("e.g. the share link didn't work for a clip from Google Drive…"),
+        // L45: Enter is never Send here (Echo's textarea: Enter = new line; the email field: nothing)
+        "",
         |a, v, text| {
+            let d = a.global::<crate::Dlg>();
+            d.set_form(false);
+            let (contact, with_log) = (d.get_text2().trim().to_string(), d.get_checked());
             if v != "ok" {
                 return;
             }
             let msg = text.trim().to_string();
             if msg.is_empty() {
-                crate::toast(a, "Write a few words first");
+                // L45: Echo keeps the form open on an empty Send (focus back in the message); the email and the
+                // log box stay as they were
+                let raw = d.get_text2().to_string();
+                feedback(a, &raw);
+                a.global::<crate::Dlg>().set_checked(with_log);
                 return;
             }
-            let tail = crate::lib_net::log_tail(400, 150_000);
-            let body = json!({ "message": msg.chars().take(4000).collect::<String>(), "contact": "", "version": app_version(),
+            let tail = if with_log { crate::lib_net::log_tail(400, 150_000) } else { String::new() };
+            let body = json!({ "message": msg.chars().take(4000).collect::<String>(), "contact": contact.chars().take(200).collect::<String>(), "version": app_version(),
                 "os": if cfg!(windows) { "Windows" } else { "Linux" }, "log": tail });
             let token = crate::cloud::token();
             crate::lib_net::call_ui(a, "POST", "/feedback", token, Some(body), |a, r| match r {
@@ -413,6 +597,12 @@ fn feedback(a: &AppWindow) {
             });
         },
     );
+    let d = a.global::<crate::Dlg>();
+    d.set_form(true);
+    d.set_placeholder2("Your email, if you'd like an answer (optional)".into());
+    d.set_text2(email.into());
+    d.set_checked(true);
+    d.set_check_text("Attach Echo's log (the last few hundred lines: what Echo did, clip and file names, no passwords or keys)".into());
 }
 
 fn send_log(a: &AppWindow, st: &Store) {
@@ -444,7 +634,7 @@ fn send_log(a: &AppWindow, st: &Store) {
             move |res| {
                 let Some(a) = w.upgrade() else { return };
                 match res {
-                    Ok(u) if !u.is_empty() => crate::toast(&a, "Link to your log copied - paste it into Discord for whoever helps you"),
+                    Ok(u) if !u.is_empty() => crate::toast(&a, "Log sent - link copied, paste it into Discord"),
                     Ok(_) => crate::toast(&a, "Couldn't upload the log - the file is copied instead, paste it into Discord"),
                     Err(e) => crate::toast(&a, format!("Couldn't send the log: {e}")),
                 }
@@ -475,7 +665,7 @@ fn send_log(a: &AppWindow, st: &Store) {
     crate::lib_net::call_ui(a, "POST", "/log", String::new(), Some(body), |a, r| match r.and_then(|v| v["url"].as_str().filter(|u| !u.is_empty()).map(|u| u.to_string()).ok_or_else(|| "no link".to_string())) {
         Ok(url) => {
             let _ = crate::lib_net::copy_text(&url);
-            crate::toast(a, "Link to your log copied - paste it into Discord for whoever helps you");
+            crate::toast(a, "Log sent - link copied, paste it into Discord");
         }
         Err(e) => crate::toast(a, format!("Couldn't send the log: {e}")),
     });
@@ -485,48 +675,32 @@ fn send_log(a: &AppWindow, st: &Store) {
 /// Echo's compress_clip from the card menu: factor 0.5 = about half, 0.33 = about a third (the original is replaced;
 /// its date is kept; the cloud copy follows)
 pub fn smaller(a: &AppWindow, idx: usize, factor: f64) {
-    let (Some(l), Some(r)) = (lib(), crate::rec_core::rec()) else { return };
-    let c = l.clip(idx);
-    if c.cloud.is_some() {
-        crate::toast(a, "This clip is only in the cloud - download it first");
-        return;
-    }
-    if a.get_player_open() {
-        a.global::<crate::Play>().invoke_close();
-    }
-    let path = c.path.to_string_lossy().to_string();
-    crate::cloud::job(
-        a,
-        "Making smaller…",
-        move |p| r.compress_clip(&path, factor, false, p).map(|(b, af)| format!("{} → {}", crate::library::fmt_size(b), crate::library::fmt_size(af))),
-        |a, res| {
-            match res {
-                Ok(t) => crate::toast(a, format!("Made smaller: {t}")),
-                Err(e) => crate::toast(a, e),
-            }
-            lib_changed(a);
-        },
-    );
+    // gaps-library row 2: asks "Make this clip smaller?" first, then joins the one-at-a-time queue with its per-card
+    // progress (lib_cards.rs, Echo's queueJobs) - was its own progress box per click
+    crate::lib_cards::shrink_at(a, idx, factor);
 }
 
-/// Settings > Troubleshooting > Self-test: Echo's self_test (records ~6 s, checks video + every audio track)
-pub fn self_test(a: &AppWindow) {
-    let Some(r) = crate::rec_core::rec() else { return };
+/// Settings > Troubleshooting > Self-test and setup step 6: Echo's self_test (records ~6 s, checks video + every audio
+/// track). gaps-settings: like Echo the button reads "Testing… (6 s)" and the result shows under the row
+/// (settings.rs self_test_row), no dialog.
+pub fn self_test(a: &AppWindow, refresh: &Refresh) {
+    let Some(rc) = crate::rec_core::rec() else { return };
     if !crate::rec_core::can_record() {
         crate::toast(a, "Another Echo is recording - close it, then run the self-test here");
         return;
     }
-    crate::cloud::job(
-        a,
-        "Self-test - play some sound and say something…",
-        move |_| {
-            let rows = r.self_test();
-            Ok(rows.into_iter().map(|(n, ok, d)| format!("{} {n}: {d}", if ok { "✓" } else { "✗" })).collect::<Vec<_>>().join("\n"))
-        },
-        |a, res| {
-            let text = res.unwrap_or_else(|e| e);
-            let all_ok = !text.contains('✗');
-            crate::ask(a, if all_ok { "Everything works" } else { "Self-test found a problem" }, &text, &[("OK", "", "primary")], None, "", |_, _, _| {});
+    if SELFTEST.with(|s| s.borrow().0) {
+        return;
+    }
+    SELFTEST.with(|s| *s.borrow_mut() = (true, None));
+    refresh();
+    let refresh = refresh.clone();
+    crate::lib_net::bg(
+        move || rc.self_test(),
+        move |rows| {
+            let res = if rows.is_empty() { Err("The self-test couldn't run - see the log".to_string()) } else { Ok(rows) };
+            SELFTEST.with(|s| *s.borrow_mut() = (false, Some(res)));
+            refresh();
         },
     );
 }

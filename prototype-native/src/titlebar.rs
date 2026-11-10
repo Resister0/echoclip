@@ -90,9 +90,28 @@ fn hwnd_of(app: &AppWindow) -> Option<isize> {
     }
 }
 
+/// Linux (Wayland/X11): after drag_window / drag_resize_window the compositor runs the move and the button release
+/// never reaches the app, so Slint kept the pressed TouchArea grabbed and routed EVERY later click to it -> the whole
+/// window acted as the title bar (9 Nov 2026, Nobara KDE Wayland). Hand Slint the missing release. Windows: no-op.
+fn end_grab(_a: &AppWindow) {
+    #[cfg(not(windows))]
+    {
+        let w = _a.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(a) = w.upgrade() {
+                a.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                    position: slint::LogicalPosition::new(1.0, 1.0),
+                    button: slint::platform::PointerEventButton::Left,
+                });
+            }
+        });
+    }
+}
+
 pub fn wire(app: &AppWindow) {
     let custom = std::env::var("ECHO_NATIVE_FRAME").is_err();
     app.set_custom_frame(custom);
+    app.set_drag_on_move(cfg!(not(windows)));
     // Windows hooks need the native window, which winit makes only after the event loop shows it (a 0 ms timer was
     // too early: both hooks silently did nothing). Try every 100 ms until it exists, then once.
     #[cfg(windows)]
@@ -137,6 +156,8 @@ pub fn wire(app: &AppWindow) {
                 win.with_winit_window(|ww| {
                     let _ = ww.drag_window();
                 });
+                // Linux: compositor keeps the button release -> see end_grab()
+                end_grab(&a);
             }
             r if r.starts_with("resize:") => {
                 use winit::window::ResizeDirection as D;
@@ -153,6 +174,7 @@ pub fn wire(app: &AppWindow) {
                 win.with_winit_window(|ww| {
                     let _ = ww.drag_resize_window(d);
                 });
+                end_grab(&a);
             }
             _ => {}
         }

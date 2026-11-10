@@ -1,11 +1,13 @@
 // Chat D - the Screenshots page: pictures in <clips>/Screenshots (Echo's P / screenshot hotkey / player Frame).
 // Click = open it in the system's picture viewer; hover = Show in folder / Delete. Rust: src/lib_shots.rs.
-import { T, Ic, Icon, IconBtn, Btn } from "theme.slint";
+import { T, Ic, Icon, IconBtn, Btn, TipArea } from "theme.slint";
+import { Focus } from "focus.slint"; // port leftovers L2
 
 export struct Shot {
     name: string,
     when: string,     // "5 min ago · 1.2 MB"
     img: image,
+    picked: bool,     // gaps-library row 12: selected (round tick, Ctrl/Shift+click, Ctrl+A)
 }
 
 export global Shots {
@@ -18,8 +20,17 @@ export global Shots {
     in property <float> view-w;        // the picture's pixel size (aspect)
     in property <float> view-h;
     callback open(int);
-    callback act(int, string);         // "folder" / "delete"
+    callback act(int, string);         // "copy" / "folder" / "delete"
     callback open-folder();
+    // gaps-library row 12: Echo's selection, search and Grid/List on this page too (lib_shots.rs)
+    in-out property <int> picked-n;
+    in-out property <string> query;    // the page's search box (filters by name)
+    callback pick(int);                // toggle one
+    callback pick-all();               // Ctrl+A: what the page shows
+    callback pick-clear();             // Clear / Esc
+    callback del-picked();             // the bar's Delete / the Delete key
+    callback search(string);
+    callback set-view(bool);           // Grid / List (the library's setting, remembered)
 }
 
 // Echo's openShot + wheelZoom: dark overlay (#000e), the picture fitted inside 24 px padding (rounded 8 px, shadow);
@@ -50,6 +61,8 @@ export component ShotViewer inherits Rectangle {
         root.oy = 0;
         if (root.visible) {
             fs.focus();
+        } else {
+            Focus.back(); // L2: Esc / click closes the viewer - the Screenshots page gets the keys again
         }
     }
     function clamp-pan() {
@@ -127,25 +140,71 @@ export component ShotViewer inherits Rectangle {
     }
 }
 
+// Echo's .pick on a screenshot (gaps-library row 12): round tick, shows on hover / while selecting
+component ShotTick inherits Rectangle {
+    in property <bool> on;
+    in property <bool> show;
+    callback clicked;
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+    background: on ? T.accent : #00000066;
+    border-width: 2px;
+    border-color: on ? T.accent : #ffffffcc;
+    opacity: show || on ? 1 : 0;
+    animate opacity { duration: T.fade; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: "Select (Ctrl+click)";
+        hover: ta.has-hover;
+    }
+    if root.on: Icon {
+        width: 14px;
+        height: 14px;
+        commands: Ic.check;
+        stroke: white;
+        stroke-width: 3px;
+    }
+}
+
 component ShotCard inherits Rectangle {
     in property <Shot> s;
     in property <int> i;
+    in property <bool> small; // list view: the picture on the left
     property <bool> hov: ta.has-hover;
+    property <bool> sel-click; // Ctrl / Shift held on the press
+    property <length> pic-w: small ? 176px : self.width - 2px;
+    property <length> pic-h: small ? self.height - 2px : pic-w * 9 / 16;
     background: T.panel;
     border-radius: T.radius;
     border-width: 1px;
-    border-color: hov ? T.accent.with-alpha(0.4) : T.line;
+    border-color: s.picked ? T.accent : hov ? T.accent.with-alpha(0.4) : T.line;
     animate border-color { duration: T.fade; }
     clip: true;
     ta := TouchArea {
         mouse-cursor: pointer;
-        clicked => { Shots.open(root.i); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.sel-click = e.modifiers.control || e.modifiers.shift;
+            }
+        }
+        // Echo: Ctrl / Shift+click or a click while something is selected = select, else open the picture
+        clicked => {
+            if (root.sel-click || Shots.picked-n > 0) {
+                Shots.pick(root.i);
+            } else {
+                Shots.open(root.i);
+            }
+        }
     }
     Rectangle {
         x: 1px;
         y: 1px;
-        width: parent.width - 2px;
-        height: self.width * 9 / 16;
+        width: root.pic-w;
+        height: root.pic-h;
         background: #0a0a0c;
         clip: true;
         Image {
@@ -154,9 +213,23 @@ component ShotCard inherits Rectangle {
             source: s.img;
             image-fit: cover;
         }
+        // selected: accent tint; something else selected: this one is dimmed (like the clip cards)
+        Rectangle {
+            background: s.picked ? T.accent.with-alpha(0.16) : Shots.picked-n > 0 ? (root.hov ? #0a0a0c26 : #0a0a0c73) : transparent;
+            animate background { duration: T.fade; }
+        }
+        ShotTick {
+            x: 9px;
+            y: 9px;
+            on: s.picked;
+            show: root.hov || Shots.picked-n > 0;
+            clicked => { Shots.pick(root.i); }
+        }
     }
     HorizontalLayout {
-        y: (parent.width - 2px) * 9 / 16 + 1px;
+        x: root.small ? root.pic-w + 2px : 0;
+        y: root.small ? 0 : root.pic-h + 1px;
+        width: parent.width - self.x;
         height: parent.height - self.y;
         padding-left: 14px;
         padding-right: 8px;
@@ -181,6 +254,12 @@ component ShotCard inherits Rectangle {
         }
         if hov: IconBtn {
             y: (parent.height - self.height) / 2;
+            icon: Ic.copy;
+            tip: "Copy to clipboard";
+            clicked => { Shots.act(root.i, "copy"); }
+        }
+        if hov: IconBtn {
+            y: (parent.height - self.height) / 2;
             icon: Ic.folder;
             tip: "Show in folder";
             clicked => { Shots.act(root.i, "folder"); }
@@ -196,10 +275,11 @@ component ShotCard inherits Rectangle {
 }
 
 export component ShotsPage inherits Rectangle {
-    property <length> gap: 22px;
-    property <int> cols: root.width > 1240px ? 4 : root.width > 860px ? 3 : root.width > 500px ? 2 : 1;
+    in property <bool> list; // the library's Grid / List setting (Echo's libView applies here too)
+    property <length> gap: list ? 10px : 22px;
+    property <int> cols: list ? 1 : root.width > 1240px ? 4 : root.width > 860px ? 3 : root.width > 500px ? 2 : 1;
     property <length> cw: (root.width - 56px - 8px - (cols - 1) * gap) / cols;
-    property <length> ch: cw * 9 / 16 + 2px + 58px;
+    property <length> ch: list ? 101px : cw * 9 / 16 + 2px + 58px;
     VerticalLayout {
         padding-left: 28px;
         padding-right: 28px;
@@ -214,6 +294,68 @@ export component ShotsPage inherits Rectangle {
                 color: T.muted;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+            }
+            // gaps-library row 12: Echo's toolbar search (by name) on this page
+            Rectangle {
+                width: 260px;
+                border-radius: 10px;
+                background: T.panel;
+                border-width: 1px;
+                border-color: qi.has-focus ? T.accent : T.line;
+                TouchArea {
+                    mouse-cursor: MouseCursor.text;
+                    clicked => { qi.focus(); }
+                }
+                Icon {
+                    x: 11px;
+                    y: 10px;
+                    width: 16px;
+                    height: 16px;
+                    commands: Ic.search;
+                    stroke: T.dim;
+                }
+                if qi.text == "": Text {
+                    x: 34px;
+                    height: parent.height;
+                    text: "Search clips…";
+                    font-size: 14px;
+                    color: T.dim;
+                    vertical-alignment: center;
+                }
+                qi := TextInput {
+                    x: 34px;
+                    width: parent.width - 46px;
+                    height: parent.height;
+                    text <=> Shots.query;
+                    vertical-alignment: center;
+                    single-line: true;
+                    font-size: 14px;
+                    color: T.text;
+                    selection-background-color: T.accent.with-alpha(0.45);
+                    edited => { Shots.search(self.text); }
+                    key-pressed(e) => {
+                        if (e.text == Key.Escape) {
+                            // L46: like the library's search: Esc also clears a selection
+                            if (Shots.picked-n > 0) {
+                                Shots.pick-clear();
+                            }
+                            self.text = "";
+                            Shots.search("");
+                            self.clear-focus();
+                            Focus.back(); // L2: clear-focus alone left no one with the keys
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+            }
+            IconBtn {
+                y: 1px;
+                icon: root.list ? Ic.grid : Ic.list;
+                tip: "Grid / list view";
+                icon-color: T.text;
+                idle-bg: T.panel;
+                clicked => { Shots.set-view(!root.list); }
             }
             Btn {
                 text: "Open folder";
@@ -231,7 +373,8 @@ export component ShotsPage inherits Rectangle {
         }
         if Shots.items.length > 0: Flickable {
             vertical-stretch: 1;
-            content-height: (ceil(Shots.items.length / root.cols)) * (root.ch + root.gap) + 20px;
+            // + room under the last row for the selection bar
+            content-height: (ceil(Shots.items.length / root.cols)) * (root.ch + root.gap) + 90px;
             for s[i] in Shots.items: ShotCard {
                 x: mod(i, root.cols) * (root.cw + root.gap);
                 y: floor(i / root.cols) * (root.ch + root.gap);
@@ -239,6 +382,49 @@ export component ShotsPage inherits Rectangle {
                 height: root.ch;
                 s: s;
                 i: i;
+                small: root.list;
+            }
+        }
+    }
+    // Echo's .pickbar.shots: "N screenshots selected" [Delete] [Clear] (Combine / Move / AV1 / Favourite hidden)
+    if Shots.picked-n > 0: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 22px;
+        width: sbl.preferred-width;
+        height: 54px;
+        background: T.panel2;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.accent;
+        drop-shadow-blur: 40px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: #000000cc;
+        TouchArea { }
+        sbl := HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            Text {
+                text: Shots.picked-n + " screenshot" + (Shots.picked-n == 1 ? "" : "s") + " selected";
+                font-size: 14px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+                vertical-alignment: center;
+            }
+            Rectangle { width: 16px; }
+            Btn {
+                text: "Delete";
+                icon: Ic.del;
+                danger: true;
+                clicked => { Shots.del-picked(); }
+            }
+            Btn {
+                text: "Clear";
+                tip: "Clear the selection (Esc)";
+                tip-above: true;
+                clicked => { Shots.pick-clear(); }
             }
         }
     }

@@ -1,7 +1,9 @@
 // Settings page, styled from Echo's ui/index.html (#page-settings: .snav, .sbody, .sec, .box, .row, .switch, .seg,
 // .qhero, .preset, .hk, .themegrid). Rust (settings.rs) builds the rows; this file only draws them.
 import { T, Ic, Icon, TipArea, Btn, IconBtn, MenuRow } from "theme.slint";
+import { Focus } from "focus.slint"; // port leftovers L2
 import { ProfilePanel } from "lib_profile.slint"; // Chat B (night)
+import { Login } from "cloud.slint"; // r2-texts L42: the inline cloud login row
 
 export struct SOpt {
     value: string,
@@ -17,6 +19,7 @@ export struct EcPlan {
     yid: string,
     ytext: string,
     save: string,    // "-17%" ("" = none)
+    current: bool,   // William (10 Nov): the plan this account pays for now (paid users see the cards too)
 }
 export global EcPlans {
     in-out property <[EcPlan]> plans;
@@ -49,6 +52,7 @@ export struct SRow {
     why: string,
     listen: bool,   // hotkey button waiting for keys
     col: bool,
+    icon: image,    // gaps-settings: a game's icon (Settings > Games)
 }
 
 export struct SBox {
@@ -273,6 +277,13 @@ component SSelect inherits Rectangle {
 // the open dropdown list: below the select (above it when there's no room), a click outside closes it and is
 // swallowed, Esc closes it
 export component SDropLayer inherits Rectangle {
+    // L2: the list's FocusScope is destroyed when it closes - hand the keys back (Settings; the setup wizard keeps none)
+    property <bool> is-open: SDrop.open;
+    changed is-open => {
+        if (!self.is-open) {
+            Focus.back();
+        }
+    }
     if SDrop.open: Rectangle {
         TouchArea {
             clicked => { SDrop.open = false; }
@@ -289,10 +300,15 @@ export component SDropLayer inherits Rectangle {
         }
         list := Rectangle {
             property <length> below: SDrop.by + SDrop.bh + 4px;
-            width: max(SDrop.bw, 200px);
-            height: sel.preferred-height;
-            x: min(SDrop.bx, root.width - self.width - 8px);
-            y: below + self.height <= root.height - 8px ? below : max(8px, SDrop.by - self.height - 4px);
+            // r2-layout (L38): Echo's <select> list scrolls - below if it fits, else the side with more room, capped
+            property <length> room-below: root.height - 8px - below;
+            property <length> room-above: SDrop.by - 12px;
+            property <bool> down: sel.preferred-height <= room-below || room-below >= room-above;
+            // r2-layout (L26): as wide as the longest option (up to 460 px), never narrower than the select
+            width: max(SDrop.bw, 200px, min(sel.preferred-width, 460px));
+            height: max(48px, min(sel.preferred-height, down ? room-below : room-above));
+            x: max(8px, min(SDrop.bx, root.width - self.width - 8px));
+            y: down ? below : max(8px, SDrop.by - self.height - 4px);
             background: T.panel;
             border-radius: 12px;
             border-width: 1px;
@@ -301,15 +317,21 @@ export component SDropLayer inherits Rectangle {
             drop-shadow-offset-y: 10px;
             drop-shadow-color: #000000aa;
             TouchArea { }   // gaps between rows don't close it
-            sel := VerticalLayout {
-                padding: 6px;
-                for o in SDrop.opts: MenuRow {
-                    text: o.label;
-                    tick-room: true;
-                    on: o.value == SDrop.value;
-                    clicked => {
-                        SDrop.open = false;
-                        S.set(SDrop.key, o.value);
+            // wheel only (a drag-scroll Flickable delays the press on a row)
+            Flickable {
+                interactive: false;
+                content-height: sel.preferred-height;
+                sel := VerticalLayout {
+                    width: list.width;
+                    padding: 6px;
+                    for o in SDrop.opts: MenuRow {
+                        text: o.label;
+                        tick-room: true;
+                        on: o.value == SDrop.value;
+                        clicked => {
+                            SDrop.open = false;
+                            S.set(SDrop.key, o.value);
+                        }
                     }
                 }
             }
@@ -353,6 +375,7 @@ component SSeg inherits Rectangle {
 component HkBtn inherits Rectangle {
     in property <[string]> keys;
     in property <bool> listen;
+    in property <string> off-text: "Off - click to set"; // gaps (10 Nov): KDE has no key = "No key in KDE"
     callback clicked;
     width: max(150px, hl.preferred-width + 24px);
     height: 40px;
@@ -374,7 +397,7 @@ component HkBtn inherits Rectangle {
             vertical-alignment: center;
         }
         if !root.listen && root.keys.length == 0: Text {
-            text: "Off - click to set";
+            text: root.off-text;
             font-size: 13px;
             color: T.dim;
             vertical-alignment: center;
@@ -492,7 +515,13 @@ export component RowView inherits Rectangle {
         padding-bottom: root.r.kind == "presets" || root.r.kind == "themes" || root.r.kind == "usage" ? 12px : 14px;
         opacity: root.r.dep ? 0.45 : 1;
         // label + controls on one line
-        if root.plain: HorizontalLayout {
+        // Slint 1.18 measures a layout that sits directly in an `if` without its width: wrapped labels counted as one line,
+        // so the page (Flickable content-height = body.preferred-height) came out too short and its end could not be
+        // scrolled to (App Settings, 10 Nov). In a conditional Rectangle whose height reads the layout's own
+        // preferred-height, the layout is measured at its real width. Same for the other wrapped blocks below.
+        if root.plain: Rectangle {
+        height: rowl.preferred-height;
+        rowl := HorizontalLayout {
             spacing: 14px;
             VerticalLayout {
                 horizontal-stretch: 1;
@@ -502,7 +531,8 @@ export component RowView inherits Rectangle {
                     text: root.r.label;
                     font-size: 14px;
                     font-weight: 600 + T.fw;
-                    color: T.text;
+                    // gaps-settings: key "red" = Echo's red title (cloud logins locked)
+                    color: root.r.key == "red" ? #f87171 : T.text;
                     wrap: word-wrap;
                 }
                 if root.r.sub != "": Text {
@@ -592,6 +622,7 @@ export component RowView inherits Rectangle {
             if root.r.kind == "hotkey": HkBtn {
                 y: (parent.height - self.height) / 2;
                 keys: root.r.keys;
+                off-text: root.r.btn != "" ? root.r.btn : "Off - click to set"; // gaps (10 Nov): "No key in KDE"
                 listen: root.r.listen;
                 clicked => { S.listen(root.r.key); }
             }
@@ -663,15 +694,40 @@ export component RowView inherits Rectangle {
                     }
                 }
             }
-            if root.r.kind == "buttons" || root.r.kind == "ecacct": HorizontalLayout {
-                spacing: 6px;
+            // r2-layout (L32): Echo's button groups wrap (flex-wrap, right-aligned) instead of squeezing the label to
+            // one word per line or running past the box (Echo Cloud: 4 buttons, "Add a cloud": 5)
+            if root.r.kind == "buttons" || root.r.kind == "ecacct": FlexboxLayout {
+                flex-wrap: wrap;
+                alignment: end;
+                cross-axis-alignment: center;
+                spacing-horizontal: 6px;
+                spacing-vertical: 6px;
+                max-width: max(200px, root.width * 0.6);
                 for o[i] in root.r.opts: Btn {
-                    y: (parent.height - self.height) / 2;
                     text: o.label;
                     // sub "sm" = Echo's quiet .btn.sm (Delete account…)
                     small: o.sub == "sm";
                     primary: i == 0 && root.r.key != "sounds";
-                    clicked => { S.act(o.value); }
+                    clicked => {
+                        S.act(o.value);
+                        // r2-texts L42: Echo's ownMenu - a small menu under "Own server…" (the shared list; the pick
+                        // comes back as S.set("cloudown", kind) -> cloud.rs own_pick)
+                        if (o.value == "cloud:own") {
+                            SDrop.opts = [
+                                { value: "webdav", label: "WebDAV (Nextcloud, ownCloud, most NAS)", sub: "" },
+                                { value: "sftp", label: "SFTP (any server or PC with SSH)", sub: "" },
+                                { value: "s3", label: "S3 storage (MinIO, R2, B2, Wasabi…)", sub: "" },
+                                { value: "folder", label: "A folder (NAS share, second drive…)", sub: "" },
+                            ];
+                            SDrop.value = "";
+                            SDrop.key = "cloudown";
+                            SDrop.bx = self.absolute-position.x;
+                            SDrop.by = self.absolute-position.y;
+                            SDrop.bw = max(self.width, 320px);
+                            SDrop.bh = self.height;
+                            SDrop.open = true;
+                        }
+                    }
                 }
             }
             // Echo's #sndfiles: one line per sound on the right ("Clip saved: built-in [Choose .wav]" /
@@ -705,6 +761,7 @@ export component RowView inherits Rectangle {
             if root.r.btn != "" && root.r.kind != "path": Btn {
                 y: (parent.height - self.height) / 2;
                 text: root.r.btn;
+                primary: root.r.key == "red";
                 clicked => { S.act(root.r.act); }
             }
             if root.r.btn2 != "" && root.r.kind != "path": Btn {
@@ -719,8 +776,122 @@ export component RowView inherits Rectangle {
                 toggled(v) => { S.set(root.r.key, v ? "true" : "false"); }
             }
         }
+        }
+        // r2-texts L42: Echo's #megarow - the login fields + Connect under the title / help (was one dialog per field)
+        if root.r.kind == "login": HorizontalLayout {
+            padding-top: 10px;
+            spacing: 6px;
+            alignment: end;
+            for f[i] in Login.fields: Rectangle {
+                preferred-width: f.w;
+                min-width: 60px;
+                height: 34px;
+                if f.kind == "button": Btn {
+                    text: f.ph;
+                    clicked => { Login.pick(); }
+                }
+                if f.kind != "button": Rectangle {
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: ti.has-focus ? T.accent : T.line;
+                    background: T.bg;
+                    if ti.text == "": Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: f.ph;
+                        font-size: 13px;
+                        color: T.dim;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    ti := TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: f.value;
+                        input-type: f.kind == "password" ? InputType.password : InputType.text;
+                        font-size: 13px;
+                        color: T.text;
+                        vertical-alignment: center;
+                        single-line: true;
+                        init => {
+                            if (i == 0 && Login.want-focus) {
+                                Login.want-focus = false;
+                                self.focus();
+                            }
+                        }
+                        edited => { Login.edited(f.key, self.text); }
+                        accepted => {
+                            Login.edited(f.key, self.text);
+                            Login.go();
+                        }
+                    }
+                }
+            }
+            Btn {
+                text: "Connect";
+                primary: true;
+                clicked => { Login.go(); }
+            }
+        }
+        // gaps-settings: self-test results under the row - Echo's #stres lines (✓/✗, name, detail; "…" while it
+        // runs) or the setup's #sutest (one coloured line each: value okline / badline)
+        if root.r.kind == "button" && root.r.opts.length > 0: Rectangle {
+        height: testl.preferred-height; // see the plain row
+        testl := VerticalLayout {
+            padding-top: 8px;
+            for o in root.r.opts: VerticalLayout {
+                if o.value == "okline" || o.value == "badline": Text {
+                    text: o.sub;
+                    font-size: 12.5px;
+                    color: o.value == "okline" ? #3ddc97 : #ff5c7a;
+                    wrap: word-wrap;
+                }
+                if o.value != "okline" && o.value != "badline": Rectangle {
+                    height: strl.preferred-height;
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: T.line;
+                    }
+                    strl := HorizontalLayout {
+                        width: parent.width;
+                        height: parent.height;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        padding-left: 2px;
+                        padding-right: 2px;
+                        spacing: 10px;
+                        Text {
+                            width: 18px;
+                            text: o.value == "ok" ? "✓" : o.value == "bad" ? "✗" : o.value == "wait" ? "…" : "";
+                            font-size: 13px;
+                            font-weight: 700 + T.fw;
+                            color: o.value == "ok" ? #3ddc97 : o.value == "bad" ? #ff5c7a : T.muted;
+                            horizontal-alignment: center;
+                        }
+                        if o.label != "": Text {
+                            min-width: 190px;
+                            text: o.label;
+                            font-size: 13px;
+                            font-weight: 600 + T.fw;
+                            color: T.text;
+                        }
+                        Text {
+                            text: o.sub;
+                            font-size: 13px;
+                            color: T.muted;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+        }
+        }
         // .row.col: label (and hint) on top, segmented buttons below
-        if root.r.kind == "seg": VerticalLayout {
+        if root.r.kind == "seg": Rectangle {
+        height: segl.preferred-height; // see the plain row
+        segl := VerticalLayout {
             spacing: 10px;
             VerticalLayout {
                 spacing: 2px;
@@ -745,6 +916,7 @@ export component RowView inherits Rectangle {
                     picked(v) => { S.set(root.r.key, v); }
                 }
             }
+        }
         }
         // .qseg presets
         if root.r.kind == "presets": Rectangle {
@@ -914,11 +1086,19 @@ export component RowView inherits Rectangle {
                 height: 26px;
                 border-radius: 7px;
                 background: T.panel2;
-                Text {
+                clip: true;
+                // gaps-settings: Echo's game icon (g.icon), else the first letter
+                if root.r.icon.width == 0: Text {
                     text: root.r.value;
                     font-size: 12px;
                     font-weight: 700 + T.fw;
                     color: T.muted;
+                }
+                if root.r.icon.width > 0: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.r.icon;
+                    image-fit: contain;
                 }
             }
             Text {
@@ -944,6 +1124,14 @@ export component RowView inherits Rectangle {
                 on: root.r.on2;
                 toggled(v) => { S.set("game_folder:" + root.r.key, v ? "true" : "false"); }
             }
+            // gaps-settings: Echo's [Move to FiveM] (GTA V row with clips filed as GTA V)
+            if root.r.btn != "": Btn {
+                y: (parent.height - self.height) / 2;
+                small: true;
+                text: root.r.btn;
+                tip: "Were these FiveM clips? Move them into the FiveM folder";
+                clicked => { S.act(root.r.act2); }
+            }
             Btn {
                 y: (parent.height - self.height) / 2;
                 small: true;
@@ -953,7 +1141,9 @@ export component RowView inherits Rectangle {
             }
         }
         // clips folder: label 150 px, path box, Open
-        if root.r.kind == "path": VerticalLayout {
+        if root.r.kind == "path": Rectangle {
+        height: pathl.preferred-height; // see the plain row
+        pathl := VerticalLayout {
             spacing: 6px;
             HorizontalLayout {
                 spacing: 14px;
@@ -987,6 +1177,7 @@ export component RowView inherits Rectangle {
                 wrap: word-wrap;
             }
         }
+        }
         // plain text (notes inside a box)
         // Echo's #ecplans: grid of cards (auto-fit, min 170 px, gap 10, margin-top 12), "Loading plans…" first
         if root.r.kind == "ecplans" && EcPlans.state == "loading": Text {
@@ -1001,7 +1192,7 @@ export component RowView inherits Rectangle {
                 min-width: 170px;
                 border-radius: 12px;
                 border-width: 1px;
-                border-color: T.line;
+                border-color: p.current ? T.accent : T.line;
                 background: #ffffff06;
                 VerticalLayout {
                     padding: 12px;
@@ -1014,36 +1205,34 @@ export component RowView inherits Rectangle {
                             color: T.text;
                         }
                         Text {
-                            text: "for your clips + share links";
+                            text: p.current ? "Your plan" : "for your clips + share links";
                             font-size: 12.5px;
-                            color: T.muted;
+                            color: p.current ? T.accent2 : T.muted;
                         }
                     }
-                    if p.mid != "": Btn {
+                    // the plan you have: managed on Polar (cancel, card, invoices)
+                    if p.current: Btn {
+                        text: "Manage plan";
+                        clicked => { S.act("ecmanage"); }
+                    }
+                    if p.mid != "" && !p.current: Btn {
                         primary: true;
                         text: EcPlans.busy == p.mid ? "Opening…" : p.mtext;
                         clicked => { EcPlans.buy(p.mid); }
                     }
-                    if p.yid != "": Rectangle {
-                        height: yb.height;
-                        yb := Btn {
-                            width: parent.width;
-                            text: EcPlans.busy == p.yid ? "Opening…" : p.ytext;
-                            clicked => { EcPlans.buy(p.yid); }
-                        }
-                        // Echo's .save: purple "-17%" next to the year price
-                        if p.save != "" && EcPlans.busy != p.yid: Text {
-                            x: parent.width - self.preferred-width - 12px;
-                            y: (parent.height - self.height) / 2;
-                            text: p.save;
-                            font-size: 11px;
-                            color: #a78bfa;
-                        }
+                    // Echo's .save: purple "-17%" right after the year price, centered together (was pinned to the
+                    // right edge on top of the price -> cut off on narrow cards)
+                    if p.yid != "" && !p.current: Btn {
+                        text: EcPlans.busy == p.yid ? "Opening…" : p.ytext;
+                        badge: EcPlans.busy == p.yid ? "" : p.save;
+                        clicked => { EcPlans.buy(p.yid); }
                     }
                 }
             }
         }
-        if root.r.kind == "info": VerticalLayout {
+        if root.r.kind == "info": Rectangle {
+        height: infol.preferred-height; // see the plain row
+        infol := VerticalLayout {
             spacing: 2px;
             if root.r.label != "": Text {
                 text: root.r.label;
@@ -1057,6 +1246,7 @@ export component RowView inherits Rectangle {
                 color: root.r.label != "" ? T.muted : T.dim;
                 wrap: word-wrap;
             }
+        }
         }
     }
     // dimmed rows: not clickable, the reason as a tooltip
@@ -1349,9 +1539,13 @@ export component SettingsPage inherits Rectangle {
                             single-line: true;
                             edited => { S.search(self.text); }
                             key-pressed(e) => {
-                                if (e.text == Key.Escape && self.text != "") {
-                                    self.text = "";
-                                    S.search("");
+                                // L46: Echo's Esc empties the box and leaves it (also when it's already empty)
+                                if (e.text == Key.Escape) {
+                                    if (self.text != "") {
+                                        self.text = "";
+                                        S.search("");
+                                    }
+                                    keys.focus();
                                     return accept;
                                 }
                                 reject

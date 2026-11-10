@@ -1,0 +1,37 @@
+// r2-layout (round 2, 10 Nov 2026): menus that go over the video, and clicks that close a menu and still go through.
+// Rust side: src/over.rs.
+
+export global Over {
+    // L39: a press outside an editor menu closed it. Echo closes its menus on pointerdown and the click still reaches
+    // what's under it; Slint's catcher swallows the press, so Rust sends the same press again (window coordinates,
+    // button 0 left / 1 right / 2 middle).
+    callback pass(length, length, int);
+    // L1 (Windows, video in its own window): Slint can't draw over the video window, so while a menu is open the
+    // video window is parked and Slint shows this still of the current picture in its place.
+    in-out property <image> still;
+    in-out property <bool> still-on;
+    // L1: the video window is on screen (Windows window mode): tooltips stay off the video (TipLayer)
+    in-out property <bool> video-win;
+    // the window size, set from Rust (over.rs): reading root.width / root.height inside a layout is a binding loop.
+    // L10 hides the library count under 1150 px; L34 flips the card's Copy ▾ above it near the bottom.
+    in-out property <length> win-w: 1600px;
+    in-out property <length> win-h: 900px;
+    // L9: the library grid's card width (Rust gives each row room for its cards' tag lines)
+    callback grid-card-w(length);
+    // L39 helper: the button that was pressed, as a number for pass()
+    public pure function btn-no(b: PointerEventButton) -> int {
+        return b == PointerEventButton.right ? 1 : b == PointerEventButton.middle ? 2 : 0;
+    }
+}
+
+// the still, drawn where the video is (inside the player's / editor's video rectangle)
+export component OverStill inherits Rectangle {
+    visible: Over.still-on;
+    background: black;
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: Over.still;
+        image-fit: contain;
+    }
+}

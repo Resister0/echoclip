@@ -38,6 +38,14 @@ pub fn select_backend() {
             if POPUP_NEXT.swap(false, Ordering::SeqCst) {
                 attrs.with_active(false).with_transparent(true).with_decorations(false).with_resizable(false)
             } else {
+                // Linux: Wayland app_id / X11 WM_CLASS "echo" = matches ~/.local/share/applications/echo.desktop
+                // (build.sh, Icon=echo-clips). Without it KDE showed the generic Wayland "W" in the taskbar (9 Nov 2026)
+                #[cfg(target_os = "linux")]
+                let attrs = {
+                    use slint::winit_030::winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+                    let a = WindowAttributesExtWayland::with_name(attrs, "echo", "echo");
+                    WindowAttributesExtX11::with_name(a, "echo", "echo")
+                };
                 attrs
             }
         })
@@ -199,6 +207,38 @@ fn ensure() -> Option<(crate::PopupWin, isize)> {
             // Echo (make_toast): x = right edge - 380, y = 24 (was 14 here)
             w.window().set_position(slint::PhysicalPosition::new(sw - (380.0 * sf) as i32, (24.0 * sf) as i32));
             echo_core::winutil::overlay_visible(hwnd, false);
+        } else {
+            // the handle often isn't there yet right after show(): the empty, see-through popup then stayed shown -
+            // in Alt+Tab as "Echo popup" from startup until the first real popup (William, 10 Nov 2026). Look again
+            // every 50 ms (up to 5 s); once it's there: no-focus tool window (out of Alt+Tab / taskbar) + hidden.
+            let ww = w.as_weak();
+            let tries = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let t = std::rc::Rc::new(slint::Timer::default());
+            let t2 = t.clone();
+            t.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
+                tries.set(tries.get() + 1);
+                let Some(w) = ww.upgrade() else { t2.stop(); return };
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                let h = match w.window().window_handle().window_handle().map(|h| h.as_raw()) {
+                    Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
+                    _ => 0,
+                };
+                if h != 0 {
+                    echo_core::winutil::make_overlay(h);
+                    echo_core::winutil::overlay_visible(h, false);
+                    WIN.with(|x| {
+                        if let Some((_, slot)) = x.borrow_mut().as_mut() {
+                            if *slot == 0 {
+                                *slot = h;
+                            }
+                        }
+                    });
+                    t2.stop();
+                } else if tries.get() >= 100 {
+                    let _ = w.hide();
+                    t2.stop();
+                }
+            });
         }
     }
     #[cfg(not(windows))]

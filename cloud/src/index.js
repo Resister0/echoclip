@@ -321,6 +321,71 @@ async function tempKeys(env, permission, prefixes, ttl) {
 }
 
 const UPLOAD_SECONDS = 6 * 3600;   // big clips on slow connections
+const cleanHash = (h) => (typeof h === "string" && /^[0-9a-f]{64}$/.test(h) ? h : null);
+const userPath = (user, key) => key.slice(`u/${user.id}/`.length);
+
+/// Another object of this user with the same clip content (hash of the clip on the PC), still in R2 - or null.
+/// Rows whose object is gone are dropped on the way.
+async function sameContent(env, user, hash, key) {
+  const rows = (await env.DB.prepare("SELECT key, moved_from FROM objects WHERE user_id = ? AND hash = ? AND key != ? LIMIT 5").bind(user.id, hash, key).all()).results || [];
+  for (const r of rows) {
+    if (await env.BUCKET.head(r.key)) return r;
+    // gone - unless its upload is still running (the row is written when the upload link is handed out)
+    const pending = await env.DB.prepare("SELECT 1 FROM uploads WHERE key = ? AND expires > ?").bind(r.key, now()).first();
+    if (!pending) await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
+  }
+  return null;
+}
+
+/// POST /upload/check {path, hash}: is this clip (same content) already in Echo Cloud under another name?
+/// -> {dup: "Echo/…" | null}. Echo asks before it converts and uploads; on a dup it moves that one (renamed clip)
+/// or leaves it (the same clip twice on the PC) instead of storing it twice.
+async function uploadCheck(req, user, env) {
+  const b = await body(req);
+  const key = userKey(user, b.path), hash = cleanHash(b.hash);
+  if (!key || !hash) return fail("Bad clip path");
+  const dup = await sameContent(env, user, hash, key);
+  // moved_from: that copy was moved there by an earlier dedup from this very path - Echo then keeps it as it is
+  return json({ dup: dup ? userPath(user, dup.key) : null, moved_from: dup && dup.moved_from ? userPath(user, dup.moved_from) : null });
+}
+
+/// POST /keep {paths}: these clips are backed up on purpose now (favourite, auto upload, removed from the PC):
+/// they stay when their share link expires.
+async function keep(req, user, env) {
+  const b = await body(req);
+  const keys = (Array.isArray(b.paths) ? b.paths : [b.path]).slice(0, 500).map((p) => userKey(user, p));
+  if (!keys.length || keys.some((k) => !k)) return fail("Bad clip path");
+  let n = 0;
+  for (let i = 0; i < keys.length; i += 90) {
+    const part = keys.slice(i, i + 90);
+    const r = await env.DB.prepare(`UPDATE objects SET share_only = 0 WHERE user_id = ? AND share_only = 1 AND key IN (${part.map(() => "?").join(",")})`).bind(user.id, ...part).run();
+    n += (r && r.meta && r.meta.changes) || 0;
+  }
+  return json({ ok: true, kept: n });
+}
+
+/// A clip was played / downloaded (share page, Echo's player or a download): counted at most once an hour per clip.
+/// The storage class job (tierObjects) moves clips nobody reads to cheaper storage and busy ones back.
+const READ_WINDOW = 30 * 86400;
+async function touchKeys(env, userId, keys) {
+  const t = now();
+  const stmts = keys.map((k) => env.DB.prepare(
+    `INSERT INTO objects (key, user_id, last_read, reads, reads_since) VALUES (?, ?, ?, 1, ?)
+     ON CONFLICT(key) DO UPDATE SET last_read = excluded.last_read,
+       reads = CASE WHEN objects.reads_since < ? THEN 1 ELSE objects.reads + 1 END,
+       reads_since = CASE WHEN objects.reads_since < ? THEN excluded.last_read ELSE objects.reads_since END
+     WHERE objects.last_read < ?`).bind(k, userId, t, t, t - READ_WINDOW, t - READ_WINDOW, t - 3600));
+  if (stmts.length) await env.DB.batch(stmts);
+}
+
+/// POST /touch {paths}: Echo streams or downloads these clips straight from R2 (rclone): tell the server they're in use.
+async function touch(req, user, env) {
+  const b = await body(req);
+  const keys = (Array.isArray(b.paths) ? b.paths : [b.path]).slice(0, 50).map((p) => userKey(user, p)).filter(Boolean);
+  await touchKeys(env, user.id, keys);
+  return json({ ok: true });
+}
+
 async function upload(req, user, env) {
   if (!env.CF_API_TOKEN || !env.ACCOUNT_ID || !env.PARENT_ACCESS_KEY_ID) return fail("Echo Cloud storage isn't set up yet", 503);
   const b = await body(req);
@@ -328,6 +393,13 @@ async function upload(req, user, env) {
   const size = Math.floor(Number(b.size));
   if (!key) return fail("Bad clip path");
   if (!(size > 0) || size > 5e9) return fail("Clips over 5 GB can't be uploaded to Echo Cloud yet");
+  // cloud-savings: the same clip (content hash from Echo) is already stored under another name -> no second copy
+  // (Echo asks /upload/check first; allow_dup = it knows and wants this one anyway). Older Echo sends no hash.
+  const hash = cleanHash(b.hash);
+  if (hash && !b.allow_dup) {
+    const dup = await sameContent(env, user, hash, key);
+    if (dup) return json({ error: "This clip is already in Echo Cloud under another name", dup: userPath(user, dup.key) }, 409);
+  }
   if (!(await allow(env, `up:${user.id}`, 600, 3600))) return fail("Too many uploads - try again in a while", 429);
   // uploads that got a link but aren't finished yet still count (else many links could be fetched first and
   // all used later); finished ones are in R2 and counted by usage(), expired ones are forgotten
@@ -364,7 +436,15 @@ async function upload(req, user, env) {
     await env.DB.prepare("DELETE FROM uploads WHERE key = ? AND user_id = ?").bind(key, user.id).run();
     return json({ error: "Echo Cloud is full - other uploads are already using the space left", full: true, used, quota: user.quota_bytes }, 413);
   }
-  return json({ url, size, expires: now() + UPLOAD_SECONDS });
+  // share_only (cloud-savings): uploaded just for an expiring share link - deleted with the link (cleanupExpired).
+  // Never for a clip that was already backed up here (a normal upload over it, or one from before this server).
+  // A normal upload (no share_only) over a share-only one makes it a backup.
+  const row = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
+  const shareOnly = !!b.share_only && (!old || !!(row && row.share_only)) ? 1 : 0;
+  await env.DB.prepare(`INSERT INTO objects (key, user_id, hash, share_only) VALUES (?, ?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET user_id = excluded.user_id, hash = excluded.hash, share_only = excluded.share_only`)
+    .bind(key, user.id, hash, shareOnly).run();
+  return json({ url, size, expires: now() + UPLOAD_SECONDS, share_only: !!shareOnly });
 }
 
 async function deleteKeys(env, user, keys) {
@@ -375,6 +455,10 @@ async function deleteKeys(env, user, keys) {
     const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
     for (const r of rows) await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
     if (rows.length) await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+  }
+  for (let i = 0; i < keys.length; i += 90) {
+    const part = keys.slice(i, i + 90);
+    await env.DB.prepare(`DELETE FROM objects WHERE user_id = ? AND key IN (${part.map(() => "?").join(",")})`).bind(user.id, ...part).run();
   }
   await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount next time
 }
@@ -401,22 +485,43 @@ async function move(req, user, env) {
   await put;
   await env.BUCKET.delete(from);
   await env.DB.prepare("UPDATE shares SET key = ? WHERE key = ? AND user_id = ?").bind(to, from, user.id).run();
+  // its hash / share-only mark / reads move with it
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(to),
+    env.DB.prepare("UPDATE objects SET key = ?, moved_from = ? WHERE key = ? AND user_id = ?").bind(to, b.dedup ? from : null, from, user.id),
+  ]);
   return json({ ok: true });
 }
 
 // share copies (watermark / AV1 -> H.264, or clips that live on another cloud) only exist for their link
 const isShareCopy = (key) => key.includes("/Echo/.shared/");
 
-/// "Stop sharing": the link stops working, the clip stays (a share copy made just for the link is deleted)
+/// a clip uploaded only for an expiring share link (cloud-savings) that no working link uses any more
+async function shareOnlyUnused(env, key) {
+  const o = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
+  if (!o || !o.share_only) return false;
+  return !(await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? AND (expires = 0 OR expires > ?) LIMIT 1").bind(key, now()).first());
+}
+
+/// "Stop sharing": the link stops working, the clip stays (a share copy made just for the link is deleted, and so is
+/// a clip that was uploaded only for this link - cloud-savings)
 async function unshare(req, user, env) {
   const key = userKey(user, (await body(req)).path);
   if (!key) return fail("Bad clip path");
   const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
+  // a clip uploaded only for its link (cloud-savings): the link stops now (expired), the clip goes with the next daily
+  // cleanup - a day for Echo to say it's kept (/keep: the PC copy was deleted meanwhile, it became a favourite…)
+  const so = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
+  if (rows.length && so && so.share_only && !isShareCopy(key)) {
+    await env.DB.prepare("UPDATE shares SET expires = ? WHERE key = ? AND user_id = ?").bind(now() - 1, key, user.id).run();
+    return json({ ok: true, removed: rows.length, copy_deleted: false });
+  }
   for (const r of rows) await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
   await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
   let copyDeleted = false;
   if (isShareCopy(key) && (await env.BUCKET.head(key))) {
     await env.BUCKET.delete(key);
+    await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(key).run();
     await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount next time
     copyDeleted = true;
   }
@@ -535,23 +640,105 @@ async function backupDb(env) {
 
 /// Daily (cron in wrangler.toml): links that have expired lose their share copy, so the space comes back.
 /// Links to the clip itself just stop working (the clip stays).
+/// cloud-savings: also clips that were uploaded only for an expiring link ("Copy share link" on a clip that was only
+/// on the PC, objects.share_only) - unless Echo said since that they're backed up on purpose (/keep, a normal upload).
+/// Only expired links of share copies / share-only uploads are picked (links to backed-up clips stay in the table, so
+/// sharing that clip again gives the same link - and 500 of those no longer block the rest).
 async function cleanupExpired(env) {
   await migrate(env);
-  const rows = (await env.DB.prepare("SELECT id, key, user_id FROM shares WHERE expires > 0 AND expires < ? LIMIT 500").bind(now()).all()).results || [];
-  let copies = 0;
+  const rows = (await env.DB.prepare(`SELECT s.id, s.key, s.user_id, COALESCE(o.share_only, 0) AS share_only FROM shares s LEFT JOIN objects o ON o.key = s.key
+    WHERE s.expires > 0 AND s.expires < ? AND (s.key LIKE '%/Echo/.shared/%' OR o.share_only = 1) LIMIT 500`).bind(now()).all()).results || [];
+  let copies = 0, uploads = 0, freed = 0;
   for (const r of rows) {
-    if (!isShareCopy(r.key)) continue;
     await env.BUCKET.delete(`thumbs/${r.id}.jpg`);
     await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(r.id).run();
-    const still = await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? LIMIT 1").bind(r.key).first();
+    // another link still plays it (share copies: any link left; share-only clips: a link that still works)
+    const still = isShareCopy(r.key)
+      ? await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? LIMIT 1").bind(r.key).first()
+      : !(await shareOnlyUnused(env, r.key));
     if (!still) {
+      const o = await env.BUCKET.head(r.key);
       await env.BUCKET.delete(r.key);
+      await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
       await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(r.user_id).run();
-      copies++;
+      if (isShareCopy(r.key)) copies++; else uploads++;
+      freed += (o && o.size) || 0;
     }
   }
-  console.log("cleanup: expired links", rows.length, "share copies deleted", copies);
-  return { expired: rows.length, copies };
+  console.log("cleanup: expired links", rows.length, "share copies deleted", copies, "share-only uploads deleted", uploads, "bytes freed", freed);
+  return { expired: rows.length, copies, uploads, freed };
+}
+
+// ----- cheaper storage for clips nobody watches (cloud-savings, 10 Nov 2026) -----
+// R2 Infrequent Access: $0.010 per GB-month instead of $0.015, but $0.01 per GB read and 30 days minimum.
+// A clip not read for TIER_IDLE_DAYS (share page plays, Echo's player / downloads via /touch; no row = never read
+// since its upload) moves there; one read again 2+ times (an hour apart) within 30 days moves back to Standard.
+// The math is in Claude outputs/cloud_savings.md. R2 can't change an object's class in place from a Worker: the
+// object is written again (streamed inside Cloudflare, only if it didn't change meanwhile). The rewrite keeps the
+// clip's date for Echo (customMetadata mtime, what rclone shows) and for the oldest-first rules (customMetadata up).
+const TIER_IDLE_DAYS = 60;
+const TIER_MIN_BYTES = 1e6;          // not worth it below
+const TIER_RUN_BYTES = 200 * GB;     // per daily run (it carries on the next day)
+const TIER_RUN_FILES = 2000;
+const TIER_RUN_MS = 8 * 60 * 1000;   // cron runs may take 15 minutes
+/// when the object was first uploaded (unix s): kept in customMetadata.up across rewrites
+const firstUpload = (o) => Number(o.customMetadata && o.customMetadata.up) || (o.uploaded ? Math.floor(new Date(o.uploaded).getTime() / 1000) : 0);
+
+async function setStorageClass(env, key, cls) {
+  const src = await env.BUCKET.get(key);
+  if (!src || !src.body) return 0;
+  const up = firstUpload(src) || now();
+  const meta = { ...(src.customMetadata || {}) };
+  if (!meta.up) meta.up = String(up);
+  if (!meta.mtime) meta.mtime = String(up);   // rclone (Echo's cloud listing) reads this as the file's date
+  const { readable, writable } = new FixedLengthStream(src.size);
+  // only if nobody uploaded a new version since the read (else that upload would be overwritten with the old one)
+  const put = env.BUCKET.put(key, readable, { httpMetadata: src.httpMetadata, customMetadata: meta, storageClass: cls, onlyIf: { etagMatches: src.etag } });
+  try {
+    await src.body.pipeTo(writable);
+    return (await put) ? src.size : 0;
+  } catch (e) {
+    console.log("tier: rewrite failed", key, e && e.message);
+    return 0;
+  }
+}
+
+async function tierObjects(env) {
+  await migrate(env);
+  const t0 = Date.now(), t = now(), idle = t - TIER_IDLE_DAYS * 86400;
+  const users = (await env.DB.prepare("SELECT id FROM users").all()).results || [];
+  const st = { checked: 0, toIA: 0, toStd: 0, bytesIA: 0, bytesStd: 0, stopped: false };
+  outer: for (const u of users) {
+    const reads = new Map((((await env.DB.prepare("SELECT key, last_read, reads, reads_since FROM objects WHERE user_id = ?").bind(u.id).all()).results) || []).map((r) => [r.key, r]));
+    let cursor;
+    do {
+      const l = await env.BUCKET.list({ prefix: `u/${u.id}/Echo/`, cursor, limit: 1000, include: ["customMetadata"] });
+      for (const o of l.objects) {
+        if (Date.now() - t0 > TIER_RUN_MS || st.toIA + st.toStd >= TIER_RUN_FILES || st.bytesIA + st.bytesStd >= TIER_RUN_BYTES) { st.stopped = true; break outer; }
+        st.checked++;
+        if (o.size < TIER_MIN_BYTES) continue;
+        const r = reads.get(o.key);
+        const uploaded = o.uploaded ? Math.floor(new Date(o.uploaded).getTime() / 1000) : t;
+        const last = Math.max(uploaded, (r && r.last_read) || 0);
+        if (o.storageClass !== "InfrequentAccess") {
+          if (last >= idle) continue;
+          const n = await setStorageClass(env, o.key, "InfrequentAccess");
+          if (n) {
+            st.toIA++; st.bytesIA += n;
+            // reads count again from now (2 reads after this move it back)
+            await env.DB.prepare(`INSERT INTO objects (key, user_id, reads, reads_since) VALUES (?, ?, 0, ?)
+              ON CONFLICT(key) DO UPDATE SET reads = 0, reads_since = excluded.reads_since`).bind(o.key, u.id, t).run();
+          }
+        } else if (r && r.reads >= 2 && r.reads_since >= t - READ_WINDOW && r.last_read >= uploaded) {
+          const n = await setStorageClass(env, o.key, "Standard");
+          if (n) { st.toStd++; st.bytesStd += n; }
+        }
+      }
+      cursor = l.truncated ? l.cursor : undefined;
+    } while (cursor);
+  }
+  console.log("tier:", JSON.stringify(st));
+  return st;
 }
 
 // Share copies (Echo/.shared/…) that no link uses any more - left behind by app bugs (chat 27: links forgotten
@@ -650,13 +837,14 @@ async function enforceQuota(env) {
     const objs = [];
     let cursor;
     for (let page = 0; page < 200; page++) {
-      const l = await env.BUCKET.list({ prefix: `u/${u.id}/`, cursor, limit: 1000 });
+      const l = await env.BUCKET.list({ prefix: `u/${u.id}/`, cursor, limit: 1000, include: ["customMetadata"] });
       objs.push(...l.objects);
       if (!l.truncated) break;
       cursor = l.cursor;
     }
     const shared = new Set((((await env.DB.prepare("SELECT key FROM shares WHERE user_id = ? AND (expires = 0 OR expires > ?)").bind(u.id, t).all()).results) || []).map((r) => r.key));
-    const ts = (o) => (o.uploaded ? new Date(o.uploaded).getTime() : 0);
+    // the first upload (a storage class rewrite keeps it in customMetadata.up), not the last rewrite
+    const ts = (o) => firstUpload(o);
     objs.sort((a, b) => (shared.has(a.key) - shared.has(b.key)) || (ts(a) - ts(b)));
     const keys = [];
     let left = objs.reduce((n, o) => n + o.size, 0), freed = 0;
@@ -673,6 +861,7 @@ async function enforceQuota(env) {
           await env.BUCKET.delete(ids.map((id) => `thumbs/${id}.jpg`));
           await env.DB.prepare(`DELETE FROM shares WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).run();
         }
+        await env.DB.prepare(`DELETE FROM objects WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).run();
       }
     }
     const removed = (u.over_removed || 0) + keys.length;
@@ -712,6 +901,7 @@ async function deleteAccount(req, user, env) {
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(user.email),
     env.DB.prepare("DELETE FROM uploads WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM objects WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM pins WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM follows WHERE follower = ? OR followee = ?").bind(user.id, user.id),
@@ -798,6 +988,48 @@ async function countApp(req, env, os, version) {
     }
   } catch (e) { console.log("app count error", e && e.message); }
 }
+
+// Echo's performance report (perf.rs + specs.rs, 10 Nov 2026): rides along with the update check as query fields.
+// Numbers + hardware model names only - nothing about the person; the PC is only told apart within one day.
+async function countPerf(req, env, url, os, version) {
+  try {
+    const q = url.searchParams;
+    if (!UPDATE_FILES[os] || !q.has("m") || !q.has("n")) return;
+    const int = (k, max) => { const v = Math.round(Number(q.get(k))); return Number.isFinite(v) && v >= 0 ? Math.min(v, max) : null; };
+    const str = (k) => { const v = String(q.get(k) || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80); return v || null; };
+    const n = int("n", 100000);
+    if (!n) return;
+    await migrate(env);
+    const h = "p" + (await sha256(`${utcDay()}|${ipOf(req)}|perf:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const cc = String((req.cf && req.cf.country) || "").toUpperCase();
+    await env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(now(), utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc"),
+        int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, /^[A-Z]{2}$/.test(cc) ? cc : null)
+      .run();
+  } catch (e) { console.log("perf report error", e && e.message); }
+}
+
+// admin page: Echo's CPU / memory on real PCs, last 30 days. Averages are weighted by minutes measured.
+async function perfStats(env) {
+  try {
+    await migrate(env);
+    const from = utcDay(now() - 29 * 86400);
+    const agg = `COUNT(DISTINCT day || h) AS pcs, SUM(n) AS mins, SUM(rn) AS rmins,
+      ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10, 2) AS cpu, ROUND(SUM(m * n) * 1.0 / NULLIF(SUM(n), 0)) AS mem,
+      ROUND(SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10, 2) AS rcpu, ROUND(SUM(rm * rn) * 1.0 / NULLIF(SUM(rn), 0)) AS rmem,
+      ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak`;
+    const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
+    const by = (col) => all(`SELECT ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY ${col} ORDER BY pcs DESC, mins DESC LIMIT 20`, from);
+    const total = (await env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ?`).bind(from).first()) || {};
+    const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
+    return {
+      total, from,
+      gpu: await by("gpu"), cpu: await by("cpu"), os: await by("osname"), ver: await by("ver"), ram: await by(ramBucket), res: await by("res || ' @ ' || fps"),
+      recent: await all("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc FROM perf ORDER BY at DESC LIMIT 30"),
+    };
+  } catch (e) { console.log("perf stats error", e && e.message); return null; }
+}
 // what the update check answered, once per computer per day and answer: upd:offered (got an update offer) or
 // upd:<reason> for "no update" although they're not on the newest (stale = the server's GitHub lookup was behind,
 // paused / hidden / internal = William's choice, no-signature / no-release = a broken release)
@@ -863,7 +1095,9 @@ async function profileMe(user, env, origin) {
     followers: (fc && fc.n) || 0,
     following: following.map((f) => publicProfile(origin, f)),
     shares: shares.map((x) => ({ id: x.id, title: x.title || x.key.split("/").pop().replace(/\.mp4$/i, ""), created: x.created, expires: x.expires,
-      thumb: x.thumb ? `${origin}/s/${x.id}.jpg` : "", dur: x.dur || 0, pinned: x.pos != null, url: `${origin}/s/${x.id}` })),
+      thumb: x.thumb ? `${origin}/s/${x.id}.jpg` : "", dur: x.dur || 0, pinned: x.pos != null, url: `${origin}/s/${x.id}`,
+      // 10 Nov 2026: the clip's cloud key, so the app can show its own picture when the share has none (owner only)
+      key: x.key })),
     pin_max: PIN_MAX,
   });
 }
@@ -1098,6 +1332,7 @@ async function adminStats(req, env) {
     profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0, list: profList },
     site: await siteStats(env),
     apps: await appStats(env),
+    perf: await perfStats(env),
     releases: await releaseList(env),
   });
 }
@@ -1208,6 +1443,13 @@ async function migrate(env) {
     // upload links handed out but not finished yet (they count toward the plan until done or expired)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uploads (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, size INTEGER NOT NULL, expires INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS stats (day TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, k))"),
+    // cloud-savings (10 Nov 2026): per clip in R2 - the SHA-256 of the clip on the PC (same clip uploaded twice
+    // after a rename is stored once), share_only = uploaded only for an expiring share link (goes when the link
+    // does), and reads for the storage class job (last_read, reads counted since reads_since; once an hour at most).
+    // No row = an upload from an older Echo: not share-only, never read since its upload.
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, hash TEXT, share_only INTEGER NOT NULL DEFAULT 0,
+      last_read INTEGER NOT NULL DEFAULT 0, reads INTEGER NOT NULL DEFAULT 0, reads_since INTEGER NOT NULL DEFAULT 0, moved_from TEXT)`),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS objects_hash ON objects (user_id, hash)"),
     // light profiles (chat 19): a name, picture, bio and colour, up to 6 pinned share links, and who you follow
     env.DB.prepare("CREATE TABLE IF NOT EXISTS profiles (user_id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT, bio TEXT, color TEXT, avatar INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS pins (user_id TEXT NOT NULL, share_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (user_id, share_id))"),
@@ -1216,6 +1458,14 @@ async function migrate(env) {
     // @names William removed and blocked (can't be taken again)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS banned_handles (handle TEXT PRIMARY KEY, at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
+    // Echo's own CPU / memory on real PCs + the PC's specs (10 Nov 2026, perf.rs / specs.rs): one row per report
+    // (sent with the update check). h = that day's scrambled code (like uv), so one PC can be told apart within a
+    // day but never followed across days. m/mp/rm = MB, c/cp/rc = CPU % of the whole PC x10, n/rn = minutes.
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS perf (at INTEGER NOT NULL, day TEXT NOT NULL, h TEXT NOT NULL, os TEXT, ver TEXT,
+      cpu TEXT, gpu TEXT, ram INTEGER, cores INTEGER, osname TEXT, res TEXT, fps INTEGER, enc TEXT,
+      m INTEGER, mp INTEGER, c INTEGER, cp INTEGER, rm INTEGER, rc INTEGER, n INTEGER, rn INTEGER, cc TEXT)`),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS perf_day ON perf (day)"),
+    env.DB.prepare("DELETE FROM perf WHERE at < ?").bind(now() - 180 * 86400),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
     // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
     env.DB.prepare("UPDATE users SET quota_bytes = ? WHERE plan = 'free' AND quota_bytes = ?").bind(Number(env.FREE_GB || 10) * GB, Number(env.FREE_GB || 10) * 1024 ** 3),
@@ -1576,7 +1826,9 @@ const page = (title, text) => new Response(
 // Secret GITHUB_TOKEN = fine-grained token, only repo Resister0/echo, permission "Contents: Read-only".
 const DOWNLOADS = {
   "windows": "Echo-Setup.exe",
-  "windows-portable": "EchoClip.exe",   // was Echo.exe until chat 31 (Discord showed "Playing ECHO")
+  // 2.0 (10 Nov 2026): the native app + libmpv-2.dll + tools/ as one zip. No fallback to the old EchoClip.exe / Echo.exe
+  // files: those are the old Tauri app (William: native Echo only)
+  "windows-portable": "Echo-Windows-portable.zip",
   "linux": "Echo-x86_64.AppImage",
   "linux-tar": "Echo-linux-x86_64.tar.gz",
 };
@@ -1739,6 +1991,15 @@ async function assetLink(env, rel, asset) {
 }
 
 async function download(env, what, from) {
+  // William (10 Nov 2026): "pause downloads until I release 2.0". While the newest public release is still the old
+  // app (below 2.0.0, or the 2.0.72 test build, which was the old Tauri Echo) every download link shows this page
+  // instead. Resumes by itself once 2.0.0 or newer is out - no second deploy needed. Unknown release = not paused.
+  if (DOWNLOADS[what] || what === "flatpak" || what === "flatpakref") {
+    const v = relVersion(await releaseOf(env, publicRepo(env), true).catch(() => null));
+    if (v && (v === "2.0.72" || !newer(v, "1.99.99"))) {
+      return page("Echo 2.0 is almost here", "Downloads are paused for a moment while Echo 2.0 gets its finishing touches. Check back soon.");
+    }
+  }
   // Linux Flatpak: the single-file bundle echo.flatpak from Echo's own Flatpak repo (ci/flatpak-repo.sh in the public
   // repo writes it to the R2 bucket echo-flatpak, served on flatpak.echoclip.link). Chat 28: the bundle, not the
   // .flatpakref - Bazaar (Bazzite / Bluefin) only opens a .flatpakref for apps it already knows; Bazaar, Discover and
@@ -1752,8 +2013,6 @@ async function download(env, what, from) {
   let file = DOWNLOADS[what];
   if (!file) return null;
   let rel = await release(env, file, false, from);
-  // releases from before the rename only have Echo.exe
-  if (!rel && what === "windows-portable") { file = "Echo.exe"; rel = await release(env, file, false, from); }
   if (!rel) {
     releaseCache.clear();
     return page("Download not available", "This build isn't ready right now - a new version may be building. Try again in about 10 minutes.");
@@ -1825,6 +2084,9 @@ function newer(a, b) {
 const sigCache = new Map();
 async function update(env, target, current) {
   const what = UPDATE_FILES[target];
+  // 9 Nov 2026: 2.0.72 was an internal test build (downloadable for a few hours) before the real 2.0.0 - the
+  // numbering restarted at 2.0.0, so treat that one build as older or it would never be offered 2.0.x
+  if (String(current).replace(/^v/, "") === "2.0.72") current = "1.99.0";
   // chat 28: every "no update" says why (header x-echo-why) so the stats page can show people who were told
   // "up to date" while a newer version exists
   const none = (why) => new Response(null, { status: 204, headers: { "x-echo-why": why || "current" } });
@@ -1912,6 +2174,8 @@ async function syncReleases(env) {
   }
 }
 async function changes(env, since) {
+  // the 2.0.72 test build counts as older than 2.0.0 (see update())
+  if (since && String(since).replace(/^v/, "") === "2.0.72") since = "1.99.0";
   if (now() - changesSynced > 120) {
     changesSynced = now();
     try { await syncReleases(env); } catch (e) { console.log("changes: sync failed", e && e.message); }
@@ -1963,7 +2227,7 @@ function gone() {
   return new Response("This clip link has expired or the clip was removed.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
-async function serveShare(req, env, id, ext) {
+async function serveShare(req, env, id, ext, ctx) {
   const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
   if (!row || (row.expires && row.expires < now())) return gone();
   if (ext === ".jpg") {
@@ -1999,6 +2263,11 @@ async function serveShare(req, env, id, ext) {
     return new Response(null, { headers: h });
   }
   const wantsRange = req.headers.has("range");
+  // cloud-savings: a play (not every range request of it) counts as a read for the storage class job
+  if (!wantsRange || /^bytes=0-/.test(req.headers.get("range") || "")) {
+    const p = touchKeys(env, row.user_id, [row.key]).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
+  }
   let o;
   try { o = await env.BUCKET.get(row.key, wantsRange ? { range: req.headers } : {}); }
   catch { o = await env.BUCKET.get(row.key); }
@@ -2018,7 +2287,7 @@ async function serveShare(req, env, id, ext) {
 }
 
 const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /shares/views", "POST /checkout", "POST /portal", "POST /auth/logout",
-  "POST /upload", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
+  "POST /upload", "POST /upload/check", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
   async fetch(req, env, ctx) {
@@ -2027,7 +2296,7 @@ export default {
     try {
       await migrate(env);
       const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(\.mp4|\.jpg)?\/?$/);
-      if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1], sm[2] || "");
+      if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1], sm[2] || "", ctx);
       // GET / and the other website pages come from site/ (static assets, answered before this code runs)
       if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
       const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
@@ -2046,6 +2315,7 @@ export default {
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") {
         if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
+        if (url.searchParams.has("m")) { const p = countPerf(req, env, url, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         const res = await update(env, um[1], um[3]);
         const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
         if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
@@ -2083,6 +2353,9 @@ export default {
       if (route === "POST /share/remove") return await unshare(req, user, env);
       if (route === "POST /shares/views") return await shareViews(req, user, env);
       if (route === "POST /upload") return await upload(req, user, env);
+      if (route === "POST /upload/check") return await uploadCheck(req, user, env);
+      if (route === "POST /keep") return await keep(req, user, env);
+      if (route === "POST /touch") return await touch(req, user, env);
       if (route === "POST /delete") return await del(req, user, env);
       if (route === "POST /move") return await move(req, user, env);
       if (route === "POST /account/delete") return await deleteAccount(req, user, env);
@@ -2106,7 +2379,8 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(cleanupExpired(env).then(() => cleanupStrayCopies(env)).catch((e) => console.log("cleanup error", e && e.stack)));
+    // the storage class job after the cleanups (no point moving a copy that is about to be deleted)
+    ctx.waitUntil(cleanupExpired(env).then(() => cleanupStrayCopies(env)).then(() => tierObjects(env)).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
     ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));

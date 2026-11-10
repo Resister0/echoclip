@@ -42,7 +42,8 @@ fn file() -> std::path::PathBuf {
 /// any other per-PC UI value in native_ui.json (Echo keeps these in its WebView's localStorage): Home's Get started
 /// skips / hide / "copied once"
 pub fn ui_get(key: &str) -> serde_json::Value {
-    std::fs::read_to_string(file()).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).map(|v| v[key].clone()).unwrap_or(serde_json::Value::Null)
+    // r2-threads (L29): parsed again only when the file changed
+    crate::library::json_cached(&file()).map(|v| v[key].clone()).unwrap_or(serde_json::Value::Null)
 }
 pub fn ui_set(key: &str, val: serde_json::Value) {
     let p = file();

@@ -1,4 +1,5 @@
 // Echo's look, ported from ui/index.html (:root variables, .btn, .ib, .cgrp, .pill, kbd, tooltips, toasts).
+import { Focus } from "focus.slint"; // L49: Esc on a Tab-focused button hands the keys back
 
 export global T {
     // text weight boost: Slint's OpenGL text has no ClearType/gamma boost, so Segoe UI looks ~10% thinner than
@@ -62,6 +63,9 @@ export global Ic {
     out property <string> plus: "M12 5v14 M5 12h14";
     out property <string> scissors: "M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M20 4L8.1 15.9 M14.5 14.5L20 20 M8.1 8.1L12 12";
     out property <string> tidy: "M4 20h16 M7 20l2-9h6l2 9 M12 11V4";
+    // William (10 Nov): Home's Share link / Captions buttons
+    out property <string> link: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1 M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1";
+    out property <string> cc: "M3 6h18v12H3z M7 13h3 M14 13h3 M7 10h10";
 }
 
 // Tooltip shown by TipLayer (one for the whole window). Owners set it after a short hover.
@@ -132,6 +136,13 @@ export component TipArea {
 export component TipLayer {
     // fills the window; draws the tooltip under (or above, near the bottom) its owner
     property <int> last-alive;
+    // r2-layout (L1): Windows - the video's own window covers anything Slint draws there: a tooltip that would land on
+    // it goes to the other side of its owner instead (the player / editor bar buttons)
+    in property <bool> avoid;
+    in property <length> ax;
+    in property <length> ay;
+    in property <length> aw;
+    in property <length> ah;
     Timer {
         interval: 400ms;
         running: Tip.on;
@@ -144,8 +155,16 @@ export component TipLayer {
     }
     if Tip.on: Rectangle {
         property <length> w: min(tt.preferred-width + 20px, 320px);
+        property <length> y-below: Tip.bottom + 8px;
+        property <length> y-above: Tip.top - self.height - 8px;
+        property <bool> want-below: !Tip.above && self.y-below + self.height < root.height;
+        property <bool> x-on-video: root.avoid && self.x < root.ax + root.aw && self.x + self.w > root.ax;
+        property <bool> below-hits: self.x-on-video && self.y-below < root.ay + root.ah && self.y-below + self.height > root.ay;
+        property <bool> above-hits: self.x-on-video && self.y-above < root.ay + root.ah && self.y-above + self.height > root.ay;
         x: clamp(Tip.x - self.w / 2, 6px, root.width - self.w - 6px);
-        y: !Tip.above && Tip.bottom + 8px + self.height < root.height ? Tip.bottom + 8px : Tip.top - self.height - 8px;
+        y: self.want-below
+            ? (self.below-hits && !self.above-hits && self.y-above >= 0 ? self.y-above : self.y-below)
+            : (self.above-hits && !self.below-hits && self.y-below + self.height <= root.height ? self.y-below : self.y-above);
         width: self.w;
         height: tt.preferred-height + 12px;
         background: T.panel2;
@@ -346,29 +365,70 @@ export component IconBtn inherits Rectangle {
     in property <brush> idle-bg: transparent;
     in property <color> icon-color: T.muted;
     in property <float> idle-opacity: 1; // William: toolbar controls slightly see-through until hovered
+    // L15: Echo's button:disabled - opacity .55, default cursor, no hover; a click does nothing (and isn't passed on)
+    in property <bool> enabled: true;
+    out property <bool> ctrl;       // Ctrl was held on the last press (Copy: Ctrl+click = the size menu)
     callback clicked;
-    opacity: ta.has-hover ? 1 : idle-opacity;
+    property <bool> hov: ta.has-hover && root.enabled;
+    opacity: !root.enabled ? 0.55 : hov ? 1 : idle-opacity;
     animate opacity { duration: T.fade; }
     width: size;
     height: size;
     border-radius: 9px;
-    background: ta.has-hover ? T.panel2 : idle-bg;
+    background: hov ? T.panel2 : idle-bg;
     animate background { duration: T.fade; }
+    // L49: Tab reaches the button (never a click: the page keeps the keys), Enter / Space press it, Echo's
+    // :focus-visible ring (2 px accent2, 2 px out)
+    fs := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(e) => {
+            // Esc: leave the button (the page / overlay gets the keys back) and let it go on up as well
+            if (e.text == Key.Escape) {
+                Focus.back();
+                return reject;
+            }
+            if ((e.text == Key.Return || e.text == " ") && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta) {
+                root.ctrl = false;
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if fs.has-focus: Rectangle {
+        x: -4px;
+        y: -4px;
+        width: root.width + 8px;
+        height: root.height + 8px;
+        border-radius: 13px;
+        border-width: 2px;
+        border-color: T.accent2;
+    }
     ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.ctrl = e.modifiers.control;
+            }
+        }
     }
     TipArea {
         text: root.tip;
-        hover: ta.has-hover && !ta.pressed;
+        hover: root.hov && !ta.pressed;
     }
     Icon {
         width: root.icon-size;
         height: root.icon-size;
         commands: root.icon;
-        stroke: root.on ? T.hi : root.danger && ta.has-hover ? T.bad : ta.has-hover ? T.text : root.icon-color;
+        stroke: root.on ? T.hi : root.danger && root.hov ? T.bad : root.hov ? T.text : root.icon-color;
         fill: root.on ? T.hi : transparent;
-        transform-scale: ta.pressed ? 0.88 : 1;
+        transform-scale: ta.pressed && root.enabled ? 0.88 : 1;
         animate transform-scale { duration: 90ms; }
     }
 }
@@ -394,8 +454,15 @@ export component Btn inherits Rectangle {
     in property <color> edge: transparent;
     in property <color> text-color: transparent;
     in property <bool> blink-dot;
+    // small coloured text right after the label, centered with it (Echo's .ecplan .save "-17%" next to the year price)
+    in property <string> badge;
+    in property <color> badge-color: #a78bfa;
+    // L15: Echo's button:disabled - opacity .55, default cursor, no hover; a click does nothing (and isn't passed on)
+    in property <bool> enabled: true;
+    out property <bool> ctrl;       // Ctrl was held on the last press (Copy: Ctrl+click = the size menu)
     callback clicked;
-    opacity: ta.has-hover ? 1 : idle-opacity;
+    property <bool> hov: ta.has-hover && root.enabled;
+    opacity: !root.enabled ? 0.55 : hov ? 1 : idle-opacity;
     animate opacity { duration: T.fade; }
     height: small ? 30px : 36px;
     width: text == "" ? (right-half ? 30px : self.height) : hl.preferred-width;
@@ -404,24 +471,61 @@ export component Btn inherits Rectangle {
     border-top-right-radius: left-half ? 0 : 10px;
     border-bottom-right-radius: left-half ? 0 : 10px;
     border-width: primary ? 0 : 1px;
-    border-color: edge != transparent ? edge : delb ? (ta.has-hover ? #ff7590 : T.bad) : active ? T.hi : danger && ta.has-hover ? T.bad : ta.has-hover ? T.hover : T.line;
-    background: primary ? T.grad : delb ? (ta.has-hover ? #ff7590 : T.bad) : ta.has-hover ? T.panel2 : T.panel;
+    border-color: edge != transparent ? edge : delb ? (hov ? #ff7590 : T.bad) : active ? T.hi : danger && hov ? T.bad : hov ? T.hover : T.line;
+    background: primary ? T.grad : delb ? (hov ? #ff7590 : T.bad) : hov ? T.panel2 : T.panel;
     drop-shadow-blur: primary ? 20px : 0;
     drop-shadow-offset-y: primary ? 6px : 0;
     drop-shadow-color: T.accent.with-alpha(0.25);
     animate background, border-color { duration: T.fade; }
-    property <color> fg: text-color != transparent ? text-color : active ? T.hi : danger && ta.has-hover ? T.bad : T.text;
+    property <color> fg: text-color != transparent ? text-color : active ? T.hi : danger && hov ? T.bad : T.text;
+    // L49: Tab reaches the button (never a click: the page keeps the keys), Enter / Space press it, Echo's
+    // :focus-visible ring (2 px accent2, 2 px out)
+    fs := FocusScope {
+        focus-on-click: false;
+        enabled: root.enabled;
+        key-pressed(e) => {
+            // Esc: leave the button (the page / overlay gets the keys back) and let it go on up as well
+            if (e.text == Key.Escape) {
+                Focus.back();
+                return reject;
+            }
+            if ((e.text == Key.Return || e.text == " ") && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta) {
+                root.ctrl = false;
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    if fs.has-focus: Rectangle {
+        x: -4px;
+        y: -4px;
+        width: root.width + 8px;
+        height: root.height + 8px;
+        border-radius: 14px;
+        border-width: 2px;
+        border-color: T.accent2;
+    }
     ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.ctrl = e.modifiers.control;
+            }
+        }
     }
     TipArea {
         text: root.tip;
-        hover: ta.has-hover && !ta.pressed;
+        hover: root.hov && !ta.pressed;
         above: root.tip-above;
     }
     // brightness on hover for the primary button
-    if root.primary && ta.has-hover: Rectangle {
+    if root.primary && root.hov: Rectangle {
         border-radius: 10px;
         background: #ffffff1c;
     }
@@ -430,7 +534,7 @@ export component Btn inherits Rectangle {
         padding-right: root.text == "" ? 0 : (root.small ? 11px : 15px);
         spacing: 8px;
         alignment: center;
-        transform-scale: ta.pressed ? 0.96 : 1;
+        transform-scale: ta.pressed && root.enabled ? 0.96 : 1;
         animate transform-scale { duration: 90ms; }
         if root.dot != transparent: Rectangle {
             y: (parent.height - self.height) / 2;
@@ -455,6 +559,12 @@ export component Btn inherits Rectangle {
             font-weight: (root.primary || root.delb ? 600 : 500) + T.fw;
             color: root.primary || root.delb ? white : root.fg;
         }
+        if root.text != "" && root.badge != "": Text {
+            text: root.badge;
+            vertical-alignment: center;
+            font-size: 11px;
+            color: root.badge-color;
+        }
     }
 }
 
@@ -468,8 +578,9 @@ export component SplitLine inherits Rectangle {
 export component Pill inherits Rectangle {
     in property <string> text;
     in property <color> dot: transparent;
+    in property <length> max-w: 100000px; // r2-layout (L8): the header's pill elides past this
     height: 30px;
-    width: hl.preferred-width;
+    width: min(hl.preferred-width, root.max-w);
     border-radius: 15px;
     background: T.panel;
     border-width: 1px;
@@ -490,6 +601,7 @@ export component Pill inherits Rectangle {
             font-size: 12.5px;
             color: T.muted;
             vertical-alignment: center;
+            overflow: elide;
         }
     }
     // over the pill, not in its row: in the row a child (the recording pill's TouchArea) took a slot + 8 px of
@@ -546,6 +658,14 @@ export global CopyCfg {
     in-out property <string> nitro: "1 GB";
     in-out property <string> custom: "100 MB";
     callback set-default(string);
+    // gaps-player (row 14): the sizes as numbers ("· fits" hints), the clip's size from its "22.7 MB" text, and the
+    // Custom box (Echo's discord_custom_mb)
+    in-out property <float> free-mb: 20;
+    in-out property <float> basic-mb: 50;
+    in-out property <float> nitro-mb: 1000;
+    in-out property <float> custom-mb: 100;
+    pure callback mb-of(string) -> float;
+    callback set-custom(string);
 }
 
 // one line in a menu (copy sizes, sort)
@@ -587,6 +707,7 @@ export component MenuRow inherits Rectangle {
             font-size: 13.5px;
             color: T.text;
             vertical-alignment: center;
+            overflow: elide; // r2-layout (L26): a long name (mic, deep folder) ends in … instead of running out
         }
         if root.badge != "": Rectangle {
             y: (parent.height - self.height) / 2;
@@ -615,6 +736,12 @@ export component MenuRow inherits Rectangle {
 export component CopyMenuBody inherits Rectangle {
     in property <string> size-text;
     callback picked(string);
+    callback cancel();      // Esc in the Custom box (close the menu)
+    // the clip's size in MB (-1 = unknown: no "· fits" hints)
+    property <float> clip-mb: root.size-text == "" ? -1 : CopyCfg.mb-of(root.size-text);
+    pure function hint(t: string, mb: float) -> string {
+        return t + (root.clip-mb >= 0 && root.clip-mb <= mb ? " · fits" : "");
+    }
     width: 260px;
     height: vl.preferred-height;
     background: T.panel;
@@ -645,30 +772,116 @@ export component CopyMenuBody inherits Rectangle {
         MenuRow {
             text: "Discord Free";
             badge: CopyCfg.def == "free" ? "default" : "";
-            right: CopyCfg.free;
+            right: root.hint(CopyCfg.free, CopyCfg.free-mb);
             clicked => { root.picked("free"); }
             right-clicked => { CopyCfg.set-default("free"); }
         }
         MenuRow {
             text: "Nitro Basic";
             badge: CopyCfg.def == "basic" ? "default" : "";
-            right: CopyCfg.basic;
+            right: root.hint(CopyCfg.basic, CopyCfg.basic-mb);
             clicked => { root.picked("basic"); }
             right-clicked => { CopyCfg.set-default("basic"); }
         }
         MenuRow {
             text: "Nitro";
             badge: CopyCfg.def == "nitro" ? "default" : "";
-            right: CopyCfg.nitro;
+            right: root.hint(CopyCfg.nitro, CopyCfg.nitro-mb);
             clicked => { root.picked("nitro"); }
             right-clicked => { CopyCfg.set-default("nitro"); }
         }
-        MenuRow {
-            text: "Custom";
-            badge: CopyCfg.def == "custom" ? "default" : "";
-            right: CopyCfg.custom;
-            clicked => { root.picked("custom"); }
-            right-clicked => { CopyCfg.set-default("custom"); }
+        // Echo's Custom row: a number box + "MB" - type a size, Enter copies (saved to discord_custom_mb)
+        Rectangle {
+            height: 36px;
+            border-radius: 8px;
+            background: cta.has-hover ? T.panel2 : transparent;
+            cta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    cin.focus();
+                    cin.select-all();
+                }
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.right && e.kind == PointerEventKind.up) {
+                        CopyCfg.set-default("custom");
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+                Text {
+                    text: "Custom";
+                    font-size: 13.5px;
+                    color: T.text;
+                    vertical-alignment: center;
+                }
+                if CopyCfg.def == "custom": Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    height: 18px;
+                    width: cbd.preferred-width + 12px;
+                    border-radius: 9px;
+                    border-width: 1px;
+                    border-color: T.hi.with-alpha(0.4);
+                    cbd := Text {
+                        text: "default";
+                        font-size: 10.5px;
+                        color: T.hi;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 54px;
+                    height: 24px;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: cin.has-focus ? T.accent : T.line;
+                    background: T.panel2;
+                    TipArea {
+                        text: "Type a size, then press Enter";
+                        hover: cta.has-hover;
+                    }
+                    FocusScope {
+                        // Esc closes the menu (it doesn't reach the player / library behind it)
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                root.cancel();
+                                return accept;
+                            }
+                            reject
+                        }
+                        cin := TextInput {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            text: CopyCfg.custom-mb;
+                            input-type: InputType.number;
+                            single-line: true;
+                            font-size: 12.5px;
+                            color: T.text;
+                            vertical-alignment: center;
+                            selection-background-color: T.accent.with-alpha(0.45);
+                            selection-foreground-color: T.text;
+                            accepted => {
+                                CopyCfg.set-custom(self.text);
+                                root.picked("custom");
+                            }
+                            changed has-focus => {
+                                if (!self.has-focus) {
+                                    CopyCfg.set-custom(self.text);
+                                }
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: "MB";
+                    font-size: 12.5px;
+                    color: T.muted;
+                    vertical-alignment: center;
+                }
+            }
         }
         Rectangle {
             height: 1px;

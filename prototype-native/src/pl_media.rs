@@ -25,16 +25,9 @@ pub fn pick_file(title: &str, filter_name: &str, exts: &[&str]) -> Option<PathBu
     }
     #[cfg(not(windows))]
     {
-        // KDE's dialog, else GNOME's (like Echo's picker)
-        let home = std::env::var("HOME").unwrap_or_default();
-        let pat = exts.iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join(" ");
-        let out = std::process::Command::new("kdialog")
-            .args(["--title", title, "--getopenfilename", &home, &format!("{filter_name} ({pat})")])
-            .output()
-            .or_else(|_| std::process::Command::new("zenity").args(["--file-selection", "--title", title, &format!("--file-filter={filter_name} | {pat}")]).output())
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (out.status.success() && !s.is_empty()).then(|| PathBuf::from(s))
+        // KDE's dialog, else GNOME's, else the desktop's FileChooser portal (always the portal in the Flatpak)
+        let pat = exts.iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join(";");
+        crate::linux::pick(title, Some((filter_name, &pat)), false)
     }
 }
 

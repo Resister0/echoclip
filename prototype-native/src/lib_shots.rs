@@ -13,10 +13,20 @@ const EXTS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "bmp"];
 thread_local! {
     static LIST: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(vec![]) };
     static GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// gaps-library row 12: the selected screenshots (by file) and the page's search text
+    static PICKED: std::cell::RefCell<std::collections::HashSet<PathBuf>> = std::cell::RefCell::new(Default::default());
+    static QUERY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 fn shots_dir(clips: &Path) -> PathBuf {
     clips.join("Screenshots")
+}
+
+/// gaps-library row 19: the sidebar's Screenshots count (Echo's n-shots)
+pub fn count(clips: &Path) -> usize {
+    std::fs::read_dir(shots_dir(clips))
+        .map(|rd| rd.flatten().filter(|e| EXTS.contains(&e.path().extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default().as_str())).count())
+        .unwrap_or(0)
 }
 
 fn list(clips: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
@@ -69,7 +79,14 @@ pub fn show(a: &AppWindow, clips: &Path) {
 }
 
 pub fn refresh(a: &AppWindow, clips: &Path) {
-    let v = list(clips);
+    // gaps-library row 12: Echo's renderShots - the search box filters by name; files that went drop out of the selection
+    let mut v = list(clips);
+    PICKED.with(|p| p.borrow_mut().retain(|x| x.exists()));
+    let q = QUERY.with(|q| q.borrow().trim().to_lowercase());
+    if !q.is_empty() {
+        v.retain(|x| x.0.file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase().contains(&q)));
+    }
+    s_picks(a);
     let total: u64 = v.iter().map(|x| x.2).sum();
     let n = v.len();
     let s = a.global::<Shots>();
@@ -77,6 +94,7 @@ pub fn refresh(a: &AppWindow, clips: &Path) {
     // same files as shown: keep the pictures, no flicker
     let same = LIST.with(|l| *l.borrow() == v.iter().map(|x| x.0.clone()).collect::<Vec<_>>());
     if same && s.get_items().row_count() == n {
+        repaint_picks(a);
         return;
     }
     LIST.with(|l| *l.borrow_mut() = v.iter().map(|x| x.0.clone()).collect());
@@ -86,6 +104,7 @@ pub fn refresh(a: &AppWindow, clips: &Path) {
             name: p.file_stem().unwrap_or_default().to_string_lossy().to_string().into(),
             when: format!("{} · {}", crate::library::ago(*t), crate::library::fmt_size(*b)).into(),
             img: Default::default(),
+            picked: PICKED.with(|k| k.borrow().contains(p)),
         })
         .collect();
     let model = Rc::new(VecModel::from(rows));
@@ -121,6 +140,92 @@ fn path_at(i: i32) -> Option<PathBuf> {
     LIST.with(|l| l.borrow().get(i as usize).cloned())
 }
 
+// ---------- gaps-library row 12: selection (Echo's picked on the Screenshots page) ----------
+/// the bar's "N screenshots selected"
+fn s_picks(a: &AppWindow) {
+    a.global::<Shots>().set_picked_n(PICKED.with(|p| p.borrow().len()) as i32);
+}
+
+/// the cards' ticks follow the selection (pictures stay)
+fn repaint_picks(a: &AppWindow) {
+    s_picks(a);
+    let m = a.global::<Shots>().get_items();
+    LIST.with(|l| {
+        for (i, p) in l.borrow().iter().enumerate() {
+            let on = PICKED.with(|k| k.borrow().contains(p));
+            if let Some(mut r) = m.row_data(i) {
+                if r.picked != on {
+                    r.picked = on;
+                    m.set_row_data(i, r);
+                }
+            }
+        }
+    });
+}
+
+fn bin() -> &'static str {
+    if cfg!(windows) {
+        "Recycle Bin"
+    } else {
+        "Trash"
+    }
+}
+
+/// Echo's #pickdel on this page: "Delete N screenshots?" (+ how many aren't in the view), then the Recycle Bin
+fn delete_picked(a: &AppWindow, clips: PathBuf) {
+    let mut sel: Vec<PathBuf> = PICKED.with(|p| p.borrow().iter().cloned().collect());
+    sel.sort();
+    if sel.is_empty() {
+        return;
+    }
+    let n = sel.len();
+    let hidden = LIST.with(|l| sel.iter().filter(|p| !l.borrow().contains(p)).count());
+    let hid_note = if hidden > 0 {
+        format!(" {hidden} of them {} in the view you're looking at (other folders / filters).", if hidden == 1 { "isn't" } else { "aren't" })
+    } else {
+        String::new()
+    };
+    let title = format!("Delete {n} screenshot{}?", if n == 1 { "" } else { "s" });
+    crate::confirm_box(a, &title, &format!("They will be moved to the {}.{hid_note}", bin()), "Delete", move |a| {
+        // r2-threads (L5): the Recycle Bin / Trash runs on a worker
+        let w = a.as_weak();
+        crate::lib_net::bg(
+            move || {
+                let (mut k, mut err) = (0, None::<String>);
+                for p in &sel {
+                    match crate::library::recycle_file(p) {
+                        Ok(()) => k += 1,
+                        Err(e) => {
+                            err.get_or_insert(e);
+                        }
+                    }
+                }
+                (k, err)
+            },
+            move |(k, err)| {
+                let Some(a) = w.upgrade() else { return };
+                let a = &a;
+                PICKED.with(|p| p.borrow_mut().clear());
+                match err {
+                    Some(e) => crate::toast(a, e),
+                    None => crate::toast(a, format!("Moved {k} screenshot{} to the {}", if k == 1 { "" } else { "s" }, bin())),
+                }
+                refresh(a, &clips);
+                sidebar(a);
+            },
+        );
+    });
+}
+
+/// the sidebar's Screenshots count follows (row 19)
+fn sidebar(_a: &AppWindow) {
+    crate::UI_SYNC.with(|f| {
+        if let Some(f) = f.borrow().as_ref() {
+            f(true)
+        }
+    });
+}
+
 pub fn wire(app: &AppWindow, clips: PathBuf) {
     // William (9 Nov): open IN the app like Echo's openShot (was: the system viewer - Paint on his PC). The full-size
     // picture is decoded on a worker thread; the viewer (lib_shots.slint ShotViewer) zooms / pans it.
@@ -152,7 +257,7 @@ pub fn wire(app: &AppWindow, clips: PathBuf) {
             #[cfg(windows)]
             let _ = std::process::Command::new("explorer").arg(&d).spawn();
             #[cfg(not(windows))]
-            let _ = std::process::Command::new("xdg-open").arg(&d).spawn();
+            let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(&d)); // r2-threads (L52): reaped
         });
     }
     {
@@ -163,16 +268,81 @@ pub fn wire(app: &AppWindow, clips: PathBuf) {
                 crate::show_in_folder(&p);
                 return;
             }
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let bin = if cfg!(windows) { "Recycle Bin" } else { "Trash" };
+            // gaps-library row 12: Echo's Copy (copy_clip: the file goes on the clipboard, Discord takes it as a picture)
+            if what == "copy" {
+                match crate::copy::clipboard_file(&p) {
+                    Ok(()) => crate::toast(&a, "Screenshot copied - paste it into Discord or anywhere"),
+                    Err(e) => crate::toast(&a, e),
+                }
+                return;
+            }
+            let name = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
             let c = c.clone();
-            crate::confirm_box(&a, "Delete screenshot?", &format!("\"{name}\" will be moved to the {bin}."), "Delete", move |a| {
+            crate::confirm_box(&a, "Delete screenshot?", &format!("\"{name}\" goes to the {}.", bin()), "Delete", move |a| {
                 match crate::library::recycle_file(&p) {
-                    Ok(()) => crate::toast(a, "Deleted"),
+                    Ok(()) => crate::toast(a, format!("Moved to {}", bin())),
                     Err(e) => crate::toast(a, e),
                 }
+                PICKED.with(|k| k.borrow_mut().remove(&p));
                 refresh(a, &c);
+                sidebar(a);
             });
+        });
+    }
+    // gaps-library row 12: select (tick / Ctrl+Shift+click / Ctrl+A), Clear / Esc, batch Delete, search, Grid / List
+    {
+        let w = app.as_weak();
+        app.global::<Shots>().on_pick(move |i| {
+            let (Some(a), Some(p)) = (w.upgrade(), path_at(i)) else { return };
+            PICKED.with(|k| {
+                let mut k = k.borrow_mut();
+                if !k.remove(&p) {
+                    k.insert(p);
+                }
+            });
+            repaint_picks(&a);
+        });
+    }
+    {
+        let w = app.as_weak();
+        app.global::<Shots>().on_pick_all(move || {
+            let Some(a) = w.upgrade() else { return };
+            // what the page shows (search), like Echo's shotView
+            LIST.with(|l| PICKED.with(|k| k.borrow_mut().extend(l.borrow().iter().cloned())));
+            repaint_picks(&a);
+        });
+    }
+    {
+        let w = app.as_weak();
+        app.global::<Shots>().on_pick_clear(move || {
+            let Some(a) = w.upgrade() else { return };
+            PICKED.with(|k| k.borrow_mut().clear());
+            repaint_picks(&a);
+        });
+    }
+    {
+        let (w, c) = (app.as_weak(), clips.clone());
+        app.global::<Shots>().on_del_picked(move || {
+            if let Some(a) = w.upgrade() {
+                delete_picked(&a, c.clone());
+            }
+        });
+    }
+    {
+        let (w, c) = (app.as_weak(), clips.clone());
+        app.global::<Shots>().on_search(move |q| {
+            QUERY.with(|x| *x.borrow_mut() = q.to_string());
+            if let Some(a) = w.upgrade() {
+                refresh(&a, &c);
+            }
+        });
+    }
+    {
+        let w = app.as_weak();
+        app.global::<Shots>().on_set_view(move |list| {
+            if let Some(a) = w.upgrade() {
+                a.invoke_set_view(list); // the library's Grid / List (remembered, lib_prefs)
+            }
         });
     }
     // new screenshots show up while the page is open (every 3 s)

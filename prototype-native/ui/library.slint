@@ -1,5 +1,8 @@
 // Library cards (grid + list), date-group headers, filter panel - styled like Echo's .card / .thumb / .info / #fmenu.
+import { Cm, CloudMenuBody } from "cloud.slint";
 import { T, Ic, Icon, TipArea, IconBtn, Btn, Badge, Toast, CopyMenuBody } from "theme.slint";
+import { Over } from "over.slint"; // r2-layout: window height (L34)
+import { Focus } from "focus.slint"; // port leftovers L2
 
 export struct Card {
     idx: int,        // row in the current view
@@ -19,8 +22,13 @@ export struct Card {
     shared: bool,    // has a share link (links.json)
     cloud-only: bool, // Chat B: only in the cloud (plays from there)
     views: string,   // Chat B: "Shared" / "Shared · 12 views"
+    views-tip: string, // L35: Echo's title on that badge ("Shared - link copied before" / "Shared - watched 12 times…")
     gicon: image,    // the game's icon (Echo's .gico), top-left on the picture
     has-gicon: bool,
+    // gaps-library row 2: Echo's .job on the picture - "Waiting…" or "Making smaller 42%" + a bar (lib_cards.rs queue)
+    job: string,
+    job-pct: float,  // 0..100
+    job-wait: bool,
 }
 
 // one row of the virtualised library list: a date header, or up to `cols` cards starting at `first`
@@ -31,6 +39,7 @@ export struct GridRow {
     n: int,
     extra: int,      // px for tag / note lines under the names in this row (cards in a row line up)
     last: bool,      // last card row of its group: no gap below it (Echo's grid gap is only between rows)
+    saving: bool,    // the "Saving clip…" card comes first in this row (Echo's #savingcard, prepended to the top grid)
 }
 
 // one option in the filter panel
@@ -40,6 +49,8 @@ export struct FOpt {
     label: string,
     count: int,
     on: bool,
+    img: image,      // gaps-library row 21: the game's icon on Game chips (Echo's .fchip img)
+    has-img: bool,
 }
 
 // chips wrapped over several lines (Slint 1.18 has no flow layout): Rust pre-splits each section into lines
@@ -73,6 +84,13 @@ export global Lib {
     in-out property <bool> ctrl-held;
     in-out property <bool> ctrl-inst;    // no slide while Ctrl goes down / up (Echo's body.ctrlinst, 300 ms)
     in-out property <int> hover-idx: -1; // the card under the mouse (its data.idx) - keys act on it
+    // the card whose Copy / cloud drop-down is open: it stays 'hovered' (buttons out, lifted) while the menu is up -
+    // opening a PopupWindow takes the mouse away from the card (William, 9 Nov 2026)
+    in-out property <int> menu-idx: -1;
+// a drop-down just closed: the card lets go of 'hovered' 300 ms later, not at once - clicking the button again
+// (= outside the menu) closed it and Slint only re-checks hover on the release: the buttons slid shut and
+// straight back out (William). If the mouse is still on the card, real hover takes over before then.
+in-out property <bool> menu-closing;
     // Chat D: card drag onto sidebar folders, inline rename, Move to menu
     callback drag-start(int);            // row: Rust fills CDrag.label + stops the hover preview
     callback drop-to(int, string);       // row, folder ("" = the main folder)
@@ -80,6 +98,97 @@ export global Lib {
     callback move-to(int, string);       // row (or the selection it's in), folder ("" = main folder, "?" = ask for a new one)
     in-out property <int> renaming: -1;  // card whose name is being edited (data.idx)
     in-out property <[string]> folders;  // every folder, sidebar order (Move to menu)
+    // 10 Nov 2026: the card's right-click menu is Echo's own (#ectx), not Slint's ContextMenuArea (lib_cards.rs)
+    in-out property <bool> av1-ok;       // this PC's graphics card encodes AV1 (Echo's av1Enc): "Convert to AV1" shows
+    in-out property <int> menu-n: 1;     // clips the open menu works on (> 1 = the card is part of a selection)
+    in-out property <bool> menu-av1;     // the clip is AV1 already: "Already AV1 - as small as it gets"
+    callback menu-open(int);             // row: Rust fills menu-n / menu-av1 before the menu shows
+    callback shrink(int, string);        // row, "half" / "third" / "av1": asks, then queues (Echo's queueJobs)
+    callback sel-act(string);            // the selection: "combine" / "fav" / "delete" / "clear" / "av1"
+    // Echo's "Saving clip…" card (shown while a clip is being saved, until it is in the list)
+    in-out property <string> saving-line;  // "Saving the last 3 min…" / "Almost ready…"
+    in-out property <bool> saving-done;    // saved: "Clip saved · Opens in a moment"
+    // gaps-cloud (row 6, cloud_live.rs): the clip uploading in the background - its card (view row / Home card idx,
+    // -1 = none) gets Echo's .upbar + .uplbl "☁ Uploading 40%"
+    in-out property <int> up-row: -1;
+    in-out property <int> up-home: -1;
+    in-out property <float> up-pct;        // 0..1
+    in-out property <string> up-label;
+}
+
+// Echo's #savingcard: a card with a spinner on a dark picture, not clickable
+export component SavingCard inherits Rectangle {
+    in property <bool> small; // list view
+    background: T.panel;
+    border-radius: T.radius;
+    border-width: 1px;
+    border-color: T.line;
+    clip: true;
+    property <length> pic-w: small ? 176px : self.width - 2px;
+    property <length> pic-h: small ? self.height - 2px : pic-w * 9 / 16;
+    pic := Rectangle {
+        x: 1px;
+        y: 1px;
+        width: pic-w;
+        height: pic-h;
+        background: #0a0a0c;
+        border-top-left-radius: T.radius - 1px;
+        border-top-right-radius: small ? 0 : T.radius - 1px;
+        border-bottom-left-radius: small ? T.radius - 1px : 0;
+        VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            // .spin: 26 px ring, accent quarter, once per 0.9 s
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 13px;
+                    border-width: 3px;
+                    border-color: #ffffff22;
+                    Path {
+                        width: 26px;
+                        height: 26px;
+                        viewbox-width: 26;
+                        viewbox-height: 26;
+                        stroke: T.accent;
+                        stroke-width: 3px;
+                        fill: transparent;
+                        commands: "M 3.8 7.8 A 11.5 11.5 0 0 1 22.2 7.8";
+                        transform-rotation: mod(animation-tick() / 1ms, 900) / 900 * 360deg;
+                    }
+                }
+            }
+            Text {
+                text: Lib.saving-line;
+                font-size: small ? 12px : 13px;
+                color: T.muted;
+                horizontal-alignment: center;
+            }
+        }
+    }
+    VerticalLayout {
+        x: small ? pic-w + 1px + 16px : 16px;
+        y: small ? 0 : pic-h + 1px;
+        width: small ? root.width - pic-w - 1px - 26px : root.width - 26px;
+        height: small ? root.height : root.height - pic-h - 1px;
+        alignment: center;
+        spacing: 3px;
+        Text {
+            text: Lib.saving-done ? "Clip saved" : "Saving clip…";
+            font-size: 15px;
+            font-weight: 600 + T.fw;
+            color: T.text;
+            overflow: elide;
+        }
+        Text {
+            text: Lib.saving-done ? "Opens in a moment" : "Long clips take a few seconds";
+            font-size: 12.5px;
+            color: T.muted;
+            overflow: elide;
+        }
+    }
 }
 
 // a card dragged onto a sidebar folder ("All clips" = the main folder) - Echo's cardDrag
@@ -93,58 +202,304 @@ export global CDrag {
     in-out property <length> py;
 }
 
-component CardMenu inherits ContextMenuArea {
+// one line of Echo's #ectx menu: 13 px, padding 7 10, radius 7, hover = panel2; .warn = red; .main = bold
+export component CtxRow inherits Rectangle { // r2-layout: exported for the folder menu (foldmenu.slint)
+    in property <string> text;
+    in property <string> right;     // e.g. "›" for a sub-list
+    in property <bool> warn;
+    in property <bool> dead;        // shown, does nothing (Echo's "Already AV1" line)
+    callback clicked;
+    height: 30px;
+    border-radius: 7px;
+    background: ta.has-hover && !root.dead ? T.panel2 : transparent;
+    ta := TouchArea {
+        mouse-cursor: root.dead ? MouseCursor.default : MouseCursor.pointer;
+        clicked => {
+            if (!root.dead) {
+                root.clicked();
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            color: root.dead ? T.muted : root.warn ? #ff8a8a : T.text;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.right != "": Text {
+            text: root.right;
+            font-size: 13px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// #ectx hr
+export component CtxSep inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        x: 2px;
+        width: parent.width - 4px;
+        height: 1px;
+        background: T.line;
+    }
+}
+
+// The card's right-click menu, drawn like Echo's own menus (#ectx: panel, 1 px line, radius 10, padding 5, deep
+// shadow, no icons) instead of Slint's ContextMenuArea (looked like a plain OS menu - William, 10 Nov 2026).
+// Echo's card menu had: [Convert to AV1] / Make smaller / Make much smaller / - / Show in folder (an AV1 clip: "Already
+// AV1 - as small as it gets"); the native app's extra lines (play, favourite, select, rename, move, delete) stay.
+// Several clips picked and this card among them: the selection's actions (Echo's .pickbar, incl. Convert to AV1).
+// The card calls open(x, y) on a right click (window coordinates); Slint keeps the popup inside the window.
+// Every line runs its action BEFORE root.done(): once the popup is closed, `data` reads as an empty card (idx 0 =
+// the newest clip) - Convert to AV1 on "k9 bug 2" asked about the latest clip (found testing, 10 Nov 2026).
+component CardMenu inherits Rectangle {
     in property <Card> data;
-    Menu {
-        MenuItem {
-            title: "Play";
-            activated => { Lib.open(data.idx, false); }
-        }
-        MenuItem {
-            title: data.fav ? "Remove from favourites" : "Add to favourites";
-            activated => { Lib.fav(data.idx); }
-        }
-        MenuItem {
-            title: data.picked ? "Deselect" : "Select";
-            activated => { Lib.pick(data.idx); }
-        }
-        MenuSeparator { }
-        MenuItem {
-            title: "Rename";
-            activated => { Lib.renaming = data.idx; }
-        }
-        Menu {
-            title: "Move to";
-            for f in Lib.folders: MenuItem {
-                title: f;
-                activated => { Lib.move-to(data.idx, f); }
+    property <length> px;
+    property <length> py;
+    property <bool> moving;      // the "Move to" list instead of the menu
+    property <bool> many: Lib.menu-n > 1;
+    width: 0px;
+    height: 0px;
+    public function open(x: length, y: length) {
+        Lib.menu-open(data.idx);
+        self.px = x - self.absolute-position.x;
+        self.py = y - self.absolute-position.y;
+        self.moving = false;
+        Lib.menu-idx = data.idx;
+        Lib.menu-closing = false;
+        pop.show();
+    }
+    function done() {
+        pop.close();
+        Lib.menu-closing = true;
+    }
+    pop := PopupWindow {
+        x: root.px;
+        y: root.py;
+        width: body.width;
+        height: body.height;
+        close-policy: close-on-click-outside;
+        // closes = focus leaves (like the Copy drop-down): the card may stop looking hovered. Esc closes.
+        forward-focus: fs;
+        fs := FocusScope {
+            width: 0px;
+            height: 0px;
+            focus-changed-event => {
+                if (!self.has-focus) {
+                    Lib.menu-closing = true;
+                }
             }
-            MenuItem {
-                title: "Main folder (no folder)";
-                activated => { Lib.move-to(data.idx, ""); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    root.done();
+                    return accept;
+                }
+                reject
             }
-            MenuItem {
-                title: "New folder…";
-                activated => { Lib.move-to(data.idx, "?"); }
+        }
+        body := Rectangle {
+            width: min(360px, max(220px, vl.preferred-width));
+            height: vl.preferred-height;
+            background: T.panel;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: T.line;
+            drop-shadow-blur: 40px;
+            drop-shadow-offset-y: 14px;
+            drop-shadow-color: #000000bb;
+            TouchArea { }
+            vl := VerticalLayout {
+                padding: 5px;
+                // ----- one clip -----
+                if !root.moving && !root.many: VerticalLayout {
+                    CtxRow {
+                        text: "Play";
+                        clicked => {
+                            Lib.open(data.idx, false);
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: data.fav ? "Remove from favourites" : "Add to favourites";
+                        clicked => {
+                            Lib.fav(data.idx);
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: data.picked ? "Deselect" : "Select";
+                        clicked => {
+                            Lib.pick(data.idx);
+                            root.done();
+                        }
+                    }
+                    CtxSep { }
+                    if !data.cloud-only: CtxRow {
+                        text: "Rename";
+                        clicked => {
+                            Lib.renaming = data.idx;
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: "Move to";
+                        right: "›";
+                        clicked => { root.moving = true; }
+                    }
+                    // Echo: nothing to shrink in the cloud; an AV1 clip is as small as it gets
+                    if !data.cloud-only: CtxSep { }
+                    if !data.cloud-only && Lib.menu-av1: CtxRow {
+                        text: "Already AV1 - as small as it gets";
+                        dead: true;
+                    }
+                    if !data.cloud-only && !Lib.menu-av1 && Lib.av1-ok: CtxRow {
+                        text: "Convert to AV1 (about half the size, same quality)";
+                        clicked => {
+                            Lib.shrink(data.idx, "av1");
+                            root.done();
+                        }
+                    }
+                    if !data.cloud-only && !Lib.menu-av1: CtxRow {
+                        text: "Make smaller (about half the size)";
+                        clicked => {
+                            Lib.shrink(data.idx, "half");
+                            root.done();
+                        }
+                    }
+                    if !data.cloud-only && !Lib.menu-av1: CtxRow {
+                        text: "Make much smaller (about a third)";
+                        clicked => {
+                            Lib.shrink(data.idx, "third");
+                            root.done();
+                        }
+                    }
+                    CtxSep { }
+                    if !data.cloud-only: CtxRow {
+                        text: "Show in folder";
+                        clicked => {
+                            Lib.act(data.idx, "folder");
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: "Delete";
+                        warn: true;
+                        clicked => {
+                            Lib.act(data.idx, "delete");
+                            root.done();
+                        }
+                    }
+                }
+                // ----- several clips picked (Echo's selection bar: Combine, Move, Convert to AV1, Favourite, Delete, Clear) -----
+                if !root.moving && root.many: VerticalLayout {
+                    Text {
+                        text: Lib.menu-n + " clips selected";
+                        font-size: 11.5px;
+                        color: T.dim;
+                        height: 26px;
+                        vertical-alignment: center;
+                        x: 10px;
+                    }
+                    CtxRow {
+                        text: "Combine";
+                        clicked => {
+                            Lib.sel-act("combine");
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: "Move to";
+                        right: "›";
+                        clicked => { root.moving = true; }
+                    }
+                    if Lib.av1-ok: CtxRow {
+                        text: "Convert to AV1 (about half the size, same quality)";
+                        clicked => {
+                            Lib.sel-act("av1");
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: "Favourite";
+                        clicked => {
+                            Lib.sel-act("fav");
+                            root.done();
+                        }
+                    }
+                    CtxSep { }
+                    CtxRow {
+                        text: "Delete";
+                        warn: true;
+                        clicked => {
+                            Lib.sel-act("delete");
+                            root.done();
+                        }
+                    }
+                    CtxRow {
+                        text: "Clear selection";
+                        clicked => {
+                            Lib.sel-act("clear");
+                            root.done();
+                        }
+                    }
+                }
+                // ----- Move to: Echo's #foldmenu ("Move 3 clips to", folders, main folder, new folder) -----
+                if root.moving: VerticalLayout {
+                    CtxRow {
+                        text: "‹  Move " + Lib.menu-n + " clip" + (Lib.menu-n == 1 ? "" : "s") + " to";
+                        clicked => { root.moving = false; }
+                    }
+                    CtxSep { }
+                    Rectangle {
+                        height: min(fl-l.preferred-height, 330px);
+                        // the list scrolls with the wheel only (a drag-scroll Flickable's delayed press reached the
+                        // cards behind - see FilterPanel)
+                        TouchArea {
+                            scroll-event(e) => {
+                                fl.content-y = min(0px, max(fl.height - fl-l.preferred-height, fl.content-y + e.delta-y));
+                                accept
+                            }
+                        }
+                        fl := Flickable {
+                            interactive: false;
+                            content-height: fl-l.preferred-height;
+                            fl-l := VerticalLayout {
+                                alignment: start;
+                                for f in Lib.folders: CtxRow {
+                                    text: f;
+                                    clicked => {
+                                        Lib.move-to(data.idx, f);
+                                        root.done();
+                                    }
+                                }
+                                CtxRow {
+                                    text: "Main folder (no folder)";
+                                    clicked => {
+                                        Lib.move-to(data.idx, "");
+                                        root.done();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    CtxSep { }
+                    CtxRow {
+                        text: "New folder…";
+                        clicked => {
+                            Lib.move-to(data.idx, "?");
+                            root.done();
+                        }
+                    }
+                }
             }
-        }
-        MenuSeparator { }
-        MenuItem {
-            title: "Make smaller (about half the size)";
-            activated => { Lib.act(data.idx, "smaller"); }
-        }
-        MenuItem {
-            title: "Make much smaller (about a third)";
-            activated => { Lib.act(data.idx, "smaller3"); }
-        }
-        MenuSeparator { }
-        MenuItem {
-            title: "Show in folder";
-            activated => { Lib.act(data.idx, "folder"); }
-        }
-        MenuItem {
-            title: "Delete";
-            activated => { Lib.act(data.idx, "delete"); }
         }
     }
 }
@@ -183,6 +538,7 @@ component PickTick inherits Rectangle {
 // click handling shared by grid + list cards: Ctrl/Shift+click or "something selected" = select, else play
 component CardTouch inherits TouchArea {
     in property <int> clip-row;
+    callback menu(length, length);   // right click: window coordinates (CardMenu.open)
     property <bool> dragged;
     // the press started on THIS card: a release alone (e.g. after a popup closed on the press) never opens a clip
     property <bool> down-here;
@@ -202,6 +558,10 @@ component CardTouch inherits TouchArea {
         }
     }
     pointer-event(e) => {
+        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right && !self.dragged) {
+            root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            return;
+        }
         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
             self.dragged = false;
             self.down-here = true;
@@ -234,6 +594,7 @@ component CardTouch inherits TouchArea {
 // the clip name; click it (or F2) = rename inline like Echo (Enter / click away = save, Esc = cancel)
 component NameLine inherits Rectangle {
     in property <Card> data;
+    callback menu(length, length);   // right click on the name: the card's menu (window coordinates)
     property <bool> editing: Lib.renaming == data.idx;
     height: 20px;
     if !root.editing: Text {
@@ -248,6 +609,9 @@ component NameLine inherits Rectangle {
         TouchArea {
             mouse-cursor: text;
             pointer-event(e) => {
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                    root.menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
                 if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                     if (e.modifiers.control || e.modifiers.shift || e.modifiers.meta) {
                         Lib.pick(data.idx);
@@ -286,11 +650,13 @@ component NameLine inherits Rectangle {
                 parent.done = true;
                 Lib.renaming = -1;
                 Lib.rename(data.idx, self.text);
+                Focus.back(); // L2: the box is destroyed - hand the keys back to the library
             }
             key-pressed(e) => {
                 if (e.text == Key.Escape) {
                     parent.done = true;
                     Lib.renaming = -1;
+                    Focus.back();
                     return accept;
                 }
                 reject
@@ -310,23 +676,45 @@ component NameLine inherits Rectangle {
 component TagChip inherits Rectangle {
     in property <string> text;
     height: 18px;
-    width: tt.preferred-width + 16px;
+    // r2-layout (L9): a very long tag ends in … (over.rs tag_lines counts with the same 160 px cap)
+    width: min(tt.preferred-width + 16px, 160px);
     border-radius: 9px;
     background: T.accent.with-alpha(0.15);
     border-width: 1px;
     border-color: T.accent.with-alpha(0.33);
     tt := Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
         text: "#" + root.text;
         font-size: 11px;
         color: T.accent2;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
     }
 }
 
 // the thumbnail with its badges (shared by grid + list)
+// L35: a badge's tooltip (Echo's title). No TouchArea - it would eat the card's clicks / drags - so the hover comes
+// from the card's own mouse position (window coordinates)
+component HoverTip inherits Rectangle {
+    in property <string> text;
+    in property <length> mx;
+    in property <length> my;
+    TipArea {
+        text: root.text;
+        hover: root.mx >= root.absolute-position.x && root.mx < root.absolute-position.x + root.width
+            && root.my >= root.absolute-position.y && root.my < root.absolute-position.y + root.height;
+    }
+}
+
 component Thumb inherits Rectangle {
     in property <Card> data;
     in property <bool> hov;
     in property <bool> small; // list view
+    in property <length> mx: -9999px; // L35: the mouse while it's on the card (window coordinates), for badge tips
+    in property <length> my: -9999px;
     background: #0a0a0c;
     clip: true;
     Image {
@@ -357,13 +745,13 @@ component Thumb inherits Rectangle {
         background: data.picked ? T.accent.with-alpha(0.16) : Lib.picking ? (hov ? #0a0a0c26 : #0a0a0c73) : transparent;
         animate background { duration: T.fade; }
     }
-    if data.dur != "": Badge {
+    if data.dur != "" && data.job == "": Badge {
         x: parent.width - self.width - 9px;
         y: parent.height - self.height - 9px;
         text: data.dur;
         bg: #000000dd;
     }
-    if data.edited: Badge {
+    if data.edited && data.job == "": Badge {
         x: 9px;
         y: parent.height - self.height - 9px;
         text: "Edited";
@@ -378,10 +766,20 @@ component Thumb inherits Rectangle {
         if data.shared: Badge {
             text: data.views != "" ? data.views : "Shared";
             bg: #000000bb;
+            HoverTip {
+                text: data.views-tip;
+                mx: root.mx;
+                my: root.my;
+            }
         }
         if data.cloud-only: Badge {
             text: "Cloud only";
             bg: T.accent.with-alpha(0.85);
+            HoverTip {
+                text: "Only in the cloud - plays from there";
+                mx: root.mx;
+                my: root.my;
+            }
         }
         if data.cloud: Rectangle {
             width: 24px;
@@ -393,6 +791,40 @@ component Thumb inherits Rectangle {
                 height: 14px;
                 commands: Ic.cloud;
                 stroke: white;
+            }
+            HoverTip {
+                text: "Also in the cloud";
+                mx: root.mx;
+                my: root.my;
+            }
+        }
+    }
+    // gaps-cloud (row 6): Echo's .upbar (5 px along the bottom) + .uplbl (top left) while this clip uploads
+    if data.idx == Lib.up-row || data.idx == Lib.up-home: Rectangle {
+        Rectangle {
+            y: parent.height - 5px;
+            height: 5px;
+            background: #00000088;
+            Rectangle {
+                x: 0;
+                width: parent.width * min(1, Lib.up-pct);
+                animate width { duration: 400ms; }
+                background: #4cc2ff;
+            }
+        }
+        Rectangle {
+            x: 6px;
+            y: 6px;
+            width: upl.preferred-width + 14px;
+            height: 20px;
+            border-radius: 6px;
+            background: #000000bb;
+            upl := Text {
+                text: Lib.up-label;
+                font-size: 11px;
+                font-weight: 600 + T.fw;
+                color: #4cc2ff;
+                vertical-alignment: center;
             }
         }
     }
@@ -425,6 +857,37 @@ component Thumb inherits Rectangle {
         show: root.hov || Lib.picking;
         clicked => { Lib.pick(data.idx); }
     }
+    // gaps-library row 2: Echo's .thumb .job - bottom strip over a dark fade: the label, then a 5 px accent bar
+    if data.job != "": Rectangle {
+        y: parent.height - self.height;
+        height: jl.preferred-height;
+        background: @linear-gradient(180deg, #00000000 0%, #000000cc 100%);
+        jl := VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 22px;
+            padding-bottom: 8px;
+            spacing: 5px;
+            Text {
+                text: data.job;
+                font-size: 12px;
+                font-weight: 600 + T.fw;
+                color: data.job-wait ? T.muted : white;
+            }
+            if !data.job-wait: Rectangle {
+                height: 5px;
+                border-radius: 2.5px;
+                background: #ffffff26;
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(data.job-pct, 0, 100) / 100;
+                    background: T.accent;
+                    animate width { duration: 250ms; }
+                }
+            }
+        }
+    }
 }
 
 // Echo's .ovl: the extra buttons (edit, cloud, folder, delete) slide in on hover, then copy [copy | v] and the star
@@ -437,6 +900,16 @@ component CardButtons inherits HorizontalLayout {
     // .more: takes no room until hover (the name gets the full width), then slides open to the LEFT of copy
     // (max-width 0 -> 142 + margin 6, .18 s ease; opacity in .15 s after .05 s, out .12 s). Ctrl held: at once.
     property <bool> open: root.hov || Lib.ctrl-held;
+    // r2-layout (L18): the L key opens the cloud menu (Cm, CloudMenuLayer) under THIS card's cloud button, like Echo's
+    // cloudMenu(card's cloud button) - not in the middle of the window
+    property <bool> l-open: Cm.open && Lib.hover-idx == data.idx;
+    changed l-open => {
+        if (self.l-open) {
+            Cm.ax = cloudbtn.absolute-position.x;
+            Cm.ay = cloudbtn.absolute-position.y + cloudbtn.height + 4px;
+            Cm.atop = cloudbtn.absolute-position.y;
+        }
+    }
     more := Rectangle {
         width: root.open ? 148px : 0px;
         animate width { duration: Lib.ctrl-inst ? 0ms : 180ms; easing: ease; }
@@ -454,11 +927,56 @@ component CardButtons inherits HorizontalLayout {
             tip: "Edit";
             clicked => { Lib.act(data.idx, "edit"); }
         }
-        IconBtn {
+        cloudbtn := IconBtn {
             y: (parent.height - self.height) / 2;
             icon: Ic.cloud;
             tip: "Cloud: upload, free up space, delete";
-            clicked => { Lib.act(data.idx, "cloud"); }
+            // Rust fills the menu (Cm); shown here as this button's own drop-down instead of the centred layer
+            clicked => {
+                Cm.open = false;
+                Lib.act(data.idx, "cloud");
+                if (Cm.open) {
+                    Cm.open = false;
+                    Lib.menu-idx = data.idx;
+                    Lib.menu-closing = false;
+                    cloudpop.show();
+                }
+            }
+        }
+        cloudpop := PopupWindow {
+            // drops down from the button's left edge, just below it (like the Copy menu)
+            x: cloudbtn.x;
+            // r2-layout (L34): above the button near the window bottom (like Echo's menus)
+            y: cloudbtn.absolute-position.y + cloudbtn.height + 6px + cloudpopb.preferred-height + 8px > Over.win-h ? cloudbtn.y - cloudpopb.preferred-height - 6px : cloudbtn.y + cloudbtn.height + 6px;
+            // own size: Slint tests clicks against it (none = every click 'outside')
+            width: cloudpopb.preferred-width;
+            height: cloudpopb.preferred-height;
+            close-policy: close-on-click-outside;
+            // closes = focus leaves (like Slint's ComboBox): the card may stop looking hovered. Esc closes.
+            forward-focus: cloudpopfs;
+            cloudpopfs := FocusScope {
+                width: 0px;
+                height: 0px;
+                focus-changed-event => {
+                    if (!self.has-focus) {
+                        Lib.menu-closing = true;
+                    }
+                }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        cloudpop.close();
+                        Lib.menu-closing = true;
+                        return accept;
+                    }
+                    reject
+                }
+            }
+            cloudpopb := CloudMenuBody {
+                done => {
+                    cloudpop.close();
+                    Lib.menu-closing = true;
+                }
+            }
         }
         IconBtn {
             y: (parent.height - self.height) / 2;
@@ -492,7 +1010,15 @@ component CardButtons inherits HorizontalLayout {
                 height: 32px;
                 icon: Ic.copy;
                 tip: "Copy to clipboard (Ctrl+click: choose size)";
-                clicked => { Lib.act(data.idx, "copy"); }
+                clicked => {
+                    if (self.ctrl) {
+                        Lib.menu-idx = data.idx;
+                        Lib.menu-closing = false;
+                        cm.show();
+                    } else {
+                        Lib.act(data.idx, "copy");
+                    }
+                }
             }
             Rectangle {
                 width: 1px;
@@ -508,21 +1034,50 @@ component CardButtons inherits HorizontalLayout {
                 icon: Ic.down;
                 icon-size: 12px;
                 tip: "Copy smaller for Discord";
-                clicked => { cm.show(); }
+                clicked => {
+                    Lib.menu-idx = data.idx;
+                    Lib.menu-closing = false;
+                    cm.show();
+                }
             }
         }
         cm := PopupWindow {
             x: 0;
-            y: cg.height + 6px;
+            // r2-layout (L34): Echo flips the menu above the button when it would run past the window bottom
+            y: cg.absolute-position.y + cg.height + 6px + cmb.preferred-height + 8px > Over.win-h ? -cmb.preferred-height - 6px : cg.height + 6px;
             // own size: Slint tests clicks against it (none = every click 'outside', fell through - William)
             width: cmb.preferred-width;
             height: cmb.preferred-height;
             close-policy: close-on-click-outside;
+            // closes = focus leaves (like Slint's ComboBox): the card may stop looking hovered. Esc closes.
+            forward-focus: cmfs;
+            cmfs := FocusScope {
+                width: 0px;
+                height: 0px;
+                focus-changed-event => {
+                    if (!self.has-focus) {
+                        Lib.menu-closing = true;
+                    }
+                }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        cm.close();
+                        Lib.menu-closing = true;
+                        return accept;
+                    }
+                    reject
+                }
+            }
             cmb := CopyMenuBody {
                 size-text: root.size-text;
                 picked(k) => {
                     cm.close();
+                    Lib.menu-closing = true;
                     Lib.act(data.idx, "copy:" + k);
+                }
+                cancel => {
+                    cm.close();
+                    Lib.menu-closing = true;
                 }
             }
         }
@@ -538,8 +1093,27 @@ component CardButtons inherits HorizontalLayout {
 
 export component CardView inherits Rectangle {
     in property <Card> data;
+    // r2-layout (L9): the library grid wraps the tags (Echo's .card .tags flex-wrap; Rust gives the row room for the
+    // lines: over.rs tag_lines); Home's narrow recent cards keep one line, cut at the card's edge
+    in property <bool> tag-wrap: true;
     // ta wraps the whole card: it stays "hovered" while the mouse is on the tick or the buttons inside it
-    property <bool> hov: ta.has-hover;
+    property <bool> hov: ta.has-hover || Lib.menu-idx == data.idx;
+    // safety net: the mouse is back on the card = its drop-down is gone (popups take all mouse events while open)
+    property <bool> real-hov: ta.has-hover;
+    changed real-hov => {
+        if (self.real-hov && Lib.menu-idx == data.idx) {
+            Lib.menu-idx = -1;
+            Lib.menu-closing = false;
+        }
+    }
+    Timer {
+        interval: 300ms;
+        running: Lib.menu-closing && Lib.menu-idx == data.idx;
+        triggered => {
+            Lib.menu-idx = -1;
+            Lib.menu-closing = false;
+        }
+    }
     changed hov => {
         if (self.hov) {
             Lib.hover-idx = data.idx;
@@ -550,6 +1124,7 @@ export component CardView inherits Rectangle {
     }
     ta := CardTouch {
         clip-row: data.idx;
+        menu(x, y) => { cmenu.open(x, y); }
         inner := Rectangle {
             // .card:hover - lift 3 px + accent border + shadow (the shadow switches instantly: an animated blur is
             // re-drawn every frame and smeared into a "trail")
@@ -575,6 +1150,8 @@ export component CardView inherits Rectangle {
                 border-top-right-radius: T.radius - 1px;
                 data: root.data;
                 hov: root.hov;
+                mx: ta.has-hover ? ta.absolute-position.x + ta.mouse-x : -9999px; // L35: badge tips
+                my: ta.has-hover ? ta.absolute-position.y + ta.mouse-y : -9999px;
             }
             // .info - padding 12 10 12 16; name 15 px semibold; meta "Friday • 22.7 MB"
             HorizontalLayout {
@@ -592,6 +1169,7 @@ export component CardView inherits Rectangle {
                     alignment: center;
                     NameLine {
                         data: root.data;
+                        menu(x, y) => { cmenu.open(x, y); }
                     }
                     HorizontalLayout {
                         spacing: 6px;
@@ -616,12 +1194,35 @@ export component CardView inherits Rectangle {
                             overflow: elide;
                         }
                     }
-                    if data.tags.length > 0: HorizontalLayout {
-                        spacing: 4px;
-                        padding-top: 4px;
-                        alignment: start;
-                        for t in data.tags: TagChip {
-                            text: t;
+                    // never wider than the room left by the buttons (the hover buttons slide in: the tags reflow)
+                    if data.tags.length > 0 && root.tag-wrap: Rectangle {
+                        min-width: 0px;
+                        clip: true;
+                        height: tfl.preferred-height + 4px;
+                        tfl := FlexboxLayout {
+                            y: 4px;
+                            width: parent.width;
+                            height: self.preferred-height;
+                            flex-wrap: wrap;
+                            spacing-horizontal: 4px;
+                            spacing-vertical: 4px;
+                            for t in data.tags: TagChip {
+                                text: t;
+                            }
+                        }
+                    }
+                    if data.tags.length > 0 && !root.tag-wrap: Rectangle {
+                        height: 22px;
+                        min-width: 0px;
+                        clip: true;
+                        HorizontalLayout {
+                            x: 0;
+                            width: self.preferred-width;
+                            spacing: 4px;
+                            padding-top: 4px;
+                            for t in data.tags: TagChip {
+                                text: t;
+                            }
                         }
                     }
                     if data.note != "": Text {
@@ -638,8 +1239,8 @@ export component CardView inherits Rectangle {
                 }
             }
         }
-        // right-click menu: on top, but it only takes right clicks (left clicks + hover pass through)
-        CardMenu {
+        // right-click menu (Echo's #ectx look): opened by the card's own right click, takes no room
+        cmenu := CardMenu {
             data: root.data;
         }
     }
@@ -648,7 +1249,23 @@ export component CardView inherits Rectangle {
 // list view (.grid.list): one row per clip, 176 px picture
 export component ListCard inherits Rectangle {
     in property <Card> data;
-    property <bool> hov: ta.has-hover;
+    property <bool> hov: ta.has-hover || Lib.menu-idx == data.idx;
+    // safety net: the mouse is back on the card = its drop-down is gone (popups take all mouse events while open)
+    property <bool> real-hov: ta.has-hover;
+    changed real-hov => {
+        if (self.real-hov && Lib.menu-idx == data.idx) {
+            Lib.menu-idx = -1;
+            Lib.menu-closing = false;
+        }
+    }
+    Timer {
+        interval: 300ms;
+        running: Lib.menu-closing && Lib.menu-idx == data.idx;
+        triggered => {
+            Lib.menu-idx = -1;
+            Lib.menu-closing = false;
+        }
+    }
     changed hov => {
         if (self.hov) {
             Lib.hover-idx = data.idx;
@@ -659,6 +1276,7 @@ export component ListCard inherits Rectangle {
     }
     ta := CardTouch {
         clip-row: data.idx;
+        menu(x, y) => { cmenu.open(x, y); }
         Rectangle {
             background: T.panel;
             border-radius: T.radius;
@@ -672,6 +1290,8 @@ export component ListCard inherits Rectangle {
                     width: 176px;
                     data: root.data;
                     hov: root.hov;
+                    mx: ta.has-hover ? ta.absolute-position.x + ta.mouse-x : -9999px; // L35: badge tips
+                    my: ta.has-hover ? ta.absolute-position.y + ta.mouse-y : -9999px;
                     small: true;
                 }
                 HorizontalLayout {
@@ -685,6 +1305,7 @@ export component ListCard inherits Rectangle {
                         alignment: center;
                         NameLine {
                             data: root.data;
+                            menu(x, y) => { cmenu.open(x, y); }
                         }
                         HorizontalLayout {
                             spacing: 6px;
@@ -707,12 +1328,19 @@ export component ListCard inherits Rectangle {
                                 horizontal-stretch: 1;
                             }
                         }
-                        if data.tags.length > 0: HorizontalLayout {
-                            spacing: 4px;
-                            padding-top: 2px;
-                            alignment: start;
-                            for t in data.tags: TagChip {
-                                text: t;
+                        // r2-layout (L9): the list row has a fixed height - one line, cut at the buttons
+                        if data.tags.length > 0: Rectangle {
+                            height: 20px;
+                            min-width: 0px;
+                            clip: true;
+                            HorizontalLayout {
+                                x: 0;
+                                width: self.preferred-width;
+                                spacing: 4px;
+                                padding-top: 2px;
+                                for t in data.tags: TagChip {
+                                    text: t;
+                                }
                             }
                         }
                     }
@@ -724,7 +1352,7 @@ export component ListCard inherits Rectangle {
                 }
             }
         }
-        CardMenu {
+        cmenu := CardMenu {
             data: root.data;
         }
     }
@@ -749,6 +1377,13 @@ component FChip inherits Rectangle {
         padding-left: 10px;
         padding-right: 10px;
         spacing: 7px;
+        if o.has-img: Image {
+            width: 16px;
+            height: 16px;
+            y: 6px;
+            source: o.img;
+            image-fit: cover;
+        }
         Text {
             text: o.label;
             font-size: 12.5px;
@@ -769,8 +1404,14 @@ export component FilterPanel inherits Rectangle {
     in property <[FLine]> lines;
     callback toggle(string, string);
     callback clear();
+    // gaps-library row 21: Echo's "Search games and tags…" box (Rust filters the Game + Tags chips)
+    in-out property <string> query;
+    callback search(string);
+    callback close();
+    // r2-layout (L38): the room under the button (Echo's #fmenu max-height 70vh) - the rest scrolls
+    in property <length> max-h: 560px;
     width: 520px;
-    height: min(vl.preferred-height, 560px);
+    height: min(vl.preferred-height, 560px, root.max-h);
     background: T.panel;
     border-radius: 14px;
     border-width: 1px;
@@ -807,6 +1448,50 @@ export component FilterPanel inherits Rectangle {
                     cta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.clear(); }
+                    }
+                }
+            }
+            // Echo's #fmenu input: types filter Game + Tags (Where + Type stay); Esc closes the panel
+            Rectangle {
+                height: 34px + 10px;
+                Rectangle {
+                    y: 10px;
+                    height: 34px;
+                    border-radius: 9px;
+                    background: T.panel2;
+                    border-width: 1px;
+                    border-color: fqi.has-focus ? T.accent : T.line;
+                    TouchArea {
+                        mouse-cursor: MouseCursor.text;
+                        clicked => { fqi.focus(); }
+                    }
+                    if fqi.text == "": Text {
+                        x: 12px;
+                        height: parent.height;
+                        text: "Search games and tags…";
+                        font-size: 13px;
+                        color: T.dim;
+                        vertical-alignment: center;
+                    }
+                    fqi := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text <=> root.query;
+                        vertical-alignment: center;
+                        single-line: true;
+                        font-size: 13px;
+                        color: T.text;
+                        selection-background-color: T.accent.with-alpha(0.45);
+                        edited => { root.search(self.text); }
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                root.close();
+                                Focus.back(); // L2: the panel (and this box) goes away
+                                return accept;
+                            }
+                            reject
+                        }
                     }
                 }
             }

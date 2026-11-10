@@ -33,32 +33,23 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: |
-            src-tauri
             prototype-native
       - name: Version
         # same number as the private repo's build (ci/version.txt, written when the code is copied here)
         # Own builds (build.cmd / build.sh) stay 0.1.0 and never offer updates.
+        # tauri.conf.json: only the installer packer reads it (version, update key) - no Tauri app is built any more
         shell: bash
         run: |
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
           sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
           echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
           grep '"version"' src-tauri/tauri.conf.json
-      - name: Build
-        working-directory: src-tauri
-        run: cargo build --release
-      - name: Rename
-        shell: pwsh
-        # EchoClip.exe, not Echo.exe (chat 31): Discord's own game detection showed "Playing ECHO" (a 2017 game) for Echo.exe
-        # (the portable download stays this Tauri build for now: the native app needs libmpv-2.dll next to it)
-        run: Copy-Item src-tauri/target/release/echo.exe EchoClip.exe
       - name: Native app
-        # if this fails, the Installer step falls back to the old Tauri app (a release without Echo-Setup.exe would
-        # leave Windows users without updates and the website without a download)
-        continue-on-error: true
-        # 9 Nov 2026: the INSTALLER ships the native Echo (prototype-native: Slint + mpv, Echo's recorder via echo-core)
-        # as EchoClip.exe. The Installer step packs it with Tauri's NSIS bundler (tauri bundle = no rebuild), so the
-        # install folder, uninstaller, hooks.nsh and the /P /R /UPDATE handling are exactly what the old Echo's updater
+        # 10 Nov 2026 (William): Echo 2.0 = the native app ONLY (prototype-native: Slint + mpv, Echo's recorder via
+        # echo-core). The old Tauri app is no longer built and there is no fallback to it: if this fails, the run fails.
+        # EchoClip.exe, not Echo.exe (chat 31): Discord's own game detection showed "Playing ECHO" (a 2017 game) for Echo.exe.
+        # The Installer step packs it with Tauri's NSIS bundler (a packing tool only - `tauri bundle` builds nothing),
+        # so the install folder, uninstaller, hooks.nsh and the /P /R /UPDATE handling are exactly what 1.0.x's updater
         # expects (tested on William's PC: update over 1.0.71 installed + relaunched it).
         # libmpv-2.dll = shinchiro's mpv build 20261107 (git 9028187538), pinned + fingerprint: byte-identical to the
         # DLL tested on William's PC. ECHO_VERSION (Version step) goes into the exe: its updater + version details.
@@ -71,6 +62,7 @@ jobs:
           echo "c91949577ae9cc2d500208da51f2c4a24cfa7a02d0ce6e130bf67ec738b450bb  dl/libmpv-2.dll" | sha256sum -c -
           cp dl/libmpv-2.dll src-tauri/libmpv-2.dll
           (cd prototype-native && cargo build --release)
+          mkdir -p src-tauri/target/release
           cp prototype-native/target/release/echo-native-proto.exe src-tauri/target/release/EchoClip.exe
           ls -la src-tauri/target/release/EchoClip.exe src-tauri/libmpv-2.dll
       - name: Code signing login (Certum)
@@ -88,8 +80,8 @@ jobs:
           username: ${{ secrets.CERTUM_USERNAME }}
           totp_secret: ${{ secrets.CERTUM_TOTP_SECRET }}
       - name: Installer
-        # Echo-Setup.exe: installs for the current user (no admin), Start menu entry + uninstaller
-        continue-on-error: true
+        # Echo-Setup.exe: installs for the current user (no admin), Start menu entry + uninstaller; then the portable zip
+        # (no continue-on-error: a release without Windows files must not go out)
         shell: bash
         working-directory: src-tauri
         env:
@@ -101,6 +93,9 @@ jobs:
           SIGNTOOL: ${{ steps.certum.outputs.signtool-path }}
           CERT_SHA1: ${{ steps.certum.outputs.cert-thumbprint }}
         run: |
+          # the installer's first page shows which Echo it installs (William, 10 Nov 2026): "Echo 2.0.0 - ..."
+          V=$(cat ../ci/version.txt 2>/dev/null | tr -d ' \r\n')
+          [ -n "$V" ] && sed -i "1s/^Echo /Echo $V /" windows/installer-notice.txt && head -n 1 windows/installer-notice.txt
           UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
           SIGN=""
           if [ -n "$SIGNTOOL" ] && [ -n "$CERT_SHA1" ]; then
@@ -125,23 +120,26 @@ jobs:
           cp dl/*/bin/ffmpeg.exe dl/*/bin/ffprobe.exe tools/
           cp dl/rclone-*/rclone.exe tools/
           ls -la tools
-          if [ -f target/release/EchoClip.exe ] && [ -f libmpv-2.dll ]; then
-            # bundle (not build): packs the native EchoClip.exe the Native app step put in target/release, + libmpv-2.dll;
-            # no WebView2 install (the native app doesn't use it)
-            npx --yes @tauri-apps/cli@2 bundle --bundles nsis \
-              --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/","libmpv-2.dll":"libmpv-2.dll"},"windows":{'"$SIGN"'"webviewInstallMode":{"type":"skip"},"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
-          else
-            echo "::warning::Native app didn't build - Echo-Setup.exe has the OLD (Tauri) Echo this time"
-            npx --yes @tauri-apps/cli@2 build --bundles nsis \
-              --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/"},"windows":{'"$SIGN"'"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
-          fi
+          test -f target/release/EchoClip.exe && test -f libmpv-2.dll
+          # bundle (not build): packs the native EchoClip.exe the Native app step put in target/release, + libmpv-2.dll;
+          # no WebView2 install (the native app doesn't use it)
+          npx --yes @tauri-apps/cli@2 bundle --bundles nsis \
+            --config '{"mainBinaryName":"EchoClip","bundle":{"active":true'"$UPD"',"licenseFile":"windows/installer-notice.txt","resources":{"tools/*":"tools/","libmpv-2.dll":"libmpv-2.dll"},"windows":{'"$SIGN"'"webviewInstallMode":{"type":"skip"},"nsis":{"installMode":"currentUser","installerHooks":"windows/hooks.nsh","installerIcon":"icons/icon.ico","headerImage":"windows/header.bmp","sidebarImage":"windows/sidebar.bmp"}}}}'
           cp target/release/bundle/nsis/*-setup.exe ../Echo-Setup.exe
           cp target/release/bundle/nsis/*-setup.exe.sig ../Echo-Setup.exe.sig || echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
-          # the portable download too
+          # the portable download (10 Nov 2026): the native app needs libmpv-2.dll (video player) next to it and its
+          # tools/ (ffmpeg, ffprobe, rclone) like the installed copy - one zip: unpack anywhere, run EchoClip.exe
+          rm -rf portable && mkdir -p portable/Echo
+          cp target/release/EchoClip.exe libmpv-2.dll portable/Echo/
+          cp -r tools portable/Echo/
           if [ -n "$SIGN" ]; then
-            "$ST" sign /sha1 "$CERT_SHA1" /tr http://time.certum.pl /td SHA256 /fd SHA256 ../EchoClip.exe || echo "::warning::portable EchoClip.exe not signed"
-            "$ST" verify /pa ../Echo-Setup.exe || echo "::warning::Echo-Setup.exe signature doesn't verify"
+            # MSYS_NO_PATHCONV: Git Bash turned signtool's /fd, /pa ... into paths ("File not found: C:/Program
+            # Files/Git/pa", run #50) - the portable exe stayed unsigned and verify failed although the setup IS signed
+            MSYS_NO_PATHCONV=1 "$ST" sign /sha1 "$CERT_SHA1" /tr http://time.certum.pl /td SHA256 /fd SHA256 portable/Echo/EchoClip.exe || echo "::warning::portable EchoClip.exe not signed"
+            MSYS_NO_PATHCONV=1 "$ST" verify /pa ../Echo-Setup.exe || echo "::warning::Echo-Setup.exe signature doesn't verify"
           fi
+          (cd portable && 7z a -tzip -mx=7 ../../Echo-Windows-portable.zip Echo >/dev/null)
+          ls -la ../Echo-Setup.exe ../Echo-Windows-portable.zip
       - name: Code signing logout
         if: always() && steps.certum.outcome == 'success'
         uses: jay0lee/certum-cloud-code-sign/teardown@a3324503499c49090869856eeeecfe95fb613d87 # v1
@@ -149,7 +147,7 @@ jobs:
         with:
           name: windows
           path: |
-            EchoClip.exe
+            Echo-Windows-portable.zip
             Echo-Setup.exe
             Echo-Setup.exe.sig
           if-no-files-found: warn
@@ -169,26 +167,36 @@ jobs:
         run: |
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update
-          sudo apt-get $APT install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libasound2-dev libdbus-1-dev libayatana-appindicator3-dev libsoup-3.0-dev pkg-config \
-            libfuse2 file patchelf zsync gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+          # 10 Nov 2026: the native app only (WebKit, libsoup and the GStreamer players were the old Tauri app's).
+          # Slint links fontconfig (+ xkbcommon), echo-core links D-Bus + ALSA; a few GTK crates are still in the lock.
+          # libmpv-dev = libmpv.so.1 (mpv 0.34) + its libraries, bundled into the AppImage.
+          sudo apt-get $APT install -y libgtk-3-dev librsvg2-dev libasound2-dev libdbus-1-dev libayatana-appindicator3-dev pkg-config \
+            libfuse2 file patchelf zsync libfontconfig1-dev libxkbcommon-dev libmpv-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            prototype-native
       - name: Version
         # same number as the private repo's build (ci/version.txt, written when the code is copied here)
         # Own builds (build.cmd / build.sh) stay 0.1.0 and never offer updates.
         shell: bash
         run: |
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
-          sed -i 's/"version": "0.1.0"/"version": "'"$V"'"/' src-tauri/tauri.conf.json
           echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
-          grep '"version"' src-tauri/tauri.conf.json
-      - name: Build
-        working-directory: src-tauri
-        run: cargo build --release
+          echo "version $V"
+      - name: Native app
+        # 10 Nov 2026 (2.0.0, William): the Linux downloads ship the native Echo ONLY (prototype-native: Slint + mpv,
+        # Echo's recorder via echo-core) as echo-clips, like Windows. ECHO_VERSION (Version step) goes into the binary:
+        # its updater + version details. No fallback to the old Tauri app: if this fails, the run fails.
+        id: native
+        working-directory: prototype-native
+        run: |
+          cargo build --release
+          ls -la target/release/echo-native-proto
+          ldd target/release/echo-native-proto
       # whisper-cli for captions in the AppImage / plain Linux build (Fedora's whisper-cpp package has no command-line
       # tool). Built once per whisper version (cached), uploaded as a release file; Echo downloads it on first use and
       # checks GitHub's SHA-256 of it. Same version as the Flatpak module (flatpak/link.echoclip.Echo.yml). (chat 28)
@@ -213,40 +221,104 @@ jobs:
       - name: Package
         run: |
           mkdir -p Echo-linux
-          cp src-tauri/target/release/echo Echo-linux/Echo
           cp build.sh src-tauri/icons/icon.png Echo-linux/
+          # the plain binary: libmpv (video player) comes from the distro here - only the AppImage has it inside
+          cp prototype-native/target/release/echo-native-proto Echo-linux/Echo
           cat > Echo-linux/README.txt <<'TXT'
           Echo for Linux (x86_64)
           Start: ./Echo
-          Needs (Fedora / Nobara): sudo dnf install webkit2gtk4.1 gpu-screen-recorder ffmpeg-free wl-clipboard libnotify pulseaudio-utils
-          Ubuntu / Debian: sudo apt install libwebkit2gtk-4.1-0 ffmpeg wl-clipboard libnotify-bin pulseaudio-utils (+ gpu-screen-recorder from its website / flatpak)
+          Needs (Fedora / Nobara): sudo dnf install mpv-libs gpu-screen-recorder ffmpeg-free wl-clipboard libnotify pulseaudio-utils
+          Ubuntu / Debian: sudo apt install libmpv2 ffmpeg wl-clipboard libnotify-bin pulseaudio-utils (Ubuntu 22.04 / Debian 11: libmpv1 instead of libmpv2) (+ gpu-screen-recorder from its website / flatpak)
+          Arch: sudo pacman -S mpv ffmpeg wl-clipboard libnotify libpulse (+ gpu-screen-recorder from the AUR)
+          mpv-libs / libmpv = the video player library. Without it Echo records fine but can't play clips.
+          Don't want to install anything? Echo-x86_64.AppImage has the video player inside.
           TXT
           tar -czf Echo-linux-x86_64.tar.gz Echo-linux
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-      - name: AppImage
-        # one file that runs on most distros (WebKit + video playback libraries inside); the recorder tools
-        # (gpu-screen-recorder, ffmpeg) still come from the system
-        continue-on-error: true
-        working-directory: src-tauri
+      - name: AppImage (native app)
+        # one file that runs on most distros: echo-clips + libmpv (Ubuntu 22.04's mpv 0.34 = libmpv.so.1) and the
+        # libraries it needs, gathered by linuxdeploy. The recorder tools (gpu-screen-recorder, ffmpeg) still come from
+        # the system. A system libmpv.so.2 (newer mpv) wins over the bundled .so.1 (prototype-native/src/mpv.rs).
+        # People who auto-update from the old (Tauri) AppImage get this file - it must play clips without mpv installed.
+        # Not bundled (the PC's own copies are used): libva (an older libva can't load newer VA-API drivers = no GPU
+        # decoding), libwayland-* / libxkbcommon (Slint loads them too - same copies as the plain build), libdbus.
+        # Plus linuxdeploy's own excludelist (glibc, libstdc++, GL/EGL, X11, ALSA, fontconfig...).
+        # Built as Echo-native.AppImage + .sig and only renamed at the very end. No fallback to the old Tauri AppImage
+        # (10 Nov 2026): if this fails, the run fails.
+        id: appimage
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
-          NO_STRIP: true
-          # update information inside the AppImage (AppImageHub / AppImageUpdate; Echo itself updates via Tauri) - chat 29
-          LDAI_UPDATE_INFORMATION: gh-releases-zsync|Resister0|echoclip|latest|Echo-x86_64.AppImage.zsync
-          UPDATE_INFORMATION: gh-releases-zsync|Resister0|echoclip|latest|Echo-x86_64.AppImage.zsync
+          NO_STRIP: 1
+          INFO: gh-releases-zsync|Resister0|echoclip|latest|Echo-x86_64.AppImage.zsync
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
-          npx --yes @tauri-apps/cli@2 build --bundles appimage \
-            --config '{"bundle":{"active":true'"$UPD"',"linux":{"appimage":{"bundleMediaFramework":true}}}}'
-          cp target/release/bundle/appimage/*.AppImage ../Echo-x86_64.AppImage
-          cp target/release/bundle/appimage/*.AppImage.sig ../Echo-x86_64.AppImage.sig || echo "no update signature"
+          T=$RUNNER_TEMP/appimage; rm -rf "$T" AppDir Echo-native.AppImage*; mkdir -p "$T/stage"
+          # linuxdeploy pinned + fingerprint; appimagetool = the same continuous build the update-info step uses
+          curl -fsSL --retry 3 -o "$T/linuxdeploy" https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+          echo "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  $T/linuxdeploy" | sha256sum -c -
+          curl -fsSL --retry 3 -o "$T/appimagetool" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$T/linuxdeploy" "$T/appimagetool"
+          cp prototype-native/target/release/echo-native-proto "$T/stage/echo-clips"
+          cp src-tauri/icons/icon.png "$T/stage/echo-clips.png"
+          # StartupWMClass=echo: the native window's Wayland app_id / X11 class (prototype-native/src/popup.rs) -
+          # KDE / GNOME find the icon through it (also in the copy AppImageLauncher / Gear Lever install)
+          printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Echo' 'GenericName=Game Clip Recorder' \
+            'Comment=Save game highlights with one key' 'Exec=echo-clips' 'Icon=echo-clips' 'Terminal=false' \
+            'Categories=AudioVideo;Video;Recorder;' 'StartupWMClass=echo' 'SingleMainWindow=true' > "$T/stage/echo.desktop"
+          MPV=/usr/lib/x86_64-linux-gnu/libmpv.so.1
+          test -e "$MPV"
+          "$T/linuxdeploy" --appdir AppDir -e "$T/stage/echo-clips" -d "$T/stage/echo.desktop" -i "$T/stage/echo-clips.png" \
+            -l "$MPV" --exclude-library 'libva.so*' --exclude-library 'libva-*' --exclude-library 'libwayland-*' \
+            --exclude-library 'libxkbcommon*' --exclude-library 'libdbus-1.so*'
+          # mpv.rs looks for usr/lib/libmpv.so.1 by that exact name
+          [ -e AppDir/usr/lib/libmpv.so.1 ] || ln -s "$(basename "$(readlink -f "$MPV")")" AppDir/usr/lib/libmpv.so.1
+          readelf -d AppDir/usr/bin/echo-clips | grep -iE 'runpath|rpath' || true
+          ls AppDir/usr/lib; du -sh AppDir
+          # every library the bundled libmpv needs: in the AppDir, or one of the system ones left out on purpose
+          if ldd AppDir/usr/lib/libmpv.so.1 | grep 'not found'; then echo "bundled libmpv misses libraries"; exit 1; fi
+          ldd AppDir/usr/lib/libmpv.so.1 | grep -v "$PWD/AppDir" || true
+          # the bundled libmpv really starts (load + create + initialize, no window / sound)
+          python3 - "$PWD/AppDir/usr/lib/libmpv.so.1" <<'PY'
+          import ctypes, sys
+          m = ctypes.CDLL(sys.argv[1])
+          v = m.mpv_client_api_version()
+          m.mpv_create.restype = ctypes.c_void_p
+          h = m.mpv_create()
+          assert h, "mpv_create failed"
+          for k, val in ((b"vo", b"null"), (b"ao", b"null")):
+              m.mpv_set_option_string(ctypes.c_void_p(h), k, val)
+          r = m.mpv_initialize(ctypes.c_void_p(h))
+          assert r >= 0, "mpv_initialize: %d" % r
+          m.mpv_terminate_destroy(ctypes.c_void_p(h))
+          print("bundled libmpv OK, client API %d.%d" % (v >> 16, v & 0xffff))
+          PY
+          # pack with the update information inside (AppImageHub / AppImageUpdate; Echo itself updates via the .sig)
+          ARCH=x86_64 "$T/appimagetool" --no-appstream -u "$INFO" AppDir Echo-native.AppImage
+          chmod +x Echo-native.AppImage
+          info=$(./Echo-native.AppImage --appimage-updateinformation)
+          case "$info" in gh-releases-zsync*) echo "update information: $info" ;; *) echo "no update information: '$info'"; exit 1 ;; esac
+          rm -f Echo-native.AppImage.zsync
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            # Echo's updater signature: the same minisign key + .sig format the Tauri bundler made (base64 of the
+            # minisign signature) - prototype-native/src/setup.rs verify() and the old Tauri updater both check it
+            npx --yes @tauri-apps/cli@2 signer sign Echo-native.AppImage
+            test -s Echo-native.AppImage.sig
+          else
+            echo "no update signature (secret TAURI_SIGNING_PRIVATE_KEY missing)"
+          fi
+          # everything worked: swap in (the .zsync is made from this file by the next step)
+          rm -f Echo-x86_64.AppImage Echo-x86_64.AppImage.sig
+          mv Echo-native.AppImage Echo-x86_64.AppImage
+          if [ -f Echo-native.AppImage.sig ]; then mv Echo-native.AppImage.sig Echo-x86_64.AppImage.sig; fi
+          rm -rf AppDir
+          ls -la Echo-x86_64.AppImage*
       - name: AppImage update info (.zsync)
         # Tauri's AppImage tooling ignores LDAI_UPDATE_INFORMATION, so the AppImage is re-packed here with appimagetool -u
-        # (AppImageHub bot, chat 30). Built as Echo-new.AppImage, re-signed for Echo's own updater, and only then swapped in -
+        # (AppImageHub bot, chat 30). The native AppImage already has it (packed with -u): then this only makes the .zsync.
+        # Built as Echo-new.AppImage, re-signed for Echo's own updater, and only then swapped in -
         # if anything fails, the original AppImage + .sig are released unchanged.
         continue-on-error: true
         env:
@@ -374,12 +446,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           msg=$(git log -1 --pretty=%s)
-          files=$(find out -type f \( -name 'EchoClip.exe' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' -o -name '*.zsync' -o -name 'whisper-cli-*' \))
+          files=$(find out -type f \( -name 'Echo-Windows-portable.zip' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' -o -name '*.zsync' -o -name 'whisper-cli-*' \))
           notes="Built from: $msg
 
-          Windows: download Echo-Setup.exe (installs Echo with a Start menu entry) or EchoClip.exe (no install). First start: if Windows says it protected your PC, click More info > Run anyway.
+          Windows: download Echo-Setup.exe (installs Echo with a Start menu entry) or Echo-Windows-portable.zip (no install: unzip it anywhere and run EchoClip.exe). First start: if Windows says it protected your PC, click More info > Run anyway.
           Linux: download Echo-x86_64.AppImage, make it runnable (right-click > Properties > Allow executing, or chmod +x) and start it. Also needs gpu-screen-recorder + ffmpeg from your distro.
-          (Echo-linux-x86_64.tar.gz = the plain program, smaller; see README.txt inside.)
+          (Echo-linux-x86_64.tar.gz = the plain program, smaller; it also needs your distro's mpv library to play clips - Fedora/Nobara: mpv-libs, Ubuntu/Debian: libmpv2, Arch: mpv - see README.txt inside.)
           Windows build: ${{ needs.windows.result }} / Linux build: ${{ needs.linux.result }}"
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); [ -n "$V" ] || V="1.0.0"
@@ -393,7 +465,7 @@ jobs:
           V=$(cat ci/version.txt 2>/dev/null | tr -d ' \r\n'); msg=$(git log -1 --pretty=%s)
           sigs='{}'
           for f in $(find out -type f -name '*.sig'); do sigs=$(jq --arg n "$(basename "$f")" --rawfile s "$f" '. + {($n): $s}' <<<"$sigs"); done
-          names=$(find out -type f \( -name 'EchoClip.exe' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' \) -printf '%f\n' | jq -R . | jq -s .)
+          names=$(find out -type f \( -name 'Echo-Windows-portable.zip' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' \) -printf '%f\n' | jq -R . | jq -s .)
           jq -n --arg v "$V" --arg m "$msg" --argjson sigs "$sigs" --argjson files "$names" '{version: $v, notes: $m, sigs: $sigs, files: $files}' > rel.json
           curl -sS -f -X POST -H "Content-Type: application/json" -H "x-release-key: $RELEASE_KEY" --data @rel.json https://echoclip.link/release/push || echo "::warning::Telling echoclip.link failed - it falls back to asking GitHub"
       - name: Announce on Discord

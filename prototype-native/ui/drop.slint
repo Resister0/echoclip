@@ -1,0 +1,37 @@
+// gaps-library row 1 (10 Nov 2026): Echo's #dropov - files dragged onto the window from Explorer / Discord /
+// browser downloads. Rust (src/drop.rs) sets these from winit's HoveredFile / DroppedFile; the sidebar folder rows
+// (app.slint NavBtn) say which folder is under the mouse.
+import { T } from "theme.slint";
+
+export global DropG {
+    in-out property <bool> on;           // files are being dragged over the window
+    in-out property <bool> editor;       // ...over the editor (videos, sounds, pictures or GIFs)
+    in-out property <length> px;         // the mouse, window coordinates
+    in-out property <length> py;
+    in-out property <bool> hit;          // a sidebar folder row is under the mouse...
+    in-out property <string> folder;     // ...this one ("" = All clips = the main folder)
+}
+
+// position:fixed; inset:12px; 3px border (dashed in Echo - Slint draws it solid), radius 16, #000a, 700 26px --hi
+export component DropOverlay inherits Rectangle {
+    visible: DropG.on;
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: parent.width - 24px;
+        height: parent.height - 24px;
+        border-radius: 16px;
+        border-width: 3px;
+        border-color: T.hi;
+        background: #000000aa;
+        Text {
+            text: DropG.editor ? "Drop videos, sounds, pictures or GIFs to add them" : "Drop videos or sounds (.wav, .mp3…) to add them";
+            font-size: 26px;
+            font-weight: 700;
+            color: T.hi;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

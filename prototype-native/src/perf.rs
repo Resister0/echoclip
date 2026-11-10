@@ -2,9 +2,10 @@
 //! clipping app. A background thread samples once a minute: memory (Task Manager's "Memory" = private working set)
 //! and CPU (share of the whole PC, like Task Manager) of Echo's process PLUS its child processes (the ffmpeg encoder
 //! while recording - leaving it out would flatter the numbers). The averages / peaks ride along with the update
-//! check Echo already makes every few hours (setup::check_updates) as query fields - the server ignores them until
-//! the admin side is built (cloud/src/index.js matches only the path). Anonymous: numbers only, nothing about the
-//! PC or the person. Reset after each report.
+//! check Echo already makes every few hours (setup::check_updates) as query fields (cloud/src/index.js countPerf,
+//! admin page "Performance"), with the PC's hardware model names + recording settings (specs.rs). Anonymous: no ID,
+//! nothing about the person. Reset after each report. Off with Settings > About > "Send anonymous performance numbers".
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -58,11 +59,36 @@ pub fn start() {
         .ok();
 }
 
-/// "?m=..&mp=..&c=..&cp=..&rm=..&rc=..&n=..&rn=..&k=.." for the update check ("" = nothing measured yet); resets.
-/// m / mp / rm = MB, c / cp / rc = CPU % x10 (one decimal), n / rn = minutes measured / of those recording, k = cores
+/// r2-perf: Settings > App Settings > About > "Send anonymous performance numbers" (on by default). Kept in
+/// native_ui.json: settings.json is rewritten by the recorder's own Settings struct, which drops keys it doesn't know.
+static OFF: AtomicBool = AtomicBool::new(false);
+static OFF_READ: std::sync::Once = std::sync::Once::new();
+
+pub fn enabled() -> bool {
+    OFF_READ.call_once(|| OFF.store(crate::lib_fx::ui_get("send_perf").as_bool() == Some(false), Ordering::Relaxed));
+    !OFF.load(Ordering::Relaxed)
+}
+
+/// S.set hook (main.rs): true = it was ours
+pub fn set(key: &str, val: &str) -> bool {
+    if key != "send_perf" {
+        return false;
+    }
+    let on = val == "true";
+    enabled(); // read the file first, so a later first read can't undo this
+    OFF.store(!on, Ordering::Relaxed);
+    crate::lib_fx::ui_set("send_perf", if on { serde_json::Value::Null } else { serde_json::json!(false) });
+    true
+}
+
+/// "?m=..&mp=..&c=..&cp=..&rm=..&rc=..&n=..&rn=..&k=..&cpu=..&gpu=..&ram=..&os=..&res=..&fps=..&enc=.." for the update
+/// check ("" = nothing measured yet, or the switch is off); resets.
+/// m / mp / rm = MB, c / cp / rc = CPU % x10 (one decimal), n / rn = minutes measured / of those recording, k = cores,
+/// the rest = this PC's hardware model names + recording settings (specs.rs)
 pub fn query() -> String {
+    // taken either way: numbers from while the switch was off are never sent later
     let Some(a) = AGG.lock().ok().and_then(|mut g| g.take()) else { return String::new() };
-    if a.n == 0 {
+    if a.n == 0 || !enabled() {
         return String::new();
     }
     let n = a.n as f64;
@@ -78,7 +104,7 @@ pub fn query() -> String {
         if a.rn > 0 { a.rcpu_sum / rn * 10.0 } else { 0.0 },
         a.n,
         a.rn
-    )
+    ) + &crate::specs::q()
 }
 
 /// (private memory MB, CPU seconds used so far) of this process + its children
@@ -157,4 +183,36 @@ fn sample() -> Option<(f64, f64)> {
         }
     }
     Some((mem, cpu))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put() {
+        *AGG.lock().unwrap() = Some(Agg { n: 3, mem_sum: 600.0, mem_peak: 250.0, cpu_sum: 3.0, cpu_peak: 2.5, rn: 1, rmem_sum: 240.0, rcpu_sum: 1.5 });
+    }
+
+    /// numbers + specs in one string, reset after sending, nothing at all while the switch is off
+    #[test]
+    fn query_and_switch() {
+        let dir = std::env::temp_dir().join("echo_perf_switch_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("ECHO_SETTINGS", dir.join("settings.json"));
+        assert!(enabled());
+        put();
+        let q = query();
+        println!("query: {q}");
+        assert!(q.starts_with("?m=200&mp=250&c=10&cp=25&rm=240&rc=15&n=3&rn=1&k=") && q.contains("&cpu=") && q.contains("&os="));
+        assert_eq!(query(), "");
+        assert!(set("send_perf", "false"));
+        assert!(std::fs::read_to_string(dir.join("native_ui.json")).unwrap().contains("\"send_perf\": false"));
+        put();
+        assert_eq!(query(), "");
+        set("send_perf", "true");
+        put();
+        assert!(query().starts_with("?m="));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

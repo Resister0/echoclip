@@ -86,9 +86,9 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
-    <release version="2.0.72" date="2026-11-09">
+    <release version="2.0.0" date="2026-11-10">
       <description>
-        <p>Bug fixes and improvements.</p>
+        <p>Echo 2.0 - the biggest update yet: Echo is rebuilt from scratch as a native app. It uses less than half the memory (about 150 MB vs 340+ MB, Medal ~470 MB) and half the CPU while recording, so your game gets more of your PC. New video player that's instant and smooth, clips play when you hover them, cut parts out right in the player, a new Home, drag and drop to import, 60-80 % smaller Echo Cloud uploads, and a signed installer. Linux runs the same new app. Everything from 1.0 is still here - just faster and lighter.</p>
       </description>
     </release>
     <release version="1.0.71" date="2026-11-07">

@@ -1,7 +1,7 @@
 // Echo's Home (#page-home, chat 30 "mockup v6"): the latest clip big + what to do with it, one "Get started" line,
 // quiet numbers (.hstrip), one row of recent clips. Rust fills HomeState; Home's cards are normal library cards
 // (Card.idx = HOME_BASE + position, so hover / favourite / buttons work through Lib like everywhere else).
-import { T, Ic, Icon, TipArea, Btn } from "theme.slint";
+import { T, Ic, Icon, TipArea, Btn, CopyMenuBody } from "theme.slint";
 import { Card, CardView, Lib } from "library.slint";
 
 export global HomeState {
@@ -18,6 +18,9 @@ export global HomeState {
     in-out property <[int]> bars;          // clips per week, last 6 weeks (oldest first)
     in-out property <int> bars-max: 1;
     in-out property <bool> spark;          // at least 3 weeks with clips
+    in-out property <[int]> days;          // William (10 Nov): clips per day, last 7 days (today last)
+    in-out property <[string]> day-l;      // their day letters ("M", "T", …)
+    in-out property <int> days-max: 1;
     // Get started (.hgs)
     in-out property <bool> gs-on;
     in-out property <[bool]> gs-done;
@@ -43,24 +46,59 @@ component HB inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+    // William (10 Nov): three of these side by side under Copy for Discord - icon + label centred
     HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 10px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        alignment: center;
         if root.icon != "": Icon {
             y: (parent.height - self.height) / 2;
-            width: 16px;
-            height: 16px;
+            width: 15px;
+            height: 15px;
             commands: root.icon;
-            stroke: T.text;
+            stroke: T.muted;
         }
         Text {
             text: root.text;
-            font-size: 14px;
+            font-size: 13.5px;
             color: T.text;
             vertical-alignment: center;
-            horizontal-stretch: 1;
+            overflow: elide;
         }
+    }
+}
+
+// William (10 Nov): one of Home's four number boxes (was a bare strip between two lines)
+component StatBox inherits Rectangle {
+    in property <string> n;
+    in property <string> l;
+    height: 76px;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: T.line;
+    background: T.panel;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.n;
+                font-size: 20px;
+                font-weight: 700 + T.fw;
+                color: T.text;
+            }
+            Text {
+                text: root.l;
+                font-size: 12px;
+                color: T.dim;
+                overflow: elide;
+            }
+        }
+        @children
     }
 }
 
@@ -75,10 +113,24 @@ export component HomePage inherits Rectangle {
     // one row of recent clips, as many as fit (2 to 7): ~250 px cards
     property <int> rcols: max(2, min(7, floor((cw + 14px) / 264px)));
     changed rcols => { HomeState.cols(self.rcols); }
-    init => { HomeState.cols(self.rcols); }
+    init => {
+        HomeState.cols(self.rcols);
+        self.sync-hero();
+    }
     property <length> rcard-w: (cw - (rcols - 1) * 14px) / rcols;
     property <length> rcard-h: rcard-w * 9 / 16 + 2px + 68px + HomeState.extra * 1px;
     property <bool> has: HomeState.cards.length > 0;
+    // gaps (10 Nov): the hero card = the latest clip's card with the sharp still as its picture
+    property <Card> c0: HomeState.cards[0];
+    property <image> hero-img: HomeState.hero;
+    property <Card> hero-card;
+    function sync-hero() {
+        self.hero-card = self.c0;
+        self.hero-card.thumb = self.hero-img;
+        self.hero-card.has-thumb = true;
+    }
+    changed c0 => { self.sync-hero(); }
+    changed hero-img => { self.sync-hero(); }
 
     Flickable {
         width: parent.width;
@@ -89,7 +141,8 @@ export component HomePage inherits Rectangle {
             padding-left: 28px;
             padding-right: 36px;
             padding-bottom: 36px;
-            padding-top: 4px;
+            // 24 (was 4): "Your latest clip" sat right under the top bar (William, 10 Nov 2026)
+            padding-top: 24px;
             spacing: 0;
             // .hempty
             if !root.has: Text {
@@ -107,6 +160,8 @@ export component HomePage inherits Rectangle {
                 alignment: start;
                 height: max(root.shot-h, side.preferred-height);
                 // .hshot: the latest clip big, radius 14; hover = play circle; click plays
+                // gaps (10 Nov): Echo's hero is a full card (makeCard: badges, job progress, game icon) with its name
+                // part hidden - the card's picture fills the hero
                 shot := Rectangle {
                     width: root.shot-w;
                     height: root.shot-h;
@@ -114,22 +169,24 @@ export component HomePage inherits Rectangle {
                     border-radius: 14px;
                     background: #0a0a0c;
                     clip: true;
-                    Image {
-                        width: parent.width;
-                        height: parent.height;
-                        source: HomeState.hero;
-                        image-fit: cover;
-                    }
-                    sta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { HomeState.act("play"); }
+                    property <bool> hov: Lib.hover-idx == HomeState.cards[0].idx;
+                    CardView {
+                        x: -1px;
+                        // the card lifts 3 px on hover: move it down as much, so the hero itself stays still
+                        y: parent.hov ? 2px : -1px;
+                        animate y { duration: T.lift; easing: ease-out; }
+                        width: parent.width + 2px;
+                        // only the picture: the card's name part is cut off by its own clip (no hidden mouse area
+                        // below the hero)
+                        height: parent.height + 2px;
+                        data: root.hero-card;
                     }
                     Rectangle {
                         width: 64px;
                         height: 64px;
                         border-radius: 32px;
                         background: #ffffff2e;
-                        opacity: sta.has-hover ? 1 : 0;
+                        opacity: parent.hov ? 1 : 0;
                         animate opacity { duration: 180ms; }
                         Path {
                             width: 26px;
@@ -139,21 +196,6 @@ export component HomePage inherits Rectangle {
                             viewbox-height: 24;
                             fill: white;
                             commands: "M8 5l12 7-12 7z";
-                        }
-                    }
-                    // the length, like the cards' .dur
-                    if HomeState.cards[0].dur != "": Rectangle {
-                        x: parent.width - self.width - 12px;
-                        y: parent.height - self.height - 12px;
-                        width: dt.preferred-width + 14px;
-                        height: 22px;
-                        border-radius: 6px;
-                        background: #000000dd;
-                        dt := Text {
-                            text: HomeState.cards[0].dur;
-                            font-size: 12px;
-                            font-weight: 600 + T.fw;
-                            color: white;
                         }
                     }
                 }
@@ -225,9 +267,25 @@ export component HomePage inherits Rectangle {
                                     width: 1px;
                                     background: #ffffff40;
                                 }
+                                // gaps (10 Nov): Echo's copyMenu - the sizes (theme.slint CopyMenuBody, like the cards)
                                 ata := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { HomeState.act("copym"); }
+                                    clicked => { cm.show(); }
+                                }
+                                cm := PopupWindow {
+                                    x: parent.width - self.width;
+                                    y: parent.height + 6px;
+                                    // own size: Slint tests clicks against it (see library.slint's copy menu)
+                                    width: cmb.preferred-width;
+                                    height: cmb.preferred-height;
+                                    close-policy: close-on-click-outside;
+                                    cmb := CopyMenuBody {
+                                        size-text: HomeState.cards[0].size;
+                                        picked(k) => {
+                                            cm.close();
+                                            HomeState.act("copy:" + k);
+                                        }
+                                    }
                                 }
                                 TipArea {
                                     text: "Choose the size";
@@ -242,23 +300,34 @@ export component HomePage inherits Rectangle {
                                 }
                             }
                         }
-                        HB {
-                            text: "Trim / edit";
-                            clicked => { HomeState.act("edit"); }
-                        }
-                        HB {
-                            text: "Share a link";
-                            clicked => { HomeState.act("link"); }
-                        }
-                        HB {
-                            text: "Add captions";
-                            clicked => { HomeState.act("cap"); }
+                        // William (10 Nov): the three actions side by side, equal width (were three stacked rows)
+                        HorizontalLayout {
+                            spacing: 8px;
+                            HB {
+                                horizontal-stretch: 1;
+                                text: "Trim / edit";
+                                icon: Ic.trim;
+                                clicked => { HomeState.act("edit"); }
+                            }
+                            HB {
+                                horizontal-stretch: 1;
+                                text: "Share link";
+                                icon: Ic.link;
+                                clicked => { HomeState.act("link"); }
+                            }
+                            HB {
+                                horizontal-stretch: 1;
+                                text: "Captions";
+                                icon: Ic.cc;
+                                clicked => { HomeState.act("cap"); }
+                            }
                         }
                     }
                 }
             }
             // .hgs: one "Get started" line (margin-top 18)
-            if root.has && HomeState.gs-on: VerticalLayout {
+            // gaps (10 Nov): with no clips yet Echo still shows Get started, the numbers and the Recent row
+            if HomeState.gs-on: VerticalLayout {
                 padding-top: 18px;
                 Rectangle {
                     height: 46px;
@@ -345,65 +414,60 @@ export component HomePage inherits Rectangle {
                 }
             }
             // .hstrip: margin 22 0 6, padding 14 0, lines above + below, gap 28
-            if root.has: VerticalLayout {
+            // William (10 Nov): four equal boxes; the first holds clips per day for the last 7 days (today last,
+            // brighter), with the day letters under it - same colours as the old 6-week spark
+            HorizontalLayout {
                 padding-top: 22px;
                 padding-bottom: 6px;
-                Rectangle {
-                    height: 72px;
-                    Rectangle {
-                        y: 0;
-                        height: 1px;
-                        background: T.line;
-                    }
-                    Rectangle {
-                        y: parent.height - 1px;
-                        height: 1px;
-                        background: T.line;
-                    }
+                spacing: 12px;
+                StatBox {
+                    horizontal-stretch: 1;
+                    n: HomeState.week;
+                    l: "clips this week";
                     HorizontalLayout {
-                        padding-top: 14px;
-                        padding-bottom: 14px;
-                        spacing: 28px;
-                        for st in [
-                            { n: HomeState.week, l: "clips this week" },
-                            { n: HomeState.total, l: "clips in total" },
-                            { n: HomeState.size, l: "on this PC" },
-                            { n: HomeState.games, l: HomeState.games-word },
-                        ]: VerticalLayout {
+                        spacing: 4px;
+                        alignment: end;
+                        for d[i] in HomeState.days: VerticalLayout {
                             alignment: center;
-                            Text {
-                                text: st.n;
-                                font-size: 18px;
-                                font-weight: 700 + T.fw;
-                                color: T.text;
-                            }
-                            Text {
-                                text: st.l;
-                                font-size: 12px;
-                                color: T.dim;
-                            }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        // .spark: clips per week, last 6 weeks (30 px tall, 8 px bars, the last one brighter)
-                        if HomeState.spark: HorizontalLayout {
-                            spacing: 4px;
-                            alignment: end;
-                            for b[i] in HomeState.bars: Rectangle {
+                            spacing: 3px;
+                            Rectangle {
                                 width: 8px;
+                                height: 28px;
                                 Rectangle {
-                                    y: parent.height - self.height - (parent.height - 30px) / 2;
-                                    height: b == 0 ? 0px : max(3px, 30px * max(0.1, b / HomeState.bars-max));
+                                    y: parent.height - self.height;
+                                    height: d == 0 ? 2px : max(3px, 28px * d / HomeState.days-max);
                                     border-radius: 3px;
-                                    background: T.accent;
-                                    opacity: i == HomeState.bars.length - 1 ? 1 : 0.5;
+                                    background: d == 0 ? T.line : T.accent;
+                                    opacity: d == 0 || i == HomeState.days.length - 1 ? 1 : 0.5;
                                 }
+                            }
+                            Text {
+                                text: HomeState.day-l[i];
+                                font-size: 9.5px;
+                                color: T.dim;
+                                horizontal-alignment: center;
                             }
                         }
                     }
                 }
+                StatBox {
+                    horizontal-stretch: 1;
+                    n: HomeState.total;
+                    l: "clips in total";
+                }
+                StatBox {
+                    horizontal-stretch: 1;
+                    n: HomeState.size;
+                    l: "on this PC";
+                }
+                StatBox {
+                    horizontal-stretch: 1;
+                    n: HomeState.games;
+                    l: HomeState.games-word;
+                }
             }
             // .hrow: "Recent" + "Open library →" (margin 26 0 12)
-            if root.has && HomeState.cards.length > 1: HorizontalLayout {
+            HorizontalLayout {
                 padding-top: 26px;
                 padding-bottom: 12px;
                 Text {
@@ -437,6 +501,7 @@ export component HomePage inherits Rectangle {
                     visible: i > 0;
                     if i > 0: CardView {
                         x: i == 1 ? 0px : 14px;
+                        tag-wrap: false; // r2-layout (L9): one line of tags here (HomeState.extra)
                         width: root.rcard-w;
                         height: root.rcard-h;
                         data: c;

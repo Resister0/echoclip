@@ -32,6 +32,14 @@ thread_local! {
     static STORE: RefCell<Option<Rc<RefCell<Store>>>> = const { RefCell::new(None) };
     static PENDING: RefCell<Option<Update>> = const { RefCell::new(None) };
     static TIMERS: RefCell<Vec<slint::Timer>> = const { RefCell::new(vec![]) };
+    /// gaps-settings: the window (focused() comes from winit's handler) + the Settings page refresh
+    static APP: RefCell<Option<slint::Weak<AppWindow>>> = const { RefCell::new(None) };
+    static REFRESH: RefCell<Option<Refresh>> = const { RefCell::new(None) };
+    /// when Echo last asked for an update (None = not yet: the first check is 30 s after start)
+    static UPD_LAST: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    /// Settings' line under the version ("" = the normal text) + a check by hand is running
+    static UPD_STATE: RefCell<String> = const { RefCell::new(String::new()) };
+    static CHECKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone)]
@@ -131,12 +139,18 @@ pub fn wire(app: &AppWindow, store: Rc<RefCell<Store>>, r: Refresh) {
     // microphones (the list takes a moment: ffmpeg / pactl on a thread)
     {
         let (store, r) = (store.clone(), r.clone());
-        crate::lib_net::bg(list_mics, move |m| {
-            store.borrow_mut().mics = m;
+        crate::lib_net::bg(list_mics, move |(m, def)| {
+            let mut st = store.borrow_mut();
+            st.mics = m;
+            st.mic_default = def;
+            drop(st);
             r();
         });
     }
-    // update card
+    // update card - gaps-settings: like Echo, "What's new" soon after start, the first check after 30 s, then every
+    // 2 h, and again when the window comes to the front (focused(), at most every 5 min)
+    APP.with(|x| *x.borrow_mut() = Some(app.as_weak()));
+    REFRESH.with(|x| *x.borrow_mut() = Some(r.clone()));
     wire_updates(app);
     let w = app.as_weak();
     slint::Timer::single_shot(Duration::from_secs(8), {
@@ -144,17 +158,56 @@ pub fn wire(app: &AppWindow, store: Rc<RefCell<Store>>, r: Refresh) {
         move || {
             if let Some(a) = w.upgrade() {
                 whats_new(&a);
+            }
+        }
+    });
+    slint::Timer::single_shot(Duration::from_secs(30), {
+        let w = w.clone();
+        move || {
+            if let Some(a) = w.upgrade() {
                 check_updates(&a, false);
             }
         }
     });
     let t = slint::Timer::default();
-    t.start(slint::TimerMode::Repeated, Duration::from_secs(4 * 3600), move || {
+    t.start(slint::TimerMode::Repeated, Duration::from_secs(2 * 3600), move || {
         if let Some(a) = w.upgrade() {
             check_updates(&a, false);
         }
     });
     TIMERS.with(|x| x.borrow_mut().push(t));
+}
+
+/// gaps-settings: Echo's updSoon - the window came to the front (main.rs, winit Focused): ask again when the last
+/// check is more than 5 min old (people keep Echo in the tray for days). Never before the first check (30 s).
+pub fn focused() {
+    let due = UPD_LAST.with(|l| l.get().is_some_and(|t| t.elapsed() > Duration::from_secs(5 * 60)));
+    if !due {
+        return;
+    }
+    UPD_LAST.with(|l| l.set(Some(std::time::Instant::now())));
+    // not inside winit's event handler
+    slint::Timer::single_shot(Duration::from_millis(0), || {
+        if let Some(a) = APP.with(|x| x.borrow().as_ref().and_then(|w| w.upgrade())) {
+            check_updates(&a, false);
+        }
+    });
+}
+
+/// gaps-settings: Settings > App Settings > About under "Echo X": (Echo's #updstate text, the button)
+pub fn upd_state() -> (String, String) {
+    let s = UPD_STATE.with(|s| s.borrow().clone());
+    if version() == "0.1.0" && s.starts_with("This copy") {
+        return (s, "Get Echo".into());
+    }
+    (if s.is_empty() { "Echo checks for updates by itself every few hours.".into() } else { s }, "Check for updates".into())
+}
+
+fn set_upd_state(s: impl Into<String>) {
+    UPD_STATE.with(|x| *x.borrow_mut() = s.into());
+    if let Some(r) = REFRESH.with(|x| x.borrow().clone()) {
+        r();
+    }
 }
 
 // ---------- tour ----------
@@ -189,8 +242,17 @@ fn tour_go(a: &AppWindow, i: i32) {
 }
 
 // ---------- microphones + mic test ----------
-/// (device name Echo stores in mic_device, label)
-fn list_mics() -> Vec<(String, String)> {
+/// ((device name Echo stores in mic_device, label), the default device's name) - gaps-settings: Echo's own list_mics
+/// + mic_label (what its recorder opens), so the default row can say "Windows default (<device>)"; the old lists
+/// below only when Echo's finds nothing
+fn list_mics() -> (Vec<(String, String)>, String) {
+    let (names, def) = echo_core::recorder::list_mics();
+    if !names.is_empty() {
+        return (names.iter().map(|n| (n.clone(), echo_core::recorder::mic_label(n))).collect(), def);
+    }
+    (list_mics_old(), def)
+}
+fn list_mics_old() -> Vec<(String, String)> {
     #[cfg(windows)]
     {
         // DirectShow's audio inputs have the same friendly names as WASAPI's ("Microphone (HyperX Cloud II)")
@@ -245,9 +307,9 @@ fn mic_test(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh) {
         crate::toast(a, "The mic test needs ffmpeg (Echo downloads it - start Echo once)");
         return;
     };
-    let (dev, mics) = {
+    let (dev, mics, def) = {
         let st = store.borrow();
-        (st.s("mic_device"), st.mics.clone())
+        (st.s("mic_device"), st.mics.clone(), st.mic_default.clone())
     };
     store.borrow_mut().mic_test = "Listening… say something".into();
     r();
@@ -256,7 +318,17 @@ fn mic_test(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh) {
         move || {
             #[cfg(windows)]
             let input: Vec<String> = {
-                let d = if dev.is_empty() { mics.first().map(|m| m.0.clone()).unwrap_or_default() } else { dev };
+                // DirectShow's names can be cut short (31 characters): the mic Echo uses, or the default one, matched
+                // to DirectShow's list by its start
+                let ds = list_mics_old();
+                let want = if dev.is_empty() { def } else { dev };
+                let d = ds
+                    .iter()
+                    .find(|m| m.0 == want)
+                    .or_else(|| ds.iter().find(|m| !want.is_empty() && want.starts_with(m.0.as_str())))
+                    .map(|m| m.0.clone())
+                    .or_else(|| ds.first().map(|m| m.0.clone()))
+                    .unwrap_or_else(|| mics.first().map(|m| m.0.clone()).unwrap_or_default());
                 if d.is_empty() {
                     return Err("No microphone found".to_string());
                 }
@@ -264,7 +336,7 @@ fn mic_test(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh) {
             };
             #[cfg(not(windows))]
             let input: Vec<String> = {
-                let _ = &mics;
+                let _ = (&mics, &def);
                 vec!["-f".into(), "pulse".into(), "-i".into(), if dev.is_empty() { "default".into() } else { dev }]
             };
             let o = crate::edrender::hidden_cmd(&ff)
@@ -321,11 +393,56 @@ fn can_self_update() -> bool {
     }
 }
 
+/// gaps-settings: Echo's linux_update_cmd (src-tauri main.rs) for the plain tar.gz build: a terminal one-liner that
+/// downloads the newest tar.gz, swaps the Echo program next to this one, then restarts Echo. None on Windows, for the
+/// AppImage and for Flatpak. ⚠ not run here (Windows PC)
+fn linux_update_cmd() -> Option<String> {
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "linux")]
+        let flatpak = echo_core::linuxutil::in_flatpak();
+        #[cfg(not(target_os = "linux"))]
+        let flatpak = false;
+        if flatpak || can_self_update() {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?.to_string_lossy().to_string();
+        let name = exe.file_name()?.to_string_lossy().to_string();
+        let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        Some(format!(
+            "d={}; t=$(mktemp -d) && curl -fsSL https://echoclip.link/download/linux-tar | tar -xz -C \"$t\" && cp \"$t/Echo-linux/Echo\" \"$d/.echo-new\" && chmod +x \"$d/.echo-new\" && mv -f \"$d/.echo-new\" \"$d/\"{} && rm -rf \"$t\" && {{ pkill -x {}; sleep 1; (nohup \"$d/\"{} >/dev/null 2>&1 &); echo 'Echo updated and restarted'; }}",
+            q(&dir),
+            q(&name),
+            q(&name.chars().take(15).collect::<String>()),
+            q(&name)
+        ))
+    }
+}
+
+/// the card's button: Echo's updCheck labels
+fn install_label() -> &'static str {
+    if can_self_update() {
+        "Restart Echo"
+    } else if linux_update_cmd().is_some() {
+        "Copy update command"
+    } else {
+        "Download"
+    }
+}
+
 fn wire_updates(app: &AppWindow) {
     let w = app.as_weak();
     app.global::<Upd>().on_clicked(move || {
         let Some(a) = w.upgrade() else { return };
         let u = a.global::<Upd>();
+        if u.get_busy() {
+            return;
+        }
         if u.get_btn() == "Got it" {
             u.set_on(false);
             u.set_older_on(false);
@@ -357,7 +474,10 @@ fn changes_since(since: &str) -> Vec<(String, String)> {
     v["releases"].as_array().map(|a| a.iter().filter_map(|r| Some((r["version"].as_str()?.to_string(), r["notes"].as_str().unwrap_or("").to_string()))).collect()).unwrap_or_default()
 }
 
-/// "Updated to Echo X" once after an update (settings.json native_seen_version = the last version that ran)
+/// "Updated to Echo X" once after an update (settings.json native_seen_version = the last version that ran).
+/// gaps-settings: like Echo's whatsNew the card shows at once - with the notes saved when the update was found
+/// (native_ui.json "whatsnew", Echo's echo_whatsnew), else "Echo X is installed." - also offline; /changes then
+/// fills in the notes and the updates skipped in between.
 fn whats_new(a: &AppWindow) {
     let cur = version();
     if cur == "0.1.0" {
@@ -365,39 +485,72 @@ fn whats_new(a: &AppWindow) {
     }
     let Some(store) = STORE.with(|s| s.borrow().clone()) else { return };
     let seen = store.borrow().s("native_seen_version");
+    let saved = crate::lib_fx::ui_get("whatsnew");
+    let stored = if saved["v"].as_str() == Some(cur.as_str()) { saved["notes"].as_str().unwrap_or("").to_string() } else { String::new() };
+    if seen == cur || (seen.is_empty() && saved.is_null()) || (!seen.is_empty() && !ver_gt(&cur, &seen)) {
+        if seen != cur {
+            let _ = store.borrow_mut().write(&[("native_seen_version", serde_json::json!(cur))]);
+        }
+        return;
+    }
     let _ = store.borrow_mut().write(&[("native_seen_version", serde_json::json!(cur))]);
-    if seen.is_empty() || !ver_gt(&cur, &seen) {
+    crate::lib_fx::ui_set("whatsnew", serde_json::Value::Null);
+    let u = a.global::<Upd>();
+    u.set_title(format!("Updated to Echo {cur}").into());
+    u.set_text(if stored.is_empty() { format!("Echo {cur} is installed.") } else { format!("What's new: {stored}") }.into());
+    u.set_btn("Got it".into());
+    u.set_primary(false);
+    u.set_busy(false);
+    u.set_more("".into());
+    u.set_older_on(false);
+    u.set_on(true);
+    if seen.is_empty() {
         return;
     }
     let w = a.as_weak();
     crate::lib_net::bg(move || changes_since(&seen), move |list| {
         let Some(a) = w.upgrade() else { return };
-        let Some(top) = list.iter().find(|(v, _)| !ver_gt(v, &cur)).cloned() else { return };
         let u = a.global::<Upd>();
-        u.set_title(format!("Updated to Echo {cur}").into());
-        u.set_text(format!("What's new: {}", top.1).into());
-        u.set_btn("Got it".into());
-        u.set_primary(false);
+        // an update check took the card meanwhile
+        if u.get_btn() != "Got it" {
+            return;
+        }
+        let Some(top) = list.iter().find(|(v, _)| !ver_gt(v, &cur)).cloned() else { return };
+        if !top.1.is_empty() {
+            u.set_text(format!("What's new: {}", top.1).into());
+        }
         let older: Vec<(String, String)> = list.into_iter().filter(|(v, _)| *v != top.0).collect();
         fill_older(&a, &older, true);
-        u.set_on(true);
     });
 }
 
 pub fn check_updates(a: &AppWindow, by_hand: bool) {
     let cur = version();
     if cur == "0.1.0" {
+        // Echo's updManual: say it plainly, then the button takes you to the installer
         if by_hand {
-            crate::toast(a, "This is a hand-made build (0.1.0) - it never updates itself");
+            if upd_state().1 == "Get Echo" {
+                crate::open_url("https://echoclip.link/download");
+            } else {
+                set_upd_state("This copy of Echo was built by hand and never updates itself. Install Echo from echoclip.link to get updates.");
+            }
         }
         return;
     }
+    if by_hand {
+        if CHECKING.with(|c| c.replace(true)) {
+            return;
+        }
+        set_upd_state("Checking…");
+    }
+    UPD_LAST.with(|l| l.set(Some(std::time::Instant::now())));
     let os = if cfg!(windows) { "windows" } else { "linux" };
     let w = a.as_weak();
     let cur2 = cur.clone();
     crate::lib_net::bg(
         move || -> Result<Option<(serde_json::Value, Vec<(String, String)>)>, String> {
-            // + the anonymous memory / CPU averages since the last check (perf.rs; ignored by the server for now)
+            // + the anonymous memory / CPU averages since the last check + the PC's specs (perf.rs, specs.rs; "" when
+            // switched off in Settings > About)
             let url = format!("{}/update/{os}/x86_64/{cur2}{}", crate::lib_net::ec_api(), crate::perf::query());
             let (code, body) = crate::lib_net::request("GET", &url, vec![], None, 30)?;
             if code == 204 || body.trim().is_empty() {
@@ -411,18 +564,30 @@ pub fn check_updates(a: &AppWindow, by_hand: bool) {
             Ok(Some((v, list)))
         },
         move |r| {
+            if by_hand {
+                CHECKING.with(|c| c.set(false));
+            }
             let Some(a) = w.upgrade() else { return };
             match r {
                 Ok(None) => {
                     crate::lib_net::log_line(&format!("update: up to date ({cur})"));
                     if by_hand {
-                        crate::toast(&a, "Echo is up to date");
+                        set_upd_state("You have the newest version.");
                     }
                 }
                 Err(e) => {
                     crate::lib_net::log_line(&format!("update: check failed: {e}"));
                     if by_hand {
-                        crate::toast(&a, "Couldn't check for updates");
+                        set_upd_state(format!("Couldn't check: {e}"));
+                    } else {
+                        // offline at start (right after boot / sleep) waited 4 h for the next check: try again in
+                        // 15 min (one chain; it ends at the first answer)
+                        let w = a.as_weak();
+                        slint::Timer::single_shot(Duration::from_secs(15 * 60), move || {
+                            if let Some(a) = w.upgrade() {
+                                check_updates(&a, false);
+                            }
+                        });
                     }
                 }
                 Ok(Some((v, list))) => {
@@ -432,18 +597,49 @@ pub fn check_updates(a: &AppWindow, by_hand: bool) {
                     PENDING.with(|p| {
                         *p.borrow_mut() = Some(Update { version: ver.clone(), url: v["url"].as_str().unwrap_or("").into(), signature: v["signature"].as_str().unwrap_or("").into() })
                     });
+                    // remembered for "What's new" after the restart, also when /changes can't be reached then
+                    crate::lib_fx::ui_set("whatsnew", serde_json::json!({ "v": ver, "notes": notes }));
                     let u = a.global::<Upd>();
-                    u.set_title("Update ready".into());
-                    u.set_text(format!("Echo {ver} is here (you have {cur}). What's new: {notes}").into());
-                    u.set_btn(if can_self_update() { "Restart Echo" } else { "Download" }.into());
-                    u.set_primary(true);
-                    let older: Vec<(String, String)> = list.into_iter().filter(|(v, _)| *v != ver).collect();
-                    fill_older(&a, &older, false);
-                    u.set_on(true);
+                    // a download / install already running keeps its "Updating…" button
+                    if !u.get_busy() {
+                        u.set_title("Update ready".into());
+                        u.set_text(if notes.is_empty() { format!("Echo {ver} is here (you have {cur}).") } else { format!("Echo {ver} is here (you have {cur}). What's new: {notes}") }.into());
+                        u.set_btn(install_label().into());
+                        u.set_primary(true);
+                        let older: Vec<(String, String)> = list.into_iter().filter(|(v, _)| *v != ver).collect();
+                        fill_older(&a, &older, false);
+                        u.set_on(true);
+                    }
+                    if by_hand {
+                        set_upd_state(format!("Echo {ver} is ready - click \"{}\" on the left.", install_label()));
+                    }
+                    // Echo hidden in the tray never shows the card: the tray menu offers it too
+                    if can_self_update() {
+                        crate::tray::update_ready(&ver);
+                    }
                 }
             }
         },
     );
+}
+
+/// r2-threads (L55): AppImage update - the new file over the running AppImage ($APPIMAGE), on a worker. Ok = the
+/// AppImage to start. ⚠ Linux only, not compiled on the PC it was written on.
+#[cfg(not(windows))]
+fn swap_appimage(f: &std::path::Path) -> Result<PathBuf, String> {
+    let msg = || "The update couldn't be installed - download Echo from echoclip.link".to_string();
+    let target = std::env::var_os("APPIMAGE").map(PathBuf::from).ok_or_else(msg)?;
+    let tmp = target.with_extension("new");
+    let ok = std::fs::copy(f, &tmp).is_ok() && {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+        std::fs::rename(&tmp, &target).is_ok()
+    };
+    if ok {
+        Ok(target)
+    } else {
+        Err(msg())
+    }
 }
 
 /// minisign check of the downloaded file against Echo's updater key (Tauri's .sig = base64 of the .minisig text)
@@ -458,15 +654,36 @@ fn verify(file: &std::path::Path, sig_b64: &str) -> Result<(), String> {
     pk.verify(&data, &sig, false).map_err(|e| e.to_string())
 }
 
-fn install(a: &AppWindow) {
+pub fn install(a: &AppWindow) {
     let Some(u) = PENDING.with(|p| p.borrow().clone()) else {
         check_updates(a, true);
         return;
     };
     if !can_self_update() || u.url.is_empty() {
+        // gaps-settings: Echo's update_install for the Linux tar.gz build: the command goes on the clipboard
+        if let Some(cmd) = linux_update_cmd() {
+            match crate::lib_net::copy_text(&cmd) {
+                Ok(_) => crate::toast(a, "Update command copied - paste it in a terminal and press Enter. Echo restarts by itself."),
+                Err(e) => crate::toast(a, e),
+            }
+            return;
+        }
         crate::open_url("https://echoclip.link/download");
         return;
     }
+    // gaps-settings: Echo's updInstall - "Updating…" (no second click), "Try again" when it fails
+    let card = a.global::<Upd>();
+    if card.get_busy() {
+        return;
+    }
+    card.set_busy(true);
+    card.set_btn("Updating…".into());
+    let failed = |a: &AppWindow, e: String| {
+        let card = a.global::<Upd>();
+        card.set_busy(false);
+        card.set_btn("Try again".into());
+        crate::toast(a, e);
+    };
     let id = crate::prog_box(&format!("Downloading Echo {}…", u.version));
     crate::prog_set(id, None, None, Some(-1.0));
     let w = a.as_weak();
@@ -480,13 +697,16 @@ fn install(a: &AppWindow) {
                 crate::lib_net::log_line(&format!("update: signature check failed: {e}"));
                 return Err("The update's signature didn't match - not installed".into());
             }
+            // r2-threads (L55): the AppImage swap (a ~100 MB copy) runs here on the worker, not in the done step
+            #[cfg(not(windows))]
+            let f = swap_appimage(&f)?;
             Ok(f)
         },
         move |r| {
             let Some(a) = w.upgrade() else { return };
             crate::prog_done(id, 400);
             match r {
-                Err(e) => crate::toast(&a, e),
+                Err(e) => failed(&a, e),
                 Ok(f) => {
                     crate::lib_net::log_line(&format!("update: installing {}", f.display()));
                     #[cfg(windows)]
@@ -497,23 +717,17 @@ fn install(a: &AppWindow) {
                             let _ = slint::quit_event_loop();
                             std::process::exit(0);
                         }
-                        crate::toast(&a, "The installer couldn't start - download Echo from echoclip.link");
+                        failed(&a, "The installer couldn't start - download Echo from echoclip.link".into());
                     }
                     #[cfg(not(windows))]
                     {
-                        // AppImage: swap the file, then start the new one
-                        let Some(target) = std::env::var_os("APPIMAGE").map(PathBuf::from) else { return };
-                        let tmp = target.with_extension("new");
-                        let ok = std::fs::copy(&f, &tmp).is_ok() && {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-                            std::fs::rename(&tmp, &target).is_ok()
-                        };
-                        if ok && std::process::Command::new(&target).spawn().is_ok() {
+                        // AppImage: the file was swapped on the worker (swap_appimage): start the new one
+                        let target = f;
+                        if std::process::Command::new(&target).spawn().is_ok() {
                             let _ = slint::quit_event_loop();
                             std::process::exit(0);
                         }
-                        crate::toast(&a, "The update couldn't be installed - download Echo from echoclip.link");
+                        failed(&a, "The update couldn't be installed - download Echo from echoclip.link".into());
                     }
                 }
             }

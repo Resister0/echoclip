@@ -180,24 +180,56 @@ pub fn scan(clips_dir: &Path) -> Vec<Source> {
 
 thread_local! {
     static LAST: RefCell<Option<(Instant, PathBuf, Vec<Source>)>> = const { RefCell::new(None) };
+    /// r2-threads (L28): a scan is running on a worker
+    static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// r2-threads (L28): redraws the Settings page when a scan found something new (main.rs)
+    static REFRESH: RefCell<Option<std::rc::Rc<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
-/// the folders, read again unless they were read in the last 1.5 s (the Settings page rebuilds on every change)
-pub fn sources(clips_dir: &Path) -> Vec<Source> {
-    if let Some(v) = LAST.with(|l| l.borrow().as_ref().filter(|(t, d, _)| t.elapsed() < Duration::from_millis(1500) && d == clips_dir).map(|x| x.2.clone())) {
-        return v;
+/// r2-threads (L28): who redraws the Settings page when the other apps' folders changed
+pub fn set_refresh(f: std::rc::Rc<dyn Fn()>) {
+    REFRESH.with(|r| *r.borrow_mut() = Some(f));
+}
+
+/// r2-threads (L28): read the folders again on a worker; the page is redrawn when the answer changed
+fn rescan(clips_dir: &Path) {
+    if BUSY.with(|b| b.replace(true)) {
+        return;
     }
-    let v = scan(clips_dir);
-    LAST.with(|l| *l.borrow_mut() = Some((Instant::now(), clips_dir.to_path_buf(), v.clone())));
+    let (d, d2) = (clips_dir.to_path_buf(), clips_dir.to_path_buf());
+    crate::lib_net::bg(
+        move || scan(&d),
+        move |v| {
+            BUSY.with(|b| b.set(false));
+            let same = LAST.with(|l| l.borrow().as_ref().is_some_and(|x| x.1 == d2 && x.2 == v));
+            LAST.with(|l| *l.borrow_mut() = Some((Instant::now(), d2, v)));
+            if !same {
+                if let Some(f) = REFRESH.with(|r| r.borrow().clone()) {
+                    f();
+                }
+            }
+        },
+    );
+}
+
+/// the folders as last read (never waits: r2-threads L28); read again on a worker when that was more than 1.5 s ago
+/// (the Settings page rebuilds on every change)
+pub fn sources(clips_dir: &Path) -> Vec<Source> {
+    let (v, fresh) = LAST.with(|l| match l.borrow().as_ref().filter(|x| x.1 == clips_dir) {
+        Some((t, _, v)) => (v.clone(), t.elapsed() < Duration::from_millis(1500)),
+        None => (vec![], false),
+    });
+    if !fresh {
+        rescan(clips_dir);
+    }
     v
 }
 
-/// read again; true = something changed since the page last showed it (clips deleted / added in the other app)
+/// read again (on a worker); the page is redrawn by `set_refresh`'s callback when something changed (clips deleted
+/// / added in the other app). Always false now - kept for the Settings timer in main.rs.
 pub fn changed(clips_dir: &Path) -> bool {
-    let before = LAST.with(|l| l.borrow().as_ref().map(|x| x.2.clone()));
-    let now = scan(clips_dir);
-    LAST.with(|l| *l.borrow_mut() = Some((Instant::now(), clips_dir.to_path_buf(), now.clone())));
-    before.is_some_and(|b| b != now)
+    rescan(clips_dir);
+    false
 }
 
 /// one Settings line per app: (label, sub, button)

@@ -11,65 +11,142 @@ use std::process::Stdio;
 const TV_YUV: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
 const TV_TAGS: [&str; 8] = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
 
-/// MB for a Copy size key ("full" / unknown = 0 = the original file)
-pub fn size_mb(key: &str) -> f64 {
+/// MB for a Copy size key ("full" / unknown = 0 = the original file); `key` "" = the Copy button's own size
+/// (settings copy_default). r2-threads (L4): one read of settings.json for both.
+fn size_mb(key: &str) -> f64 {
+    let st = crate::library::echo_settings().unwrap_or_default();
+    let def = default_in(&st);
+    mb_in(&st, if key.is_empty() { &def } else { key })
+}
+
+fn mb_in(st: &serde_json::Value, key: &str) -> f64 {
     if key == "full" || key.is_empty() {
         return 0.0;
     }
-    let st = crate::library::echo_settings().unwrap_or_default();
     let d = match key { "free" => 20.0, "basic" => 50.0, "nitro" => 1000.0, "custom" => 100.0, _ => 0.0 };
     st.get(format!("discord_{key}_mb")).and_then(|v| v.as_f64()).unwrap_or(d)
 }
 
 /// the Copy button's own size (settings copy_default)
-pub fn default_key() -> String {
-    crate::library::echo_settings().and_then(|s| s.get("copy_default").and_then(|v| v.as_str()).map(String::from)).unwrap_or_else(|| "full".into())
+fn default_in(st: &serde_json::Value) -> String {
+    st.get("copy_default").and_then(|v| v.as_str()).unwrap_or("full").to_string()
 }
 
-fn fmt_mb(b: u64) -> String {
-    let mb = b as f64 / 1e6;
-    if mb >= 100.0 { format!("{mb:.0} MB") } else { format!("{mb:.1} MB") }
+/// Echo's fmtMb: a Copy size target, whole MB / GB ("20 MB", "1 GB") - PORT_LEFTOVERS L25
+fn fmt_mb(mb: f64) -> String {
+    if mb >= 1000.0 { format!("{} GB", mb / 1000.0) } else { format!("{mb} MB") }
+}
+
+thread_local! {
+    /// r2-threads (L24): clips being copied right now (Echo's `sizing`: a 2nd start used to fight the 1st one)
+    static SIZING: std::cell::RefCell<std::collections::HashSet<PathBuf>> = Default::default();
+    /// r2-threads (L4): Home's "Share a clip" step is written once per run, not on every click
+    static COPIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn sizing_end(p: &Path) {
+    SIZING.with(|s| s.borrow_mut().remove(p));
+}
+
+/// what a Copy click turned out to need (decided on a worker: size, AV1 probe, clipboard)
+enum Step {
+    /// the clip fits: it's on the clipboard (or the error)
+    Done(Result<String, String>),
+    /// fits, but AV1: an H.264 copy first (Echo's shareable)
+    Av1,
+    /// too big: make it smaller
+    Shrink,
 }
 
 /// Copy ▾ / the Copy button: `key` "" = the default size. Runs the shrink on a worker thread with a progress box.
+/// r2-threads (L4): the size check, the AV1 ffprobe and the clipboard run on a worker too.
 pub fn copy_clip_ui(a: &AppWindow, path: PathBuf, thumbs: PathBuf, key: &str) {
-    // Home's Get started "Share a clip" counts a copy as done (Echo's echo_copied)
-    crate::lib_fx::ui_set("gs_copied", serde_json::json!(true));
-    let key = if key.is_empty() { default_key() } else { key.to_string() };
-    let mb = size_mb(&key);
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if mb <= 0.0 || size as f64 <= mb * 1e6 {
-        // audit (9 Nov): Echo's copy_clip copies rec.shareable(): an AV1 clip (shrunk old clips) becomes an H.264 copy
-        // first, so it plays in Discord - this copied the AV1 file as it was
-        if let Some(r) = crate::rec_core::rec().filter(|_| echo_core::recorder::is_av1(&path.to_string_lossy())) {
-            let pb = prog_box("Making it play in Discord…");
-            prog_set(pb, None, None, Some(-1.0));
-            let w = a.as_weak();
-            let src = path.to_string_lossy().to_string();
-            crate::lib_net::bg(
-                move || r.shareable(&src).and_then(|p| clipboard_file(Path::new(&p)).map(|_| std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0))),
-                move |res| {
-                    prog_done(pb, 300);
-                    let Some(a) = w.upgrade() else { return };
-                    match res {
-                        Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", fmt_mb(sz))),
-                        Err(e) => toast(&a, e),
-                    }
-                },
-            );
-            return;
-        }
-        match clipboard_file(&path) {
-            Ok(()) => toast(a, format!("Copied{} - paste it into Discord or anywhere", if mb > 0.0 { format!(" ({})", fmt_mb(size)) } else { String::new() })),
-            Err(e) => toast(a, e),
-        }
+    if SIZING.with(|s| s.borrow().contains(&path)) {
+        toast(a, "This clip is already being copied - one moment");
         return;
     }
+    // Home's Get started "Share a clip" counts a copy as done (Echo's echo_copied)
+    if !COPIED.with(|c| c.replace(true)) {
+        crate::lib_fx::ui_set("gs_copied", serde_json::json!(true));
+    }
+    let mb = size_mb(key);
+    SIZING.with(|s| s.borrow_mut().insert(path.clone()));
+    let av1_known = crate::lib_cards::av1_known(&path);
+    let (w, p2) = (a.as_weak(), path.clone());
+    crate::lib_net::bg(
+        move || {
+            let size = std::fs::metadata(&p2).map(|m| m.len()).unwrap_or(0);
+            if mb > 0.0 && size as f64 > mb * 1e6 {
+                return (Step::Shrink, None);
+            }
+            // audit (9 Nov): Echo's copy_clip copies rec.shareable(): an AV1 clip (shrunk old clips) becomes an H.264
+            // copy first, so it plays in Discord - this copied the AV1 file as it was
+            let probed = match av1_known {
+                Some(_) => None,
+                None if crate::rec_core::rec().is_some() => Some(echo_core::recorder::is_av1(&p2.to_string_lossy())),
+                None => None,
+            };
+            if crate::rec_core::rec().is_some() && (av1_known.or(probed) == Some(true)) {
+                return (Step::Av1, probed);
+            }
+            let r = clipboard_file(&p2).map(|_| if mb > 0.0 { format!(" ({})", crate::library::fmt_size(size)) } else { String::new() });
+            (Step::Done(r), probed)
+        },
+        move |(step, probed)| {
+            if let Some(is) = probed {
+                crate::lib_cards::av1_note(&path, is);
+            }
+            let Some(a) = w.upgrade() else {
+                sizing_end(&path);
+                return;
+            };
+            match step {
+                Step::Done(r) => {
+                    sizing_end(&path);
+                    match r {
+                        Ok(sz) => toast(&a, format!("Copied{sz} - paste it into Discord or anywhere")),
+                        Err(e) => toast(&a, e),
+                    }
+                }
+                Step::Av1 => copy_av1(&a, path),
+                Step::Shrink => copy_shrunk(&a, path, thumbs, mb),
+            }
+        },
+    );
+}
+
+/// the clip fits but is AV1: Echo's shareable() makes an H.264 copy, that goes on the clipboard
+fn copy_av1(a: &AppWindow, path: PathBuf) {
+    let Some(r) = crate::rec_core::rec() else {
+        sizing_end(&path);
+        return;
+    };
+    let pb = prog_box("Making it play in Discord…");
+    prog_set(pb, None, None, Some(-1.0));
+    let w = a.as_weak();
+    let src = path.to_string_lossy().to_string();
+    crate::lib_net::bg(
+        move || r.shareable(&src).and_then(|p| clipboard_file(Path::new(&p)).map(|_| std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0))),
+        move |res| {
+            sizing_end(&path);
+            prog_done(pb, 300);
+            let Some(a) = w.upgrade() else { return };
+            match res {
+                Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", crate::library::fmt_size(sz))),
+                Err(e) => toast(&a, e),
+            }
+        },
+    );
+}
+
+/// too big for the size: Echo's shrink_clip on a worker with a progress box
+fn copy_shrunk(a: &AppWindow, path: PathBuf, thumbs: PathBuf, mb: f64) {
     let Some(ff) = crate::sheets::ffmpeg() else {
+        sizing_end(&path);
         toast(a, "Making it smaller needs ffmpeg (Echo's copy wasn't found)");
         return;
     };
-    let pb = prog_box(&format!("Making it fit {} for Discord…", fmt_mb((mb * 1e6) as u64)));
+    let pb = prog_box(&format!("Shrinking to fit {}…", fmt_mb(mb)));
     prog_set(pb, None, None, Some(0.0));
     let w = a.as_weak();
     std::thread::spawn(move || {
@@ -84,10 +161,11 @@ pub fn copy_clip_ui(a: &AppWindow, path: PathBuf, thumbs: PathBuf, key: &str) {
         }
         .and_then(|out| clipboard_file(&out).map(|_| std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0)));
         let _ = slint::invoke_from_event_loop(move || {
+            sizing_end(&path);
             prog_done(pb, 400);
             let Some(a) = w.upgrade() else { return };
             match r {
-                Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", fmt_mb(sz))),
+                Ok(sz) => toast(&a, format!("Copied ({}) - paste it into Discord or anywhere", crate::library::fmt_size(sz))),
                 Err(e) => toast(&a, e),
             }
         });
@@ -285,15 +363,22 @@ mod win {
 /// Chat A: the Copy menus' sizes ("20 MB", "1 GB") and the default badge from Echo's settings.
 pub fn fill_menu(a: &AppWindow) {
     let c = a.global::<crate::CopyCfg>();
+    let st = crate::library::echo_settings().unwrap_or_default(); // r2-threads: read once, not 9 times
+    let size_mb = |k: &str| mb_in(&st, k);
     let f = |k: &str| {
         let mb = size_mb(k);
         if mb >= 1000.0 { format!("{} GB", (mb / 1000.0 * 10.0).round() / 10.0) } else { format!("{mb:.0} MB") }
     };
-    c.set_def(default_key().into());
+    c.set_def(default_in(&st).into());
     c.set_free(f("free").into());
     c.set_basic(f("basic").into());
     c.set_nitro(f("nitro").into());
     c.set_custom(f("custom").into());
+    // gaps-player (row 14): the numbers too, for the "· fits" hints and the Custom box
+    c.set_free_mb(size_mb("free") as f32);
+    c.set_basic_mb(size_mb("basic") as f32);
+    c.set_nitro_mb(size_mb("nitro") as f32);
+    c.set_custom_mb(size_mb("custom") as f32);
 }
 /// Right-click a size = the Copy button's default (Echo's copy_default), once at start.
 pub fn wire(a: &AppWindow) {
@@ -306,8 +391,32 @@ pub fn wire(a: &AppWindow) {
             Ok(()) => {
                 fill_menu(&a);
                 let name = match k.as_str() { "free" => "Discord Free", "basic" => "Nitro Basic", "nitro" => "Nitro", "custom" => "Custom", _ => "Full size" };
-                toast(&a, format!("Copy now uses {name}"));
+                toast(&a, format!("Copy button now copies: {name}"));
             }
+            Err(e) => toast(&a, e),
+        }
+    });
+    // the clip's size from its "22.7 MB" / "1.20 GB" text (library::fmt_size), for the "· fits" hints
+    a.global::<crate::CopyCfg>().on_mb_of(|t| {
+        let mut it = t.split_whitespace();
+        let n = it.next().and_then(|x| x.parse::<f32>().ok()).unwrap_or(-1.0);
+        match it.next() {
+            Some("GB") => n * 1000.0,
+            Some("KB") => n / 1000.0,
+            _ => n,
+        }
+    });
+    // Echo's Custom box: a whole number of MB, at least 1, saved to discord_custom_mb (Enter = copy, done by the menu)
+    let w = a.as_weak();
+    a.global::<crate::CopyCfg>().on_set_custom(move |t| {
+        let Some(a) = w.upgrade() else { return };
+        let v = t.trim().replace(',', ".").parse::<f64>().unwrap_or(0.0).round().max(1.0);
+        if (v - size_mb("custom")).abs() < 0.5 {
+            return;
+        }
+        let mut st = crate::settings::Store::load();
+        match st.write(&[("discord_custom_mb", serde_json::json!(v))]) {
+            Ok(()) => fill_menu(&a),
             Err(e) => toast(&a, e),
         }
     });

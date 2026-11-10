@@ -21,6 +21,10 @@ pub struct Job {
 pub struct Done {
     pub key: usize,
     pub px: Option<SharedPixelBuffer<Rgb8Pixel>>,
+    /// Linux: the same pictures as RGBA, made here on the worker. Slint's OpenGL renderer uploads RGB with 1-byte
+    /// row alignment = Mesa converts all ~10 MB on the CPU, on the UI thread: a visible hitch every time the
+    /// seek-bar pictures appeared (9 Nov 2026, Nobara RX 9070 XT). RGBA takes the driver's fast path.
+    pub rgba: Option<SharedPixelBuffer<slint::Rgba8Pixel>>,
     pub tw: u32,
     pub th: u32,
     pub note: String,
@@ -39,9 +43,35 @@ fn fresh(sheet: &Path, clip: &Path) -> bool {
 
 /// ffmpeg: ECHO_FFMPEG, then the copy Echo downloaded (%APPDATA%\Clipper\ffmpeg), then PATH
 pub fn ffmpeg() -> Option<PathBuf> {
+    // looked up ONCE: the PATH check runs 'ffmpeg -version' (~50 ms on Linux) and callers sit on the UI thread -
+    // every clip open stuttered on Linux (9 Nov 2026, after the Windows-exe fix made Linux reach the PATH check)
+    static FF: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    // only a FOUND ffmpeg is kept: on a first Windows run Echo may still be downloading it
+    if let Some(f) = FF.get() {
+        return f.clone();
+    }
+    // r2-threads (L53): "not found" is kept for 30 s too - every caller (hover video, player, editor) ran the
+    // search + 'ffmpeg -version' again
+    static MISS: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    if MISS.lock().map_or(false, |m| m.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30))) {
+        return None;
+    }
+    let f = find_ffmpeg();
+    if f.is_some() {
+        let _ = FF.set(f.clone());
+    } else if let Ok(mut m) = MISS.lock() {
+        *m = Some(std::time::Instant::now());
+    }
+    f
+}
+
+fn find_ffmpeg() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("ECHO_FFMPEG") {
         return Some(PathBuf::from(p));
     }
+    // Windows only: Echo's downloaded ffmpeg.exe. On Linux APPDATA = ~/.config, and a synced Clipper folder can hold
+    // the Windows ffmpeg.exe -> 'Permission denied' on spawn = no seek pictures / editor renders (9 Nov 2026, Nobara)
+    #[cfg(windows)]
     if let Ok(a) = std::env::var("APPDATA") {
         fn find(d: &Path) -> Option<PathBuf> {
             for e in std::fs::read_dir(d).ok()?.flatten() {
@@ -60,9 +90,16 @@ pub fn ffmpeg() -> Option<PathBuf> {
             return Some(f);
         }
     }
-    let mut c = Command::new("ffmpeg");
-    hide(&mut c);
-    c.arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().ok().filter(|s| s.success()).map(|_| PathBuf::from("ffmpeg"))
+    // Linux (gaps-linux row 38): next to Echo, PATH, then the usual folders a menu start leaves out of PATH
+    #[cfg(target_os = "linux")]
+    let found = crate::linux::find_ffmpeg();
+    #[cfg(not(target_os = "linux"))]
+    let found = {
+        let mut c = Command::new("ffmpeg");
+        hide(&mut c);
+        c.arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().ok().filter(|s| s.success()).map(|_| PathBuf::from("ffmpeg"))
+    };
+    found
 }
 
 fn hide(_c: &mut Command) {
@@ -73,22 +110,44 @@ fn hide(_c: &mut Command) {
     }
 }
 
+/// gaps-cloud (row 5): a cloud-only clip comes in as its streaming address (cloud::play_path)
+fn remote(clip: &Path) -> bool {
+    clip.to_string_lossy().starts_with("http")
+}
+
+/// a stream's length from ffmpeg's "Duration: 00:00:31.53" line (cloud clips whose length isn't known yet)
+fn probe_dur(clip: &Path) -> f64 {
+    let Some(ff) = ffmpeg() else { return 0.0 };
+    let mut c = Command::new(ff);
+    hide(&mut c);
+    let Ok(o) = c.args(["-hide_banner", "-i"]).arg(clip).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return 0.0 };
+    let err = String::from_utf8_lossy(&o.stderr);
+    let Some(t) = err.split("Duration: ").nth(1).and_then(|s| s.split(',').next()) else { return 0.0 };
+    t.trim().split(':').filter_map(|x| x.parse::<f64>().ok()).fold(0.0, |acc, x| acc * 60.0 + x)
+}
+
 fn own_cache(clip: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    clip.hash(&mut h);
+    // a stream: the clip's part of the address only (the streaming server's port changes between runs)
+    let s = clip.to_string_lossy();
+    if remote(clip) {
+        s.splitn(4, '/').nth(3).unwrap_or(&s).hash(&mut h);
+    } else {
+        clip.hash(&mut h);
+    }
     let dir = std::env::temp_dir().join("echo-proto-sheets");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("{:016x}.jpg", h.finish()))
 }
 
 fn make(job: &Job, out: &Path) -> Result<(), String> {
-    if job.dur <= 0.0 {
+    let d = if job.dur <= 0.0 && remote(&job.clip) { probe_dur(&job.clip) } else { job.dur };
+    if d <= 0.0 {
         return Err("clip length unknown".into());
     }
     let ff = ffmpeg().ok_or("ffmpeg not found")?;
     let n = 60;
-    let d = job.dur;
     let mut c = Command::new(ff);
     hide(&mut c);
     c.args(["-hide_banner", "-loglevel", "error", "-y", "-threads", "4"]);
@@ -115,12 +174,14 @@ fn make(job: &Job, out: &Path) -> Result<(), String> {
 
 fn load(job: &Job) -> Done {
     let t0 = std::time::Instant::now();
-    let fail = |note: String| Done { key: job.key, px: None, tw: 0, th: 0, note };
-    let path = if fresh(&job.echo_sheet, &job.clip) {
+    let fail = |note: String| Done { key: job.key, px: None, rgba: None, tw: 0, th: 0, note };
+    // a stream has no file date: a sheet made before (Echo's, from when the clip was on this PC, or ours) is used as is
+    let far = remote(&job.clip);
+    let path = if fresh(&job.echo_sheet, &job.clip) || (far && job.echo_sheet.exists()) {
         job.echo_sheet.clone()
     } else {
         let own = own_cache(&job.clip);
-        if !fresh(&own, &job.clip) {
+        if !(fresh(&own, &job.clip) || (far && own.exists())) {
             if let Err(e) = make(job, &own) {
                 return fail(format!("no seek pictures: {e}"));
             }
@@ -138,7 +199,17 @@ fn load(job: &Job) -> Done {
     let th = (th0 * tw / tw0).max(1);
     let small = image::imageops::resize(&img.to_rgb8(), tw * 10, th * 6, image::imageops::FilterType::Triangle);
     let px = SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(small.as_raw(), small.width(), small.height());
-    Done { key: job.key, px: Some(px), tw, th, note: format!("seek pictures in {} ms", t0.elapsed().as_millis()) }
+    let rgba = if cfg!(windows) {
+        None
+    } else {
+        let mut b = SharedPixelBuffer::<slint::Rgba8Pixel>::new(small.width(), small.height());
+        for (d, s) in b.make_mut_bytes().chunks_exact_mut(4).zip(small.as_raw().chunks_exact(3)) {
+            d[..3].copy_from_slice(s);
+            d[3] = 255;
+        }
+        Some(b)
+    };
+    Done { key: job.key, px: Some(px), rgba, tw, th, note: format!("seek pictures in {} ms", t0.elapsed().as_millis()) }
 }
 
 /// one worker: newest request first (older hover requests are dropped)

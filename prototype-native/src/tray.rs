@@ -24,6 +24,7 @@ fn menu_action(id: &str) {
         "save" => { std::thread::spawn(|| { let _ = rec_core::do_save(None); }); }
         "long" => { std::thread::spawn(|| { let _ = rec_core::do_session(); }); }
         "quit" => rec_core::push(Ev::Quit),
+        "update" => rec_core::push(Ev::Update),
         _ => {}
     }
 }
@@ -31,6 +32,37 @@ fn menu_action(id: &str) {
 #[cfg(windows)]
 thread_local! {
     static TRAY: std::cell::RefCell<Option<tray_icon::TrayIcon>> = const { std::cell::RefCell::new(None) };
+    static MENU: std::cell::RefCell<Option<(tray_icon::menu::Menu, Option<tray_icon::menu::MenuItem>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An update is ready (setup.rs check_updates): people who keep Echo in the tray never see the sidebar card, so the
+/// tray menu gets "Update to Echo X" on top + the tooltip says so (no popup over games). UI thread.
+pub fn update_ready(version: &str) {
+    #[cfg(windows)]
+    {
+        use tray_icon::menu::MenuItem;
+        let label = format!("Update to Echo {version} (restarts Echo)");
+        MENU.with(|m| {
+            let mut m = m.borrow_mut();
+            let Some((menu, item)) = m.as_mut() else { return };
+            match item {
+                Some(i) => i.set_text(&label),
+                None => {
+                    let i = MenuItem::with_id("update", &label, true, None);
+                    if menu.insert(&i, 0).is_ok() {
+                        *item = Some(i);
+                    }
+                }
+            }
+        });
+        TRAY.with(|t| {
+            if let Some(t) = t.borrow().as_ref() {
+                let _ = t.set_tooltip(Some(format!("Echo - update {version} ready")));
+            }
+        });
+    }
+    #[cfg(target_os = "linux")]
+    linux::update_ready(version);
 }
 
 /// UI thread, once.
@@ -57,6 +89,7 @@ pub fn start() {
                 rec_core::push(Ev::Show);
             }
         }));
+        MENU.with(|m| *m.borrow_mut() = Some((menu.clone(), None)));
         let mut b = TrayIconBuilder::new().with_tooltip("Echo").with_menu(Box::new(menu)).with_menu_on_left_click(false);
         if let Some((rgba, s)) = icon_rgba(32) {
             if let Ok(i) = tray_icon::Icon::from_rgba(rgba, s, s) {
@@ -77,7 +110,10 @@ pub fn start() {
 
 pub fn stop() {
     #[cfg(windows)]
-    TRAY.with(|x| x.borrow_mut().take());
+    {
+        TRAY.with(|x| x.borrow_mut().take());
+        MENU.with(|x| x.borrow_mut().take());
+    }
     #[cfg(target_os = "linux")]
     linux::stop();
     EXISTS.store(false, Ordering::Relaxed);
@@ -91,6 +127,8 @@ mod linux {
     struct EchoTray {
         icon: Vec<ksni::Icon>,
         rec_ok: bool,
+        /// "Update to Echo X" ready (gaps-linux: like the Windows tray)
+        update: Option<String>,
     }
     static HANDLE: Mutex<Option<ksni::blocking::Handle<EchoTray>>> = Mutex::new(None);
 
@@ -105,7 +143,11 @@ mod linux {
             self.icon.clone()
         }
         fn tool_tip(&self) -> ksni::ToolTip {
-            ksni::ToolTip { title: "Echo".into(), ..Default::default() }
+            let title = match &self.update {
+                Some(v) => format!("Echo - update {v} ready"),
+                None => "Echo".into(),
+            };
+            ksni::ToolTip { title, ..Default::default() }
         }
         fn activate(&mut self, _x: i32, _y: i32) {
             super::menu_action("open");
@@ -115,13 +157,18 @@ mod linux {
             let item = |label: &str, id: &'static str, enabled: bool| -> ksni::MenuItem<Self> {
                 StandardItem { label: label.into(), enabled, activate: Box::new(move |_: &mut Self| super::menu_action(id)), ..Default::default() }.into()
             };
-            vec![
+            let mut m = Vec::new();
+            if let Some(v) = &self.update {
+                m.push(item(&format!("Update to Echo {v} (restarts Echo)"), "update", true));
+            }
+            m.extend([
                 item("Open Echo", "open", true),
                 item("Save clip", "save", self.rec_ok),
                 item("Start / stop recording", "long", self.rec_ok),
                 ksni::MenuItem::Separator,
                 item("Quit", "quit", true),
-            ]
+            ]);
+            m
         }
     }
 
@@ -136,7 +183,7 @@ mod linux {
                 vec![ksni::Icon { width: s as i32, height: s as i32, data }]
             })
             .unwrap_or_default();
-        let t = EchoTray { icon, rec_ok: crate::rec_core::can_record() };
+        let t = EchoTray { icon, rec_ok: crate::rec_core::can_record(), update: None };
         // Flatpak can't own the name without a permission: the version without a bus name works everywhere
         let r = if echo_core::linuxutil::in_flatpak() { t.disable_dbus_name(true).spawn() } else { t.spawn() };
         match r {
@@ -145,6 +192,13 @@ mod linux {
                 super::EXISTS.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => echo_core::recorder::log_line(&format!("tray: {e}")),
+        }
+    }
+    /// "Update to Echo X (restarts Echo)" on top of the menu + the tooltip (the tray redraws its menu itself)
+    pub fn update_ready(version: &str) {
+        let v = version.to_string();
+        if let Some(h) = HANDLE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            h.update(move |t: &mut EchoTray| t.update = Some(v));
         }
     }
     pub fn stop() {

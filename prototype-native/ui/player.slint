@@ -3,7 +3,10 @@
 // The Title / Tags / Note panel (#pside) sits on the RIGHT (William, chat 33).
 // Positions are absolute: Rust needs the exact video rectangle (Windows window mode puts its own video window there)
 // and the seek-preview rectangle (cut out of that window so the preview shows above the video).
-import { T, Ic, Icon, TipArea, IconBtn, Btn, Kbd, Toast, CopyMenuBody } from "theme.slint";
+import { Cm, CloudMenuBody } from "cloud.slint";
+import { T, Ic, Icon, TipArea, IconBtn, Btn, Kbd, Toast, CopyMenuBody, MenuRow } from "theme.slint";
+import { OverStill } from "over.slint"; // r2-layout (L1): still picture while a menu covers the video
+import { Focus } from "focus.slint"; // port leftovers L2 / L33
 
 export global Play {
     in-out property <string> title;
@@ -36,6 +39,7 @@ export global Play {
     in-out property <float> t1: 1;
     in-out property <bool> exact;
     in-out property <bool> busy;           // saving a trimmed copy
+    in-out property <bool> gif-busy;       // L14: a GIF of the selection is being made (Echo: trim.busy + #tgif disabled)
     // William (9 Nov): cut out middle parts on the strip - Shift+drag highlights (h0..h1), X cuts it; cuts = flat
     // [a0, b0, a1, b1, ...] fractions, skipped while playing, left out of Save copy, carried into the editor (E)
     in-out property <float> h0: -1;
@@ -47,6 +51,14 @@ export global Play {
     // sound + fullscreen
     in-out property <float> volume: 1;
     in-out property <bool> muted;
+    // M / the mute button: un-muting with the volume at 0 sets it to 0.5 (Echo's pmute)
+    public function toggle-mute() {
+        self.muted = !self.muted;
+        if (!self.muted && self.volume <= 0) {
+            self.volume = 0.5;
+        }
+        self.set-volume(self.volume, self.muted);
+    }
     in-out property <bool> full;
     in-out property <bool> video-window;
     in-out property <bool> overlay-ok: true;
@@ -61,6 +73,10 @@ export global Play {
     callback next();
     callback toggle-fav();
     callback add-tag(string);
+    // gaps-player (row 45): existing tags matching what's typed in the Tags box (Echo's datalist)
+    in-out property <[string]> tag-hints;
+    callback tag-typed(string);
+    callback tag-blur(string);             // the Tags box lost focus with text in it (added if still the same clip)
     callback remove-tag(string);
     callback note-edited(string);
     callback act(string);                  // "folder" / "copy" / "copy:<size>" / "share" / "cloud" / "edit" / "frame" / "thumb" / "audio" / "delete" / "gif" / "replace"
@@ -74,6 +90,16 @@ export global Play {
     callback pan(float, float);
     in-out property <bool> zoomed;
     in-out property <[float]> marks;
+    // gaps-cloud (rows 4-6, cloud_live.rs): a cloud-only clip (Title read-only), Echo's #pload overlay while it
+    // streams in / downloads, and the #pup / #puplbl upload bar + line while this clip uploads
+    in-out property <bool> cloud-only;
+    in-out property <bool> cl-on;
+    in-out property <string> cl-title;
+    in-out property <string> cl-sub;
+    in-out property <float> cl-pct: -1;    // 0..1, < 0 = moving bar (nothing known yet)
+    in-out property <bool> up-on;
+    in-out property <float> up-pct;        // 0..1
+    in-out property <string> up-text;
 }
 
 // time formats (Slint 1.18 has no top-level functions: a global holds them)
@@ -205,6 +231,7 @@ component DinField inherits Rectangle {
     in property <bool> read-only;
     callback accepted(string);
     callback edited(string);
+    callback focus-out(string);     // the field lost focus (Tags: the typed tag is added, like Echo's onblur)
     background: T.panel2;
     border-radius: 9px;
     border-width: 1px;
@@ -238,40 +265,54 @@ component DinField inherits Rectangle {
         vertical-alignment: top;
         accepted => { root.accepted(self.text); }
         edited => { root.edited(self.text); }
+        changed has-focus => {
+            if (!self.has-focus) {
+                root.focus-out(self.text);
+            }
+        }
     }
 }
 
 // a small checkbox (Echo's label.chk)
-component Check inherits HorizontalLayout {
+// L16: Echo's <label class="chk">: the box AND its text are clickable, the label's title shows as a tooltip.
+// (A HorizontalLayout gave the TouchArea its own cell beside the text, so neither the box nor "Exact" took a click.)
+component Check inherits Rectangle {
     in-out property <bool> checked;
     in property <string> text;
     in property <string> tip;
-    spacing: 6px;
-    Rectangle {
-        y: (parent.height - 16px) / 2;
-        width: 16px;
-        height: 16px;
-        border-radius: 4px;
-        border-width: 1.5px;
-        border-color: root.checked ? T.accent : T.muted;
-        background: root.checked ? T.accent : transparent;
-        if root.checked: Icon {
-            width: 12px;
-            height: 12px;
-            commands: Ic.check;
-            stroke: white;
-            stroke-width: 3px;
+    width: hl.preferred-width;
+    hl := HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border-width: 1.5px;
+            border-color: root.checked ? T.accent : T.muted;
+            background: root.checked ? T.accent : transparent;
+            if root.checked: Icon {
+                width: 12px;
+                height: 12px;
+                commands: Ic.check;
+                stroke: white;
+                stroke-width: 3px;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 12.5px;
+            color: T.muted;
+            vertical-alignment: center;
         }
     }
-    Text {
-        text: root.text;
-        font-size: 12.5px;
-        color: T.muted;
-        vertical-alignment: center;
-    }
-    TouchArea {
+    ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.checked = !root.checked; }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover && !ta.pressed;
     }
 }
 
@@ -309,21 +350,35 @@ export component PlayerView inherits Rectangle {
     // (showing / hiding them is decided in Rust from the window's own mouse events: Slint's hover only knows the
     // topmost item, so moving onto the strip looked like "the mouse left" and made them blink)
     // fullscreen + Windows window mode: clear, the video window sits behind Slint's window
-    background: Play.full ? (Play.video-window ? transparent : black) : #0b0b0fbb;
+    background: Play.full ? (Play.video-window ? transparent : black) : transparent;
+    // William (10 Nov): the window's title bar (top-h tall) stays lit and live with a clip open - the dim layer, the
+    // "click beside = close" area and the key scope all start below it (fullscreen: the whole window as before)
+    in property <length> top-h: 52px;
+    property <length> dim-y: Play.full ? 0 : root.top-h;
 
     public function take-focus() {
         fs.focus();
     }
 
+    if !Play.full: Rectangle {
+        y: root.dim-y;
+        height: root.height - root.dim-y;
+        background: #0b0b0fbb;
+    }
     // click beside the video = close
     TouchArea {
+        y: root.dim-y;
+        height: root.height - root.dim-y;
         clicked => {
             if (!Play.full) {
                 Play.close();
             }
         }
     }
+    // (below the title bar too: an unfocused FocusScope eats the first click to take focus - that was Record / Save clip)
     fs := FocusScope {
+        y: root.dim-y;
+        height: root.height - root.dim-y;
         key-pressed(e) => {
             if (e.text == Key.Escape) {
                 if (Play.h0 >= 0) {
@@ -337,6 +392,11 @@ export component PlayerView inherits Rectangle {
                 return accept;
             }
             if (e.text == " ") {
+                Play.toggle-pause();
+                return accept;
+            }
+            // YouTube-style K = play / pause (Echo's KeyK)
+            if (e.text == "k" || e.text == "K") {
                 Play.toggle-pause();
                 return accept;
             }
@@ -365,8 +425,7 @@ export component PlayerView inherits Rectangle {
                 return accept;
             }
             if (e.text == "m" || e.text == "M") {
-                Play.muted = !Play.muted;
-                Play.set-volume(Play.volume, Play.muted);
+                Play.toggle-mute();
                 return accept;
             }
             if (e.text == "t" || e.text == "T") {
@@ -458,7 +517,13 @@ export component PlayerView inherits Rectangle {
                 icon: Ic.copy;
                 left-half: true;
                 tip: "Copy (Ctrl+click: choose size)";
-                clicked => { Play.act("copy"); }
+                clicked => {
+                    if (self.ctrl) {
+                        cm.show();
+                    } else {
+                        Play.act("copy");
+                    }
+                }
             }
             Btn {
                 icon: Ic.down;
@@ -478,20 +543,63 @@ export component PlayerView inherits Rectangle {
                     picked(k) => {
                         cm.close();
                         Play.act("copy:" + k);
+                        fs.focus();
+                    }
+                    cancel => {
+                        cm.close();
+                        fs.focus();
                     }
                 }
             }
         }
-        Btn {
+        sharebtn := Btn {
             text: "Share";
             icon: Ic.share;
             tip: "Upload and copy a link that plays in Discord";
-            clicked => { Play.act("share"); }
+            clicked => {
+                Cm.open = false;
+                Play.act("share");
+                if (Cm.open) {
+                    Cm.open = false;
+                    sharepop.show();
+                }
+            }
         }
-        Btn {
+        sharepop := PopupWindow {
+            // drops down from the button's left edge, just below it (like the Copy menu)
+            x: sharebtn.x;
+            y: sharebtn.y + sharebtn.height + 6px;
+            // own size: Slint tests clicks against it (none = every click 'outside')
+            width: sharepopb.preferred-width;
+            height: sharepopb.preferred-height;
+            close-policy: close-on-click-outside;
+            sharepopb := CloudMenuBody {
+                done => { sharepop.close(); }
+            }
+        }
+        cloudbtn := Btn {
             icon: Ic.cloud;
             tip: "Cloud: upload, free up space, download, delete";
-            clicked => { Play.act("cloud"); }
+            clicked => {
+                Cm.open = false;
+                Play.act("cloud");
+                if (Cm.open) {
+                    Cm.open = false;
+                    cloudpop.show();
+                }
+            }
+        }
+        cloudpop := PopupWindow {
+            // drops down from the button's left edge, just below it (like the Copy menu)
+            x: cloudbtn.x;
+            y: cloudbtn.y + cloudbtn.height + 6px;
+            // own size: Slint tests clicks against it (none = every click 'outside')
+            width: cloudpopb.preferred-width;
+            height: cloudpopb.preferred-height;
+            close-policy: close-on-click-outside;
+            cloudpopb := CloudMenuBody {
+                done => { cloudpop.close(); }
+            }
         }
         // group divider
         Rectangle {
@@ -534,10 +642,47 @@ export component PlayerView inherits Rectangle {
             tip: "Use this frame as the clip's thumbnail";
             clicked => { Play.act("thumb"); }
         }
-        Btn {
+        mp3btn := Btn {
             icon: Ic.music;
             tip: "Save the sound as MP3 or WAV + copy it";
-            clicked => { Play.act("audio"); }
+            clicked => { mp3pop.show(); }
+        }
+        // Echo's MP3 popup: two rows, just below the button
+        mp3pop := PopupWindow {
+            x: mp3btn.x;
+            y: mp3btn.y + mp3btn.height + 4px;
+            width: 230px;
+            height: mp3l.preferred-height;
+            close-policy: close-on-click-outside;
+            Rectangle {
+                background: T.panel;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: T.line;
+                drop-shadow-blur: 40px;
+                drop-shadow-offset-y: 14px;
+                drop-shadow-color: #000000aa;
+                TouchArea { }
+            }
+            mp3l := VerticalLayout {
+                padding: 6px;
+                MenuRow {
+                    text: "Save as MP3";
+                    clicked => {
+                        mp3pop.close();
+                        Play.act("audio");
+                        fs.focus();
+                    }
+                }
+                MenuRow {
+                    text: "Save as WAV (sound effects)";
+                    clicked => {
+                        mp3pop.close();
+                        Play.act("wav");
+                        fs.focus();
+                    }
+                }
+            }
         }
         Rectangle {
             width: 23px;
@@ -612,6 +757,49 @@ export component PlayerView inherits Rectangle {
                 height: parent.height;
                 source: Play.poster;
                 image-fit: contain;
+            }
+        }
+        // r2-layout (L1): Windows - the video window is parked while a menu covers it; its picture stays here
+        OverStill { }
+        // gaps-cloud (row 5): Echo's #pload - "Loading from the cloud…" / "Downloading from the cloud…" + a bar along
+        // the bottom of the video (Windows window mode: main.rs parks mpv's window meanwhile, so this shows)
+        if Play.cl-on: Rectangle {
+            background: #000000aa;
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Text {
+                    text: Play.cl-title;
+                    font-size: 16px;
+                    font-weight: 700 + T.fw;
+                    color: #ffffff;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: Play.cl-sub;
+                    font-size: 14px;
+                    color: #a1a1aa;
+                    horizontal-alignment: center;
+                }
+            }
+            Rectangle {
+                y: parent.height - 6px;
+                height: 6px;
+                background: #ffffff1a;
+                clip: true;
+                Rectangle {
+                    property <float> run;
+                    x: Play.cl-pct < 0 ? (self.run * 1.3 - 0.3) * parent.width : 0;
+                    width: Play.cl-pct < 0 ? parent.width * 0.3 : parent.width * min(1, Play.cl-pct);
+                    animate width { duration: 300ms; }
+                    background: T.accent;
+                    // .ind: a 30 % piece sliding along while nothing is known
+                    Timer {
+                        interval: 30ms;
+                        running: Play.cl-pct < 0;
+                        triggered => { parent.run = Math.mod(parent.run + 0.027, 1.0); }
+                    }
+                }
             }
         }
         videota := TouchArea {
@@ -715,6 +903,18 @@ export component PlayerView inherits Rectangle {
                 height: 1px;
                 y: 0;
                 background: #ffffff14;
+            }
+            // gaps-cloud (row 6): Echo's #pup - the upload's bar, right under the video (mpv's window can't be drawn over)
+            if Play.up-on: Rectangle {
+                y: 0;
+                height: 4px;
+                background: #00000088;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * min(1, Play.up-pct);
+                    animate width { duration: 400ms; }
+                    background: #4cc2ff;
+                }
             }
         }
         seek := Rectangle {
@@ -942,6 +1142,11 @@ export component PlayerView inherits Rectangle {
                     }
                 }
             }
+            // L35: Echo's title on the strip
+            TipArea {
+                text: "Click to jump · drag the yellow ends to trim";
+                hover: sa.has-hover && !sa.pressed && seek.drag == "";
+            }
             // a small x in the middle of each cut: click = put it back
             for k in floor(Play.cuts.length / 2): Rectangle {
                 property <length> cx: parent.width * (Play.cuts[k * 2] + Play.cuts[k * 2 + 1]) / 2;
@@ -1043,9 +1248,11 @@ export component PlayerView inherits Rectangle {
                 }
                 Text {
                     // prototype stats (where Echo has nothing): codec, decoder, frames
-                    text: Play.trimming || !Play.show-stats ? "" : Play.stats;
-                    font-size: 11.5px;
-                    color: T.dim;
+                    // gaps-cloud (row 6): Echo's #puplbl "☁ Uploading 40% · 1 min left" while this clip uploads
+                    text: Play.trimming ? "" : Play.up-on ? Play.up-text : !Play.show-stats ? "" : Play.stats;
+                    font-size: Play.up-on ? 12px : 11.5px;
+                    font-weight: Play.up-on ? 600 + T.fw : 400 + T.fw;
+                    color: Play.up-on ? #4cc2ff : T.dim;
                     vertical-alignment: center;
                     horizontal-alignment: right;
                     overflow: elide;
@@ -1070,10 +1277,8 @@ export component PlayerView inherits Rectangle {
                     Rectangle { width: 4px; }
                     Check {
                         text: "Exact";
+                        tip: "Frame-exact start (re-encodes, a bit slower)"; // L16: was a TipArea cell with no hover
                         checked <=> Play.exact;
-                    }
-                    TipArea {
-                        text: "Frame-exact start (re-encodes, a bit slower)";
                     }
                     Btn {
                         y: 3px;
@@ -1087,18 +1292,21 @@ export component PlayerView inherits Rectangle {
                         small: true;
                         text: "GIF";
                         tip: "Make a GIF of the selection and copy it (max 30 s)";
+                        enabled: !Play.gif-busy; // L14/L15: Echo's #tgif.disabled while it works
                         clicked => { Play.act("gif"); }
                     }
                     Btn {
                         y: 3px;
                         small: true;
                         text: "Replace";
+                        enabled: !Play.busy; // L14/L15: Echo disables Save copy + Replace while either runs
                         clicked => { Play.act("replace"); }
                     }
                     Btn {
                         y: 3px;
                         small: true;
                         primary: true;
+                        enabled: !Play.busy;
                         text: Play.busy ? "Saving…" : "Save copy";
                         clicked => {
                             if (!Play.busy) {
@@ -1111,8 +1319,7 @@ export component PlayerView inherits Rectangle {
                     icon: Play.muted || Play.volume == 0 ? Ic.mute : Ic.vol;
                     tip: "Mute (M)";
                     clicked => {
-                        Play.muted = !Play.muted;
-                        Play.set-volume(Play.volume, Play.muted);
+                        Play.toggle-mute();
                     }
                 }
                 // volume (Echo's #pvol, 90 px)
@@ -1243,7 +1450,8 @@ export component PlayerView inherits Rectangle {
         FocusScope {
             focus-on-click: false;
             capture-key-pressed(e) => {
-                if (e.text == Key.Escape) {
+                // L33: not in the title box - there Esc puts the old name back and the player stays open
+                if (e.text == Key.Escape && !tt.has-focus) {
                     Play.close();
                     return accept;
                 }
@@ -1277,6 +1485,7 @@ export component PlayerView inherits Rectangle {
                         y: 9px;
                         width: parent.width - 22px;
                         text: Play.title;
+                        read-only: Play.cloud-only; // gaps-cloud (row 4): Echo's #sname.readOnly for cloud clips
                         single-line: false;
                         wrap: word-wrap;
                         font-size: 13.5px;
@@ -1292,12 +1501,14 @@ export component PlayerView inherits Rectangle {
                         key-pressed(e) => {
                             if (e.text == Key.Return) {
                                 self.clear-focus();
+                                Focus.back(); // L2: the player's keys (Space, arrows) work again at once
                                 return accept;
                             }
                             if (e.text == Key.Escape) {
                                 self.cancel = true;
                                 self.text = Play.title;
                                 self.clear-focus();
+                                Focus.back();
                                 return accept;
                             }
                             reject
@@ -1335,6 +1546,46 @@ export component PlayerView inherits Rectangle {
                         accepted(t) => {
                             Play.add-tag(t);
                             self.text = "";
+                            Play.tag-hints = [];
+                        }
+                        edited(t) => { Play.tag-typed(t); }
+                        focus-out(t) => {
+                            if (t != "") {
+                                Play.tag-blur(t);
+                                self.text = "";
+                            }
+                            Play.tag-hints = [];
+                        }
+                    }
+                    // existing tags that match (a click adds it; focus stays in the box)
+                    if Play.tag-hints.length > 0 && tagin.text != "": Rectangle {
+                        height: hl.preferred-height;
+                        background: T.panel2;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: T.line;
+                        hl := VerticalLayout {
+                            padding: 4px;
+                            for h in Play.tag-hints: Rectangle {
+                                height: 26px;
+                                border-radius: 6px;
+                                background: hta.has-hover ? T.panel : transparent;
+                                hta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        Play.add-tag(h);
+                                        tagin.text = "";
+                                        Play.tag-hints = [];
+                                    }
+                                }
+                                Text {
+                                    x: 8px;
+                                    text: "#" + h;
+                                    font-size: 12.5px;
+                                    color: T.accent2;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }

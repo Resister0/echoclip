@@ -2,9 +2,13 @@
 //! Video (mode "gpu"): own zero-copy pipeline in gpucap.rs -> H.264 over a named pipe.
 //! Video (mode "cpu"): ffmpeg ddagrab -> hwdownload -> AMF (fallback).
 //! Audio: WASAPI loopback (+ optional mic) via cpal -> mixed, paced PCM into ffmpeg stdin -> AAC.
-//! Output: rolling 2s mpegts segments; save = concat last N seconds with -c copy.
+//! Output: rolling 2s mpegts segments (video + raw s302m audio); save = concat last N seconds, video copied,
+//! audio encoded to AAC.
 
 use crate::settings::Settings;
+// smaller Echo Cloud copies, no duplicate uploads, share-only uploads, reads for the server (cloud-savings)
+#[path = "cloudsave.rs"]
+mod cloudsave;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1371,6 +1375,19 @@ pub fn unzip_to(zip_path: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// ffmpeg for saving a clip: since the buffer holds raw audio (9 Nov 2026) a save ENCODES the AAC tracks - a few
+/// seconds of full CPU. Below-normal priority on Windows so a game running at the same time never waits for it.
+fn ffmpeg_save() -> Command {
+    #[allow(unused_mut)]
+    let mut c = sys_cmd("ffmpeg");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000 | 0x0000_4000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+    }
+    c
+}
+
 /// Set by the UI at start: Echo's video player decodes AV1 smoothly (in hardware). Without it Echo never makes AV1 files,
 /// so PCs with older graphics cards never end up with clips that stutter.
 pub static AV1_PLAYS: AtomicBool = AtomicBool::new(false);
@@ -1765,6 +1782,22 @@ fn ts_video_timing(path: &std::path::Path) -> Option<(f64, f64)> {
     Some(((vmin - smin) as f64 / 90000.0, (vmax - vmin + frame) as f64 / 90000.0))
 }
 
+/// Major version of the ffmpeg Echo runs (Windows: the bundled 9.x; Linux AppImage: the system's; Flatpak: 9.0),
+/// read once from "ffmpeg -version". Git builds ("N-112345-g…") count as new; unreadable = 0 (old, safe path).
+fn ffmpeg_major() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        let out = ffmpeg().arg("-version").stdout(Stdio::piped()).stderr(Stdio::null()).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string()).unwrap_or_default();
+        let v = out.split_whitespace().nth(2).unwrap_or("");
+        let major = if v.starts_with("N-") { 99 } else {
+            v.trim_start_matches('n').split(|c: char| !c.is_ascii_digit()).next().and_then(|d| d.parse().ok()).unwrap_or(0)
+        };
+        log_line(&format!("ffmpeg: '{}' -> version {major}{}", out.trim(), if major >= 5 { " (fast saves)" } else { " (saves read every segment fully)" }));
+        major
+    })
+}
+
 /// concat list for the segments: with "duration" lines so the VIDEO of each segment joins the next one exactly
 /// (falls back to plain "file" lines if a segment can't be read).
 fn concat_list(segs: &[std::path::PathBuf]) -> String {
@@ -1773,6 +1806,13 @@ fn concat_list(segs: &[std::path::PathBuf]) -> String {
     let mut body = String::new();
     for (k, p) in segs.iter().enumerate() {
         body += &format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"));
+        // no stream probing per segment: the stream types are in each segment's header, and probing the raw
+        // (s302m) audio of every 2 s segment made a save ~5x slower (9 Nov 2026: 2.0 -> 0.43 s per 24 s of clip).
+        // "option" lines need ffmpeg 5+: the Linux AppImage uses the system's ffmpeg (Ubuntu 22.04 = 4.4 would
+        // fail every save with them), so only when this PC's ffmpeg is new enough
+        if ffmpeg_major() >= 5 {
+            body += "option analyzeduration 0\noption probesize 65536\n";
+        }
         if all && k + 1 < segs.len() {
             let (lead, vdur) = t[k].unwrap();
             let (next_lead, _) = t[k + 1].unwrap();
@@ -2354,10 +2394,15 @@ fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, 
             }
         }
         let tracks = 3 + g.len();
-        let mut chunk = Vec::with_capacity(n * tracks * 4);
+        let mut chunk = Vec::with_capacity(n * tracks * 2);
         // NaN/Inf from a capture source must never reach ffmpeg: its AAC encoder stops for good on them
         // ("Input contains (near) NaN/+-Inf", the whole recording dies). clamp() lets NaN through.
-        let put = |chunk: &mut Vec<u8>, x: f32| chunk.extend_from_slice(&(if x.is_finite() { x.clamp(-1.0, 1.0) } else { 0.0 }).to_le_bytes());
+        // 16-bit on the pipe (9 Nov 2026, was f32): half the bytes for both sides; samples were already clamped
+        // to -1..1 here, so nothing above 16 bits reaches the 160k AAC tracks anyway.
+        let put = |chunk: &mut Vec<u8>, x: f32| {
+            let x = if x.is_finite() { x.clamp(-1.0, 1.0) } else { 0.0 };
+            chunk.extend_from_slice(&((x * 32767.0).round() as i16).to_le_bytes());
+        };
         let mix_apps = MIX_APPS.load(Ordering::Relaxed);
         let no_mic = MIX_NO_MIC.load(Ordering::Relaxed);
         let inc = [MIX_INC[0].load(Ordering::Relaxed), MIX_INC[1].load(Ordering::Relaxed), MIX_INC[2].load(Ordering::Relaxed), MIX_INC[3].load(Ordering::Relaxed)];
@@ -2544,6 +2589,49 @@ fn gpu_input(_: usize, _: &Arc<AtomicBool>, _: &Settings, _: isize) -> Option<(V
 const TV_YUV: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
 /// Matching output tags (so Discord / Chrome / phones don't guess the colours).
 const TV_TAGS: [&str; 8] = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+
+/// What import_one needs to know about a file: first video stream's codec / pixel format / colour range, first
+/// audio stream's codec, length in seconds. Empty strings / 0 when missing.
+#[derive(Default, Debug, PartialEq)]
+struct ImportProbe {
+    vc: String,
+    ac: String,
+    pix_fmt: String,
+    range: String,
+    dur: f64,
+}
+
+/// One ffprobe for all of ImportProbe (each ffprobe start costs ~160 ms on Windows).
+fn import_probe(src: &Path) -> ImportProbe {
+    let out = hidden("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type,codec_name,pix_fmt,color_range:format=duration", "-of", "flat"])
+        .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    parse_import_probe(&out)
+}
+
+/// ffprobe "-of flat" lines: streams.stream.N.key="value" and format.duration="12.3"
+fn parse_import_probe(flat: &str) -> ImportProbe {
+    // per stream index: (type, codec, pix_fmt, range)
+    let mut streams: std::collections::BTreeMap<usize, [String; 4]> = Default::default();
+    let mut p = ImportProbe::default();
+    for line in flat.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim().trim_matches('"').to_string();
+        if k == "format.duration" {
+            p.dur = v.parse().unwrap_or(0.0);
+        } else if let Some((n, key)) = k.strip_prefix("streams.stream.").and_then(|r| r.split_once('.')) {
+            let Ok(n) = n.parse::<usize>() else { continue };
+            let s = streams.entry(n).or_default();
+            match key { "codec_type" => s[0] = v, "codec_name" => s[1] = v, "pix_fmt" => s[2] = v, "color_range" => s[3] = v, _ => {} }
+        }
+    }
+    if let Some(s) = streams.values().find(|s| s[0] == "video") {
+        (p.vc, p.pix_fmt, p.range) = (s[1].clone(), s[2].clone(), s[3].clone());
+    }
+    if let Some(s) = streams.values().find(|s| s[0] == "audio") {
+        p.ac = s[1].clone();
+    }
+    p
+}
 
 /// Share of pixels outside TV range (16-235) in a few small grey frames: full-range videos
 /// (real blacks) have lots of them, correctly made TV-range videos almost none.
@@ -2753,6 +2841,8 @@ impl Recorder {
             // The noise filter can output NaN (ffmpeg 8/9 arnndn: on silence and at the end; tested chat 18).
             // One NaN stops that track's AAC encoder for good -> mix + mic tracks empty/dead, clips can't save.
             // aeval turns NaN/Inf into 0 (cheap: 4 s of audio in 0.13 s).
+            // (9 Nov 2026: a mono noise filter - average of both sides - halved its cost but made William's HyperX mic
+            // ~5 dB quieter in clips, hard to hear under game sound: reverted, stereo as before)
             let nr = nr.map(|f| {
                 let e = (0..if ch == 1 { 1 } else { 2 }).map(|i| format!("if(isnan(val({i}))+isinf(val({i})),0,val({i}))")).collect::<Vec<_>>().join("|");
                 format!("{f},aeval=exprs='{e}'")
@@ -2795,7 +2885,7 @@ impl Recorder {
             "-hide_banner".into(), "-nostdin".into(), "-loglevel".into(), "error".into(), "-y".into(),
             // input 0: audio from our stdin pipe
             "-thread_queue_size".into(), "8192".into(),
-            "-f".into(), "f32le".into(), "-ar".into(), rate.to_string(), "-ac".into(), (ch as usize * tracks).to_string(),
+            "-f".into(), "s16le".into(), "-ar".into(), rate.to_string(), "-ac".into(), (ch as usize * tracks).to_string(),
         ];
         if let Some(t0) = audio_offset {
             // gpu mode: video carries wall-clock timestamps; put audio on the same clock.
@@ -2827,7 +2917,11 @@ impl Recorder {
             tail.extend(["-map".into(), format!("[a{t}]")]);
         }
         tail.extend::<Vec<String>>(vec![
-            "-c:a".into(), "aac".into(), "-b:a".into(), "160k".into(), "-ac".into(), "2".into(),
+            // RAW audio in the buffer (SMPTE 302M = PCM inside MPEG-TS), AAC only when a clip is saved (join):
+            // the 7 live AAC encoders were ~90 % of the recorder's audio CPU (9 Nov 2026, real FiveM audio:
+            // 7.05 -> 0.68 % of a core, ffmpeg 27 -> 21 MB). Costs: a save encodes (~2 s per clip minute) and the
+            // buffer writes ~1.6 MB/s more to disk. Clip files are the same AAC 160k as before.
+            "-c:a".into(), "s302m".into(), "-strict".into(), "-2".into(), "-ac".into(), "2".into(),
             "-f".into(), "segment".into(),
             "-segment_time".into(), SEG.to_string(),
             "-segment_wrap".into(), wrap.to_string(),
@@ -2992,10 +3086,11 @@ impl Recorder {
         let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
         let body = concat_list(&paths);
         fs::write(&list, body).map_err(err)?;
-        let status = ffmpeg()
+        // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had
+        let status = ffmpeg_save()
             .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list)
-            .args(["-map", "0:v", "-map", "0:a", "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart"])
+            .args(["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
             .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
             .args(["-f", "mp4"])
             .arg(out)
@@ -3033,17 +3128,18 @@ impl Recorder {
             .map(|(i, _)| names.get(i).map(|n| n.to_string()).unwrap_or_else(|| format!("#{i}"))).collect();
         log_line(&format!("save: audio track(s) {} had no sound data at all - saved with silence there", empty.join(", ")));
         let secs = (n_segs as u32 * SEG + 4).to_string();
-        let mut cmd = ffmpeg();
+        let mut cmd = ffmpeg_save();
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(list)
             .args(["-f", "lavfi", "-t", &secs, "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v"]);
         for (i, &c) in counts.iter().enumerate() {
             if c == 0 { cmd.args(["-map", "1:a"]); } else { cmd.args(["-map".to_string(), format!("0:a:{i}")]); }
         }
-        cmd.args(["-c", "copy"]);
+        // raw buffer audio -> AAC (see join); the silent stand-in tracks small
+        cmd.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2"]);
         for (i, &c) in counts.iter().enumerate() {
-            if c == 0 { cmd.args([format!("-c:a:{i}"), "aac".into(), format!("-b:a:{i}"), "32k".into()]); }
+            if c == 0 { cmd.args([format!("-b:a:{i}"), "32k".into()]); }
         }
-        cmd.args(["-bsf:a", "aac_adtstoasc", "-shortest", "-movflags", "+faststart"])
+        cmd.args(["-shortest", "-movflags", "+faststart"])
             .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
             .args(["-f", "mp4"]).arg(out)
             .stdout(Stdio::null()).stderr(Stdio::piped());
@@ -4128,6 +4224,12 @@ impl Recorder {
         log_line("import: cancelled");
     }
 
+    /// What the running import does right now, for the progress box (10 Nov 2026: it sat on a silent "0%" while
+    /// the video was checked): "Checking the video…", "Converting…", "Copying…", or "" (between files).
+    pub fn import_stage(&self) -> &'static str {
+        ["", "Checking the video…", "Converting…", "Copying…"][IMPORT_STAGE.load(Ordering::Relaxed).min(3) as usize]
+    }
+
     /// `folder`: library folder the videos go into ("" = the main library; chat 30: dropping onto a sidebar folder).
     /// `progress(fraction 0..1 of all files, file index, total, name)`, several times a second while a file is
     /// converted (imports can take minutes - big videos are re-encoded when needed).
@@ -4141,6 +4243,7 @@ impl Recorder {
         for (i, p) in paths.iter().enumerate() {
             if IMPORT_CANCEL.load(Ordering::Relaxed) { bad.push("cancelled".into()); break; }
             let name0 = Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            IMPORT_STAGE.store(STAGE_CHECK, Ordering::Relaxed);
             progress(i as f64 / total.max(1) as f64, i, total, &name0);
             let src = PathBuf::from(p);
             // a dropped folder (e.g. Medal's clips folder): import everything in it, game subfolders kept
@@ -4153,6 +4256,7 @@ impl Recorder {
             let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             // sound files (.wav, .mp3…) become playable/editable clips in the "Sounds" folder
             if is_audio_file(&src) {
+                IMPORT_STAGE.store(STAGE_CONVERT, Ordering::Relaxed);
                 match self.import_audio(&src) {
                     Ok(out) => ok.push(out.to_string_lossy().to_string()),
                     Err(e) => bad.push(format!("{name}: {e}")),
@@ -4172,6 +4276,7 @@ impl Recorder {
                 Err(e) => bad.push(format!("{name}: {e}")),
             }
         }
+        IMPORT_STAGE.store(0, Ordering::Relaxed);
         progress(1.0, total, total, "");
         (ok, bad)
     }
@@ -4224,29 +4329,24 @@ impl Recorder {
         // unique per import: the same file dropped twice at once overwrote one shared .tmp (chat 30)
         static IMPORT_N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let tmp = dir.join(format!("{stem}.{}.importing.tmp", IMPORT_N.fetch_add(1, Ordering::Relaxed)));
-        // codecs WebView2 can play without converting
-        let probe = |sel: &str| -> String {
-            hidden("ffprobe").args(["-v", "error", "-select_streams", sel, "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
-                .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").trim().to_string()).unwrap_or_default()
-        };
-        let (vc, ac) = (probe("v:0"), probe("a:0"));
+        // codecs WebView2 can play without converting, pixel format / range, length - one ffprobe (was four, 10 Nov 2026)
+        let ImportProbe { vc, ac, pix_fmt, range, dur } = import_probe(src);
         // length for the progress bar (ffmpeg reports out_time_us while converting)
-        let dur = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(src).output()
-            .ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok()).unwrap_or(0.0).max(0.1);
+        let dur = dur.max(0.1);
         let tick = |t: f64| prog(t / dur);
         if vc.is_empty() {
             return Err("no video stream".into());
         }
         // full-range video (Medal, phones, some OBS setups): labelled "pc" or simply out of TV range.
         // Players (Linux WebKitGTK, Discord) show those too dark, so convert them to real TV range.
-        let vinfo = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt,color_range", "-of", "csv=p=0"])
-            .arg(src).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-        let full = vinfo.contains("pc") || vinfo.contains("yuvj") || full_range_share(src) > 0.005;
-        let copy_ok = vc == "h264" && !full && vinfo.trim().starts_with("yuv420p") && (ac.is_empty() || ac == "aac" || ac == "mp3");
+        let tagged_full = range == "pc" || pix_fmt.starts_with("yuvj");
+        let full = tagged_full || full_range_share(src) > 0.005;
+        let copy_ok = vc == "h264" && !full && pix_fmt.starts_with("yuv420p") && (ac.is_empty() || ac == "aac" || ac == "mp3");
         let vf = if full { "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p".to_string() } else { TV_YUV.to_string() };
         let run = |args: &[&str]| -> bool {
             if skip_enc(args) { return false; }
             let reenc = !args.contains(&"copy");
+            IMPORT_STAGE.store(if reenc { STAGE_CONVERT } else { STAGE_COPY }, Ordering::Relaxed);
             let vaapi = args.contains(&"h264_vaapi");
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y"]);
@@ -4268,10 +4368,10 @@ impl Recorder {
         // above used ~3 cores just decoding/converting. Only when the range is known from the file's own tags: a clip
         // that is full range WITHOUT saying so (found by full_range_share) keeps the CPU conversion, the GPU would
         // treat it as TV range and the picture would come out washed out.
-        let tagged_full = vinfo.contains("pc") || vinfo.contains("yuvj");
         let gpu_ok = cfg!(target_os = "linux") && (tagged_full || !full);
         let run_gpu = || -> bool {
             let Some(d) = vaapi_device() else { return false };
+            IMPORT_STAGE.store(STAGE_CONVERT, Ordering::Relaxed);
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-hwaccel", "vaapi", "-hwaccel_device", &d, "-hwaccel_output_format", "vaapi", "-i"])
                 .arg(src).args(["-map", "0:v:0", "-map", "0:a?", "-vf", "scale_vaapi=format=nv12:out_range=tv:out_color_matrix=bt709",
@@ -4283,7 +4383,10 @@ impl Recorder {
         };
         let done = (copy_ok && run(&["-c", "copy"]))
             || (gpu_ok && run_gpu())
-            || run(&[&["-c:v", "h264_amf", "-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", "22"][..], &aenc[..]].concat())
+            // "balanced", not "quality" (r2-import, 10 Nov 2026): the encoder was the bottleneck - a 30 s 1440p clip
+            // took 16.0 s, now 9.4 s, picture 0.13 dB PSNR lower (not visible), file 1.6 % bigger. An all-GPU path
+            // (AMF decode + vpp_amf colour) was slower (18.7 s) and came out darker, so the colour stays on the CPU.
+            || run(&[&["-c:v", "h264_amf", "-quality", "balanced", "-rc", "qvbr", "-qvbr_quality_level", "22"][..], &aenc[..]].concat())
             || run(&[&["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "22"][..], &aenc[..]].concat())
             || run(&[&["-c:v", "h264_qsv", "-global_quality", "22"][..], &aenc[..]].concat())
             // Linux: the GPU through VA-API (AMD/Intel) before the much slower CPU encoder (chat 30)
@@ -6197,6 +6300,13 @@ struct CloudState {
     /// clips whose cloud copy you deleted while keeping them on this PC: never auto-upload them again
     /// (uploading one by hand takes it off this list) - chat 29, "Manage Echo Cloud space"
     no_upload: std::collections::BTreeSet<String>,
+    /// cloud-savings: clips uploaded to Echo Cloud only for an expiring share link (the server deletes them with the
+    /// link unless Echo says they're kept - favourite / auto upload / removed from this PC, see cloudsave.rs)
+    share_only: std::collections::BTreeSet<String>,
+    /// cloud-savings: Echo Cloud has a smaller copy of these clips: [cloud size, size of the clip on this PC]
+    smaller: std::collections::BTreeMap<String, [u64; 2]>,
+    /// cloud-savings: the same clip is on this PC twice; Echo Cloud keeps it once, as the other name
+    dups: std::collections::BTreeMap<String, String>,
 }
 
 /// One file in Echo Cloud for Settings → Cloud → "Manage Echo Cloud space" (chat 29).
@@ -7277,11 +7387,18 @@ impl Recorder {
     }
 
     pub fn cloud_upload(&self, path: &str) -> Result<(), String> {
-        self.upload_inner(path, false)
+        match self.upload_inner(path, false, false)? {
+            None => Ok(()),
+            // cloud-savings: the same clip is on this PC twice - Echo Cloud already has it under the other name
+            Some(other) => Err(format!("This clip is already in Echo Cloud as “{}” - it isn't stored twice",
+                Path::new(&other).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(other.clone()))),
+        }
     }
 
     /// "Copy share link" on a clip that's only on this PC: upload it (to Echo Cloud when there is one and it
     /// has room, so the link plays in Discord), then make the link. Returns the link (also copied by the caller).
+    /// cloud-savings: with an expiring link the upload is share-only - Echo Cloud deletes it when the link expires,
+    /// unless the clip gets backed up on purpose later (favourite / auto upload / "Remove from PC").
     pub fn upload_and_link(&self, path: &str, days: Option<u32>, progress: &dyn Fn(f64)) -> Result<String, String> {
         let rel = self.rel_of(path).ok_or("not a clip")?;
         let cfg = self.settings();
@@ -7291,6 +7408,7 @@ impl Recorder {
             progress(1.0);
             return Ok(u);
         }
+        let share_only = days.map(|d| d.min(3650)).unwrap_or(cfg.link_days) > 0;
         // a share copy (watermark / AV1) is all the link needs: the whole clip doesn't have to go up first
         if !(has_ec && is_av1(path)) && !self.cloud_state().files.iter().any(|f| f.rel == rel) {
             let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -7302,7 +7420,7 @@ impl Recorder {
             } else {
                 // the upload's progress shows on the card as "Making link N%" (it used to sit at 0% until the link)
                 let r = std::thread::scope(|sc| {
-                    let h = sc.spawn(|| self.upload_inner(path, true));
+                    let h = sc.spawn(|| self.upload_inner(path, true, share_only));
                     while !h.is_finished() {
                         let f = { let p = UP_PROGRESS.lock().unwrap(); (p.rel == rel && p.total > 0).then(|| p.got as f64 / p.total as f64) };
                         if let Some(f) = f { progress(f.min(1.0) * 0.95); }
@@ -7310,47 +7428,37 @@ impl Recorder {
                     }
                     h.join().unwrap_or_else(|_| Err("upload crashed".into()))
                 });
-                r?;
+                // the same clip is in Echo Cloud under its other name on this PC: link that one
+                if let Some(other) = r? {
+                    return self.cloud_link(&other, days, progress);
+                }
             }
         }
         self.cloud_link(&rel, days, progress)
     }
 
-    fn upload_inner(&self, path: &str, for_link: bool) -> Result<(), String> {
+    /// Ok(Some(other)) = not uploaded: Echo Cloud already has this very clip as `other` (cloud-savings, no duplicates).
+    fn upload_inner(&self, path: &str, for_link: bool, share_only: bool) -> Result<Option<String>, String> {
         let rel = self.rel_of(path).ok_or("not a clip")?;
         ec_ensure();
         let only_ec = self.settings().cloud_accounts.len() == 1 && EC.lock().map(|g| g.is_some()).unwrap_or(false);
         if ec_full() && only_ec {
             return Err("Echo Cloud is full - delete some clips from the cloud or upgrade your plan".into());
         }
-        // pause instead of going over the plan: a clip that doesn't fit isn't uploaded
-        // (the server also stops handing out upload keys once the account is full)
-        if only_ec {
-            let need = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            if let Some(left) = ec_space_left() {
-                if need > left {
-                    log_line(&format!("echo cloud: upload paused - {rel} needs {:.2} GB, {:.2} GB left", need as f64 / 1e9, left as f64 / 1e9));
-                    return Err(format!("Echo Cloud is full - this clip needs {:.1} GB but only {:.1} GB is left. Uploads are paused until you free up space or upgrade your plan.",
-                        need as f64 / 1e9, left as f64 / 1e9));
-                }
-            }
-        }
         let t0 = Instant::now();
         // the clip's own date: the cloud entry keeps it (now_unix() made a "freed up" clip jump to the top of the
         // library as if it were brand new until the next cloud listing - chat 28)
         let made = fs::metadata(path).ok().and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or_else(now_unix, |d| d.as_secs());
-        // AV1 clips go up as H.264, so share links play on every phone and browser
-        let up = self.shareable(path)?;
-        let path = up.as_str();
+        let orig = path.to_string();
+        let orig_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         // new uploads go into Echo/<year>/<month>/<day>/<folder>/; re-uploads overwrite where the clip already is
         let known = self.cloud_state().files.into_iter().find(|f| f.rel == rel).map(|f| if f.path.is_empty() { f.rel } else { f.path });
         let cp = known.unwrap_or_else(|| format!("{}/{rel}", date_folder(Path::new(path))));
-        // live progress for the UI (card bar, bottom bar, player)
-        let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         // several clouds: the one picked in Settings → Cloud ("Upload new clips to"), else the union decides
+        // (decided on the clip's own size: a smaller Echo Cloud copy fits wherever the clip does)
         let cfg = self.settings();
-        let target = upload_target(&cfg, fsize, for_link);
+        let target = upload_target(&cfg, orig_size, for_link);
         // where it's going, for the progress box. The union puts new files on the writable cloud with the most
         // free space (Echo Cloud is read-only there): with one other cloud that's always it
         let dest = match &target {
@@ -7364,24 +7472,62 @@ impl Recorder {
                 }
             }
         };
-        UP_CANCEL.store(false, Ordering::Relaxed);
-        {
-            let mut p = UP_PROGRESS.lock().unwrap();
-            if p.count == 0 { p.idx = 1; p.count = 1; }
-            p.rel = rel.clone(); p.got = 0; p.total = fsize; p.dest = dest.clone();
-        }
         // Echo Cloud: one size-checked upload link per file from the server (keys can't upload past the plan)
         let to_ec = match &target {
             Some(a) => a.provider == "echocloud",
             None => cfg.cloud_accounts.len() == 1 && cfg.cloud_accounts[0].provider == "echocloud",
         } && !cfg.ec_token.is_empty();
         let ec_key = format!("Echo/{}", cp.trim_start_matches('/'));
+        UP_CANCEL.store(false, Ordering::Relaxed);
+        // live progress for the UI (card bar, bottom bar, player): "Getting ready…" while the copy is made
+        {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.count == 0 { p.idx = 1; p.count = 1; }
+            p.rel = rel.clone(); p.got = 0; p.total = orig_size; p.dest = dest.clone();
+        }
+        let up_done = || {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
+        };
+        // cloud-savings: the same clip already in Echo Cloud under another name -> moved there / kept once
+        let hash = if to_ec { self.clip_hash(Path::new(&orig), &rel) } else { None };
+        if let Some(h) = &hash {
+            if let Some(other) = self.ec_dedup(&cfg, &rel, &cp, &ec_key, h) {
+                up_done();
+                return Ok(other);
+            }
+        }
+        // Echo Cloud gets a smaller copy (cloudsave.rs); other clouds: AV1 clips go up as H.264, so share links play
+        // on every phone and browser, every other clip as itself
+        let made_copy = if to_ec { self.cloud_copy(path, &rel) } else { self.shareable(path).map(|p| (p, false)) };
+        let (up, temp) = match made_copy { Ok(x) => x, Err(e) => { up_done(); return Err(e); } };
+        let path = up.as_str();
+        let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        { let mut p = UP_PROGRESS.lock().unwrap(); if p.rel == rel { p.total = fsize; } }
+        // pause instead of going over the plan: a clip that doesn't fit isn't uploaded
+        // (the server also stops handing out upload keys once the account is full)
+        if only_ec {
+            if let Some(left) = ec_space_left() {
+                if fsize > left {
+                    up_done();
+                    log_line(&format!("echo cloud: upload paused - {rel} needs {:.2} GB, {:.2} GB left", fsize as f64 / 1e9, left as f64 / 1e9));
+                    return Err(format!("Echo Cloud is full - this clip needs {:.1} GB but only {:.1} GB is left. Uploads are paused until you free up space or upgrade your plan.",
+                        fsize as f64 / 1e9, left as f64 / 1e9));
+                }
+            }
+        }
         let mut r: Result<(), String> = Err(String::new());
         let mut via_server = false;
+        let mut kept_share_only = false;
         if to_ec {
-            match ec_call(&ec_api(&cfg), "POST", "/upload", &cfg.ec_token, Some(serde_json::json!({ "path": ec_key, "size": fsize }))) {
+            let mut req = serde_json::json!({ "path": ec_key, "size": fsize });
+            // allow_dup: /upload/check above already said there's no other copy (or it couldn't be moved)
+            if let Some(h) = &hash { req["hash"] = serde_json::json!(h); req["allow_dup"] = serde_json::json!(true); }
+            if share_only { req["share_only"] = serde_json::json!(true); }
+            match ec_call(&ec_api(&cfg), "POST", "/upload", &cfg.ec_token, Some(req)) {
                 Ok(j) => {
                     via_server = true;
+                    kept_share_only = j["share_only"].as_bool().unwrap_or(false);
                     let url = j["url"].as_str().unwrap_or("").to_string();
                     let rel2 = rel.clone();
                     r = crate::net::put_file(&url, Path::new(path), move |b, t| {
@@ -7406,10 +7552,7 @@ impl Recorder {
                 if p.rel == rel { p.got = b; if t > 0 { p.total = t; } }
             });
         }
-        {
-            let mut p = UP_PROGRESS.lock().unwrap();
-            if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
-        }
+        up_done();
         if UP_CANCEL.swap(false, Ordering::Relaxed) && r.is_err() {
             log_line(&format!("cloud: upload of {rel} to {dest} cancelled"));
             let mut sk = UP_SKIPPED.lock().unwrap();
@@ -7417,16 +7560,22 @@ impl Recorder {
             return Err("Upload cancelled".into());
         }
         r?;
+        // the smaller copy was only made for this upload
+        if temp { let _ = fs::remove_file(path); let _ = fs::remove_file(format!("{path}.sig")); }
         ec_add_used(fsize);
         // the streaming server's folder listing is from before this upload: it couldn't find the new file
         // (player stuck at 0 s for ~15 s, then "Couldn't stream this clip" - chat 28) -> fresh start on next use
         if self.cloud_serve.lock().unwrap().is_some() { SERVE_STALE.store(true, Ordering::Relaxed); }
-        log_line(&format!("cloud: uploaded {rel} to {dest} in {:.0}s ({})", t0.elapsed().as_secs_f32(),
-            if via_server { "Echo Cloud, size-checked upload link" } else if to_ec { "Echo Cloud, keys" } else { "rclone" }));
+        log_line(&format!("cloud: uploaded {rel} to {dest} in {:.0}s ({}{}{})", t0.elapsed().as_secs_f32(),
+            if via_server { "Echo Cloud, size-checked upload link" } else if to_ec { "Echo Cloud, keys" } else { "rclone" },
+            if temp { format!(", smaller copy {:.1} of {:.1} MB", fsize as f64 / 1e6, orig_size as f64 / 1e6) } else { String::new() },
+            if kept_share_only { ", only for its share link" } else { "" }));
         let mut st = self.cloud_state();
         st.keep_remote.remove(&rel);
         st.no_upload.remove(&rel);
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        st.dups.remove(&rel);
+        if kept_share_only { st.share_only.insert(rel.clone()); } else { st.share_only.remove(&rel); }
+        if temp { st.smaller.insert(rel.clone(), [fsize, orig_size]); } else { st.smaller.remove(&rel); }
         st.files.retain(|f| f.rel != rel);
         let p = Path::new(&rel);
         st.files.push(CloudFile {
@@ -7434,10 +7583,10 @@ impl Recorder {
             path: cp,
             name: p.file_stem().unwrap_or_default().to_string_lossy().into(),
             folder: p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default(),
-            size, modified: made, local: true,
+            size: fsize, modified: made, local: true,
         });
         self.save_cloud_state(&st);
-        Ok(())
+        Ok(None)
     }
 
     /// Download a cloud clip into the clips folder (same sub-folder). Returns the local path.
@@ -7447,6 +7596,7 @@ impl Recorder {
     }
 
     pub fn cloud_download(&self, rel: &str) -> Result<String, String> {
+        self.cloud_touch(rel);
         let out = self.clips_dir().join(rel);
         if let Some(d) = out.parent() {
             fs::create_dir_all(d).map_err(err)?;
@@ -7559,8 +7709,14 @@ impl Recorder {
         let size = fs::metadata(path).map_err(err)?.len();
         let j = rclone_out(&["lsjson", &remote(&self.cpath(&rel))]).map_err(|_| "This clip isn't in the cloud yet - upload it first".to_string())?;
         let v: Vec<serde_json::Value> = serde_json::from_str(&j).unwrap_or_default();
-        if v.first().and_then(|f| f["Size"].as_u64()) != Some(size) {
+        // cloud-savings: Echo Cloud may hold the smaller copy Echo made of exactly this file
+        let cloud_size = v.first().and_then(|f| f["Size"].as_u64());
+        if !cloud_size.map_or(false, |c| self.same_clip(&self.cloud_state(), &rel, c, size)) {
             return Err("The cloud copy isn't complete yet - upload it first".into());
+        }
+        // uploaded only for a share link: Echo Cloud must keep it now (it's the only copy left)
+        if self.cloud_state().share_only.contains(&rel) {
+            self.ec_keep(std::slice::from_ref(&rel)).map_err(|e| format!("Couldn't reach Echo Cloud to keep this clip - try again ({e})"))?;
         }
         fs::remove_file(path).map_err(err)?;
         self.remove_if_empty(Path::new(path).parent());
@@ -7596,6 +7752,9 @@ impl Recorder {
         let mut st = self.cloud_state();
         st.files.retain(|f| f.rel != rel);
         st.keep_remote.remove(rel);
+        st.share_only.remove(rel);
+        st.smaller.remove(rel);
+        st.dups.retain(|k, v| k != rel && v != rel);
         // still on this PC: the background sync must not upload it straight back
         if self.clips_dir().join(rel).exists() { st.no_upload.insert(rel.to_string()); }
         self.save_cloud_state(&st);
@@ -7623,6 +7782,7 @@ impl Recorder {
         };
         let v: Vec<serde_json::Value> = serde_json::from_str(&j).map_err(err)?;
         let root = self.clips_dir();
+        let st0 = self.cloud_state();
         let mut files: Vec<EcFile> = v.iter().filter_map(|f| {
             let path = f["Path"].as_str()?.to_string();
             let copy = path.split('/').any(|p| p.starts_with('.'));
@@ -7633,7 +7793,7 @@ impl Recorder {
             Some(EcFile {
                 name: p.file_stem()?.to_string_lossy().to_string(),
                 folder: if copy { String::new() } else { p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default() },
-                local: !copy && fs::metadata(root.join(&rel)).map_or(false, |m| m.len() == size),
+                local: !copy && fs::metadata(root.join(&rel)).map_or(false, |m| self.same_clip(&st0, &rel, size, m.len())),
                 size, modified, copy, rel, path,
             })
         }).collect();
@@ -7729,11 +7889,22 @@ impl Recorder {
         // the exact object the link plays (a share copy keeps its old name when the clip is renamed later)
         if let Some(e) = self.links().get(rel) { if !e.key.is_empty() && !paths.contains(&e.key) { paths.push(e.key.clone()); } }
         let mut removed = 0;
+        let mut upload_gone = false;
         for p in paths {
             let j = ec_call(&ec_api(&cfg), "POST", "/share/remove", &cfg.ec_token, Some(serde_json::json!({ "path": p })))?;
             removed += j["removed"].as_u64().unwrap_or(0);
+            upload_gone |= j["upload_deleted"].as_bool().unwrap_or(false);
         }
         self.forget_link(rel);
+        // cloud-savings: the clip was uploaded only for this link - the server deleted it with the link
+        if upload_gone {
+            let mut st = self.cloud_state();
+            st.files.retain(|f| f.rel != rel);
+            st.share_only.remove(rel);
+            st.smaller.remove(rel);
+            self.save_cloud_state(&st);
+            log_line(&format!("cloud: {rel} was uploaded only for its link - removed from Echo Cloud with it"));
+        }
         log_line(&format!("cloud: stopped sharing {rel} ({removed} link(s))"));
         if removed == 0 { return Err("This clip had no share link".into()); }
         Ok(())
@@ -7761,8 +7932,12 @@ impl Recorder {
         if let Some(rel) = self.rel_of(path) {
             let mut st = self.cloud_state();
             if st.files.iter().any(|f| f.rel == rel) {
-                st.keep_remote.insert(rel);
+                let so = st.share_only.contains(&rel);
+                st.keep_remote.insert(rel.clone());
                 self.save_cloud_state(&st);
+                // cloud-savings: uploaded only for a share link, and now its only copy - Echo Cloud must keep it
+                // (if this fails, the next sync tries again: it keeps share-link uploads that aren't on this PC)
+                if so { if let Err(e) = self.ec_keep(std::slice::from_ref(&rel)) { log_line(&format!("echo cloud: couldn't keep {rel} yet: {e}")); } }
             }
         }
     }
@@ -7792,6 +7967,11 @@ impl Recorder {
             f.rel = new_rel.clone();
             f.path = new_p.clone();
         }
+        // cloud-savings marks follow the clip (the server moves its own with /move)
+        if st.share_only.remove(&old_rel) { st.share_only.insert(new_rel.clone()); }
+        if let Some(v) = st.smaller.remove(&old_rel) { st.smaller.insert(new_rel.clone(), v); }
+        if let Some(v) = st.dups.remove(&old_rel) { st.dups.insert(new_rel.clone(), v); }
+        for v in st.dups.values_mut().filter(|v| **v == old_rel) { *v = new_rel.clone(); }
         self.save_cloud_state(&st);
         let cfg = self.settings();
         let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
@@ -8274,13 +8454,29 @@ impl Recorder {
         // 1) uploads
         if cfg.cloud_upload != "off" {
             let favs = self.favorites();
-            let no_up = self.cloud_state().no_upload;
+            let st0 = self.cloud_state();
+            let no_up = st0.no_upload.clone();
             // "game": like "all", but only once the game is closed (no upload traffic while playing)
             let game_running = self.last_game.lock().unwrap().as_ref().map_or(false, |(_, t)| t.elapsed().as_secs() < 15);
             let every = cfg.cloud_upload == "all" || (cfg.cloud_upload == "game" && !game_running);
-            let todo: Vec<ClipInfo> = self.list_clips().into_iter().filter(|c| {
-                let rel = if c.folder.is_empty() { format!("{}.mp4", c.name) } else { format!("{}/{}.mp4", c.folder, c.name) };
+            let rel_of = |c: &ClipInfo| if c.folder.is_empty() { format!("{}.mp4", c.name) } else { format!("{}/{}.mp4", c.folder, c.name) };
+            // cloud-savings: a clip uploaded only for a share link that now counts as backed up (favourite / auto
+            // upload): Echo Cloud keeps it when the link expires
+            let clips = self.list_clips();
+            let keep: Vec<String> = clips.iter().map(|c| (rel_of(c), c)).filter(|(rel, c)| {
+                st0.share_only.contains(rel) && in_cloud.contains(rel) && (favs.contains(&c.name) || (every && c.modified >= cfg.cloud_since))
+            }).map(|(rel, _)| rel).collect();
+            // ... and one whose PC copy was deleted (it's the only copy now; the native library writes keep_remote itself)
+            let root = self.clips_dir();
+            let mut keep = keep;
+            let extra: Vec<String> = st0.share_only.iter().filter(|r| in_cloud.contains(*r) && !root.join(r).exists() && !keep.contains(*r)).cloned().collect();
+            keep.extend(extra);
+            if let Err(e) = self.ec_keep(&keep) { log_line(&format!("echo cloud: couldn't keep share-link uploads: {e}")); }
+            let todo: Vec<ClipInfo> = clips.into_iter().filter(|c| {
+                let rel = rel_of(c);
                 !in_cloud.contains(&rel) && (favs.contains(&c.name) || (every && c.modified >= cfg.cloud_since))
+                    // the same clip twice on this PC: Echo Cloud has it once, as the other name
+                    && !st0.dups.get(&rel).map_or(false, |o| in_cloud.contains(o))
                     && !UP_SKIPPED.lock().unwrap().contains(&rel) // cancelled by hand: not again on its own
                     && !no_up.contains(&rel) // its cloud copy was deleted on purpose (cloud space manager)
                     && now_unix().saturating_sub(c.modified) > 20 // not still being written
@@ -8288,9 +8484,14 @@ impl Recorder {
             for (i, c) in todo.iter().enumerate() {
                 self.set_busy(&format!("Uploading {} of {}…", i + 1, todo.len()));
                 { let mut p = UP_PROGRESS.lock().unwrap(); p.idx = i as u32 + 1; p.count = todo.len() as u32; }
-                if self.cloud_upload(&c.path).is_err() {
-                    let mut p = UP_PROGRESS.lock().unwrap(); p.idx = 0; p.count = 0;
-                    break;
+                match self.upload_inner(&c.path, false, false) {
+                    Ok(None) => {}
+                    // the same clip is already in Echo Cloud under its other name: skip this one, go on with the rest
+                    Ok(Some(_)) => continue,
+                    Err(_) => {
+                        let mut p = UP_PROGRESS.lock().unwrap(); p.idx = 0; p.count = 0;
+                        break;
+                    }
                 }
                 if cfg.cloud_free_after && self.cloud_remove_local(&c.path).is_ok() {
                     changed = true;
@@ -8511,6 +8712,11 @@ fn drop_repeats(words: &mut Vec<Word>) {
 /// import's ffmpeg, killable by "Cancel" (Recorder::import_cancel); false right away once cancelled
 static IMPORT_CANCEL: AtomicBool = AtomicBool::new(false);
 static IMPORT_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+/// Recorder::import_stage: 0 none, 1 checking, 2 converting, 3 copying
+static IMPORT_STAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const STAGE_CHECK: u8 = 1;
+const STAGE_CONVERT: u8 = 2;
+const STAGE_COPY: u8 = 3;
 fn run_import_ffmpeg(c: &mut Command, on_time: &dyn Fn(f64)) -> bool {
     if IMPORT_CANCEL.load(Ordering::Relaxed) { return false; }
     let Ok(mut child) = c.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
@@ -8727,4 +8933,27 @@ fn merge_sample(b: &mut Vec<u8>) -> (u32, u32) {
     if out.len() != b.len() { return (0, merged + left); }   // never change a sample's length
     *b = out;
     (merged, left)
+}
+
+#[cfg(test)]
+mod import_probe_tests {
+    use super::*;
+
+    #[test]
+    fn one_probe_reads_video_audio_range_and_length() {
+        // a Discord clip (9 audio tracks) as ffprobe -of flat prints it; codec_type may come after codec_name
+        let flat = "streams.stream.0.codec_name=\"h264\"\nstreams.stream.0.codec_type=\"video\"\nstreams.stream.0.pix_fmt=\"yuv420p\"\n\
+                    streams.stream.0.color_range=\"tv\"\nstreams.stream.1.codec_name=\"aac\"\nstreams.stream.1.codec_type=\"audio\"\n\
+                    streams.stream.2.codec_name=\"opus\"\nstreams.stream.2.codec_type=\"audio\"\nformat.duration=\"29.880667\"\n";
+        let p = parse_import_probe(flat);
+        assert_eq!(p, ImportProbe { vc: "h264".into(), ac: "aac".into(), pix_fmt: "yuv420p".into(), range: "tv".into(), dur: 29.880667 });
+        // audio first, full range, no length
+        let flat = "streams.stream.0.codec_type=\"audio\"\nstreams.stream.0.codec_name=\"mp3\"\nstreams.stream.1.codec_type=\"video\"\n\
+                    streams.stream.1.codec_name=\"hevc\"\nstreams.stream.1.pix_fmt=\"yuvj420p\"\nstreams.stream.1.color_range=\"pc\"\nformat.duration=\"N/A\"\n";
+        let p = parse_import_probe(flat);
+        assert_eq!((p.vc.as_str(), p.ac.as_str(), p.pix_fmt.as_str(), p.range.as_str(), p.dur), ("hevc", "mp3", "yuvj420p", "pc", 0.0));
+        // no video: vc empty (import_one says "no video stream")
+        assert_eq!(parse_import_probe("streams.stream.0.codec_type=\"audio\"\nstreams.stream.0.codec_name=\"aac\"\n").vc, "");
+        assert_eq!(parse_import_probe(""), ImportProbe::default());
+    }
 }

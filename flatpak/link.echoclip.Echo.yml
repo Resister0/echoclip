@@ -8,9 +8,13 @@
 # For the Flathub submission the "echo" module's `type: dir` source is swapped for the public repo
 # (type: git, url https://github.com/Resister0/echoclip.git, tag + commit) - see README.md.
 
+#
+# 10 Nov 2026 (2.0.0): Echo is the native app now (prototype-native: Slint + mpv, Echo's recorder via echo-core),
+# not the Tauri/WebKit one. The video player library (libmpv + libplacebo) is built below from our own ffmpeg.
+
 id: link.echoclip.Echo
 runtime: org.gnome.Platform
-runtime-version: '50'          # WebKitGTK 4.1 (2.54) + libsoup3 ship in GNOME 50; check before moving to 51
+runtime-version: '50'          # (the old Tauri app needed GNOME's WebKitGTK; the native app only needs the freedesktop base)
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -26,8 +30,8 @@ finish-args:
   - --filesystem=xdg-videos         # clips: ~/Videos/EchoClips (and other clipping apps' folders to import)
   - --filesystem=xdg-run/pipewire-0 # screen capture stream from the ScreenCast portal (gpu-screen-recorder -w portal)
   - --talk-name=org.freedesktop.secrets            # cloud logins in the keyring (KWallet / GNOME Keyring)
-  - --talk-name=org.kde.StatusNotifierWatcher      # tray icon
-  - --filesystem=xdg-run/tray-icon:create         # the tray icon picture (Tauri writes it there for the tray to read)
+  - --talk-name=org.kde.StatusNotifierWatcher      # tray icon (native app: ksni, no well-known D-Bus name in the sandbox)
+  - --filesystem=xdg-run/tray-icon:create         # the tray icon picture (the old Tauri app wrote it there; kept for now)
   - --talk-name=org.freedesktop.Notifications      # "Clip saved" popups (notify-send)
   - --talk-name=org.freedesktop.ScreenSaver        # idle time (pause recording when away)
   - --talk-name=org.freedesktop.FileManager1       # "Show in folder"
@@ -50,8 +54,8 @@ cleanup:
   - /share/gtk-doc
 
 modules:
-  # ---- tray icon (Tauri loads libayatana-appindicator at runtime; not in the GNOME runtime) ----
-  - libayatana-appindicator3-0.1.yml
+  # (the old Tauri app's tray library libayatana-appindicator3-0.1.yml isn't needed: the native app's tray talks D-Bus
+  #  itself - ksni)
 
   # ---- clipboard: "Copy" puts the clip file on the clipboard (wl-copy --type text/uri-list) ----
   - name: wl-clipboard
@@ -214,16 +218,19 @@ modules:
   - name: ffmpeg
     buildsystem: simple
     build-commands:
+      # shared libraries since 2.0.0 (10 Nov 2026): libmpv (below) plays clips with this same ffmpeg. Modules built
+      # after this one see its libraries in /app/lib on purpose (gpu-screen-recorder brings its own and is built first).
       - ./configure --prefix=/app --enable-gpl --enable-version3 --disable-debug --disable-doc --disable-ffplay
-        --enable-static --disable-shared --enable-pic
+        --disable-static --enable-shared --enable-pic
         --enable-libx264 --enable-libmp3lame --enable-libass --enable-libfreetype --enable-libharfbuzz
         --enable-libfontconfig --enable-libfribidi --enable-libdrm --enable-vaapi
         --enable-libdav1d
         $FFMPEG_NV
       - make -j$FLATPAK_BUILDER_N_JOBS
       # libdav1d (from the runtime): AV1 decoding - thumbnails/strips of AV1 clips + the AV1 encoder test (chat 30)
-      # only the two programs - its libraries in /app/lib would be picked up by other builds
-      - install -Dm755 -t /app/bin ffmpeg ffprobe
+      - make install
+    cleanup:
+      - /share/ffmpeg
     build-options:
       arch:
         x86_64:
@@ -233,6 +240,46 @@ modules:
       - type: archive
         url: https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz
         sha256: 7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
+
+  # ---- libmpv: the native app's video player (dlopens libmpv.so.2; draws through OpenGL into Slint's window).
+  # mpv 0.42 needs libplacebo >= 7.387 (not in the runtime). Player only: no mpv program, no Lua/JS scripting,
+  # no discs / Vulkan. (10 Nov 2026, not built yet ⚠) ----
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dvulkan=disabled          # mpv draws through OpenGL here (vo=libmpv)
+      - -Dglslang=disabled
+      - -Dshaderc=disabled
+      - -Dd3d11=disabled
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      - type: git                  # with its 3rdparty submodules (glad, jinja, markupsafe, fast_float)
+        url: https://github.com/haasn/libplacebo.git
+        tag: v7.387.0
+        commit: 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dvulkan=disabled
+      - -Dmanpage-build=disabled
+      - -Dlibarchive=disabled
+      - -Dlibbluray=disabled
+      - -Ddvdnav=disabled
+      - -Dcdda=disabled
+      - -Dlibcurl=disabled
+    cleanup:
+      - /share
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.42.0
+        commit: b0841e8c4d156b8403dc1876c4cbd9011eb583f3
 
   # ---- rclone (cloud: Echo Cloud, Google Drive, Filen, MEGA...) - upstream release binary ----
   - name: rclone
@@ -269,7 +316,8 @@ modules:
         tag: v1.9.5
         commit: d1be6fde11ac6e0407606b4e42fe72d34add8037
 
-  # ---- Echo itself (Rust + Tauri; the UI is plain ui/index.html, no npm step) ----
+  # ---- Echo itself: the native app (Rust: Slint + mpv; Echo's recorder = echo-core, which compiles src-tauri/src) ----
+  # cargo-sources.json = every crate in prototype-native/Cargo.lock (flatpak/update-cargo-sources.sh after it changes)
   - name: echo
     buildsystem: simple
     build-options:
@@ -279,13 +327,11 @@ modules:
         CARGO_NET_OFFLINE: 'true'
         ECHO_VERSION: 0.1.0       # set to the release (1.0.N) for Flathub builds; 0.1.0 = hand-made build
     build-commands:
-      - sed -i -E 's/("version":[[:space:]]*)"0\.1\.0"/\1"'"$ECHO_VERSION"'"/' src-tauri/tauri.conf.json
-      # window id (Wayland app_id) = the Flatpak id, so the taskbar / dock finds the icon and desktop file
-      - sed -i -E 's/("identifier":[[:space:]]*)"dk\.volkan\.clipper"/\1"link.echoclip.Echo"/' src-tauri/tauri.conf.json
-      - cd src-tauri && cargo --offline build --release
-      - install -Dm755 src-tauri/target/release/echo /app/bin/echo-clips
-      # the tray library is loaded at runtime - fail the build here instead of shipping an Echo that panics at start
-      - test -e /app/lib/libayatana-appindicator3.so.1
+      # ECHO_VERSION (above) is compiled into the app (prototype-native/src/lib_set.rs app_version())
+      - cd prototype-native && cargo --offline build --release
+      - install -Dm755 prototype-native/target/release/echo-native-proto /app/bin/echo-clips
+      # the player library is loaded at runtime - fail the build here instead of shipping an Echo that can't play clips
+      - test -e /app/lib/libmpv.so.2
       - install -Dm644 flatpak/link.echoclip.Echo.desktop /app/share/applications/link.echoclip.Echo.desktop
       - install -Dm644 flatpak/link.echoclip.Echo.metainfo.xml /app/share/metainfo/link.echoclip.Echo.metainfo.xml
       - install -Dm644 flatpak/link.echoclip.Echo.png /app/share/icons/hicolor/256x256/apps/link.echoclip.Echo.png
@@ -299,6 +345,12 @@ modules:
           - repo
           - src-tauri/target
           - src-tauri/gen
+          - prototype-native/target
+          - prototype-native/EchoProto
+          - prototype-native/EchoProto.exe
+          - prototype-native/libmpv-2.dll
+          - prototype-native/proto.log
+          - prototype-native/osd-debug.log
           - Echo
           - Claude outputs
           - cloud

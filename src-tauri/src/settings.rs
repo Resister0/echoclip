@@ -151,6 +151,9 @@ pub struct Settings {
     pub mix_music: bool,
     /// mic only sends one channel: copy it to both ears
     pub mic_mono: bool,
+    /// Echo Cloud gets the clip as it is (no smaller copy) - cloud-savings, 10 Nov 2026; off by default, meant to become
+    /// a paid-plan perk. The user's own clouds always get the original.
+    pub cloud_original: bool,
     /// cloud: delete the PC copy after an automatic upload
     pub cloud_free_after: bool,
     /// cloud share links expire after this many days (0 = never)
@@ -298,6 +301,7 @@ impl Default for Settings {
             mix_browser: false,
             mix_music: false,
             mic_mono: false,
+            cloud_original: false,
             cloud_free_after: false,
             link_days: 0,
             cloud_target: String::new(),

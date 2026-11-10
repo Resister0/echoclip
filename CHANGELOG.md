@@ -3,8 +3,25 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
-## Next release
-- The library uses less memory when you have lots of clips (pictures far off-screen are let go and come back before you scroll to them)
+## 2.0.0 - 10 Nov - Echo 2.0: rebuilt as a native app
+- Echo is now a native app on Windows and Linux, with a new, smoother video player (mpv, GPU playback)
+- About 150 MB of memory in the background and half the CPU while recording (0.6 % of the PC instead of 1.2 %)
+- The window stays responsive while deleting, moving, copying and uploading; the library uses less memory with lots of clips
+- Clips play when you hover them (now on Linux too), with sharper clip pictures
+- Cut parts out in the player (Shift+drag, X); Save copy and Edit keep the cuts. Mouse Back / Forward buttons work
+- New Home with your week at a glance and a compact status card (hover it for your storage)
+- Drag and drop videos onto the window to import them; faster imports
+- Echo's own right-click menu on clips; Make smaller / Convert to AV1 run as a queue with Cancel
+- Sub-folders by dragging folders onto each other; Screenshots page with Copy, select and search
+- The header is the window's title bar; click a hotkey there to change it, pick the clip length from a dropdown
+- Editor: captions list with editable times, transitions, play backwards, Discord export copied for pasting
+- Echo Cloud: smaller uploads (60-80 % smaller, up to 1080p; "Original quality in Echo Cloud" to keep the original), no duplicate uploads, share-only uploads go away with their link, cloud-only clips download when needed
+- Smarter Tidy up ("Saved twice" keeps the newest clip, new "Edit and original" / "In the cloud too") and "Free up space" chips in Manage space
+- Crimson theme, RGB mode, mic test in the welcome setup, plans for paid Echo Cloud users
+- Optional anonymous performance numbers (Settings > App Settings > About; no ID, kept 180 days)
+- Signed installer; the portable download is a zip; updates retry every 15 min when offline and show in the tray
+- Linux runs the same native app (AppImage, tar.gz, Flatpak); the tar.gz needs your distro's mpv library
+- Known: on Linux Wayland dragging files onto the window doesn't import yet, and Linux game folders show a letter instead of the game's icon
 
 ## 1.0.70 - 7 Nov
 - AV1 clips play in the Linux AppImage

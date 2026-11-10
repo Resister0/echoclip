@@ -1,0 +1,6 @@
+// Port leftovers L2 (10 Nov): after a rename box, overlay, dropdown or dialog closes, the keys must go back where they
+// belong - Echo's key handlers were on the document, so they never got lost. Slint drops every key while the focus is on
+// a hidden or destroyed item. Rust (src/focus.rs) picks the place: dialog, tour, editor, Tidy, player, Settings, library.
+export global Focus {
+    callback back();
+}

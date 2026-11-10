@@ -23,6 +23,10 @@ if old_path:
     except OSError:
         pass
 
+# 9 Nov 2026: 2.0.72 was an internal test build before the real 2.0.0 (numbering restarted at 2.0.0) - sorted by
+# version it would stay on top as the "newest" release
+rel.pop("2.0.72", None)
+
 text = " ".join(text.split())
 # "#..." = internal build (hidden in Echo's What's new too)
 if not text or text.startswith("#"):

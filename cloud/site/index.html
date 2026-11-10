@@ -46,20 +46,21 @@
       </a>
     </div>
     <p class="dl-note"><b class="noads">Free · no ads · no account</b> · Windows 10/11 and Linux (AppImage or Flatpak) ·
-      also <a href="/download/windows-portable">Echo.exe without installing</a> or the <a href="/download/linux-tar">plain Linux build</a></p>
+      also <a href="/download/windows-portable">a zip without installing</a> or the <a href="/download/linux-tar">plain Linux build</a></p>
 
     <div class="stats">
-      <div><b>~250 MB</b><small>Memory while recording, encoder included</small></div>
-      <div><b>Rust</b><small>Fast, native core</small></div>
+      <div><b>153 MB</b><small>Memory while recording in the background, encoder included</small></div>
+      <div><b>Rust + Slint</b><small>Native UI on Windows: opens and scrolls instantly</small></div>
       <div><b>0</b><small>Electron or bundled Chromium</small></div>
       <div><b>2</b><small>Systems: Windows &amp; Linux</small></div>
     </div>
+    <a class="vsmedal" href="#vs-medal"><b>50% less CPU than Medal</b> while recording, and 70% less memory <span aria-hidden="true">&rarr;</span></a>
 
     <div class="viewsw" role="tablist" aria-label="How to show the app">
       <button type="button" role="tab" aria-selected="true" data-view="demo">Try it here</button>
       <button type="button" role="tab" aria-selected="false" data-view="shot">Real screenshot</button>
     </div>
-    <img class="realshot" src="/screenshots/library.png" width="1920" height="1021" loading="lazy" hidden
+    <img class="realshot" src="/screenshots/library.png?v=2" width="1920" height="1043" loading="lazy" hidden
       alt="The real Echo app on Linux: the clip library with game folders, filters and the recording status">
     <div class="app" aria-label="Preview of the Echo app - try the buttons">
       <aside class="arail">
@@ -163,11 +164,11 @@
   <div class="wrap">
     <p class="eyebrow">Light by design</p>
     <h2>Built to stay out of your game's way</h2>
-    <p class="sub">A clipping app runs the whole time you play, so it should be small. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays your clips with mpv - no web view and no bundled browser at all.</p>
+    <p class="sub">A clipping app runs the whole time you play, so it should be small. Echo 2.0 is a native Rust app: on Windows its interface is built with Slint, a light native UI toolkit, so it opens instantly and stays snappy, and your clips play with mpv - no web view and no bundled browser at all.</p>
     <div class="compare">
       <div class="card us"><h3>Echo</h3>
         <ul>
-          <li>Native Rust app on Windows - no web view, no bundled browser</li>
+          <li>Native Rust + Slint app on Windows - snappy, no web view, no bundled browser</li>
           <li>Clips play hardware-decoded with mpv; FFmpeg comes alongside for video</li>
           <li>Records with your graphics card's encoder (NVIDIA or AMD)</li>
           <li>No account, ads or overlay needed to save a clip</li>
@@ -180,11 +181,11 @@
           <li>Usually Windows only</li>
         </ul></div>
     </div>
-    <div class="card measure">
+    <div class="card measure" id="vs-medal">
       <h3>Measured: Echo vs Medal, both recording</h3>
       <table>
         <tr><th></th><th>Memory</th><th>CPU</th></tr>
-        <tr class="us"><td>Echo 2.0</td><td><b>252 MB</b></td><td>1.2 %</td></tr>
+        <tr class="us"><td>Echo 2.0</td><td><b>153 MB</b></td><td><b>0.6 %</b></td></tr>
         <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
       </table>
       <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
@@ -256,7 +257,7 @@
       <h3>Measured: Echo vs Medal, both recording</h3>
       <table>
         <tr><th></th><th>Memory</th><th>CPU</th></tr>
-        <tr class="us"><td>Echo 2.0</td><td><b>252 MB</b></td><td>1.2 %</td></tr>
+        <tr class="us"><td>Echo 2.0</td><td><b>153 MB</b></td><td><b>0.6 %</b></td></tr>
         <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
       </table>
       <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>

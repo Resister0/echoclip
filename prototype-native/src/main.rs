@@ -12,14 +12,20 @@ mod editor;
 mod edui;
 mod library;
 mod lib_cards;
+mod lib_del; // gaps-library row 42: Echo's delete dialogs + progress
+mod lib_prefs; // gaps-library rows 20 + 44: remembered sort / view / filters, "Longest" probes lengths
+mod lib_merge; // gaps-library row 29: folder right-click "Merge into …"
+mod drop; // gaps-library row 1: drag and drop files onto the window (import / editor)
 mod lib_shots;
 mod lib_import;
 mod tidy;
+mod cleanup; // session cleanup: more Tidy up / Echo Cloud space categories
 mod lib_pick;
 mod lib_sound;
 mod lib_net;
 mod lib_set;
 mod cloud;
+mod cloud_live; // gaps-cloud: cloud player overlay, background upload progress, space warnings
 mod setup;
 mod lib_color;
 mod lib_fx; // Chat B (night): Settings > Appearance > Background effect
@@ -32,23 +38,30 @@ mod pl_sticker;
 mod pl_actions;
 mod pl_cuts; // William (9 Nov): cut out parts on the player's strip (Shift+drag, X)
 mod perf; // William (9 Nov): memory / CPU averages for the admin panel (sent with the update check)
+mod specs; // r2-perf (10 Nov): the PC's hardware model names + recording settings, sent with those numbers
 mod hover_vid; // William (9 Nov): card hover preview = the real clip (was a flipbook)
 mod discord; // William (9 Nov): Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
 mod idle; // William (9 Nov): efficiency mode for the UI side while hidden in the tray
+mod focus; // port leftovers L2: keys go back after a rename / overlay / dialog closes
+mod hdr_home; // gaps (10 Nov): header chips (KDE keys), "On this day" + milestones, Record button, error toasts -> log
 
 thread_local! {
     /// Echo's window is the one in front (winit Focused) - hover previews only then
     static WIN_FOCUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 mod copy;
+mod bgwork; // r2-threads: PORT_LEFTOVERS L3-L55, blocking work moved off the UI thread
 // Chat A: Echo's real recorder (echo-core), in-game popup, tray
 mod rec_core;
 mod titlebar;
 mod pl_zoom;
 mod popup;
 mod tray;
+#[cfg(target_os = "linux")]
+mod linux; // gaps-linux: ffmpeg lookup, Trash fallback, DnD tip, Flatpak first start, menu entry, pickers
 mod settings;
 mod sheets;
+mod over; // r2-layout: menus over the video (L1), clicks that close a menu and go on (L39)
 #[cfg(windows)]
 mod winvideo;
 
@@ -409,14 +422,16 @@ extern "C" fn on_mpv_update(ctx: *mut c_void) {
 fn hotkey_pills(settings: Option<&serde_json::Value>) -> Vec<HotkeyPill> {
     let mut pills = vec![];
     if let Some(hk) = settings.and_then(|s| s.get("hotkeys")).and_then(|v| v.as_array()) {
-        for h in hk {
+        for (i, h) in hk.iter().enumerate() {
             let keys = h.get("keys").and_then(|k| k.as_str()).unwrap_or("");
             let secs = h.get("seconds").and_then(|k| k.as_u64()).unwrap_or(0);
             if keys.is_empty() {
                 continue;
             }
-            let parts: Vec<SharedString> = settings::key_parts(keys).into_iter().map(SharedString::from).collect();
-            pills.push(HotkeyPill { keys: ModelRc::new(VecModel::from(parts)), label: library::fmt_len(secs).into() });
+            // gaps (10 Nov): Linux with KDE's portal shows the key KDE really uses (hdr_home.rs)
+            let kde = hdr_home::kde_show(keys);
+            let parts: Vec<SharedString> = kde.clone().unwrap_or_else(|| settings::key_parts(keys)).into_iter().map(SharedString::from).collect();
+            pills.push(HotkeyPill { keys: ModelRc::new(VecModel::from(parts)), label: library::fmt_len(secs).into(), idx: i as i32, secs: secs as i32, kde: kde.is_some() });
         }
     }
     pills
@@ -444,10 +459,11 @@ fn apply_theme(a: &AppWindow, st: &settings::Store) {
 }
 
 fn open_url(u: &str) {
+    // r2-threads (L27): CREATE_NO_WINDOW - cmd's console no longer flashes up
     #[cfg(windows)]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", u]).spawn();
+    let _ = std::os::windows::process::CommandExt::creation_flags(std::process::Command::new("cmd").args(["/C", "start", "", u]), 0x0800_0000).spawn();
     #[cfg(not(windows))]
-    let _ = std::process::Command::new("xdg-open").arg(u).spawn();
+    let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(u)); // r2-threads (L52): reaped
 }
 
 // ---------- Echo's #notes: messages + progress boxes in ONE stack (theme.slint ToastLayer) ----------
@@ -503,6 +519,7 @@ fn note_out(id: i32) {
 /// Echo's toast(): a message; the same text again only restarts its timer; at most 3 messages at once
 fn toast(_a: &AppWindow, s: impl Into<SharedString>) {
     let s: SharedString = s.into();
+    hdr_home::log_toast(&s); // gaps (10 Nov): errors go into Echo's log too
     let ms = (s.chars().count() as u64 * 55).clamp(2600, 7000);
     let (id, gen) = NOTES.with(|n| {
         let mut n = n.borrow_mut();
@@ -601,7 +618,7 @@ thread_local! {
 const GS_STEPS: [(&str, &str, &str, &str); 5] = [
     ("clip", "save your first clip", "press your clip hotkey in a game", ""),
     ("edit", "trim or edit a clip", "cut it down to the good part", "Open the editor"),
-    ("account", "create your free Echo Profile", "profile page, link views, 10 GB backup", "Create profile"),
+    ("account", "create a free Echo account", "profile page, link views, 10 GB backup", "Create account"),
     ("share", "share a clip", "copy one into Discord or make a link", "Copy for Discord"),
     ("backup", "back up your clips", "to Echo Cloud or your own storage", "Set up"),
 ];
@@ -614,7 +631,7 @@ fn gs_next(lib: &library::LibModel) -> (Vec<bool>, Option<usize>) {
     // William: the line kept coming back - "share" was hard-coded false and Skip / Hide weren't saved. Now like
     // Echo: share = any share link or Copy used once; skips + hide kept per PC in native_ui.json
     // Echo's shared_clips (shared.json + links that still work) - the same set as Echo's Home step
-    let shared = rec_core::rec().is_some_and(|r| !r.shared_clips().is_empty()) || lib_fx::ui_get("gs_copied").as_bool().unwrap_or(false);
+    let shared = bgwork::shared_any(&lib.root()) || lib_fx::ui_get("gs_copied").as_bool().unwrap_or(false); // r2-threads (L29)
     let real = [!all.is_empty(), all.iter().any(|c| c.edited), signed, shared, cloud];
     GS.with(|g| {
         let mut g = g.borrow_mut();
@@ -641,7 +658,6 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
     let h = a.global::<HomeState>();
     h.set_extra(lib.home_extra());
     let (week, total, bytes, games, bars) = lib.home_stats();
-    h.set_week(week.to_string().into());
     h.set_total(total.to_string().into());
     h.set_size(library::fmt_size(bytes).into());
     h.set_games(games.to_string().into());
@@ -649,6 +665,27 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
     h.set_bars_max(bars.iter().copied().max().unwrap_or(1).max(1) as i32);
     h.set_spark(bars.iter().filter(|&&n| n > 0).count() >= 3);
     h.set_bars(ModelRc::new(VecModel::from(bars.iter().map(|&n| n as i32).collect::<Vec<_>>())));
+    // William (10 Nov): Home's first number box - clips per calendar day, last 7 days (today last) + day letters;
+    // "clips this week" = the same 7 days, so the number and the bars always agree
+    {
+        use chrono::{Datelike, Local};
+        let today = Local::now().date_naive();
+        let mut days = [0i32; 7];
+        for c in lib.all().iter() {
+            let t: chrono::DateTime<Local> = c.mtime.into();
+            let back = (today - t.date_naive()).num_days();
+            if (0..7).contains(&back) {
+                days[6 - back as usize] += 1;
+            }
+        }
+        const L: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
+        let letters: Vec<SharedString> = (0..7i64).map(|i| L[(today - chrono::Duration::days(6 - i)).weekday().num_days_from_monday() as usize].into()).collect();
+        h.set_week(days.iter().sum::<i32>().to_string().into());
+        h.set_days_max(days.iter().copied().max().unwrap_or(1).max(1));
+        h.set_days(ModelRc::new(VecModel::from(days.to_vec())));
+        h.set_day_l(ModelRc::new(VecModel::from(letters)));
+    }
+    let _ = week;
     let (done, next) = gs_next(lib);
     h.set_gs_done(ModelRc::new(VecModel::from(done)));
     h.set_gs_on(next.is_some());
@@ -662,6 +699,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
         .and_then(|s| s.get("hotkeys").and_then(|v| v.get(0)).and_then(|v| v.get("keys")).and_then(|k| k.as_str()).map(String::from))
         .filter(|k| !k.is_empty());
     h.set_empty_key(key.map(|k| settings::key_parts(&k).join("+")).unwrap_or_else(|| "your clip hotkey".into()).into());
+    hdr_home::charm(a, lib); // gaps (10 Nov): milestones + "On this day" follow the list
     // the latest clip: "1 hour ago · 58.8 MB · FiveM" + its picture
     let Some(idx) = lib.index_at(library::HOME_BASE) else { return };
     let c = lib.clip(idx);
@@ -764,65 +802,11 @@ fn confirm_box(a: &AppWindow, title: &str, msg: &str, yes: &str, done: impl FnOn
     });
 }
 
-/// Delete clips (Chat B: real now - Recycle Bin / Trash). Echo's confirm; clips in the cloud ask
-/// "Only from this PC / Everywhere" (Everywhere needs Echo's cloud code - not in the prototype yet).
+/// Delete clips (Chat B: real now - Recycle Bin / Trash). gaps-library row 42: Echo's dialogs (hidden-clips line,
+/// choice order, Enter does nothing on the choice, progress box) are in lib_del.rs.
 fn delete_clips_ui(a: &AppWindow, ids: Vec<usize>) {
     let Some(lib) = LIB.with(|l| l.borrow().clone()) else { return };
-    let ids: Vec<usize> = ids.into_iter().filter(|&i| i < lib.len() && !lib.clip(i).gone.get()).collect();
-    if ids.is_empty() {
-        return;
-    }
-    let n = ids.len();
-    let what = if n == 1 { format!("\"{}\"", lib.clip(ids[0]).shown) } else { format!("{n} clips") };
-    let title = if n == 1 { "Delete clip?".to_string() } else { format!("Delete {n} clips?") };
-    let bin = if cfg!(windows) { "Recycle Bin" } else { "Trash" };
-    // Chat B: only cloud-only clips picked = they go from the cloud (one question)
-    if ids.iter().all(|&i| lib.clip(i).cloud.is_some()) {
-        cloud::delete_cloud_only(a, ids);
-        return;
-    }
-    let ids2 = ids.clone();
-    let cloud = ids.iter().filter(|&&i| lib.in_cloud(i) || lib.clip(i).cloud.is_some()).count();
-    let go = {
-        let lib = lib.clone();
-        move |a: &AppWindow| {
-            if a.get_player_open() {
-                a.global::<Play>().invoke_close(); // mpv lets go of the file first
-            }
-            let w = a.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(250), move || {
-                let Some(a) = w.upgrade() else { return };
-                let (k, err) = lib.delete_clips(&ids);
-                if let Some(e) = err {
-                    toast(&a, e);
-                } else if k > 0 {
-                    toast(&a, if k == 1 { "Deleted".to_string() } else { format!("Deleted {k} clips") });
-                }
-                lib.refresh();
-                home_fill(&a, &lib);
-                UI_SYNC.with(|f| {
-                    if let Some(f) = f.borrow().as_ref() {
-                        f(true)
-                    }
-                });
-            });
-        }
-    };
-    if cloud > 0 {
-        let msg = format!(
-            "{} in the cloud. Delete only the copy on this PC (it stays in the cloud), or everywhere?",
-            if cloud == 1 && n == 1 { "This clip is also".to_string() } else { format!("{cloud} of them are also") }
-        );
-        ask(a, &title, &msg, &[("Cancel", "", ""), ("Everywhere", "all", ""), ("Only from this PC", "pc", "delb")], None, "pc", move |a, v, _| {
-            if v == "pc" {
-                go(a);
-            } else if v == "all" {
-                cloud::delete_everywhere(a, ids2); // Chat B
-            }
-        });
-    } else {
-        confirm_box(a, &title, &format!("{what} will be moved to the {bin}."), "Delete", go);
-    }
+    lib_del::delete_ui(a, lib, ids);
 }
 
 fn open_editor(idx: usize) {
@@ -839,9 +823,24 @@ fn show_in_folder(p: &std::path::Path) {
     }
     #[cfg(not(windows))]
     {
-        if let Some(d) = p.parent() {
-            let _ = std::process::Command::new("xdg-open").arg(d).spawn();
-        }
+        // Chat 23: the file manager opens WITH the clip selected (org.freedesktop.FileManager1.ShowItems - Dolphin,
+        // Nautilus, Nemo...); only the folder through xdg-open when that isn't there. Off the UI thread (dbus-send waits).
+        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        std::thread::spawn(move || {
+            let uri: String = p.to_string_lossy().bytes().map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            }).collect();
+            let ok = std::process::Command::new("dbus-send")
+                .args(["--session", "--print-reply", "--reply-timeout=3000", "--dest=org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems"])
+                .arg(format!("array:string:file://{uri}")).arg("string:")
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            if !ok {
+                if let Some(d) = p.parent() {
+                    let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(d)); // r2-threads (L52): reaped
+                }
+            }
+        });
     }
 }
 
@@ -898,7 +897,8 @@ fn main() {
     // ---------- library ----------
     let clips_dir = library::find_clips_dir();
     let t0 = Instant::now();
-    let clips = library::scan(&clips_dir);
+    // r2-threads (L37): read on a worker; a library that takes longer than 200 ms comes in after the window opens
+    let (clips, late_scan) = bgwork::scan_start(&clips_dir, Duration::from_millis(200));
     let scan_ms = t0.elapsed().as_millis();
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PathBuf, Option<PathBuf>)>();
     std::thread::spawn(move || {
@@ -935,6 +935,7 @@ fn main() {
         }
     });
     let lib = Rc::new(library::LibModel::new(clips, clips_dir.join(".thumbs"), tx));
+    lib.set_loading(late_scan.is_some()); // r2-threads (L37)
     LIB.with(|l| *l.borrow_mut() = Some(lib.clone()));
     app.set_cards(ModelRc::from(lib.clone()));
     app.set_rows(ModelRc::from(lib.rows.clone()));
@@ -953,7 +954,11 @@ fn main() {
             let n = lib.view_len();
             let bytes: u64 = (0..n).filter_map(|r| lib.clip_at(r)).map(|c| c.size).sum();
             a.set_count_text(format!("{n} clip{} · {}", if n == 1 { "" } else { "s" }, library::fmt_size(bytes)).into());
-            if lib.len() == 0 {
+            if lib.len() == 0 && lib.loading() {
+                // r2-threads (L37): the clips folder is still being read - no "No clips yet" meanwhile
+                a.set_empty_title("".into());
+                a.set_empty_text("".into());
+            } else if lib.len() == 0 {
                 a.set_empty_title("No clips yet".into());
                 a.set_empty_text("Press your hotkey in game to save the last moments.".into());
             } else {
@@ -963,6 +968,8 @@ fn main() {
             let total: u64 = lib.all().iter().map(|c| c.size).sum();
             a.set_storage_used(format!("{} used", library::fmt_size(total)).into());
             a.set_storage_cap(if cap_gb > 0 { format!("of {}", library::fmt_size(cap_gb * 1_000_000_000)) } else { "no limit".into() }.into());
+            // William (10 Nov): the status card's hover panel
+            a.set_local_limit(if cap_gb > 0 { library::fmt_size(cap_gb * 1_000_000_000) } else { "No limit".into() }.into());
             a.set_storage_frac(if cap_gb > 0 { total as f32 / (cap_gb as f32 * 1e9) } else { (total as f32 / 50e9).min(1.0) });
             a.set_picked_n(lib.picked.borrow().len() as i32);
             a.global::<Lib>().set_picking(!lib.picked.borrow().is_empty());
@@ -983,6 +990,9 @@ fn main() {
     app.global::<HomeState>().set_cards(ModelRc::new(library::HomeCards(lib.clone())));
     lib.refresh();
     sync(true);
+    if let Some(rx) = late_scan {
+        bgwork::scan_finish(&app, &lib, rx, sync.clone()); // r2-threads (L37)
+    }
     {
         let (w, lib) = (app.as_weak(), lib.clone());
         app.global::<HomeState>().on_cols(move |n| {
@@ -994,6 +1004,7 @@ fn main() {
     }
     UI_SYNC.with(|f| *f.borrow_mut() = Some(sync.clone()));
     lib_cards::wire(&app, lib.clone(), sync.clone());
+    lib_prefs::wire(&app, &lib, sync.clone());
     tidy::wire(&app, lib.clone());
     lib_shots::wire(&app, clips_dir.clone());
 
@@ -1026,6 +1037,11 @@ fn main() {
         let lib = lib.clone();
         app.on_set_cols(move |n| lib.set_cols(n.max(1) as usize));
     }
+    over::init(&app); // r2-layout (L39)
+    {
+        let lib = lib.clone();
+        app.global::<Over>().on_grid_card_w(move |w| lib.set_card_w(w)); // r2-layout (L9): tag lines
+    }
     {
         let (w, lib, sync) = (app.as_weak(), lib.clone(), sync.clone());
         app.on_set_sort(move |s| {
@@ -1035,6 +1051,10 @@ fn main() {
             *lib.sort.borrow_mut() = s.to_string();
             lib.refresh();
             sync(false);
+            lib_prefs::save_sort(&s);
+            if let (Some(a), true) = (w.upgrade(), s == "long") {
+                lib_prefs::probe_long(&a, &lib, sync.clone());
+            }
         });
     }
     {
@@ -1043,12 +1063,14 @@ fn main() {
             if let Some(a) = w.upgrade() {
                 a.set_list_view(list);
             }
+            lib_prefs::save_view(list);
         });
     }
     {
         let (lib, sync) = (lib.clone(), sync.clone());
         app.on_ftoggle(move |g, k| {
             lib.ftoggle(&g, &k);
+            lib_prefs::save_filters(&lib);
             lib.refresh();
             sync(false);
         });
@@ -1057,6 +1079,7 @@ fn main() {
         let (lib, sync) = (lib.clone(), sync.clone());
         app.on_fclear(move || {
             lib.fsel.borrow_mut().clear();
+            lib_prefs::save_filters(&lib);
             lib.refresh();
             sync(false);
         });
@@ -1130,17 +1153,23 @@ fn main() {
             let Some(a) = w.upgrade() else { return };
             let mut ids: Vec<usize> = lib.picked.borrow().iter().cloned().collect();
             ids.sort();
-            let (n, err) = lib.move_clips(&ids, &folder);
-            if n > 0 {
-                lib.clear_picks();
-                let to = library::clean_folder(&folder);
-                toast(&a, format!("Moved {n} clip{} to {}", if n == 1 { "" } else { "s" }, if to.is_empty() { "the main folder".to_string() } else { format!("\"{to}\"") }));
-            }
-            if let Some(e) = err {
-                toast(&a, e);
-            }
-            lib.refresh();
-            sync(true);
+            // r2-threads (L13): the files move on a worker
+            let (w, l2, sync, folder) = (a.as_weak(), lib.clone(), sync.clone(), folder.to_string());
+            lib.move_clips_bg(&ids, &folder.clone(), move |n, err| {
+                let Some(a) = w.upgrade() else { return };
+                let lib = l2;
+                // Echo's moveClips toast: no quotes round the folder, the last error after it (r2-texts L48)
+                if n > 0 {
+                    lib.clear_picks();
+                    let to = library::clean_folder(&folder);
+                    let last = err.map(|e| format!(" - {e}")).unwrap_or_default();
+                    toast(&a, format!("Moved {n} clip{} to {}{last}", if n == 1 { "" } else { "s" }, if to.is_empty() { "the main folder".to_string() } else { to }));
+                } else {
+                    toast(&a, err.unwrap_or_else(|| "Nothing moved".into()));
+                }
+                lib.refresh();
+                sync(true);
+            });
         });
     }
     {
@@ -1184,13 +1213,19 @@ fn main() {
             let go = {
                 let (lib, src, new, target, leaf) = (lib.clone(), src.clone(), new.clone(), target.clone(), leaf.clone());
                 move |a: &AppWindow, merge: bool| {
-                    match lib.move_folder(&src, &new) {
-                        Ok(_) if merge => toast(a, format!("Merged \"{src}\" into \"{new}\"")),
-                        Ok(_) if target.is_empty() => toast(a, format!("\"{leaf}\" is a top folder now")),
-                        Ok(_) => toast(a, format!("Moved \"{leaf}\" into {target}")),
-                        Err(e) => toast(a, e),
-                    }
-                    after(a);
+                    // r2-threads (L13): the files move on a worker
+                    let (w, src, new, target, leaf, after) = (a.as_weak(), src.clone(), new.clone(), target.clone(), leaf.clone(), after.clone());
+                    lib.move_folder_bg(&src.clone(), &new.clone(), move |r| {
+                        let Some(a) = w.upgrade() else { return };
+                        let a = &a;
+                        match r {
+                            Ok(_) if merge => toast(a, format!("Merged \"{src}\" into \"{new}\"")),
+                            Ok(_) if target.is_empty() => toast(a, format!("\"{leaf}\" is a top folder now")),
+                            Ok(_) => toast(a, format!("Moved \"{leaf}\" into {target}")),
+                            Err(e) => toast(a, e),
+                        }
+                        after(a);
+                    });
                 }
             };
             match lib.folder_exists(&new) {
@@ -1228,14 +1263,20 @@ fn main() {
             let go = {
                 let (lib, sync, folder, new, leaf) = (lib.clone(), sync.clone(), folder.clone(), new.clone(), leaf.clone());
                 move |a: &AppWindow, merge: bool| {
-                    match lib.move_folder(&folder, &new) {
-                        Ok(_) if merge => toast(a, format!("Merged \"{folder}\" into \"{new}\"")),
-                        Ok(_) => toast(a, format!("Renamed to \"{leaf}\"")),
-                        Err(e) => toast(a, e),
-                    }
-                    lib.refresh();
-                    a.set_filter(lib.nav.borrow().as_str().into());
-                    sync(true);
+                    // r2-threads (L13): the files move on a worker
+                    let (w, l2, sync, folder, new, leaf) = (a.as_weak(), lib.clone(), sync.clone(), folder.clone(), new.clone(), leaf.clone());
+                    lib.move_folder_bg(&folder.clone(), &new.clone(), move |r| {
+                        let Some(a) = w.upgrade() else { return };
+                        let (a, lib) = (&a, l2);
+                        match r {
+                            Ok(_) if merge => toast(a, format!("Merged \"{folder}\" into \"{new}\"")),
+                            Ok(_) => toast(a, format!("Renamed to \"{leaf}\"")),
+                            Err(e) => toast(a, e),
+                        }
+                        lib.refresh();
+                        a.set_filter(lib.nav.borrow().as_str().into());
+                        sync(true);
+                    });
                 }
             };
             match lib.folder_exists(&new) {
@@ -1251,6 +1292,10 @@ fn main() {
         let (w, lib, sync, root) = (app.as_weak(), lib.clone(), sync.clone(), clips_dir.clone());
         app.on_folder_act(move |folder, what| {
             let Some(a) = w.upgrade() else { return };
+            if let Some(to) = what.strip_prefix("merge:") {
+                lib_merge::merge_ui(&a, lib.clone(), folder.to_string(), to.to_string(), sync.clone());
+                return;
+            }
             match what.as_str() {
                 "notreal" => toast(&a, format!("\"{folder}\" isn't a folder yet - its clips are in the main folder. Drag clips onto it to make one.")),
                 "open" => {
@@ -1258,7 +1303,7 @@ fn main() {
                     #[cfg(windows)]
                     let _ = std::process::Command::new("explorer").arg(&d).spawn();
                     #[cfg(not(windows))]
-                    let _ = std::process::Command::new("xdg-open").arg(&d).spawn();
+                    let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(&d)); // r2-threads (L52): reaped
                 }
                 "delete" => {
                     match lib.delete_folder(&folder) {
@@ -1289,16 +1334,16 @@ fn main() {
             }
             d.set_open(false);
             let text = d.get_text().to_string();
-            // keys go back where they were
-            if a.get_player_open() {
-                a.invoke_focus_player();
-            } else if a.get_view() == "settings" {
-                a.invoke_focus_settings();
-            } else {
-                a.invoke_focus_library();
-            }
+            // keys go back where they were (L2: editor / Tidy first - the editor keeps a hidden player "open")
+            focus::back(&a);
+            cloud::space_refocus(&a); // r2-texts L17: the Echo Cloud space manager under the dialog gets the keys back
             if let Some(cb) = DLG_CB.with(|c| c.borrow_mut().take()) {
                 cb(&a, v.to_string(), text);
+            }
+            // the answer may have closed the editor / Tidy or left Settings: hand the keys on again (a new dialog
+            // from the answer focuses itself)
+            if !a.global::<Dlg>().get_open() {
+                focus::back(&a);
             }
         });
     }
@@ -1371,6 +1416,7 @@ fn main() {
             apply_theme(&a, &st);
         })
     };
+    hdr_home::wire(&app, srefresh.clone()); // gaps (10 Nov): KDE keys re-read, "On this day" buttons
     {
         let (store, r) = (store.clone(), srefresh.clone());
         app.global::<S>().on_pick(move |id| {
@@ -1380,7 +1426,7 @@ fn main() {
                 st.listening.clear();
             }
             r();
-            if id == "cloud" {
+            if id == "cloud" || id == "profile" {
                 UI.with(|u| {
                     if let Some(a) = u.borrow().as_ref().and_then(|w| w.upgrade()) {
                         cloud::load_info(&a); // Chat B: space per cloud
@@ -1407,9 +1453,13 @@ fn main() {
         let (w, store, r) = (app.as_weak(), store.clone(), srefresh.clone());
         app.global::<S>().on_set(move |k, v| {
             // Chat B (night): the background effect lives in native_ui.json, not settings.json
-            if lib_fx::set(&k, &v) {
+            // (r2-perf: "Send anonymous performance numbers" too - perf.rs)
+            if lib_fx::set(&k, &v) || perf::set(&k, &v) {
                 r();
                 return;
+            }
+            if w.upgrade().is_some_and(|a| cloud::own_pick(&a, &k, &v)) {
+                return; // r2-texts L42: the "Own server…" menu pick, not a setting
             }
             let msg = store.borrow_mut().set(&k, &v);
             r();
@@ -1424,8 +1474,12 @@ fn main() {
         });
     }
     {
-        let (store, r) = (store.clone(), srefresh.clone());
+        let (w, store, r) = (app.as_weak(), store.clone(), srefresh.clone());
         app.global::<S>().on_listen(move |id| {
+            // gaps (10 Nov): KDE decides the keys (Linux portal) - say where to change them instead
+            if w.upgrade().is_some_and(|a| hdr_home::kde_blocks(&a, &store.borrow(), &id)) {
+                return;
+            }
             {
                 let mut st = store.borrow_mut();
                 st.listening = if st.listening == id.as_str() { String::new() } else { id.to_string() };
@@ -1538,7 +1592,7 @@ fn main() {
                     #[cfg(windows)]
                     let _ = std::process::Command::new("explorer").arg(&d).spawn();
                     #[cfg(not(windows))]
-                    let _ = std::process::Command::new("xdg-open").arg(&d).spawn();
+                    let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(&d)); // r2-threads (L52): reaped
                 } else if act == "discord" {
                     open_url("https://discord.gg/JPVewEfUQs");
                 } else if act == "changelog" {
@@ -1568,6 +1622,7 @@ fn main() {
         let rr: Rc<dyn Fn()> = srefresh.clone();
         setup::wire(&app, store.clone(), rr.clone());
         cloud::wire(&app, rr.clone());
+        cloud_live::wire(&app); // gaps-cloud (rows 6, 24)
         lib_color::wire(&app, store.clone(), rr);
         lib_fx::wire(&app);
         lib_profile::wire(&app);
@@ -1575,6 +1630,7 @@ fn main() {
     lib_set::wire(&app, store.clone());
     // Settings > Clips & Storage open: other apps' clip counts follow their folders (Chat B, William chat 5)
     let import_timer = slint::Timer::default();
+    import::set_refresh(srefresh.clone()); // r2-threads (L28): the scan runs on a worker, the page follows
     {
         let (w, store, r) = (app.as_weak(), store.clone(), srefresh.clone());
         import_timer.start(slint::TimerMode::Repeated, Duration::from_secs(3), move || {
@@ -1629,7 +1685,7 @@ fn main() {
             #[cfg(windows)]
             let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             #[cfg(not(windows))]
-            let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+            let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(&dir)); // r2-threads (L52): reaped
         });
     }
 
@@ -1668,6 +1724,9 @@ fn main() {
         let (w, lib) = (app.as_weak(), lib.clone());
         app.global::<Lib>().on_act(move |row, what| {
             let (Some(a), Some(c)) = (w.upgrade(), lib.clip_at(row as usize)) else { return };
+            if cloud::card_needs_local(&a, row, what.as_str()) {
+                return; // gaps-cloud (row 4): a cloud-only clip is downloaded first, then this runs again
+            }
             hover_vid::stop(&a); // the preview keeps the file open (rename / move / delete would fail)
             if let Some(k) = what.as_str().strip_prefix("copy") {
                 copy::copy_clip_ui(&a, c.path.clone(), c.thumbs.clone(), k.trim_start_matches(':')); // Chat C
@@ -1696,11 +1755,8 @@ fn main() {
                 "cloud" | "link" => {
                     // Chat B: the cloud menu / L = copy the share link (cloud.rs)
                     if let Some(i) = lib.index_at(row as usize) {
-                        if what.as_str() == "link" {
-                            cloud::quick_link(&a, i);
-                        } else {
-                            cloud::menu(&a, i, false);
-                        }
+                        // gaps-cloud (row 43): L opens the cloud menu (link + expiry chips) like Echo, not a link at once
+                        cloud::menu(&a, i, false);
                     }
                 }
                 w if w.starts_with("copy") => unhandled(w),
@@ -1723,7 +1779,10 @@ fn main() {
                 if s.player == Some(d.key) {
                     s.player_px = Some((d.key, px.clone(), d.tw, d.th));
                 }
-                let img = slint::Image::from_rgb8(px);
+                let img = match d.rgba {
+                    Some(b) => slint::Image::from_rgba8(b),
+                    None => slint::Image::from_rgb8(px),
+                };
                 s.items.retain(|x| x.0 != d.key);
                 s.items.push((d.key, img.clone(), d.tw as i32, d.th as i32));
                 // keep the hovered card's and the player's sheet only
@@ -1771,7 +1830,14 @@ fn main() {
                 Some(r) => r,
                 None => {
                     let c = lib.clip(idx);
-                    let _ = tx.send(sheets::Job { key: idx, clip: c.path.clone(), echo_sheet: c.scrub(), dur: c.dur.unwrap_or(0.0) });
+                    // gaps-cloud (row 5): a cloud-only clip's seek pictures come from its stream - for the player only
+                    if cloud::cloud_only(&c) && SHEETS.with(|s| s.borrow().player) != Some(idx) {
+                        return None;
+                    }
+                    if !cloud::play_ready(&c.path, || {}) {
+                        return None; // r2-threads (L6): its stream address is being worked out (worker)
+                    }
+                    let _ = tx.send(sheets::Job { key: idx, clip: cloud::play_path(&c.path), echo_sheet: c.scrub(), dur: c.dur.unwrap_or(0.0) });
                     None
                 }
             }
@@ -1895,6 +1961,7 @@ fn main() {
             // a Home card: play it at its spot in the library view (prev / next walk the view)
             let row = lib.view_row_of(idx).map(|r| r as i32).unwrap_or(row);
             let c = lib.clip(idx);
+            cleanup::opened(&lib.thumbs_dir, &c.name); // cleanup: "Not watched in 90+ days" needs the last play
             let mut p = p.borrow_mut();
             sn(&mut p);
             p.open = true;
@@ -1944,7 +2011,8 @@ fn main() {
             a.window().request_redraw(); // mpv starts / loads the file in the render hook
             // extras AFTER the video starts: opening stays instant
             let (w2, ask2) = (w.clone(), ask.clone());
-            slint::Timer::single_shot(Duration::from_millis(400), move || {
+            // (gaps-cloud: a cloud clip after 6 s - its seek pictures read the stream too, the video goes first)
+            slint::Timer::single_shot(Duration::from_millis(if c.cloud.is_some() { 6000 } else { 400 }), move || {
                 let Some(a) = w2.upgrade() else { return };
                 if SHEETS.with(|s| s.borrow().player) != Some(idx) {
                     return;
@@ -1959,6 +2027,28 @@ fn main() {
             });
         })
     };
+    // gaps-player: Save copy / Replace open a clip like a fresh one (Replace: its old seek pictures are dropped first)
+    {
+        let (lib, play) = (lib.clone(), play.clone());
+        pl_actions::set_reopen(Rc::new(move |idx| {
+            SHEETS.with(|s| {
+                let mut s = s.borrow_mut();
+                s.items.retain(|x| x.0 != idx);
+                s.failed.retain(|&i| i != idx);
+                if s.player_px.as_ref().is_some_and(|x| x.0 == idx) {
+                    s.player_px = None;
+                }
+            });
+            match lib.view_row_of(idx) {
+                Some(r) => {
+                    play(r as i32);
+                    true
+                }
+                None => false,
+            }
+        }));
+    }
+    cloud_live::set_play(play.clone()); // gaps-cloud (row 5): play the downloaded copy after a stream fallback
     {
         let (lib, play, p) = (lib.clone(), play.clone(), player.clone());
         let sync = sync.clone();
@@ -1983,9 +2073,13 @@ fn main() {
             match what.as_str() {
                 "play" => play(library::HOME_BASE as i32),
                 "library" => a.invoke_pick_filter("all".into()),
-                "copy" | "copym" => {
+                // gaps (10 Nov): "copy:<size>" = a size from the ▾ menu (home.slint CopyMenuBody)
+                w if w == "copy" || w == "copym" || w.starts_with("copy:") => {
+                    if cloud::home_needs_local(&a, w) {
+                        return; // gaps-cloud (row 4): download first, then copy
+                    }
                     if let Some(c) = lib.index_at(library::HOME_BASE).map(|i| lib.clip(i)) {
-                        copy::copy_clip_ui(&a, c.path.clone(), c.thumbs.clone(), ""); // Chat C
+                        copy::copy_clip_ui(&a, c.path.clone(), c.thumbs.clone(), w.strip_prefix("copy:").unwrap_or("")); // Chat C
                     }
                 }
                 "link" => {
@@ -1994,10 +2088,13 @@ fn main() {
                     }
                 }
                 "edit" | "cap" => {
+                    if cloud::home_needs_local(&a, what.as_str()) {
+                        return; // gaps-cloud (row 4): download first, then the editor
+                    }
                     if let Some(i) = lib.index_at(library::HOME_BASE) {
                         open_editor(i);
                         if what.as_str() == "cap" {
-                            a.global::<Ed>().invoke_act("cap".into());
+                            edui::act_when_open(&a, "cap"); // gaps-editor: waits for the editor (it may ask first)
                         }
                     }
                 }
@@ -2009,9 +2106,15 @@ fn main() {
                                 open_editor(i);
                             }
                         }
+                        // gaps (10 Nov): Echo's step 4 button "Copy for Discord" copies the latest clip (was a link)
                         Some("share") => {
                             if let Some(i) = lib.index_at(library::HOME_BASE) {
-                                cloud::quick_link(&a, i); // Chat B
+                                // gaps-cloud (row 4): a cloud-only clip downloads first, then Home's "copy" runs
+                                if !cloud::home_needs_local(&a, "copy") {
+                                    let c = lib.clip(i);
+                                    copy::copy_clip_ui(&a, c.path.clone(), c.thumbs.clone(), "");
+                                    home_fill(&a, &lib); // the step ticks itself off
+                                }
                             }
                         }
                         Some("account") | Some("backup") => {
@@ -2043,6 +2146,16 @@ fn main() {
             }
         });
     }
+    // William (10 Nov): the status card's hover panel - "Manage cloud storage" = Settings > Cloud + its space manager
+    {
+        let w = app.as_weak();
+        app.on_manage_cloud(move || {
+            let Some(a) = w.upgrade() else { return };
+            a.invoke_page("Settings".into());
+            a.global::<S>().invoke_pick("cloud".into());
+            cloud::space_open(&a);
+        });
+    }
     // sidebar statcard's Echo Profile row (Echo's #acctrow): click = Settings > Cloud (goCloudSettings), x = hide
     {
         let w = app.as_weak();
@@ -2062,6 +2175,7 @@ fn main() {
     {
         let play_dyn: Rc<dyn Fn(i32)> = play.clone();
         edui::setup(&app, player.clone(), play_dyn.clone(), clips_dir.clone());
+        focus::setup(&app);
         let (w, p) = (app.as_weak(), player.clone());
         OPEN_EDITOR.with(|o| {
             *o.borrow_mut() = Some(Rc::new(move |idx| {
@@ -2297,16 +2411,10 @@ fn main() {
                     None => (0.0, true),
                 };
                 let (w, p, lib) = (a.as_weak(), p.clone(), lib.clone());
-                slint::Timer::single_shot(Duration::from_millis(150), move || {
+                // r2-threads (L7): the file rename (and its ~4 s retry while mpv lets go) runs on a worker
+                let l2 = lib.clone();
+                slint::Timer::single_shot(Duration::from_millis(150), move || l2.rename_clip_bg(idx, &v, move |res| {
                     let Some(a) = w.upgrade() else { return };
-                    let mut res = lib.rename_clip(idx, &v);
-                    for _ in 0..20 {
-                        if res.as_ref().err().is_none_or(|e| !(e.contains("os error 32") || e.contains("os error 5") || e.contains("another program"))) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                        res = lib.rename_clip(idx, &v);
-                    }
                     let c = lib.clip(idx);
                     let pl = a.global::<Play>();
                     pl.set_title(c.shown.as_str().into());
@@ -2322,8 +2430,11 @@ fn main() {
                             m.command(&["loadfile", &c.path.to_string_lossy(), "replace", "-1", &format!("start={at:.3},pause={}", if paused { "yes" } else { "no" })]);
                         }
                     }
-                });
+                }));
                 return;
+            }
+            if cloud::player_needs_local(&a, idx, what.as_str()) {
+                return; // gaps-cloud (row 4): download first, then this button again
             }
             {
                 // Chat C: frame / thumbnail / MP3 / WAV / GIF / Replace + Copy sizes (pl_actions.rs, copy.rs)
@@ -2349,13 +2460,6 @@ fn main() {
                 "delete" => delete_clips_ui(&a, vec![idx]),
                 "share" => cloud::menu(&a, idx, true), // Chat B
                 "cloud" => cloud::menu(&a, idx, false),
-                "frame" | "thumb" | "audio" | "gif" => unhandled(what.as_str()),
-                "replace" => {
-                    let name = lib.clip(idx).name.clone();
-                    confirm_box(&a, "Replace original?", &format!("\"{name}\" will be overwritten with the trimmed part. This can't be undone."), "Replace", |a| {
-                        toast(a, "Use Save copy to keep the trimmed part")
-                    });
-                }
                 w if w.starts_with("copy") => unhandled(w),
                 _ => {}
             }
@@ -2365,6 +2469,7 @@ fn main() {
     // ---------- quick trim (the yellow ends of the strip), volume, fullscreen ----------
     let last_trim = Rc::new(std::cell::Cell::new((0.0f32, 1.0f32)));
     pl_cuts::wire(&app, player.clone());
+    pl_actions::wire_tags(&app, player.clone()); // gaps-player: Tags box suggestions + add on blur
     {
         let (w, p, lt) = (app.as_weak(), player.clone(), last_trim.clone());
         pl.on_trim_changed(move |dragging| {
@@ -2413,7 +2518,13 @@ fn main() {
         pl.on_trim_save(move || {
             let Some(a) = w.upgrade() else { return };
             let pl = a.global::<Play>();
+            if pl.get_busy() || pl.get_gif_busy() {
+                return; // L14: Echo's trim.busy (a key could start a 2nd Save copy, or one during a GIF)
+            }
             let Some(idx) = p.borrow().clip else { return };
+            if cloud::player_needs_local(&a, idx, "trim") {
+                return; // gaps-cloud (row 4): a cloud-only clip is downloaded first, then Save copy runs again
+            }
             let c = lib.clip(idx);
             let d = p.borrow().duration;
             let (s0, s1) = (pl.get_t0() as f64 * d, pl.get_t1() as f64 * d);
@@ -2440,38 +2551,20 @@ fn main() {
                 out = dir.join(format!("{base} (trim {k}).{ext}"));
                 k += 1;
             }
+            // made in .thumbs (a dot folder the library skips), then moved next to the clip: no half-made card
+            let tmp = root.join(".thumbs").join(format!("{base}.saving.{ext}"));
             let exact = pl.get_exact();
             pl.set_busy(true);
             // its own progress box in the notes stack (spinner while ffmpeg runs)
-            let pb = prog_box(if has_cuts { "Saving a copy without the cut parts (re-encoding)…" } else if exact { "Saving a frame-exact copy (re-encoding)…" } else { "Saving a copy…" });
+            let pb = prog_box(if has_cuts || exact { "Exporting (re-encoding)…" } else { "Exporting…" }); // Echo's texts
             prog_set(pb, None, None, Some(-1.0));
             let (src, w2, root2) = (c.path.clone(), w.clone(), root.clone());
             let job = move || -> Result<(PathBuf, PathBuf, Option<f64>), String> {
-                let mut cmd = std::process::Command::new(&ff);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x0800_0000);
-                }
-                if has_cuts {
-                    let ex = pl_cuts::select_expr(&keep);
-                    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src);
-                    cmd.args(["-map", "0:v:0", "-map", "0:a?"]);
-                    cmd.args(["-vf", &format!("select='{ex}',setpts=N/FRAME_RATE/TB"), "-af", &format!("aselect='{ex}',asetpts=N/SR/TB")]);
-                    cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k"]);
-                } else {
-                    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{s0:.3}"), "-i"]).arg(&src);
-                    cmd.args(["-t", &format!("{:.3}", s1 - s0), "-map", "0:v:0", "-map", "0:a?"]);
-                }
-                if !has_cuts && exact {
-                    cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "copy"]);
-                } else if !has_cuts {
-                    cmd.args(["-c", "copy", "-avoid_negative_ts", "make_zero"]);
-                }
-                let o = cmd.arg(&out).stdin(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
-                if !o.status.success() || !out.exists() {
-                    let _ = std::fs::remove_file(&out);
-                    return Err(String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("ffmpeg failed").to_string());
+                // gaps-player (row 35): Exact / cuts re-encode with Echo's chain (AMF -> NVENC -> QSV -> libx264)
+                pl_actions::encode_trim(&ff, &src, s0, s1, exact, &keep, has_cuts, d, &tmp)?;
+                if let Err(e) = std::fs::rename(&tmp, &out) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e.to_string());
                 }
                 // its card picture: in the prototype's own temp folder (Echo makes its own when it sees the file)
                 let tdir = std::env::temp_dir().join("echo-proto-thumbs");
@@ -2491,7 +2584,7 @@ fn main() {
                     .stdin(std::process::Stdio::null())
                     .output();
                 // its real length (a copy without "Exact" starts at the keyframe before the selection)
-                let probe = if ff.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".exe")) { ff.with_file_name("ffprobe.exe") } else { PathBuf::from("ffprobe") };
+                let probe = edrender::ffprobe(&ff); // r2-threads (L55): next to ffmpeg (ECHO_FFMPEG too), else PATH
                 let mut pc = std::process::Command::new(probe);
                 #[cfg(windows)]
                 {
@@ -2515,21 +2608,28 @@ fn main() {
                     let Some(lib) = LIB.with(|l| l.borrow().clone()) else { return };
                     match r {
                         Ok((out, thumb, len)) => {
-                            if let Some(mut c) = library::clip_from(&out, &root2) {
-                                c.dur = len.or(Some(s1 - s0));
-                                if thumb.exists() {
-                                    c.own_thumb = Some(thumb);
+                            let mut new_idx = lib.index_of_path(&out);
+                            if new_idx.is_none() {
+                                if let Some(mut c) = library::clip_from(&out, &root2) {
+                                    c.dur = len.or(Some(s1 - s0));
+                                    if thumb.exists() {
+                                        c.own_thumb = Some(thumb);
+                                    }
+                                    new_idx = Some(lib.add(c));
+                                    lib.refresh();
                                 }
-                                lib.add(c);
-                                lib.refresh();
                             }
-                            toast(&a, format!("Saved as \"{}\"", out.file_stem().unwrap_or_default().to_string_lossy()));
+                            toast(&a, "Saved trimmed clip"); // Echo's text
                             a.invoke_pick_filter(a.get_filter());
                             UI_SYNC.with(|f| {
                                 if let Some(f) = f.borrow().as_ref() {
                                     f(true)
                                 }
                             });
+                            // gaps-player (row 35): Echo opens the NEW clip in the player
+                            if let Some(i) = new_idx.filter(|_| a.get_player_open()) {
+                                pl_actions::reopen(i);
+                            }
                         }
                         Err(e) => toast(&a, format!("Couldn't save the copy: {e}")),
                     }
@@ -2645,6 +2745,8 @@ fn main() {
                                 pl.mpv_error = why;
                                 pl.pending = None;
                                 a.global::<Play>().set_stats(format!("Can't play: {}", pl.mpv_error).into());
+                                // gaps-player (row 40): that line is hidden - say it where it shows
+                                toast(&a, format!("Can't play this clip: {}", pl.mpv_error));
                             }
                         }
                         a.global::<Play>().set_frame(slint::Image::default());
@@ -2696,7 +2798,10 @@ fn main() {
                         }
                     }
                     // 4. load a waiting file
-                    if let (Some(m), Some((path, at))) = (pl.mpv.as_ref(), pl.pending.take()) {
+                    // r2-threads (L6): a cloud-only clip waits here until its stream address is ready (worker)
+                    let aw = a.as_weak();
+                    let ready = pl.pending.as_ref().is_none_or(|(p, _)| cloud::play_ready(p, move || if let Some(a) = aw.upgrade() { a.window().request_redraw() }));
+                    if let (Some(m), Some((path, at))) = (pl.mpv.as_ref(), pl.pending.take_if(|_| ready)) {
                         let path = cloud::play_path(&path); // Chat B: cloud-only clips stream from Echo's rclone server
                         m.arm_first_frame();
                         if at > 0.5 {
@@ -2739,6 +2844,16 @@ fn main() {
                             }
                         }
                         pl.vo_checked = false;
+                    }
+                    let Some(m) = pl.mpv.as_ref() else { return };
+                    // gaps-player (row 40): mpv couldn't open the file - say so instead of an endless black picture
+                    // (cloud-only clips: left to the cloud's own streaming fallback)
+                    if let Some(why) = m.take_load_error() {
+                        let cloud = pl.clip.is_some_and(|i| LIB.with(|l| l.borrow().as_ref().is_some_and(|l| l.clip(i).cloud.is_some())));
+                        log_to(&mut pl.log, format!("player: mpv couldn't open the clip ({why})"));
+                        if !cloud {
+                            toast(&a, format!("Can't play this clip ({why}) - the file may be damaged"));
+                        }
                     }
                     let Some(m) = pl.mpv.as_ref() else { return };
                     // first picture of THIS clip on screen? (mpv's own START_FILE + PLAYBACK_RESTART events; or 1.5 s
@@ -2809,7 +2924,12 @@ fn main() {
                                 // a dialog is open (Leave editor? / Edit the project? / Delete?): the video window would cover
                                 // it (Slint can't draw over it) - park it meanwhile; parked, it keeps its picture
                                 let dlg = a.global::<Dlg>().get_open();
+                                // gaps-cloud (row 5): also parked while the cloud overlay ("Loading from the cloud…") shows
+                                let dlg = dlg || a.global::<Play>().get_cl_on();
+                                // r2-layout (L1): a menu reaching over the video - parked too, a still of its picture shows (over.rs)
+                                let dlg = over::park_for_menu(&a, m, vw.is_shown()) || dlg;
                                 vw.show(!dlg && (pl.first_frame || (poster_up && !full) || (flip && !full && pl.swap)));
+                                over::set_video_win(&a, vw.is_shown());
                                 // flip model, normal view: mpv draws the part of the seek preview that lies over the video
                                 let pv = if flip && !full && a.get_preview_on() {
                                     let f = a.get_osd_hover();
@@ -3033,28 +3153,15 @@ fn main() {
             if let Some(m) = p.mpv.as_ref() {
                 m.drain_events();
             }
+            cloud_live::player_tick(&a, p.mpv.as_ref(), p.clip.filter(|_| p.open)); // gaps-cloud (row 5)
+            // the "Saving clip…" card never stays longer than 90 s (a save that never reports back)
+            if tick % 12 == 6 && lib.saving_expire() {
+                lib.rebuild_rows();
+            }
             // every 3 s: clips deleted / added outside Echo (file manager) leave / join the library (William, chat 5)
-            if tick % 12 == 6 && a.window().is_visible() && !a.window().is_minimized() && lib.sync_disk(&root) {
-                lib.refresh();
-                home_fill(&a, &lib);
-                // Chat D: only in the library - pick_filter switches the view, it pulled Home / Settings away
-                if a.get_view() == "library" {
-                    a.invoke_pick_filter(a.get_filter());
-                }
-                UI_SYNC.with(|f| {
-                    if let Some(f) = f.borrow().as_ref() {
-                        f(true)
-                    }
-                });
-                // the open clip was deleted: close the player (not while editing - the editor keeps its copy in memory)
-                if p.open && !a.global::<Ed>().get_open() && p.clip.is_some_and(|i| lib.clip(i).gone.get()) {
-                    let w2 = a.as_weak();
-                    slint::Timer::single_shot(Duration::from_millis(0), move || {
-                        if let Some(a) = w2.upgrade() {
-                            a.global::<Play>().invoke_close();
-                        }
-                    });
-                }
+            // r2-threads (L3): the walk runs on a worker (bgwork.rs), the library follows on the UI thread
+            if tick % 12 == 6 && a.window().is_visible() && !a.window().is_minimized() {
+                bgwork::disk_tick(&a, &lib, &root);
             }
             // William (9 Nov): hidden (tray / minimized) for 30 s = efficiency mode for the UI side (idle.rs: fast
             // timers paused, UI thread EcoQoS + lower priority); the recorder's threads are never touched
@@ -3316,6 +3423,11 @@ fn main() {
                     }
                     EventResult::Propagate
                 }
+                // gaps-library row 1: files dragged onto the window (drop.rs)
+                winit::event::WindowEvent::HoveredFile(_) | winit::event::WindowEvent::HoveredFileCancelled | winit::event::WindowEvent::DroppedFile(_) => {
+                    drop::winit_event(&wk, win, ev);
+                    EventResult::Propagate
+                }
                 winit::event::WindowEvent::CursorEntered { .. } => {
                     MOUSE.with(|m| m.borrow_mut().inside = true);
                     EventResult::Propagate
@@ -3337,6 +3449,8 @@ fn main() {
                 winit::event::WindowEvent::Focused(true) => {
                     WIN_FOCUSED.with(|f| f.set(true));
                     unstick_mods(win);
+                    setup::focused(); // gaps-settings: Echo's updSoon (update re-check, at most every 5 min)
+                    hdr_home::on_focus(); // gaps (10 Nov): KDE may have changed Echo's keys
                     EventResult::Propagate
                 }
                 winit::event::WindowEvent::MouseInput { state: winit::event::ElementState::Pressed, button: b @ (winit::event::MouseButton::Back | winit::event::MouseButton::Forward), .. } => {
@@ -3349,6 +3463,12 @@ fn main() {
                         }
                     });
                     EventResult::PreventDefault
+                }
+                // L21: Echo's keydown wakes the fullscreen controls too (Space to pause kept them hidden)
+                winit::event::WindowEvent::KeyboardInput { event, .. } if event.state == winit::event::ElementState::Pressed => {
+                    MOUSE.with(|m| m.borrow_mut().last_move = Instant::now());
+                    wake(&wk);
+                    EventResult::Propagate
                 }
                 winit::event::WindowEvent::MouseInput { state, .. } => {
                     if *state == winit::event::ElementState::Pressed {

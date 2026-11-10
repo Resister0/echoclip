@@ -1110,6 +1110,7 @@ dependencies = [
  "ab_glyph",
  "base64 0.22.1",
  "chrono",
+ "dbus",
  "echo-core",
  "glow 0.16.0",
  "image",

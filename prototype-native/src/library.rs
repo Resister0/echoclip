@@ -55,7 +55,10 @@ impl Clip {
 }
 
 pub fn find_clips_dir() -> PathBuf {
-    if let Some(a) = std::env::args().nth(1) {
+    // a folder given on the command line (testing) - never a flag: "Start with Windows" runs Echo with
+    // --autostart, which used to become the clips folder = 0 clips after a reboot until Echo was restarted by hand
+    // (William, 10 Nov 2026)
+    if let Some(a) = std::env::args().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_dir()) {
         return PathBuf::from(a);
     }
     if let Ok(d) = std::env::var("ECHO_CLIPS") {
@@ -219,6 +222,88 @@ pub fn shown_name(stem: &str) -> String {
 }
 
 /// a clip file that appeared after the scan (e.g. a trimmed copy), `root` = the clips folder
+/// every real folder on disk under the clips folder, 5 levels deep (also empty ones, like Echo's sidebar)
+fn walk_dirs(root: &Path) -> BTreeSet<String> {
+    fn walk(dir: &Path, rel: &str, depth: u32, out: &mut BTreeSet<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if folder_reserved(&r) {
+                continue;
+            }
+            out.insert(r.clone());
+            if depth < 4 {
+                walk(&e.path(), &r, depth + 1, out);
+            }
+        }
+    }
+    let mut set = BTreeSet::new();
+    walk(root, "", 0, &mut set);
+    set
+}
+
+/// r2-threads (L3): what the disk sync reads from the disk - gathered on a worker, applied by `LibModel::sync_apply`
+pub struct DiskScan {
+    root_ok: bool,
+    /// L29: the folders on disk (the sidebar's folder list)
+    dirs: BTreeSet<String>,
+    on_disk: HashSet<PathBuf>,
+    conly: Vec<(String, u64, u64)>,
+    /// clip files the library doesn't know yet, already read (settled: not written to for 3 s)
+    new_clips: Vec<Clip>,
+}
+
+/// r2-threads (L3): the clips tree (depth 5), Echo's cloud-only files and the new clips (`known` = the library's
+/// files, `LibModel::known_paths`). Blocking: run it on a worker.
+pub fn disk_scan(root: &Path, known: HashSet<PathBuf>) -> DiskScan {
+    let mut on_disk: HashSet<PathBuf> = HashSet::new();
+    fn walk(dir: &Path, depth: u32, out: &mut HashSet<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => {
+                    if depth < 5 {
+                        walk(&p, depth + 1, out);
+                    }
+                }
+                Ok(_) => {
+                    let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    if matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "webm") {
+                        out.insert(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if !root.is_dir() {
+        return DiskScan { root_ok: false, dirs: BTreeSet::new(), on_disk, conly: vec![], new_clips: vec![] };
+    }
+    walk(root, 0, &mut on_disk);
+    let conly = crate::cloud::cloud_only_files();
+    let mut new_clips = vec![];
+    for p in on_disk.difference(&known) {
+        // a new file still being written (a recording / export) shows once it's settled
+        let settled = std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() >= 3);
+        if p.extension().is_some_and(|x| x == "tmp") || !settled {
+            continue;
+        }
+        if let Some(c) = clip_from(p, root) {
+            new_clips.push(c);
+        }
+    }
+    DiskScan { root_ok: true, dirs: walk_dirs(root), on_disk, conly, new_clips }
+}
+
 pub fn clip_from(path: &Path, root: &Path) -> Option<Clip> {
     let md = std::fs::metadata(path).ok()?;
     let rel = path.parent()?.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
@@ -228,7 +313,27 @@ pub fn clip_from(path: &Path, root: &Path) -> Option<Clip> {
 /// Echo's settings.json (hotkeys, storage limit), when it can be found
 pub fn echo_settings() -> Option<serde_json::Value> {
     // Chat B: the same file as the Settings page / Echo's settings.rs (settings::path)
-    std::fs::read_to_string(crate::settings::path()).ok().and_then(|s| serde_json::from_str(&s).ok())
+    json_cached(&crate::settings::path()) // r2-threads (L29): parsed again only when the file changed
+}
+
+/// r2-threads (L29): a JSON file, parsed again only when its size / time changed (or it was written in the last
+/// 2 s - coarse file times). Per thread.
+pub fn json_cached(p: &Path) -> Option<serde_json::Value> {
+    type Stamp = (Option<SystemTime>, u64);
+    thread_local! {
+        static CACHE: RefCell<HashMap<PathBuf, (Stamp, Option<serde_json::Value>)>> = RefCell::new(HashMap::new());
+    }
+    let md = std::fs::metadata(p).ok();
+    let stamp: Stamp = (md.as_ref().and_then(|m| m.modified().ok()), md.as_ref().map_or(0, |m| m.len()));
+    let settled = stamp.0.and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() >= 2);
+    if md.is_some() && settled {
+        if let Some(v) = CACHE.with(|c| c.borrow().get(p).filter(|x| x.0 == stamp).map(|x| x.1.clone())) {
+            return v;
+        }
+    }
+    let v: Option<serde_json::Value> = std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok());
+    CACHE.with(|c| c.borrow_mut().insert(p.to_path_buf(), (stamp, v.clone())));
+    v
 }
 
 /// Echo's fmtLen: 30 -> "30s", 180 -> "3m", 90 -> "1.5m"
@@ -400,7 +505,7 @@ fn rename_patient(from: &Path, to: &Path) -> Result<(), String> {
     }
 }
 
-/// to the Recycle Bin (Windows) / Trash (Linux: gio trash, a plain delete if gio is missing) - Echo's delete_clip
+/// to the Recycle Bin (Windows) / Trash (Linux: linux::trash - gio, else the Trash spec; never a plain delete) - Echo's delete_clip
 fn recycle(p: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -432,17 +537,155 @@ fn recycle(p: &Path) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let ok = std::process::Command::new("gio").arg("trash").arg(p).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
-        if !ok {
-            std::fs::remove_file(p).map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        // gio, else the Trash portal / the freedesktop Trash spec; never a permanent delete (gaps-linux row 39)
+        crate::linux::trash(p)
     }
 }
 
 /// Chat D: Recycle Bin / Trash for any file (Screenshots page)
 pub fn recycle_file(p: &Path) -> Result<(), String> {
     recycle(p)
+}
+
+/// r2-threads (L13): one clip to move (`LibModel::move_many_bg`), plain data for the worker
+pub struct MoveJob {
+    idx: usize,
+    from: PathBuf,
+    /// the folder on disk it goes to / its name in the library ("" = the main folder)
+    dir: PathBuf,
+    folder: String,
+    shown: String,
+}
+
+/// r2-threads (L13): Echo's move_clip for one clip, on a worker. Err((the folder couldn't be made, message)).
+fn move_file(j: &MoveJob, root: &Path) -> Result<PathBuf, (bool, String)> {
+    std::fs::create_dir_all(&j.dir).map_err(|e| (true, e.to_string()))?;
+    let new = j.dir.join(j.from.file_name().unwrap_or_default());
+    if new.exists() {
+        return Err((false, format!("{} already has a clip called \"{}\"", if j.folder.is_empty() { "The main folder" } else { &j.folder }, j.shown)));
+    }
+    rename_patient(&j.from, &new).map_err(|e| (false, e.replace("A clip in this folder is", &format!("\"{}\" is", j.shown))))?;
+    // the old folder goes when it's empty now (Echo's remove_if_empty; an .echo-folder marker keeps it)
+    if let Some(par) = j.from.parent().filter(|p| *p != root) {
+        let _ = std::fs::remove_dir(par);
+    }
+    Ok(new)
+}
+
+/// r2-threads (L13): what moving a folder's files did (on a worker)
+pub struct FolderFiles {
+    /// merge: which file went where (None = the folder itself was renamed)
+    merged: Option<HashMap<PathBuf, PathBuf>>,
+    /// clips renamed on a name clash ("x" -> "x (2)"): their tags / note / favourite follow on the UI thread
+    renamed: Vec<(String, String)>,
+    err: Option<String>,
+}
+
+/// r2-threads (L13): Echo's folder merge, on a worker: every clip of `src` goes into `dst` (renamed "name (2)" on
+/// clashes, their .thumbs files follow), its sub-folders come along unless `dst` has one with that name; `src`
+/// goes when it's done
+fn merge_files(src: &Path, dst: &Path, thumbs: &Path) -> FolderFiles {
+    let mut ff = FolderFiles { merged: Some(HashMap::new()), renamed: vec![], err: None };
+    let rd = match std::fs::read_dir(src) {
+        Ok(rd) => rd,
+        Err(e) => {
+            ff.err = Some(e.to_string());
+            return ff;
+        }
+    };
+    for f in rd.flatten() {
+        let p = f.path();
+        if p.is_dir() {
+            let to = dst.join(f.file_name());
+            if !to.exists() {
+                let _ = rename_patient(&p, &to);
+            }
+            continue;
+        }
+        if !p.is_file() || f.file_name() == ".echo-folder" {
+            continue;
+        }
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let ext = p.extension().map(|x| format!(".{}", x.to_string_lossy())).unwrap_or_default();
+        let mut to = dst.join(format!("{stem}{ext}"));
+        let mut k = 2;
+        while to.exists() {
+            to = dst.join(format!("{stem} ({k}){ext}"));
+            k += 1;
+        }
+        if let Err(e) = rename_patient(&p, &to) {
+            ff.err = Some(e);
+            return ff;
+        }
+        if let Some(m) = ff.merged.as_mut() {
+            m.insert(p.clone(), to.clone());
+        }
+        let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        if new_stem != stem {
+            for x in ["jpg", "dur", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
+                let _ = std::fs::rename(thumbs.join(format!("{stem}.{x}")), thumbs.join(format!("{new_stem}.{x}")));
+            }
+            ff.renamed.push((stem, new_stem));
+        }
+    }
+    let _ = std::fs::remove_file(src.join(".echo-folder"));
+    let _ = std::fs::remove_dir(src);
+    ff
+}
+
+/// r2-threads (L7): a checked clip rename (`LibModel::rename_prep`): the file move can run on a worker
+pub struct RenamePrep {
+    idx: usize,
+    from: PathBuf,
+    to: PathBuf,
+    name: String,
+    /// its cloud rel before (the cloud copy follows)
+    follow: Option<String>,
+}
+
+/// r2-threads (L5): one clip to delete (`LibModel::delete_plan`), plain data for the worker
+pub struct DelJob {
+    idx: usize,
+    path: PathBuf,
+    name: String,
+    /// in the cloud / shared: its rel goes on cloud.json's keep_remote list
+    cloud: bool,
+    rel: String,
+}
+
+/// r2-threads (L5): Echo's delete_clip for one clip, on a worker: Recycle Bin / Trash, an emptied folder goes, its
+/// thumbnails go
+fn delete_file(j: &DelJob, root: &Path, thumbs: &Path) -> Result<(), String> {
+    recycle(&j.path)?;
+    if let Some(par) = j.path.parent().filter(|p| *p != root) {
+        let _ = std::fs::remove_dir(par);
+    }
+    for x in ["jpg", "dur", "thumbt", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a0.m4a", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
+        let _ = std::fs::remove_file(thumbs.join(format!("{}.{x}", j.name)));
+    }
+    Ok(())
+}
+
+/// Cloud clips deleted from this PC: on cloud.json's keep_remote list (like Echo's "Only from this PC") so they
+/// aren't downloaded again
+fn keep_remote(thumbs: &Path, keep: Vec<String>) {
+    if keep.is_empty() {
+        return;
+    }
+    let p = thumbs.join("cloud.json");
+    if let Some(mut v) = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+        if let Some(o) = v.as_object_mut() {
+            let list = o.entry("keep_remote").or_insert_with(|| serde_json::json!([]));
+            if let Some(a) = list.as_array_mut() {
+                for k in keep {
+                    if !a.iter().any(|x| x.as_str() == Some(k.as_str())) {
+                        a.push(k.into());
+                    }
+                }
+            }
+            let _ = write_atomic(&p, &serde_json::to_string(&v).unwrap_or_default());
+        }
+    }
 }
 
 /// Write keys into Echo's settings.json: re-read, replace only these keys, temp file + rename (like the Settings page)
@@ -470,11 +713,15 @@ pub const TYPES: [(&str, &str); 5] = [("clip", "Clips"), ("rec", "Recordings"), 
 pub struct Meta {
     pub tags: Vec<String>,
     pub note: String,
+    /// gaps-library row 44: what was said (auto captions: <thumbs>/<name>.words.json, Echo's clip_meta) - search only
+    pub said: String,
 }
 
 pub struct LibModel {
     /// every clip (index = stable id; new clips are appended)
     all: RefCell<Vec<Rc<Clip>>>,
+    /// r2-threads (L37): the first read of the clips folder is still running on a worker
+    loading: Cell<bool>,
     pub thumbs_dir: PathBuf,
     view: RefCell<Vec<usize>>,
     cache: RefCell<HashMap<usize, (Image, u64)>>,
@@ -493,6 +740,8 @@ pub struct LibModel {
     pub fsel: RefCell<BTreeMap<String, Vec<String>>>,
     pub cols: Cell<usize>,
     pub rows: Rc<VecModel<GridRow>>,
+    /// r2-layout (L9): the grid card's width (Slint: Over.grid-card-w), for the tag lines
+    pub card_w: Cell<f32>,
     /// window minimized for a while: no thumbnails held or decoded
     suspended: Cell<bool>,
     /// Home: the newest clips (Card.idx = HOME_BASE + position, so Lib's callbacks work for them too)
@@ -503,8 +752,27 @@ pub struct LibModel {
     pub folder_order: RefCell<BTreeMap<String, Vec<String>>>,
     /// game icons Echo saved (<Echo's data folder>/icons/<game>.png), decoded once per file version
     icon_cache: RefCell<HashMap<PathBuf, (SystemTime, Option<Image>)>>,
-    /// Chat D badges: clips in Echo's cloud.json / links.json (lower-case rel paths), re-read at most every 5 s
-    cloud_cache: RefCell<Option<(std::time::Instant, HashSet<String>, HashSet<String>)>>,
+    /// Chat D badges: clips in Echo's cloud.json / links.json (lower-case rel paths); r2-threads (L36): re-read when
+    /// one of the files changed (size / time per file), checked at most every 300 ms
+    #[allow(clippy::type_complexity)]
+    cloud_cache: RefCell<Option<(std::time::Instant, [Option<(Option<SystemTime>, u64)>; 2], HashSet<String>, HashSet<String>)>>,
+    /// r2-threads (L29): the folders on disk (sidebar), from the disk sync; None = walk once more (Echo changed folders)
+    disk_dirs: RefCell<Option<BTreeSet<String>>>,
+    /// Echo's savingPh: the "Saving clip…" card at the top while a clip is saved (until it is in the list)
+    pub saving: RefCell<Option<SavingPh>>,
+    /// gaps-library row 44: lengths ffprobe found for clips without a .dur file (sort "Longest", lib_prefs::probe_long)
+    pub probed: RefCell<HashMap<usize, f64>>,
+    /// gaps-library row 21: the filter panel's "Search games and tags…" text
+    pub fq: RefCell<String>,
+}
+
+pub struct SavingPh {
+    pub secs: u32,
+    pub at: std::time::Instant,
+    /// where the clip goes (recorder save_target: its folder, else its game name, else "")
+    pub folder: String,
+    /// set once it is saved ("Clip saved · Opens in a moment")
+    pub path: Option<PathBuf>,
 }
 
 /// Card.idx of Home's cards starts here (library view rows are below it)
@@ -532,11 +800,17 @@ impl LibModel {
             fsel: Default::default(),
             cols: Cell::new(4),
             rows: Rc::new(VecModel::default()),
+            card_w: Cell::new(330.0),
             suspended: Cell::new(false),
             home: Default::default(),
             home_notify: Default::default(),
             icon_cache: Default::default(),
             cloud_cache: Default::default(),
+            disk_dirs: Default::default(),
+            loading: Cell::new(false),
+            saving: Default::default(),
+            probed: Default::default(),
+            fq: Default::default(),
             folder_order: RefCell::new(
                 echo_settings().and_then(|v| v.get("folder_order").cloned()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
             ),
@@ -565,51 +839,67 @@ impl LibModel {
     }
     /// files deleted / added outside Echo (file manager, another app): the library follows. True = something changed.
     pub fn sync_disk(&self, root: &Path) -> bool {
-        let mut on_disk: HashSet<PathBuf> = HashSet::new();
-        fn walk(dir: &Path, depth: u32, out: &mut HashSet<PathBuf>) {
-            let Ok(rd) = std::fs::read_dir(dir) else { return };
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') {
-                    continue;
-                }
-                let p = e.path();
-                match e.file_type() {
-                    Ok(t) if t.is_dir() => {
-                        if depth < 5 {
-                            walk(&p, depth + 1, out);
-                        }
-                    }
-                    Ok(_) => {
-                        let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        if matches!(ext.as_str(), "mp4" | "mkv" | "mov" | "webm") {
-                            out.insert(p);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if !root.is_dir() {
+        let scan = disk_scan(root, self.known_paths());
+        self.sync_apply(root, scan)
+    }
+    /// r2-threads (L3): every clip file Echo knows (incl. ones deleted outside Echo), for `disk_scan` on a worker
+    pub fn known_paths(&self) -> HashSet<PathBuf> {
+        self.all.borrow().iter().map(|c| c.path.clone()).collect()
+    }
+    /// r2-threads (L37): the first read of the clips folder hasn't come back yet (the list is still empty)
+    pub fn loading(&self) -> bool {
+        self.loading.get()
+    }
+    pub fn set_loading(&self, on: bool) {
+        self.loading.set(on);
+    }
+    /// r2-threads (L37): the clips the first read found (on a worker); ones the library got meanwhile stay
+    pub fn load_scanned(&self, clips: Vec<Clip>) {
+        self.loading.set(false);
+        let known = self.known_paths();
+        let mut a = self.all.borrow_mut();
+        a.extend(clips.into_iter().filter(|c| !known.contains(&c.path)).map(Rc::new));
+    }
+    /// r2-threads (L3): the library follows a `disk_scan` (made on a worker). The scan is a moment old, so a clip
+    /// file only flips (gone <-> here) when the disk still agrees now - what Echo did itself meanwhile wins.
+    pub fn sync_apply(&self, root: &Path, scan: DiskScan) -> bool {
+        let DiskScan { root_ok, dirs, on_disk, conly, new_clips } = scan;
+        if !root_ok {
             return false; // folder unplugged / renamed: don't empty the library
         }
-        walk(root, 0, &mut on_disk);
         let mut changed = false;
+        // L29: the sidebar's folders on disk; a folder that differs from what the sidebar knew is checked once more
+        // (Echo may have made / removed it since the scan) - a folder made in the file manager shows up now too
+        let old = self.disk_dirs.borrow().clone();
+        let dirs = match old {
+            Some(old) => {
+                let mut d: BTreeSet<String> = old.intersection(&dirs).cloned().collect();
+                d.extend(old.symmetric_difference(&dirs).filter(|f| root.join(f).is_dir()).cloned());
+                changed |= d != old;
+                d
+            }
+            None => dirs,
+        };
+        *self.disk_dirs.borrow_mut() = Some(dirs);
         let mut known: HashSet<PathBuf> = HashSet::new();
         // Chat B: cloud-only clips (rel lower-case -> (rel, size, modified))
-        let conly: HashMap<String, (String, u64, u64)> = crate::cloud::cloud_only_files().into_iter().map(|(r, s, m)| (r.to_lowercase(), (r, s, m))).collect();
+        let conly: HashMap<String, (String, u64, u64)> = conly.into_iter().map(|(r, s, m)| (r.to_lowercase(), (r, s, m))).collect();
         let mut promote: Vec<usize> = vec![];
         for (i, c) in self.all.borrow().iter().enumerate() {
-            let here = if let Some(rel) = &c.cloud {
-                if on_disk.contains(&c.path) {
+            let on = on_disk.contains(&c.path);
+            let mut here = if let Some(rel) = &c.cloud {
+                if on {
                     promote.push(i); // downloaded: becomes a normal clip below
                     true
                 } else {
                     conly.contains_key(&rel.to_lowercase())
                 }
             } else {
-                on_disk.contains(&c.path)
+                on
             };
+            if c.gone.get() == here && (c.cloud.is_none() || on) {
+                here = c.path.exists(); // only for a flip: one stat
+            }
             if c.gone.get() == here {
                 c.gone.set(!here);
                 changed = true;
@@ -643,16 +933,14 @@ impl LibModel {
                 changed = true;
             }
         }
-        for p in on_disk.difference(&known) {
-            // a new file still being written (a recording / export) shows once it's settled
-            let settled = std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() >= 3);
-            if p.extension().is_some_and(|x| x == "tmp") || !settled {
+        // new files (read on the worker); one Echo added itself meanwhile is known by now
+        for c in new_clips {
+            if known.contains(&c.path) || !c.path.exists() {
                 continue;
             }
-            if let Some(c) = clip_from(p, root) {
-                self.add(c);
-                changed = true;
-            }
+            known.insert(c.path.clone());
+            self.add(c);
+            changed = true;
         }
         if changed {
             let gone: Vec<usize> = self.all.borrow().iter().enumerate().filter(|(_, c)| c.gone.get()).map(|(i, _)| i).collect();
@@ -665,6 +953,14 @@ impl LibModel {
         let mut a = self.all.borrow_mut();
         a.push(Rc::new(c));
         a.len() - 1
+    }
+    /// gaps-player: clip `idx` was rewritten in place (player Replace): read its size / length / date again
+    pub fn reload(&self, idx: usize, root: &Path) {
+        let old = self.clip(idx);
+        if let Some(mut c) = clip_from(&old.path, root) {
+            c.shown = old.shown.clone();
+            self.all.borrow_mut()[idx] = Rc::new(c);
+        }
     }
 
     // ---------- Echo's files ----------
@@ -683,7 +979,17 @@ impl LibModel {
         for (k, e) in v {
             let tags = e.get("tags").and_then(|t| t.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
             let note = e.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string();
-            m.insert(k, Meta { tags, note });
+            m.insert(k, Meta { tags, note, said: String::new() });
+        }
+        // Echo's clip_meta: the words auto captions heard (<name>.words.json = one JSON string)
+        if let Ok(rd) = std::fs::read_dir(&self.thumbs_dir) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                if let Some(stem) = n.strip_suffix(".words.json") {
+                    let said: String = std::fs::read_to_string(e.path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+                    m.entry(stem.to_string()).or_default().said = said;
+                }
+            }
         }
         *self.meta.borrow_mut() = m;
     }
@@ -732,10 +1038,11 @@ impl LibModel {
         std::fs::create_dir_all(&self.thumbs_dir).map_err(|e| e.to_string())?;
         write_atomic(&self.meta_path(), &serde_json::to_string(&v).map_err(|e| e.to_string())?)?;
         let mut m = self.meta.borrow_mut();
-        if clean.is_empty() && note.is_empty() {
+        let said = m.get(name).map(|x| x.said.clone()).unwrap_or_default();
+        if clean.is_empty() && note.is_empty() && said.is_empty() {
             m.remove(name);
         } else {
-            m.insert(name.to_string(), Meta { tags: clean, note });
+            m.insert(name.to_string(), Meta { tags: clean, note, said });
         }
         Ok(())
     }
@@ -820,6 +1127,8 @@ impl LibModel {
             }
             s.push(' ');
             s.push_str(&m.note);
+            s.push(' ');
+            s.push_str(&m.said);
         }
         s.to_lowercase()
     }
@@ -843,13 +1152,62 @@ impl LibModel {
         match self.sort.borrow().as_str() {
             "old" => v.sort_by(|&a, &b| all[a].mtime.cmp(&all[b].mtime)),
             "big" => v.sort_by(|&a, &b| all[b].size.cmp(&all[a].size)),
-            "long" => v.sort_by(|&a, &b| all[b].dur.unwrap_or(0.0).total_cmp(&all[a].dur.unwrap_or(0.0))),
+            "long" => {
+                // gaps-library row 44: clips without a .dur use the length ffprobe found (lib_prefs::probe_long)
+                let pr = self.probed.borrow();
+                let d = |i: usize| all[i].dur.or_else(|| pr.get(&i).copied()).unwrap_or(0.0);
+                v.sort_by(|&a, &b| d(b).total_cmp(&d(a)))
+            }
             "name" => v.sort_by(|&a, &b| natural_cmp(&all[a].name, &all[b].name)),
             _ => v.sort_by(|&a, &b| all[b].mtime.cmp(&all[a].mtime)),
         }
         *self.view.borrow_mut() = v;
         self.notify.reset();
+        self.saving_expire();
         self.rebuild_rows();
+    }
+
+    /// Echo's savingHere(): does the clip being saved belong in what the library shows now? Old Echo showed the
+    /// card in ANY folder for a moment (William: in a folder unrelated to the game, until it fixed itself).
+    fn saving_here(&self) -> bool {
+        let s = self.saving.borrow();
+        let Some(s) = s.as_ref() else { return false };
+        let nav = self.nav.borrow();
+        match nav.as_str() {
+            "all" | "today" | "week" => true,
+            n if n.starts_with("game:") => {
+                let g = &n[5..];
+                s.folder == g || s.folder.starts_with(&format!("{g}/"))
+            }
+            _ => false, // favourites, edited, cloud, tags: a new clip isn't in them
+        }
+    }
+
+    /// drops the card once the saved clip is in the list (disk sync, every 3 s) or after 90 s; true = dropped
+    pub fn saving_expire(&self) -> bool {
+        let gone = match self.saving.borrow().as_ref() {
+            None => return false,
+            Some(s) => {
+                s.at.elapsed().as_secs() > 90
+                    || s.path.as_ref().is_some_and(|p| {
+                        let p = p.to_string_lossy().replace('\\', "/").to_lowercase();
+                        self.all.borrow().iter().any(|c| !c.gone.get() && c.path.to_string_lossy().replace('\\', "/").to_lowercase() == p)
+                    })
+            }
+        };
+        if gone {
+            *self.saving.borrow_mut() = None;
+        }
+        gone
+    }
+
+    /// the card's text (Echo: "Saving the last 3 min…" -> "Almost ready…")
+    pub fn saving_text(&self) -> (String, bool) {
+        match self.saving.borrow().as_ref() {
+            Some(s) if s.path.is_some() => ("Almost ready…".into(), true),
+            Some(s) => (format!("Saving the last {}…", fmt_len(s.secs as u64)), false),
+            None => (String::new(), false),
+        }
     }
 
     /// header rows + rows of `cols` cards (Slint calls set_cols when the window width changes the column count)
@@ -872,25 +1230,34 @@ impl LibModel {
             }
         }
         let mut rows = vec![];
+        // Echo prepends the "Saving clip…" card to the top group (its own "Today" group when nothing is shown yet);
+        // in a 1-column view (list) it gets a row of its own
+        let mut ph = self.saving_here();
+        if ph && groups.is_empty() {
+            rows.push(GridRow { header: "Today".into(), count: "".into(), first: 0, n: 0, extra: 0, last: false, saving: false });
+            rows.push(GridRow { header: "".into(), count: "".into(), first: 0, n: 0, extra: 0, last: true, saving: true });
+        }
         for (name, first, n) in groups {
-            rows.push(GridRow { header: name.into(), count: n.to_string().into(), first: first as i32, n: 0, extra: 0, last: false });
+            rows.push(GridRow { header: name.into(), count: n.to_string().into(), first: first as i32, n: 0, extra: 0, last: false, saving: false });
             let mut k = 0;
             while k < n {
-                let m = cols.min(n - k);
-                // cards in a row line up: room for a tag line / note line if any card in the row has one
-                let (mut tags, mut note) = (false, false);
+                let slot = std::mem::take(&mut ph);
+                let m = (cols - slot as usize).min(n - k);
+                // cards in a row line up: room for the tag lines / note line of the card in the row that needs most
+                // (r2-layout L9: tags wrap - over::tag_lines)
+                let (mut tags, mut note) = (0, false);
                 {
                     let meta = self.meta.borrow();
                     let all = self.all.borrow();
                     for &ci in &view[first + k..first + k + m] {
                         if let Some(e) = meta.get(&all[ci].name) {
-                            tags |= !e.tags.is_empty();
+                            tags = tags.max(crate::over::tag_lines(&e.tags, self.card_w.get()));
                             note |= !e.note.trim().is_empty();
                         }
                     }
                 }
-                let extra = if tags { 24 } else { 0 } + if note { 18 } else { 0 };
-                rows.push(GridRow { header: "".into(), count: "".into(), first: (first + k) as i32, n: m as i32, extra, last: k + m >= n });
+                let extra = crate::over::tag_extra(tags) + if note { 18 } else { 0 };
+                rows.push(GridRow { header: "".into(), count: "".into(), first: (first + k) as i32, n: m as i32, extra, last: k + m >= n, saving: slot });
                 k += m;
             }
         }
@@ -900,6 +1267,22 @@ impl LibModel {
     pub fn set_cols(&self, cols: usize) {
         if cols != self.cols.get() {
             self.cols.set(cols);
+            self.rebuild_rows();
+        }
+    }
+
+    /// r2-layout (L9): the grid card's width changed (window resize) - the tag lines may change. Rows are rebuilt
+    /// only when a row's room really changes (not on every pixel of a resize).
+    pub fn set_card_w(&self, w: f32) {
+        if (w - self.card_w.get()).abs() < 0.5 {
+            return;
+        }
+        let old = self.card_w.replace(w);
+        let changed = {
+            let meta = self.meta.borrow();
+            meta.values().any(|e| !e.tags.is_empty() && crate::over::tag_lines(&e.tags, old) != crate::over::tag_lines(&e.tags, w))
+        };
+        if changed {
             self.rebuild_rows();
         }
     }
@@ -1044,25 +1427,17 @@ impl LibModel {
     /// every folder the sidebar lists: real folders on disk (also empty ones, like Echo), folders of clips,
     /// and games that only exist as a name prefix ("FiveM 2026-..." in the main folder)
     fn folder_set(&self) -> BTreeSet<String> {
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        fn walk(dir: &Path, rel: &str, depth: u32, out: &mut BTreeSet<String>) {
-            let Ok(rd) = std::fs::read_dir(dir) else { return };
-            for e in rd.flatten() {
-                if !e.file_type().is_ok_and(|t| t.is_dir()) {
-                    continue;
-                }
-                let name = e.file_name().to_string_lossy().to_string();
-                let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-                if folder_reserved(&r) {
-                    continue;
-                }
-                out.insert(r.clone());
-                if depth < 4 {
-                    walk(&e.path(), &r, depth + 1, out);
-                }
+        // r2-threads (L29): the folders on disk come from the disk sync's worker (every 3 s); walked here only
+        // the first time and after Echo changed folders itself
+        let cached = self.disk_dirs.borrow().clone();
+        let mut set: BTreeSet<String> = match cached {
+            Some(s) => s,
+            None => {
+                let s = walk_dirs(&self.root());
+                *self.disk_dirs.borrow_mut() = Some(s.clone());
+                s
             }
-        }
-        walk(&self.root(), "", 0, &mut set);
+        };
         for c in self.all().iter() {
             if !c.folder.is_empty() {
                 let parts: Vec<&str> = c.folder.split('/').collect();
@@ -1129,14 +1504,9 @@ impl LibModel {
     /// clips of this folder that are in the cloud or have a share link (Echo's cloud.json / links.json):
     /// moving those needs the cloud copies moved too - that comes with the real port
     fn folder_in_cloud(&self, f: &str) -> bool {
-        let pre = format!("{}/", f.to_lowercase());
-        let under = |rel: &str| rel.replace('\\', "/").to_lowercase().starts_with(&pre);
-        let read = |n: &str| std::fs::read_to_string(self.thumbs_dir.join(n)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        let cloud = read("cloud.json").and_then(|v| v.get("files").and_then(|f| f.as_array()).cloned()).unwrap_or_default();
-        if cloud.iter().any(|x| x.get("rel").and_then(|r| r.as_str()).is_some_and(under)) {
-            return true;
-        }
-        read("links.json").and_then(|v| v.as_object().cloned()).is_some_and(|m| m.keys().any(|k| under(k)))
+        let pre = format!("{}/", f.replace('\\', "/").to_lowercase());
+        // r2-threads (L36): the cached sets (already lower-case with '/')
+        self.cloud_sets(|cl, li| cl.iter().chain(li.iter()).any(|r| r.starts_with(&pre)))
     }
     /// Is there already a folder with this name (any upper / lower case)? Returns its real name.
     pub fn folder_exists(&self, f: &str) -> Option<String> {
@@ -1165,6 +1535,7 @@ impl LibModel {
         let dir = self.root().join(&rel);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let _ = std::fs::write(dir.join(".echo-folder"), "");
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29)
         Ok(rel)
     }
     /// Echo's delete_folder: only a folder without clips (its empty sub-folders go too)
@@ -1184,6 +1555,7 @@ impl LibModel {
             return Err("Move or delete the clips in it first".into());
         }
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29)
         let par = parent_of(&rel).to_string();
         let leaf = rel.rsplit('/').next().unwrap_or(&rel).to_string();
         let mut ord = self.folder_order.borrow_mut();
@@ -1200,8 +1572,40 @@ impl LibModel {
     /// the two are merged (clips renamed "name (2)" on clashes, their thumbnails / tags / favourite follow).
     /// New clips of that game follow too (settings.json folder_alias). Clips keep their ids (open player,
     /// selection). Returns the new folder.
-    pub fn move_folder(&self, old: &str, new: &str) -> Result<String, String> {
+    /// r2-threads (L13): the files move on a worker (a locked clip waits up to ~4 s there); `done` on the UI thread
+    pub fn move_folder_bg(self: &Rc<Self>, old: &str, new: &str, done: impl FnOnce(Result<String, String>) + 'static) {
         let (old, new) = (clean_folder(old), clean_folder(new));
+        let follow = match self.move_folder_check(&old, &new) {
+            Ok(f) => f,
+            Err(e) => return done(Err(e)),
+        };
+        let (root, thumbs, o2, n2) = (self.root(), self.thumbs_dir.clone(), old.clone(), new.clone());
+        let lib = self.clone();
+        crate::lib_net::bg(
+            move || {
+                let (src, dst) = (root.join(&o2), root.join(&n2));
+                if n2.eq_ignore_ascii_case(&o2) || !dst.exists() {
+                    if let Some(par) = dst.parent() {
+                        let _ = std::fs::create_dir_all(par);
+                    }
+                    FolderFiles { merged: None, renamed: vec![], err: rename_patient(&src, &dst).err() }
+                } else {
+                    // merge: move every clip over, renaming on name clashes
+                    merge_files(&src, &dst, &thumbs)
+                }
+            },
+            move |ff| {
+                let r = lib.move_folder_after(&old, &new, ff);
+                if r.is_ok() {
+                    crate::cloud::follow_move(follow.into_iter().map(|(i, o)| (o, crate::cloud::rel_of(&lib.clip(i)))).filter(|(o, n)| o != n).collect());
+                }
+                done(r);
+            },
+        );
+    }
+    /// move_folder's checks; Ok = the clips whose cloud copies follow (id, rel before)
+    fn move_folder_check(&self, old: &str, new: &str) -> Result<Vec<(usize, String)>, String> {
+        let (old, new) = (old.to_string(), new.to_string());
         if old.is_empty() || new.is_empty() {
             return Err("pick a folder".into());
         }
@@ -1229,70 +1633,138 @@ impl LibModel {
         } else {
             vec![]
         };
-        let r = self.move_folder_inner(&old, &new);
-        if r.is_ok() {
-            crate::cloud::follow_move(follow.into_iter().map(|(i, o)| (o, crate::cloud::rel_of(&self.clip(i)))).filter(|(o, n)| o != n).collect());
-        }
-        r
+        Ok(follow)
     }
-    fn move_folder_inner(&self, old: &str, new: &str) -> Result<String, String> {
-        let (old, new) = (old.to_string(), new.to_string());
+    /// after a merge on the worker: renamed clips' tags / note / favourite follow (their .thumbs files moved there)
+    fn apply_renamed(&self, renamed: &[(String, String)]) {
+        for (stem, new_stem) in renamed {
+            let m = self.meta.borrow().get(stem).cloned();
+            if let Some(m) = m {
+                let _ = self.set_meta(new_stem, m.tags, m.note);
+                let _ = self.set_meta(stem, vec![], String::new());
+            }
+            if self.favs.borrow().contains(stem) {
+                let _ = self.set_favs(&[stem.clone()], false);
+                let _ = self.set_favs(&[new_stem.clone()], true);
+            }
+        }
+    }
+    /// gaps-library row 29: Echo's "Merge into the main folder" (rename_folder with new = ""): the folder's clips go
+    /// to the top of the clips folder (renamed on name clashes), its sub-folders become top folders, new clips of it
+    /// go there too (folder_alias old -> ""), cloud copies follow. The moved clips come back through sync_disk.
+    /// r2-threads (L13): the files move on a worker (then the clips folder is read there too); `done` on the UI thread
+    pub fn merge_into_main_bg(self: &Rc<Self>, old: &str, done: impl FnOnce(Result<(), String>) + 'static) {
+        let old = clean_folder(old);
+        if old.is_empty() {
+            return done(Err("pick a folder".into()));
+        }
+        if folder_reserved(&old) {
+            return done(Err("that folder name is reserved".into()));
+        }
         let root = self.root();
         let src = root.join(&old);
-        let dst = root.join(&new);
-        let same_dir = new.eq_ignore_ascii_case(&old);
-        // merge: which file went where (a clip with the same name may already be there)
-        let mut merged: Option<HashMap<PathBuf, PathBuf>> = None;
-        if same_dir || !dst.exists() {
-            if let Some(par) = dst.parent() {
-                let _ = std::fs::create_dir_all(par);
-            }
-            rename_patient(&src, &dst)?;
-        } else {
-            // merge: move every clip over, renaming on name clashes
-            let map = merged.insert(HashMap::new());
-            let rd = std::fs::read_dir(&src).map_err(|e| e.to_string())?;
-            for f in rd.flatten() {
-                let p = f.path();
-                if p.is_dir() {
-                    let to = dst.join(f.file_name());
-                    if !to.exists() {
-                        let _ = rename_patient(&p, &to);
-                    }
-                    continue;
-                }
-                if !p.is_file() || f.file_name() == ".echo-folder" {
-                    continue;
-                }
-                let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                let ext = p.extension().map(|x| format!(".{}", x.to_string_lossy())).unwrap_or_default();
-                let mut to = dst.join(format!("{stem}{ext}"));
-                let mut k = 2;
-                while to.exists() {
-                    to = dst.join(format!("{stem} ({k}){ext}"));
-                    k += 1;
-                }
-                rename_patient(&p, &to)?;
-                map.insert(p.clone(), to.clone());
-                let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                if new_stem != stem {
-                    for x in ["jpg", "dur", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
-                        let _ = std::fs::rename(self.thumbs_dir.join(format!("{stem}.{x}")), self.thumbs_dir.join(format!("{new_stem}.{x}")));
-                    }
-                    let m = self.meta.borrow().get(&stem).cloned();
-                    if let Some(m) = m {
-                        let _ = self.set_meta(&new_stem, m.tags, m.note);
-                        let _ = self.set_meta(&stem, vec![], String::new());
-                    }
-                    if self.favs.borrow().contains(&stem) {
-                        let _ = self.set_favs(&[stem.clone()], false);
-                        let _ = self.set_favs(&[new_stem.clone()], true);
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(src.join(".echo-folder"));
-            let _ = std::fs::remove_dir(&src);
+        if !src.is_dir() {
+            return done(Err(format!("\"{old}\" isn't a folder yet - its clips are in the main folder")));
         }
+        let lo = old.to_lowercase();
+        let pre = format!("{lo}/");
+        let under = |f: &str| {
+            let f = f.to_lowercase();
+            f == lo || f.starts_with(&pre)
+        };
+        // clips in the cloud follow (their path before, their rel before)
+        let follow: Vec<(PathBuf, String)> = (0..self.len())
+            .filter(|&i| {
+                let c = self.clip(i);
+                !c.gone.get() && c.cloud.is_none() && under(&c.folder) && self.in_cloud(i)
+            })
+            .map(|i| (self.clip(i).path.clone(), crate::cloud::rel_of(&self.clip(i))))
+            .collect();
+        let (known, thumbs) = (self.known_paths(), self.thumbs_dir.clone());
+        let lib = self.clone();
+        crate::lib_net::bg(
+            move || {
+                // sub-folders come along (unless the main folder already has one with that name)
+                let ff = merge_files(&src, &root, &thumbs);
+                let scan = disk_scan(&root, known);
+                (ff, scan)
+            },
+            move |(ff, scan)| done(lib.merge_after(old, follow, ff, scan)),
+        );
+    }
+    fn merge_after(&self, old: String, follow: Vec<(PathBuf, String)>, ff: FolderFiles, scan: DiskScan) -> Result<(), String> {
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29): folders may have changed - the sidebar walks again
+        self.apply_renamed(&ff.renamed);
+        if let Some(e) = ff.err {
+            return Err(e);
+        }
+        let moved = ff.merged.unwrap_or_default();
+        let root = self.root();
+        let src = root.join(&old);
+        let lo = old.to_lowercase();
+        let pre = format!("{lo}/");
+        let under = |f: &str| {
+            let f = f.to_lowercase();
+            f == lo || f.starts_with(&pre)
+        };
+        let pairs: Vec<(String, String)> = follow
+            .into_iter()
+            .filter_map(|(p, orel)| {
+                let np = moved.get(&p).cloned().or_else(|| p.strip_prefix(&src).ok().map(|r| root.join(r)).filter(|n| n.is_file()))?;
+                let nrel = np.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+                (nrel != orel).then_some((orel, nrel))
+            })
+            .collect();
+        crate::cloud::follow_move(pairs);
+        // the remembered sub-folder order: "old/x" keys move up one level, the old parent forgets it
+        {
+            let mut ord = self.folder_order.borrow_mut();
+            let keys: Vec<String> = ord.keys().filter(|k| under(k)).cloned().collect();
+            for k in keys {
+                if let Some(v) = ord.remove(&k) {
+                    let nk = k[old.len()..].trim_start_matches('/').to_string();
+                    if !nk.is_empty() {
+                        ord.insert(nk, v);
+                    }
+                }
+            }
+            let (op, ol) = (parent_of(&old).to_string(), old.rsplit('/').next().unwrap_or(&old).to_string());
+            if let Some(v) = ord.get_mut(&op) {
+                v.retain(|x| !x.eq_ignore_ascii_case(&ol));
+            }
+        }
+        // new clips of this game go to the main folder too (Echo's folder_alias old -> "")
+        let mut alias: BTreeMap<String, String> =
+            echo_settings().and_then(|v| v.get("folder_alias").cloned()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        for v in alias.values_mut() {
+            if v.eq_ignore_ascii_case(&old) {
+                v.clear();
+            }
+        }
+        alias.insert(old.clone(), String::new());
+        if let Err(e) = self.save_folder_order(Some(serde_json::to_value(&alias).unwrap_or_default())) {
+            eprintln!("folders: settings.json not saved: {e}");
+        }
+        {
+            let mut nav = self.nav.borrow_mut();
+            if nav.strip_prefix("game:").is_some_and(|f| under(f)) {
+                *nav = "all".into();
+            }
+        }
+        self.sync_apply(&root, scan); // r2-threads (L13): read on the worker
+        Ok(())
+    }
+    /// move_folder after the files moved on the worker: the clips follow in place, the folder order / alias / filter too
+    fn move_folder_after(&self, old: &str, new: &str, ff: FolderFiles) -> Result<String, String> {
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29): folders may have changed - the sidebar walks again
+        let (old, new) = (old.to_string(), new.to_string());
+        let root = self.root();
+        self.apply_renamed(&ff.renamed);
+        if let Some(e) = ff.err {
+            return Err(e);
+        }
+        // merge: which file went where (a clip with the same name may already be there)
+        let merged = ff.merged;
         // the clips follow in place (same ids); merged clips that got a new name are picked up by sync_disk
         let lo = old.to_lowercase();
         {
@@ -1392,56 +1864,92 @@ impl LibModel {
     }
 
     /// Echo's move_clip for the picked clips: into `folder` ("" = the main folder). Clips keep their ids.
-    /// Returns (moved, message for the clips that couldn't move).
-    pub fn move_clips(&self, ids: &[usize], folder: &str) -> (usize, Option<String>) {
+    /// r2-threads (L13): the files move on a worker (a locked clip waits up to ~4 s there); `done(moved, message
+    /// for the clips that couldn't move)` on the UI thread.
+    pub fn move_clips_bg(self: &Rc<Self>, ids: &[usize], folder: &str, done: impl FnOnce(usize, Option<String>) + 'static) {
+        self.move_many_bg(vec![(ids.to_vec(), folder.to_string())], done);
+    }
+    /// several moves in one go (Sort into folders: one batch per game folder), one worker
+    pub fn move_many_bg(self: &Rc<Self>, batches: Vec<(Vec<usize>, String)>, done: impl FnOnce(usize, Option<String>) + 'static) {
+        let root = self.root();
+        let mut err = None::<String>;
+        let mut jobs: Vec<MoveJob> = vec![];
         // Chat B: the moved cloud clips' cloud copies follow (cloud_follow_move)
         let mut follow: Vec<(usize, String)> = vec![];
-        let r = self.move_clips_inner(ids, folder, &mut follow);
-        let pairs: Vec<(String, String)> = follow.into_iter().map(|(i, o)| (o, crate::cloud::rel_of(&self.clip(i)))).filter(|(o, n)| o != n).collect();
-        crate::cloud::follow_move(pairs);
-        r
-    }
-    fn move_clips_inner(&self, ids: &[usize], folder: &str, follow: &mut Vec<(usize, String)>) -> (usize, Option<String>) {
-        let folder = clean_folder(folder);
-        if folder_reserved(&folder) {
-            return (0, Some("that folder name is reserved".into()));
+        for (ids, folder) in batches {
+            let folder = clean_folder(&folder);
+            if folder_reserved(&folder) {
+                err = Some("that folder name is reserved".into());
+                continue;
+            }
+            let folder = self.folder_exists(&folder).unwrap_or(folder);
+            let dir = if folder.is_empty() { root.clone() } else { root.join(&folder) };
+            for &i in &ids {
+                let c = self.clip(i);
+                if c.gone.get() || c.folder == folder {
+                    continue;
+                }
+                // Chat B: clips in the cloud / with a share link: their cloud copy follows (cloud_follow_move)
+                if c.cloud.is_some() {
+                    err = Some(format!("\"{}\" is only in the cloud - download it first to move it", c.shown));
+                    continue;
+                }
+                let file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let rel = if c.folder.is_empty() { file } else { format!("{}/{file}", c.folder) };
+                if self.rel_in_cloud(&rel) {
+                    follow.push((i, rel));
+                }
+                jobs.push(MoveJob { idx: i, from: c.path.clone(), dir: dir.clone(), folder: folder.clone(), shown: c.shown.clone() });
+            }
         }
-        let folder = self.folder_exists(&folder).unwrap_or(folder);
-        let root = self.root();
-        let dir = if folder.is_empty() { root.clone() } else { root.join(&folder) };
-        let (mut moved, mut err) = (0, None::<String>);
-        for &i in ids {
-            let c = self.clip(i);
-            if c.gone.get() || c.folder == folder {
-                continue;
-            }
-            // Chat B: clips in the cloud / with a share link: their cloud copy follows (cloud_follow_move)
-            if c.cloud.is_some() {
-                err = Some(format!("\"{}\" is only in the cloud - download it first to move it", c.shown));
-                continue;
-            }
-            let file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let rel = if c.folder.is_empty() { file } else { format!("{}/{file}", c.folder) };
-            if self.rel_in_cloud(&rel) {
-                follow.push((i, rel));
-            }
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                err = Some(e.to_string());
-                break;
-            }
-            let new = dir.join(c.path.file_name().unwrap_or_default());
-            if new.exists() {
-                err = Some(format!("{} already has a clip called \"{}\"", if folder.is_empty() { "The main folder" } else { &folder }, c.shown));
-                continue;
-            }
-            if let Err(e) = rename_patient(&c.path, &new) {
-                err = Some(e.replace("A clip in this folder is", &format!("\"{}\" is", c.shown)));
-                continue;
-            }
-            // the old folder goes when it's empty now (Echo's remove_if_empty; an .echo-folder marker keeps it)
-            if let Some(par) = c.path.parent().filter(|p| *p != root.as_path()) {
-                let _ = std::fs::remove_dir(par);
-            }
+        let lib = self.clone();
+        let r0 = root.clone();
+        let state = Rc::new(RefCell::new((0usize, err)));
+        let (s1, s2) = (state.clone(), state);
+        crate::bgwork::stream(
+            move |tx| {
+                let mut broken: Option<PathBuf> = None;
+                for j in jobs {
+                    if broken.as_ref() == Some(&j.dir) {
+                        continue; // the folder couldn't be made (Echo: the rest of that move stops)
+                    }
+                    let r = move_file(&j, &r0);
+                    if r.as_ref().is_err_and(|e| e.0) {
+                        broken = Some(j.dir.clone());
+                    }
+                    let _ = tx.send((j, r.map_err(|e| e.1)));
+                }
+            },
+            move |(j, r): (MoveJob, Result<PathBuf, String>)| {
+                let mut s = s1.borrow_mut();
+                match r {
+                    Ok(new) => {
+                        lib.moved(&j, new);
+                        s.0 += 1;
+                    }
+                    Err(e) => s.1 = Some(e),
+                }
+            },
+            move || {
+                if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
+                    let pairs: Vec<(String, String)> = follow.into_iter().map(|(i, o)| (o, crate::cloud::rel_of(&l.clip(i)))).filter(|(o, n)| o != n).collect();
+                    crate::cloud::follow_move(pairs);
+                }
+                let (n, e) = s2.borrow_mut().clone();
+                done(n, e);
+            },
+        );
+    }
+    /// r2-threads (L13): clip `j.idx` is in its new folder now (`new` = its file): the library entry follows
+    fn moved(&self, j: &MoveJob, new: PathBuf) {
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29): folders may have changed - the sidebar walks again
+        let i = j.idx;
+        let c = self.clip(i);
+        if c.path != j.from {
+            return; // changed meanwhile: the disk sync sorts it out
+        }
+        let folder = j.folder.clone();
+        {
             let game = if folder.is_empty() {
                 match date_at(&c.name) {
                     Some(k) if !matches!(&c.name[..k], "Clip" | "Montage" | "Recording") => c.name[..k].to_string(),
@@ -1468,13 +1976,31 @@ impl LibModel {
                 gone: Default::default(),
                 cloud: None,
             });
-            moved += 1;
         }
-        (moved, err)
     }
     /// Echo's rename_clip (Chat D): new file name in the same folder, " (Echo)" kept, favourite + tags/note + Echo's
     /// .thumbs files follow. The clip keeps its id. Cloud clips refuse (their cloud copy must follow - real port).
-    pub fn rename_clip(&self, idx: usize, name: &str) -> Result<String, String> {
+    /// r2-threads (L7): the file rename (it waits up to ~4 s on a locked file) on a worker;
+    /// `done` on the UI thread with the shown name or the error
+    pub fn rename_clip_bg(self: &Rc<Self>, idx: usize, name: &str, done: impl FnOnce(Result<String, String>) + 'static) {
+        let prep = match self.rename_prep(idx, name) {
+            Err(e) => return done(Err(e)),
+            Ok(Err(shown)) => return done(Ok(shown)),
+            Ok(Ok(p)) => p,
+        };
+        let (from, to) = (prep.from.clone(), prep.to.clone());
+        let lib = self.clone();
+        crate::lib_net::bg(
+            move || rename_patient(&from, &to).map_err(|e| e.replace("A clip in this folder is", "The clip is")),
+            move |r| {
+                // the clip changed meanwhile (moved / deleted / renamed again): the file went, the library follows
+                // on the next disk sync
+                done(r.and_then(|_| lib.rename_finish(prep)));
+            },
+        );
+    }
+    /// the checks of rename_clip: Ok(Err(shown)) = nothing to do (same name)
+    fn rename_prep(&self, idx: usize, name: &str) -> Result<Result<RenamePrep, String>, String> {
         let c = self.clip(idx);
         if c.gone.get() {
             return Err("that clip isn't there any more".into());
@@ -1488,14 +2014,28 @@ impl LibModel {
             name.push_str(" (Echo)");
         }
         if name == c.name {
-            return Ok(c.shown.clone());
+            return Ok(Err(c.shown.clone()));
         }
-        let name: &str = &name;
         if c.cloud.is_some() {
             return Err(format!("\"{}\" is only in the cloud - download it first to rename it", c.shown));
         }
         let follow = self.in_cloud(idx).then(|| crate::cloud::rel_of(&c));
-        let r = self.rename_clip_inner(idx, name.to_string());
+        let ext = c.path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
+        let new = c.path.with_file_name(format!("{name}.{ext}"));
+        // only a change of upper/lower case may hit the same file (Windows)
+        if new.exists() && !name.eq_ignore_ascii_case(&c.name) {
+            return Err("A clip with that name already exists".into());
+        }
+        Ok(Ok(RenamePrep { idx, from: c.path.clone(), to: new, name, follow }))
+    }
+    /// after the file was renamed: favourite, tags / note, Echo's .thumbs files and the cloud copy follow
+    fn rename_finish(&self, prep: RenamePrep) -> Result<String, String> {
+        let RenamePrep { idx, from, to: new, name, follow } = prep;
+        let c = self.clip(idx);
+        if c.path != from || c.gone.get() {
+            return Err("That clip changed meanwhile - try again".into());
+        }
+        let r = self.rename_clip_inner(idx, name, new);
         if let (Ok(_), Some(o)) = (&r, follow) {
             let n = crate::cloud::rel_of(&self.clip(idx));
             if n != o {
@@ -1504,15 +2044,8 @@ impl LibModel {
         }
         r
     }
-    fn rename_clip_inner(&self, idx: usize, name: String) -> Result<String, String> {
+    fn rename_clip_inner(&self, idx: usize, name: String, new: PathBuf) -> Result<String, String> {
         let c = self.clip(idx);
-        let ext = c.path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
-        let new = c.path.with_file_name(format!("{name}.{ext}"));
-        // only a change of upper/lower case may hit the same file (Windows)
-        if new.exists() && !name.eq_ignore_ascii_case(&c.name) {
-            return Err("A clip with that name already exists".into());
-        }
-        rename_patient(&c.path, &new).map_err(|e| e.replace("A clip in this folder is", "The clip is"))?;
         let old = c.name.clone();
         if self.favs.borrow().contains(&old) {
             let _ = self.set_favs(&[old.clone()], false);
@@ -1567,64 +2100,75 @@ impl LibModel {
     /// Echo's delete_clip for these clips: Recycle Bin / Trash, its thumbnails + favourite go, an emptied folder goes.
     /// Cloud clips: only the copy on this PC goes; the clip is put on cloud.json's keep_remote list (like Echo's
     /// "Only from this PC") so it isn't downloaded again. Returns (deleted, first error).
-    pub fn delete_clips(&self, ids: &[usize]) -> (usize, Option<String>) {
-        let root = self.root();
-        let (mut n, mut err) = (0, None::<String>);
-        let mut keep: Vec<String> = vec![];
-        for &i in ids {
-            let c = self.clip(i);
-            if c.gone.get() {
-                continue;
-            }
-            let cloud = self.in_cloud(i);
-            if let Err(e) = recycle(&c.path) {
-                err.get_or_insert(e);
-                continue;
-            }
-            if cloud {
-                let file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                keep.push(if c.folder.is_empty() { file } else { format!("{}/{file}", c.folder) });
-            }
-            if let Some(par) = c.path.parent().filter(|p| *p != root.as_path()) {
-                let _ = std::fs::remove_dir(par);
-            }
-            for x in ["jpg", "dur", "thumbt", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a0.m4a", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
-                let _ = std::fs::remove_file(self.thumbs_dir.join(format!("{}.{x}", c.name)));
-            }
-            if self.favs.borrow().contains(&c.name) {
-                let _ = self.set_favs(&[c.name.clone()], false);
-            }
-            c.gone.set(true);
-            self.picked.borrow_mut().remove(&i);
-            n += 1;
-        }
-        if !keep.is_empty() {
-            let p = self.thumbs_dir.join("cloud.json");
-            if let Some(mut v) = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
-                if let Some(o) = v.as_object_mut() {
-                    let list = o.entry("keep_remote").or_insert_with(|| serde_json::json!([]));
-                    if let Some(a) = list.as_array_mut() {
-                        for k in keep {
-                            if !a.iter().any(|x| x.as_str() == Some(k.as_str())) {
-                                a.push(k.into());
-                            }
-                        }
+    /// r2-threads (L5): the files go on a worker (`delete_clips_bg`, a clip at a time: Recycle Bin / Trash can wait
+    /// on a locked file); `each(done, total)` after every clip and `done(deleted, first error)` run on the UI thread.
+    pub fn delete_clips_bg(self: &Rc<Self>, ids: &[usize], mut each: impl FnMut(usize, usize) + 'static, done: impl FnOnce(usize, Option<String>) + 'static) {
+        let jobs = self.delete_plan(ids);
+        let total = jobs.len();
+        let (root, thumbs) = (self.root(), self.thumbs_dir.clone());
+        let lib = self.clone();
+        let (mut i, mut n, mut err) = (0usize, 0usize, None::<String>);
+        let res = Rc::new(RefCell::new((0usize, None::<String>)));
+        let r2 = res.clone();
+        crate::bgwork::stream(
+            move |tx| {
+                let mut keep = vec![];
+                for j in jobs {
+                    let r = delete_file(&j, &root, &thumbs);
+                    if r.is_ok() && j.cloud {
+                        keep.push(j.rel.clone());
                     }
-                    let _ = write_atomic(&p, &serde_json::to_string(&v).unwrap_or_default());
+                    let _ = tx.send((j, r));
                 }
-            }
+                keep_remote(&thumbs, keep);
+            },
+            move |(j, r): (DelJob, Result<(), String>)| {
+                i += 1;
+                match r {
+                    Ok(()) => {
+                        lib.deleted(&j);
+                        n += 1;
+                    }
+                    Err(e) => {
+                        err.get_or_insert(e);
+                    }
+                }
+                *r2.borrow_mut() = (n, err.clone());
+                each(i, total);
+            },
+            move || {
+                let (n, e) = res.borrow_mut().clone();
+                done(n, e);
+            },
+        );
+    }
+    /// r2-threads (L5): the clips to delete, as plain data a worker can take (gone ones skipped)
+    pub fn delete_plan(&self, ids: &[usize]) -> Vec<DelJob> {
+        ids.iter()
+            .filter(|&&i| i < self.len() && !self.clip(i).gone.get())
+            .map(|&i| {
+                let c = self.clip(i);
+                let file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                DelJob { idx: i, path: c.path.clone(), name: c.name.clone(), cloud: self.in_cloud(i), rel: if c.folder.is_empty() { file } else { format!("{}/{file}", c.folder) } }
+            })
+            .collect()
+    }
+    /// r2-threads (L5): the clip's file went (delete_file on a worker): its favourite goes, the library forgets it
+    pub fn deleted(&self, j: &DelJob) {
+        *self.disk_dirs.borrow_mut() = None; // r2-threads (L29): folders may have changed - the sidebar walks again
+        if self.favs.borrow().contains(&j.name) {
+            let _ = self.set_favs(&[j.name.clone()], false);
         }
-        (n, err)
+        if j.idx < self.len() {
+            self.clip(j.idx).gone.set(true);
+        }
+        self.picked.borrow_mut().remove(&j.idx);
     }
 
     /// one clip (rel = "Valorant/x.mp4") in Echo's cloud.json / links.json
     fn rel_in_cloud(&self, rel: &str) -> bool {
-        let r = rel.to_lowercase();
-        let same = |x: &str| x.replace('\\', "/").to_lowercase() == r;
-        let read = |n: &str| std::fs::read_to_string(self.thumbs_dir.join(n)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        let cloud = read("cloud.json").and_then(|v| v.get("files").and_then(|f| f.as_array()).cloned()).unwrap_or_default();
-        cloud.iter().any(|x| x.get("rel").and_then(|r| r.as_str()).is_some_and(same))
-            || read("links.json").and_then(|v| v.as_object().cloned()).is_some_and(|m| m.keys().any(|k| same(k)))
+        let r = rel.replace('\\', "/").to_lowercase();
+        self.cloud_sets(|cl, li| cl.contains(&r) || li.contains(&r)) // r2-threads (L36): cached
     }
     /// the folders the Move menu offers (sidebar order, sub-folders indented): (folder, depth)
     pub fn move_targets(&self) -> Vec<(String, usize)> {
@@ -1677,6 +2221,7 @@ impl LibModel {
             drop: "".into(),
             has_img: false,
             img: Default::default(),
+            merge: Default::default(),
         };
         // Echo's sidebar: CLIPS (Cloud + Screenshots come with the real port), FOLDERS, TAGS
         let mut nav = vec![
@@ -1685,8 +2230,8 @@ impl LibModel {
             item("week", "This week", count("week"), crate::icons::CAL, ""),
             item("fav", "Favourites", count("fav"), crate::icons::STAR, ""),
             item("edited", "Edited", count("edited"), crate::icons::EDIT, ""),
-            item("cloud", "Cloud", 0, crate::icons::CLOUD, ""),
-            item("shots", "Screenshots", 0, crate::icons::SHOTS, ""),
+            item("cloud", "Cloud", count("cloud"), crate::icons::CLOUD, ""), // gaps-library row 19
+            item("shots", "Screenshots", crate::lib_shots::count(&self.root()), crate::icons::SHOTS, ""),
         ];
         // folders: real folders on disk (also empty ones) + folders of clips + games that only exist as a name
         // prefix; each top folder (A-Z), then its sub-folders in the remembered order (drag to reorder)
@@ -1728,6 +2273,14 @@ impl LibModel {
                 drop: "".into(),
                 has_img: icon.is_some(),
                 img: icon.unwrap_or_default(),
+                // gaps-library row 29: the right-click menu's "Merge into <folder>" (every other real folder)
+                merge: ModelRc::new(VecModel::from(
+                    folders
+                        .iter()
+                        .filter(|o| *o != f && !o.starts_with(&format!("{f}/")) && root.join(o.as_str()).is_dir() && !folder_reserved(o))
+                        .map(|o| SharedString::from(o.as_str()))
+                        .collect::<Vec<_>>(),
+                )),
             });
         }
         for (k, (t, n)) in self.tag_counts().iter().enumerate() {
@@ -1744,6 +2297,7 @@ impl LibModel {
                 drop: "".into(),
                 has_img: false,
                 img: Default::default(),
+                merge: Default::default(),
             });
         }
         nav
@@ -1755,40 +2309,49 @@ impl LibModel {
         let on = |g: &str, k: &str| fsel.get(g).map(|v| v.iter().any(|x| x == k)).unwrap_or(false);
         let all = self.all();
         let cnt = |f: &dyn Fn(&Clip) -> bool| all.iter().filter(|c| f(c)).count() as i32;
+        // gaps-library row 21: Echo's #fmenu - Game / Where / Type / Tags (Where always listed); the search box
+        // filters the Game and Tags chips by name; Game chips carry the game's icon
+        let q = self.fq.borrow().trim().to_lowercase();
+        let hit = |label: &str| q.is_empty() || label.to_lowercase().contains(&q);
         let mut sections: Vec<(&str, &str, Vec<FOpt>)> = vec![];
         let mut games = self.games();
         games.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+        let alias: BTreeMap<String, String> =
+            echo_settings().and_then(|v| v.get("folder_alias").cloned()).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
         let mut g: Vec<FOpt> = games
             .iter()
-            .map(|(n, c)| FOpt { group: "game".into(), key: n.as_str().into(), label: n.as_str().into(), count: *c as i32, on: on("game", n) })
+            .filter(|(n, _)| hit(n))
+            .map(|(n, c)| {
+                let icon = self.game_icon(n, &alias);
+                FOpt { group: "game".into(), key: n.as_str().into(), label: n.as_str().into(), count: *c as i32, on: on("game", n), has_img: icon.is_some(), img: icon.unwrap_or_default() }
+            })
             .collect();
         let none = cnt(&|c| c.game.is_empty());
-        if none > 0 {
-            g.push(FOpt { group: "game".into(), key: "".into(), label: "No game".into(), count: none, on: on("game", "") });
+        if none > 0 && hit("No game") {
+            g.push(FOpt { group: "game".into(), key: "".into(), label: "No game".into(), count: none, on: on("game", ""), ..Default::default() });
         }
         sections.push(("game", "GAME", g));
+        sections.push((
+            "where",
+            "WHERE",
+            WHERE
+                .iter()
+                .map(|(k, l)| FOpt { group: "where".into(), key: (*k).into(), label: (*l).into(), count: cnt(&|c| self.where_ok(c, k)), on: on("where", k), ..Default::default() })
+                .collect(),
+        ));
         sections.push((
             "type",
             "TYPE",
             TYPES
                 .iter()
-                .map(|(k, l)| FOpt { group: "type".into(), key: (*k).into(), label: (*l).into(), count: cnt(&|c| self.type_ok(c, k)), on: on("type", k) })
+                .map(|(k, l)| FOpt { group: "type".into(), key: (*k).into(), label: (*l).into(), count: cnt(&|c| self.type_ok(c, k)), on: on("type", k), ..Default::default() })
                 .collect(),
         ));
-        if crate::cloud::on() || all.iter().any(|c| c.cloud.is_some()) {
-            sections.push((
-                "where",
-                "WHERE",
-                WHERE
-                    .iter()
-                    .map(|(k, l)| FOpt { group: "where".into(), key: (*k).into(), label: (*l).into(), count: cnt(&|c| self.where_ok(c, k)), on: on("where", k) })
-                    .collect(),
-            ));
-        }
         let tags: Vec<FOpt> = self
             .tag_counts()
             .into_iter()
-            .map(|(t, n)| FOpt { group: "tag".into(), key: t.as_str().into(), label: format!("#{t}").into(), count: n as i32, on: on("tag", &t) })
+            .filter(|(t, _)| hit(&format!("#{t}")))
+            .map(|(t, n)| FOpt { group: "tag".into(), key: t.as_str().into(), label: format!("#{t}").into(), count: n as i32, on: on("tag", &t), ..Default::default() })
             .collect();
         sections.push(("tag", "TAGS", tags));
         let mut lines = vec![];
@@ -1801,7 +2364,7 @@ impl LibModel {
             let mut first = true;
             for o in opts {
                 // chip width in "characters": label + count + padding
-                let w = o.label.chars().count() + o.count.to_string().len() + 6 + if o.on { 2 } else { 0 };
+                let w = o.label.chars().count() + o.count.to_string().len() + 6 + if o.on { 2 } else { 0 } + if o.has_img { 3 } else { 0 };
                 if !cur.is_empty() && width + w > 64 {
                     lines.push(FLine { head: if first { head.into() } else { "".into() }, opts: ModelRc::new(VecModel::from(std::mem::take(&mut cur))) });
                     first = false;
@@ -1825,7 +2388,7 @@ impl LibModel {
                     "where" => WHERE.iter().find(|t| t.0 == k).map(|t| t.1.to_string()).unwrap_or(k.clone()),
                     _ => TYPES.iter().find(|t| t.0 == k).map(|t| t.1.to_string()).unwrap_or(k.clone()),
                 };
-                v.push(FOpt { group: g.as_str().into(), key: k.as_str().into(), label: label.into(), count: 0, on: true });
+                v.push(FOpt { group: g.as_str().into(), key: k.as_str().into(), label: label.into(), count: 0, on: true, ..Default::default() });
             }
         }
         v
@@ -1949,6 +2512,7 @@ impl LibModel {
         // icons/<game>.png + cache as the sidebar folders
         let game_top = c.game.split('/').next().unwrap_or("").to_string();
         let gicon = if game_top.is_empty() { None } else { self.game_icon(&game_top, &BTreeMap::new()) };
+        let job = crate::lib_cards::job_of(&c.path);
         Card {
             has_gicon: gicon.is_some(),
             gicon: gicon.unwrap_or_default(),
@@ -1956,7 +2520,11 @@ impl LibModel {
             title: SharedString::from(c.shown.as_str()),
             when: ago(c.mtime).into(),
             size: fmt_size(c.size).into(),
-            dur: c.dur.map(fmt_dur).unwrap_or_default().into(),
+            dur: c.dur.or_else(|| self.probed.borrow().get(&idx).copied()).map(fmt_dur).unwrap_or_default().into(),
+            // gaps-library row 2: Echo's per-card job ("Waiting…" / "Making smaller 42%")
+            job: job.as_ref().map(|j| j.0.as_str()).unwrap_or("").into(),
+            job_pct: job.as_ref().map(|j| j.1).unwrap_or(0.0),
+            job_wait: job.as_ref().is_some_and(|j| j.2),
             game: SharedString::from(c.game.split('/').next().unwrap_or("")),
             thumb: thumb.unwrap_or_default(),
             has_thumb: has,
@@ -1977,28 +2545,51 @@ impl LibModel {
             } else {
                 "".into()
             },
+            // L35: Echo's title on the Shared badge
+            views_tip: if shared {
+                match crate::cloud::views_of(&crate::cloud::rel_of(&c)) {
+                    0 => "Shared - link copied before".into(),
+                    n => format!("Shared - watched {n} time{} on its share page", if n == 1 { "" } else { "s" }).into(),
+                }
+            } else {
+                "".into()
+            },
         }
     }
-    /// (in the cloud, has a share link) for badges - from a 5 s cache of cloud.json / links.json
+    /// (in the cloud, has a share link) for badges - from the cache of cloud.json / links.json
     fn cloud_flags(&self, c: &Clip) -> (bool, bool) {
-        let fresh = self.cloud_cache.borrow().as_ref().is_some_and(|x| x.0.elapsed() < std::time::Duration::from_secs(5));
-        if !fresh {
-            let read = |n: &str| std::fs::read_to_string(self.thumbs_dir.join(n)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-            let norm = |x: &str| x.replace('\\', "/").to_lowercase();
-            let cloud: HashSet<String> = read("cloud.json")
-                .and_then(|v| v.get("files").and_then(|f| f.as_array()).cloned())
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|x| x.get("rel").and_then(|r| r.as_str()).map(norm))
-                .collect();
-            let links: HashSet<String> = read("links.json").and_then(|v| v.as_object().cloned()).map(|m| m.keys().map(|k| norm(k)).collect()).unwrap_or_default();
-            *self.cloud_cache.borrow_mut() = Some((std::time::Instant::now(), cloud, links));
-        }
         let file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let rel = if c.folder.is_empty() { file } else { format!("{}/{file}", c.folder) }.to_lowercase();
+        self.cloud_sets(|cl, li| (cl.contains(&rel), li.contains(&rel)))
+    }
+    /// r2-threads (L36): Echo's cloud.json rels + links.json keys (lower-case, '/'), parsed again only when one of
+    /// the two files changed (size / time, looked at no more than every 300 ms) - was a parse on every lookup
+    fn cloud_sets<T>(&self, f: impl FnOnce(&HashSet<String>, &HashSet<String>) -> T) -> T {
+        let recent = self.cloud_cache.borrow().as_ref().is_some_and(|x| x.0.elapsed() < std::time::Duration::from_millis(300));
+        if !recent {
+            let stamp = |n: &str| std::fs::metadata(self.thumbs_dir.join(n)).ok().map(|m| (m.modified().ok(), m.len()));
+            let key = [stamp("cloud.json"), stamp("links.json")];
+            let same = self.cloud_cache.borrow().as_ref().is_some_and(|x| x.1 == key);
+            if same {
+                if let Some(x) = self.cloud_cache.borrow_mut().as_mut() {
+                    x.0 = std::time::Instant::now();
+                }
+            } else {
+                let read = |n: &str| std::fs::read_to_string(self.thumbs_dir.join(n)).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+                let norm = |x: &str| x.replace('\\', "/").to_lowercase();
+                let cloud: HashSet<String> = read("cloud.json")
+                    .and_then(|v| v.get("files").and_then(|f| f.as_array()).cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|x| x.get("rel").and_then(|r| r.as_str()).map(norm))
+                    .collect();
+                let links: HashSet<String> = read("links.json").and_then(|v| v.as_object().cloned()).map(|m| m.keys().map(|k| norm(k)).collect()).unwrap_or_default();
+                *self.cloud_cache.borrow_mut() = Some((std::time::Instant::now(), key, cloud, links));
+            }
+        }
         let cc = self.cloud_cache.borrow();
-        let (_, cl, li) = cc.as_ref().unwrap();
-        (cl.contains(&rel), li.contains(&rel))
+        let (_, _, cl, li) = cc.as_ref().unwrap();
+        f(cl, li)
     }
 }
 

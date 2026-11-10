@@ -2,7 +2,7 @@
 import { ListView } from "std-widgets.slint";
 import { T, Ic, Icon, Tip, TipArea, TipLayer, Toast, Notes, Note, ToastLayer, IconBtn, Btn, Badge, Pill, Kbd, MenuRow, CopyCfg } from "theme.slint";
 export { CopyCfg } // Chat A: Copy menu sizes + default (copy.rs)
-import { Card, GridRow, FOpt, FLine, Flip, HoverVid, Lib, CDrag, CardView, ListCard, FilterPanel, FPill } from "library.slint";
+import { Card, GridRow, FOpt, FLine, Flip, HoverVid, Lib, CDrag, CardView, ListCard, SavingCard, FilterPanel, FPill } from "library.slint";
 import { Play, PlayerView } from "player.slint";
 import { Pf, PfClip, PfFriend, PfSwatch } from "lib_profile.slint"; // Chat B (night): Echo Profile
 import { Fx, FxPart, FxLayer } from "lib_fx.slint"; // Chat B (night): background effect
@@ -11,6 +11,8 @@ import { S, Cp, EcPlans, EcPlan, SOpt, SRow, SBox, SNav, ThemeCard, ThemeLine, S
 import { Dlg, DChoice, DialogLayer } from "dialog.slint";
 import { Tidy, TRow, TidyLayer } from "tidy.slint";
 import { Shots, Shot, ShotsPage, ShotViewer } from "lib_shots.slint";
+import { DropG, DropOverlay } from "drop.slint"; // gaps-library row 1: drag and drop files onto the window
+export { DropG }
 import { HomeState, HomePage } from "home.slint";
 import { Upd, UpdOld, UpdCard } from "update.slint";
 import { Su, Tour, SetupLayer, TourLayer } from "setup.slint";
@@ -18,6 +20,16 @@ import { Cm, CmItem, Ecm, EcmRow, CloudMenuLayer, SpaceLayer } from "cloud.slint
 import { PopupWin } from "popup.slint";
 export { PopupWin } // Chat A: in-game popup window (src/popup.rs)
 import { Ed, EdSeg, EdTxt, EdTick, EdAud, EdMenu, EditorView } from "editor.slint";
+export { EdCap } from "editor.slint"; // gaps-editor: the captions list
+export { Login, LoginField } from "cloud.slint"; // r2-texts L42: inline cloud login fields (Settings > Cloud)
+export { EcmCat } from "cloud.slint"; // cleanup: Manage space's "Free up space" chips
+import { Otd, OtdBar } from "otd.slint"; // gaps (10 Nov): "On this day" bar (hdr_home.rs)
+export { Otd }
+import { Over } from "over.slint"; // r2-layout: menus over the video (L1), clicks that go on (L39)
+import { FolderMenu } from "foldmenu.slint"; // r2-layout (L20): the sidebar folder menu in Echo's look
+export { Over }
+import { Focus } from "focus.slint"; // port leftovers L2: keys go back after a close (src/focus.rs)
+export { Focus }
 
 export { Fx, FxPart, Pf, PfClip, PfFriend, PfSwatch } // Chat B (night)
 export { Card, GridRow, FOpt, FLine, Flip, HoverVid, Lib, CDrag, Tidy, TRow, Shots, Shot, Play, Toast, Notes, Note, S, SOpt, SRow, SBox, SNav, ThemeCard, ThemeLine, T, Dlg, DChoice, HomeState, Upd, UpdOld, Su, Tour, Cp, EcPlans, EcPlan, Cm, CmItem, Ecm, EcmRow, Ed, EdSeg, EdTxt, EdTick, EdAud, EdMenu }
@@ -35,6 +47,7 @@ export struct NavItem {
     drop: string,    // while a folder is dragged: "into" / "sort" / "" (set by Rust at drag start)
     has-img: bool,   // a game icon Echo saved (shown instead of the letter)
     img: image,
+    merge: [string], // gaps-library row 29: folders the right-click menu offers "Merge into …" for
 }
 
 // inline folder name box in the sidebar: rename a folder / a new (sub-)folder
@@ -57,9 +70,19 @@ global FDrag {
     in-out property <string> zone;       // "into" / "before" / "after" / "top" / ""
 }
 
+// William (10 Nov): one connected cloud in the status card's hover panel
+export struct CloudUse {
+    name: string,
+    text: string,
+    frac: float,
+}
+
 export struct HotkeyPill {
     keys: [string],  // "Shift", "F11"
     label: string,   // "Clip 3m"
+    idx: int,        // gaps (10 Nov): its row in settings.json's hotkeys ("hk:N" / "hk_secs:N")
+    secs: int,       // the clip length (the length menu ticks it)
+    kde: bool,       // Linux: the keys are KDE's (none = "No key in KDE"); a click only says where to change them
 }
 
 // Echo's .nav (pages) and .flt (clip filters / folders)
@@ -81,6 +104,7 @@ component NavBtn inherits Rectangle {
     in property <bool> menu-ok;           // folder rows: right-click menu
     in property <bool> menu-real;         // a real folder (not only a name prefix)
     in property <bool> menu-empty;        // no clips inside: Delete is offered
+    in property <[string]> merge-to;      // gaps-library row 29: "Merge into <folder>" items
     in property <bool> card-drop;         // a dragged CARD may be dropped here (folders + "All clips") - Chat D
     callback clicked;
     callback drag-start();
@@ -95,6 +119,17 @@ component NavBtn inherits Rectangle {
     // a card dragged over this row
     property <bool> card-over: CDrag.on && root.card-drop && CDrag.py >= self.absolute-position.y && CDrag.py < self.absolute-position.y + self.height
         && CDrag.px >= self.absolute-position.x && CDrag.px < self.absolute-position.x + self.width;
+    // gaps-library row 1: files from Explorer dragged over this row (drop.rs reads DropG.folder on the drop)
+    property <bool> file-over: DropG.on && root.card-drop && DropG.py >= self.absolute-position.y && DropG.py < self.absolute-position.y + self.height
+        && DropG.px >= self.absolute-position.x && DropG.px < self.absolute-position.x + self.width;
+    changed file-over => {
+        if (self.file-over) {
+            DropG.folder = root.folder;
+            DropG.hit = true;
+        } else if (DropG.hit && DropG.folder == root.folder) {
+            DropG.hit = false;
+        }
+    }
     changed card-over => {
         if (self.card-over) {
             CDrag.target = root.folder;
@@ -138,6 +173,10 @@ component NavBtn inherits Rectangle {
             if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.dragged) {
                 root.drag-end();
             }
+            // r2-layout (L20): right-click = the folder menu at the mouse
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.up && root.menu-ok) {
+                fm.open(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
         }
         moved => {
             if (self.pressed && root.drag-ok) {
@@ -157,27 +196,12 @@ component NavBtn inherits Rectangle {
             }
         }
     }
-    // Echo's folderCtx: right-click a folder
-    if root.menu-ok: ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "New sub-folder…";
-                activated => { root.folder-act(root.menu-real ? "new" : "notreal"); }
-            }
-            MenuItem {
-                title: "Rename folder…";
-                activated => { root.folder-act(root.menu-real ? "rename" : "notreal"); }
-            }
-            if root.menu-real && root.menu-empty: MenuItem {
-                title: "Delete folder";
-                activated => { root.folder-act("delete"); }
-            }
-            MenuSeparator { }
-            MenuItem {
-                title: "Open folder";
-                activated => { root.folder-act(root.menu-real ? "open" : "notreal"); }
-            }
-        }
+    // Echo's folderCtx: right-click a folder - r2-layout (L20): Echo's own dark menu (foldmenu.slint), opened by ta
+    fm := FolderMenu {
+        real: root.menu-real;
+        empty: root.menu-empty;
+        merge-to: root.merge-to;
+        act(k) => { root.folder-act(k); }
     }
     // reorder: a line where the folder would land
     if root.zone == "before" || root.zone == "after": Rectangle {
@@ -270,11 +294,13 @@ component NavBtn inherits Rectangle {
                     parent.done = true;
                     root.renamed(self.text);
                     FEdit.rename = "";
+                    Focus.back(); // L2: the box goes away, the keys go back to the page
                 }
                 key-pressed(e) => {
                     if (e.text == Key.Escape) {
                         parent.done = true;
                         FEdit.rename = "";
+                        Focus.back();
                         return accept;
                     }
                     reject
@@ -335,11 +361,13 @@ component NewFolderBox inherits Rectangle {
                 if (self.text != "") {
                     root.made(self.text);
                 }
+                Focus.back(); // L2
             }
             key-pressed(e) => {
                 if (e.text == Key.Escape) {
                     root.done = true;
                     FEdit.new-on = false;
+                    Focus.back();
                     return accept;
                 }
                 reject
@@ -436,6 +464,9 @@ export component AppWindow inherits Window {
     icon: @image-url("echo-icon.png");
     // Chat A: Echo's own title bar (option B, merged with the header) - no Windows frame. ECHO_NATIVE_FRAME=1 = old frame
     in property <bool> custom-frame: true;
+    // Linux: start a window drag only after the mouse moves 4 px with the button down (a drag on press hands the
+    // pointer to the compositor, so the 2nd click of a double-click never arrived = no double-click maximize)
+    in property <bool> drag-on-move: false;
     in property <bool> win-max; // was "maximized" (shadowed Window's builtin)
     in-out property <bool> fopen; // Echo's #fmenu (FilterLayer below)
     in property <length> win-hh: 900px; // window height for the update card + Home (no layout binding loop)
@@ -460,11 +491,25 @@ export component AppWindow inherits Window {
     in property <bool> list-view;
     in property <string> sort: "new";
     in property <[FLine]> flines;
+    in-out property <string> fquery; // gaps-library row 21: the filter panel's search text
     in property <[FOpt]> factive;
     in property <int> picked-n;
     in property <string> empty-title: "Nothing here";
     in property <string> empty-text;
     in property <[HotkeyPill]> hotkeys;
+    // gaps (10 Nov): the header chip waiting for new keys (-1 = none); when the wait ends, keys go back to the page
+    in-out property <int> hk-listen: -1;
+    property <bool> s-lis: S.listening;
+    changed s-lis => {
+        if (!self.s-lis && self.hk-listen >= 0) {
+            self.hk-listen = -1;
+            keys.focus();
+        } else if (self.s-lis && self.hk-listen >= 0) {
+            // a header chip waits for keys: give them to hkfs (the chip's own click handler runs inside a chip
+            // that S.listen just rebuilt, so focusing from there didn't stick - William, 10 Nov)
+            hkfs.focus();
+        }
+    }
     in property <string> storage-used;
     in property <string> storage-cap;
     in property <float> storage-frac;
@@ -473,6 +518,7 @@ export component AppWindow inherits Window {
     callback set-cols(int);
     callback set-sort(string);
     callback set-view(bool);
+    callback fsearch(string); // gaps-library row 21
     callback ftoggle(string, string);
     callback fclear();
     callback pick-all();
@@ -509,6 +555,8 @@ export component AppWindow inherits Window {
     in property <bool> rec-on;
     in property <string> rec-long: "Record";
     in property <bool> rec-long-on;
+    in property <bool> rec-busy; // L14/L15: Record is busy (starting / saving the recording): disabled look
+    in property <bool> combine-busy; // L14/L15: a montage is being made (rec_core::combine_ui)
     in property <bool> rec-mic-off;
     in property <string> rec-saving;
     // Chat A: the game Echo sees (title bar chip, from sketch D)
@@ -547,6 +595,22 @@ export component AppWindow inherits Window {
     in property <bool> acct-on: true;
     in property <bool> acct-signed;
     callback acct-act(string);                // "open" / "hide"
+    // William (10 Nov): compact status card + its storage hover panel
+    in property <string> rail-tag;            // "GPU" / "CPU"
+    in property <bool> cloud-on;              // a cloud with known usage (Echo Cloud)
+    in property <float> cloud-frac;
+    in property <string> cloud-text;          // "229 GB of 2.4 TB" (the card: the first connected cloud)
+    in property <string> cloud-name;          // "Echo Cloud" / "Google Drive" …
+    in property <[CloudUse]> cloud-uses;      // the hover panel: every connected cloud on its own
+    in property <string> local-limit;         // "No limit" / "100 GB"
+    callback manage-cloud();
+    property <bool> st-want: sthov.has-hover || stpop-ta.has-hover;
+    property <bool> st-show;
+    changed st-want => {
+        if (self.st-want) {
+            self.st-show = true;
+        }
+    }
 
     property <string> sort-label: sort == "old" ? "Oldest" : sort == "big" ? "Largest" : sort == "long" ? "Longest" : sort == "name" ? "Name" : "Newest";
 
@@ -590,7 +654,13 @@ export component AppWindow inherits Window {
         Rectangle { y: parent.height - 1px; height: 1px; background: T.line; }
         TouchArea {
             pointer-event(e) => {
-                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down && root.custom-frame) {
+                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down && root.custom-frame && !root.drag-on-move) {
+                    root.win-act("drag");
+                }
+            }
+            moved => {
+                if (self.pressed && root.custom-frame && root.drag-on-move
+                    && (abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px)) {
                     root.win-act("drag");
                 }
             }
@@ -643,6 +713,9 @@ export component AppWindow inherits Window {
                 color: T.text;
                 vertical-alignment: center;
                 font-family: "Segoe UI Variable Display";
+                // a clip is open over the page: only the page name fades, the rest of the bar stays lit (10 Nov)
+                opacity: root.player-open && !Ed.open && !Play.full ? 0.4 : 1;
+                animate opacity { duration: 150ms; }
             }
             Rectangle {
                 width: 1px;
@@ -653,6 +726,7 @@ export component AppWindow inherits Window {
             Pill {
                 y: 12px;
                 height: 28px;
+                max-w: 260px; // r2-layout (L8): a long state ends in … instead of pushing Save clip off
                 opacity: 0.72;
                 text: root.rec-saving != "" ? root.rec-saving : root.rec-state;
                 dot: root.rec-on ? T.ok : T.bad;
@@ -666,7 +740,7 @@ export component AppWindow inherits Window {
                 y: 12px;
                 height: 28px;
                 opacity: 0.72;
-                width: gml.preferred-width;
+                width: min(gml.preferred-width, 220px); // r2-layout (L8): a long game name ends in …
                 border-radius: 14px;
                 background: root.rec-game-off ? T.panel : #ff8a3c1a;
                 border-width: 1px;
@@ -703,13 +777,24 @@ export component AppWindow inherits Window {
                         font-size: 12.5px;
                         color: root.rec-game-off ? T.muted : T.text;
                         vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
             }
             // .chips (gap 8): .chip = padding 0 10, gap 6: keys (.chk-k padding 2 3, gap 4), "Clip", length select
+            // r2-layout (L8): Echo's .chips{overflow:hidden} - with little room the chips are cut, Record / Save clip
+            // and the window buttons stay on screen (the length list is a popup: not cut)
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                preferred-width: hkchips.preferred-width;
+                clip: true;
             hkchips := HorizontalLayout {
+                x: 0;
+                width: self.preferred-width;
+                height: parent.height;
                 spacing: 8px;
-                for h in root.hotkeys: Rectangle {
+                for h in root.hotkeys: hkc := Rectangle {
                     y: 12px;
                     height: 28px;
                     // William: the bar's pill + chips slightly see-through (cleaner)
@@ -718,18 +803,58 @@ export component AppWindow inherits Window {
                     border-radius: 14px;
                     background: T.panel;
                     border-width: 1px;
-                    border-color: T.line;
+                    // gaps (10 Nov): Echo's .chk-k - click the keys, then press the new ones (S.listen, like Settings)
+                    property <bool> lis: S.listening && root.hk-listen == h.idx;
+                    border-color: self.lis ? T.accent : T.line;
                     chl := HorizontalLayout {
                         padding-left: 10px;
                         padding-right: 10px;
                         spacing: 6px;
-                        HorizontalLayout {
-                            padding-left: 3px;
-                            padding-right: 3px;
-                            spacing: 4px;
-                            for k in h.keys: Kbd {
-                                y: 5px;
-                                text: k;
+                        Rectangle {
+                            width: chk.preferred-width;
+                            border-radius: 6px;
+                            background: kta.has-hover && !hkc.lis ? T.panel2 : transparent;
+                            chk := HorizontalLayout {
+                                padding-left: 3px;
+                                padding-right: 3px;
+                                spacing: 4px;
+                                if hkc.lis: Text {
+                                    text: "Press keys…";
+                                    font-size: 12.5px;
+                                    color: T.accent2;
+                                    vertical-alignment: center;
+                                }
+                                if !hkc.lis && h.kde && h.keys.length == 0: Text {
+                                    text: "No key in KDE";
+                                    font-size: 12.5px;
+                                    color: T.dim;
+                                    vertical-alignment: center;
+                                }
+                                if !hkc.lis: HorizontalLayout {
+                                    spacing: 4px;
+                                    for k in h.keys: Kbd {
+                                        y: 5px;
+                                        text: k;
+                                    }
+                                }
+                            }
+                            kta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (!h.kde) {
+                                        root.hk-listen = h.idx;
+                                    }
+                                    S.listen("hk:" + h.idx);
+                                    // S.listen refills root.hotkeys, which rebuilds these chips: a key catcher
+                                    // inside the chip would be gone by now - hkfs (below the settings page) isn't
+                                    if (S.listening) {
+                                        hkfs.focus();
+                                    }
+                                }
+                            }
+                            TipArea {
+                                text: "Click, then press the new keys";
+                                hover: kta.has-hover;
                             }
                         }
                         Text {
@@ -738,27 +863,71 @@ export component AppWindow inherits Window {
                             color: T.muted;
                             vertical-alignment: center;
                         }
-                        HorizontalLayout {
-                            padding-left: 2px;
-                            padding-right: 2px;
-                            spacing: 7px;
-                            Text {
-                                text: h.label;
-                                font-size: 12.5px;
-                                color: T.muted;
-                                vertical-alignment: center;
+                        // Echo's .chk-l: the clip length (15s … 20m)
+                        Rectangle {
+                            width: chlen.preferred-width;
+                            border-radius: 6px;
+                            background: lta.has-hover ? T.panel2 : transparent;
+                            chlen := HorizontalLayout {
+                                padding-left: 2px;
+                                padding-right: 2px;
+                                spacing: 7px;
+                                Text {
+                                    text: h.label;
+                                    font-size: 12.5px;
+                                    color: lta.has-hover ? T.text : T.muted;
+                                    vertical-alignment: center;
+                                }
+                                Icon {
+                                    y: 9px;
+                                    width: 12px;
+                                    height: 12px;
+                                    stroke-width: 2.2px;
+                                    commands: Ic.down;
+                                    stroke: lta.has-hover ? T.text : T.muted;
+                                }
                             }
-                            Icon {
-                                y: 9px;
-                                width: 12px;
-                                height: 12px;
-                                stroke-width: 2.2px;
-                                commands: Ic.down;
-                                stroke: T.muted;
+                            lta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { lenpop.show(); }
+                            }
+                            TipArea {
+                                text: "Clip length";
+                                hover: lta.has-hover;
+                            }
+                            lenpop := PopupWindow {
+                                x: 0;
+                                y: parent.height + 8px;
+                                width: 130px;
+                                height: lpl.preferred-height;
+                                close-policy: close-on-click-outside;
+                                Rectangle {
+                                    background: T.panel;
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: T.line;
+                                    drop-shadow-blur: 40px;
+                                    drop-shadow-offset-y: 14px;
+                                    drop-shadow-color: #000000aa;
+                                    lpl := VerticalLayout {
+                                        padding: 6px;
+                                        for s in [15, 30, 60, 120, 180, 300, 600, 900, 1200]: MenuRow {
+                                            height: 32px;
+                                            text: s < 60 ? s + "s" : (s / 60) + "m";
+                                            tick-room: true;
+                                            on: h.secs == s;
+                                            clicked => {
+                                                lenpop.close();
+                                                S.set("hk_secs:" + h.idx, s);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
+            }
             }
             Rectangle { horizontal-stretch: 1; }
             IconBtn {
@@ -780,6 +949,7 @@ export component AppWindow inherits Window {
                 text-color: root.rec-long-on ? #ff9aac : transparent;
                 text: root.rec-long;
                 tip: root.rec-long-on ? "Stop and save the recording" : "Record everything until you stop";
+                enabled: !root.rec-busy; // L15
                 clicked => { root.rec-act("long"); }
             }
             savebtn := Btn {
@@ -842,7 +1012,7 @@ export component AppWindow inherits Window {
                         icon: "M6 4h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z M10 9.5v5l4.5-2.5z";
                         page: true;
                         on: root.view == "library";
-                        clicked => { root.pick-filter("all"); }
+                        clicked => { root.pick-filter("all"); Focus.back(); } // L2: leaving Settings
                     }
                     NavBtn {
                         label: "Settings";
@@ -905,6 +1075,10 @@ export component AppWindow inherits Window {
                                                 FEdit.new-on = true;
                                             }
                                         }
+                                        TipArea {
+                                            text: "New folder"; // L35
+                                            hover: pta.has-hover;
+                                        }
                                     }
                                 }
                                 }
@@ -927,6 +1101,7 @@ export component AppWindow inherits Window {
                                     card-drop: n.folder != "" || n.id == "all";
                                     menu-real: n.real;
                                     menu-empty: n.count == "";
+                                    merge-to: n.merge;
                                     folder-act(what) => {
                                         if (what == "new") {
                                             FEdit.rename = "";
@@ -941,7 +1116,7 @@ export component AppWindow inherits Window {
                                     }
                                     renamed(t) => { root.folder-rename(n.folder, t); }
                                     on: (root.view == "library" || root.view == "shots") && root.filter == n.id;
-                                    clicked => { root.pick-filter(n.id); }
+                                    clicked => { root.pick-filter(n.id); Focus.back(); } // L2: leaving Settings through a folder
                                     drag-start => {
                                         FDrag.src = n.folder;
                                         FDrag.label = n.label;
@@ -973,7 +1148,7 @@ export component AppWindow inherits Window {
                     }
                     if Upd.on: Rectangle { height: 4px; } // + the column spacing (2 + 2) = Echo's margin-bottom 8
                     // .statcard (where Echo shows the recorder): prototype status + storage meter + memory
-                    Rectangle {
+                    stcard := Rectangle {
                         // natural height: the nav list above takes the spare room, not this card
                         height: sc.preferred-height;
                         vertical-stretch: 0;
@@ -981,6 +1156,11 @@ export component AppWindow inherits Window {
                         border-radius: 12px;
                         border-width: 1px;
                         border-color: T.line;
+                        // William (10 Nov): hovering the status part shows the storage panel (stpop, root level)
+                        sthov := TouchArea {
+                            height: sc.preferred-height - (root.acct-on ? 37px + 9px : 0px);
+                            y: 0;
+                        }
                         sc := VerticalLayout {
                             alignment: start;
                             padding-left: 13px;
@@ -1006,44 +1186,41 @@ export component AppWindow inherits Window {
                                     font-weight: 600 + T.fw;
                                     color: T.text;
                                     overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                // William (10 Nov): compact card - "GPU" on the right; the full sentence is in the
+                                // hover panel
+                                Text {
+                                    text: root.rail-tag;
+                                    font-size: 11.5px;
+                                    color: T.dim;
+                                    vertical-alignment: center;
                                 }
                             }
-                            if root.rail-mode != "": Text {
-                                text: root.rail-mode;
-                                font-size: 12px;
-                                color: T.muted;
-                                wrap: word-wrap;
-                            }
-                            if root.rail-health != "": Text {
+                            // only problems stay in the card (stalled, low disk, GPU busy, cloud almost full)
+                            if root.rail-health-k > 0: Text {
                                 text: root.rail-health;
                                 font-size: 11.5px;
-                                color: root.rail-health-k == 2 ? #ff5c7a : root.rail-health-k == 1 ? #ffb84d : #3ddc97;
+                                color: root.rail-health-k == 2 ? #ff5c7a : #ffb84d;
                                 wrap: word-wrap;
                             }
-                            // .meter
+                            // .meter: the cloud when it's set up, else this PC
                             Rectangle {
                                 height: 5px;
                                 border-radius: 3px;
                                 background: #ffffff12;
                                 Rectangle {
                                     x: 0;
-                                    width: parent.width * clamp(root.storage-frac, 0, 1);
+                                    width: parent.width * clamp(root.cloud-on ? root.cloud-frac : root.storage-frac, 0, 1);
                                     border-radius: 3px;
                                     background: T.grad;
                                 }
                             }
-                            HorizontalLayout {
-                                Text {
-                                    text: root.storage-used;
-                                    font-size: 11.5px;
-                                    color: T.muted;
-                                    horizontal-stretch: 1;
-                                }
-                                Text {
-                                    text: root.storage-cap;
-                                    font-size: 11.5px;
-                                    color: T.muted;
-                                }
+                            Text {
+                                text: root.cloud-on ? root.cloud-name + " · " + root.cloud-text : root.storage-used + (root.storage-cap == "no limit" ? "" : " " + root.storage-cap);
+                                font-size: 11.5px;
+                                color: T.muted;
+                                overflow: elide;
                             }
                             // .acctrow: Echo Profile (never the email - the sidebar shows in screenshots / streams)
                             if root.acct-on: Rectangle {
@@ -1097,6 +1274,10 @@ export component AppWindow inherits Window {
                                             mouse-cursor: pointer;
                                             clicked => { root.acct-act("hide"); }
                                         }
+                                        TipArea {
+                                            text: "Hide - you can still sign in under Settings → Cloud"; // L35
+                                            hover: axa.has-hover;
+                                        }
                                     }
                                 }
                             }
@@ -1110,6 +1291,15 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 init => { self.focus(); }
                 key-pressed(e) => {
+                    // a header chip says "Press keys…" but focus stayed here: the keys are for the chip
+                    if (S.listening && root.hk-listen >= 0) {
+                        if (e.text == Key.Escape) {
+                            S.cancel-listen();
+                        } else {
+                            S.key(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta);
+                        }
+                        return accept;
+                    }
                     // William (9 Nov): Echo's Ctrl+F - search clips (from any page it opens the Library first); in
                     // Settings it searches the settings
                     if (e.modifiers.control && (e.text == "f" || e.text == "F") && !root.player-open && !Dlg.open && !Ed.open) {
@@ -1130,6 +1320,21 @@ export component AppWindow inherits Window {
                         FEdit.new-on = false;
                         FEdit.rename = FEdit.hover;
                         return accept;
+                    }
+                    // gaps-library row 12: the Screenshots page selects like the library (Ctrl+A, Esc, Delete)
+                    if (root.view == "shots" && !root.player-open && !Dlg.open && !Shots.view-open) {
+                        if (e.modifiers.control && (e.text == "a" || e.text == "A")) {
+                            Shots.pick-all();
+                            return accept;
+                        }
+                        if (e.text == Key.Escape && Shots.picked-n > 0) {
+                            Shots.pick-clear();
+                            return accept;
+                        }
+                        if (e.text == Key.Delete && Shots.picked-n > 0) {
+                            Shots.del-picked();
+                            return accept;
+                        }
                     }
                     if (root.view != "library" || root.player-open || Dlg.open) {
                         return reject;
@@ -1155,6 +1360,11 @@ export component AppWindow inherits Window {
                     }
                     if (e.text == Key.Escape && root.picked-n > 0) {
                         root.pick-clear();
+                        return accept;
+                    }
+                    // gaps-library row 18: Delete deletes the selection anywhere on the page (not only over a card)
+                    if (e.text == Key.Delete && root.picked-n > 0) {
+                        root.pick-act("delete");
                         return accept;
                     }
                     if (Lib.hover-idx < 0) {
@@ -1217,27 +1427,38 @@ export component AppWindow inherits Window {
                     if root.view == "shots": ShotsPage {
                         width: parent.width;
                         height: parent.height;
+                        list: root.list-view; // gaps-library row 12
                     }
                     VerticalLayout {
                     // only in the library: Settings is drawn OVER this column, and a Slint background doesn't stop clicks -
                     // with the grid still there, the cards under Settings' empty spots could be clicked (William, chat 4)
                     visible: root.view == "library";
                     // .toolbar: padding 4 28 6
+                    // 54 / top 12 (was 46 / 4): a little more room under the top bar (William, 10 Nov 2026)
                     Rectangle {
-                        height: 46px;
-                        HorizontalLayout {
+                        // r2-layout (L10): taller when the filter pills wrap onto a second line (Echo's .fbar)
+                        height: max(54px, tbl.preferred-height);
+                        tbl := HorizontalLayout {
                             padding-left: 20px; // + the name button's 8 px = the cards' 28 px
                             padding-right: 28px;
-                            padding-top: 4px;
+                            padding-top: 12px;
                             padding-bottom: 6px;
                             spacing: 10px;
+                            // r2-layout (L10): Echo's .fbar{min-width:0; flex-wrap:wrap} - the name, count, filter
+                            // pills and "Clear all" wrap instead of pushing Tidy up / Open folder off the edge
+                            FlexboxLayout {
+                            horizontal-stretch: 1;
+                            flex-wrap: wrap;
+                            spacing-horizontal: 10px;
+                            spacing-vertical: 6px;
+                            cross-axis-alignment: center;
                             // William (9 Nov, sketch E): the list's name IS the filter button ("All clips ▾", "FiveM ▾"):
                             // no floating pill under the title bar line; the count follows it. (was: count, then a
                             // bordered "Filter" pill)
                             fbtn := Rectangle {
-                                y: 2px;
                                 height: 32px;
-                                width: fhl.preferred-width;
+                                // r2-layout (L10): a long list name ends in …
+                                width: min(fhl.preferred-width, 320px);
                                 border-radius: 8px;
                                 background: fta.has-hover || root.fopen ? #ffffff0f : transparent;
                                 animate background { duration: T.fade; }
@@ -1259,6 +1480,7 @@ export component AppWindow inherits Window {
                                         font-weight: 600 + T.fw;
                                         color: T.text;
                                         vertical-alignment: center;
+                                        overflow: elide;
                                     }
                                     Icon {
                                         y: (parent.height - self.height) / 2 + 1px;
@@ -1286,16 +1508,16 @@ export component AppWindow inherits Window {
                                 // popup closed on the PRESS of a chip click (counted as outside) and the release then
                                 // opened the clip behind it (William)
                             }
-                            Text {
+                            // r2-layout (L10): Echo hides the count under 1150 px
+                            if Over.win-w > 1150px: Text {
                                 text: root.count-text;
                                 font-size: 13px;
                                 color: T.muted;
                                 vertical-alignment: center;
                             }
                             for o in root.factive: FPill {
-                                y: 3px;
                                 o: o;
-                                head: o.group == "game" ? "Game" : o.group == "type" ? "Type" : "Tag";
+                                head: o.group == "game" ? "Game" : o.group == "type" ? "Type" : o.group == "where" ? "Where" : "Tags";
                                 clicked => { root.ftoggle(o.group, o.key); }
                             }
                             if root.factive.length > 1: Text {
@@ -1308,7 +1530,7 @@ export component AppWindow inherits Window {
                                     clicked => { root.fclear(); }
                                 }
                             }
-                            Rectangle { horizontal-stretch: 1; }
+                            }
                             // .searchbox
                             Rectangle {
                                 width: 260px;
@@ -1354,16 +1576,25 @@ export component AppWindow inherits Window {
                                     // Echo: Esc in the search box empties it and leaves it
                                     key-pressed(e) => {
                                         if (e.text == Key.Escape) {
+                                            // L46: Echo's Esc also clears a selection (the selection bar's Clear)
+                                            if (root.picked-n > 0) {
+                                                root.pick-clear();
+                                            }
                                             self.text = "";
                                             root.search("");
                                             keys.focus();
+                                            return accept;
+                                        }
+                                        // L46: shortcuts stay out of the box - F2 went up to `keys` and renamed the
+                                        // hovered card
+                                        if (e.text == Key.F2) {
                                             return accept;
                                         }
                                         reject
                                     }
                                 }
                             }
-                            SelectBtn {
+                            sortbtn := SelectBtn {
                                 idle-opacity: 0.72;
                                 text: root.sort-label;
                                 clicked => { spop.show(); }
@@ -1392,9 +1623,10 @@ export component AppWindow inherits Window {
                             }
                         }
                         spop := PopupWindow {
-                            x: parent.width - 520px;
-                            y: 44px;
-                            width: 160px;
+                            // r2-layout (L19): Echo's <select> opens at the control (was a fixed spot ~100 px off)
+                            x: sortbtn.x;
+                            y: sortbtn.y + sortbtn.height + 4px;
+                            width: max(160px, sortbtn.width);
                             // its own height, so Slint counts clicks on the rows as inside the popup
                             height: spl.preferred-height;
                             Rectangle {
@@ -1441,6 +1673,8 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // gaps (10 Nov): Echo's "On this day" bar above the grid (hdr_home.rs)
+                    if Otd.show: OtdBar { }
                     // the clips: 4 columns like Echo (.grid repeat(4)), gap 22; list view 1 column, gap 8
                     grid := Rectangle {
                         vertical-stretch: 1;
@@ -1450,7 +1684,11 @@ export component AppWindow inherits Window {
                         property <int> cols: root.list-view ? 1 : root.width > 1500px ? 4 : root.width > 1120px ? 3 : root.width > 760px ? 2 : 1;
                         property <length> card-w: (avail - (cols - 1) * gap) / cols;
                         property <length> card-h: card-w * 9 / 16 + 2px + 68px;
-                        init => { root.set-cols(self.cols); }
+                        init => {
+                            root.set-cols(self.cols);
+                            Over.grid-card-w(self.card-w); // r2-layout (L9)
+                        }
+                        changed card-w => { Over.grid-card-w(self.card-w); }
                         changed cols => { root.set-cols(self.cols); }
                         ListView {
                             for r in root.rows: Rectangle {
@@ -1482,13 +1720,24 @@ export component AppWindow inherits Window {
                                     height: grid.card-h + r.extra * 1px;
                                     spacing: grid.gap;
                                     alignment: start;
+                                    if r.saving: SavingCard {
+                                        width: grid.card-w;
+                                        height: grid.card-h + r.extra * 1px;
+                                    }
                                     for c in r.n: CardView {
                                         width: grid.card-w;
                                         height: grid.card-h + r.extra * 1px;
                                         data: root.cards[r.first + c];
                                     }
                                 }
-                                if r.header == "" && root.list-view: ListCard {
+                                if r.header == "" && root.list-view && r.saving: SavingCard {
+                                    x: 28px;
+                                    y: 0;
+                                    width: grid.card-w;
+                                    height: 101px;
+                                    small: true;
+                                }
+                                if r.header == "" && root.list-view && !r.saving: ListCard {
                                     x: 28px;
                                     y: 0;
                                     width: grid.card-w;
@@ -1577,6 +1826,7 @@ export component AppWindow inherits Window {
                 icon: "M4 6h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z M15 6h6a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z M11 12h3";
                 tip: "Join the selected clips into one video (oldest first)";
                 tip-above: true;
+                enabled: !root.combine-busy; // L15
                 clicked => { root.pick-act("combine"); }
             }
             mvb := Btn {
@@ -1585,6 +1835,14 @@ export component AppWindow inherits Window {
                 tip: "Move the selected clips into a folder";
                 tip-above: true;
                 clicked => { mpop.show(); }
+            }
+            // gaps-library row 2: Echo's #pickav1 (only when this PC's graphics card encodes AV1)
+            if Lib.av1-ok: Btn {
+                text: "Convert to AV1";
+                icon: "M4 14l4-4 4 4 8-8 M14 6h6v6";
+                tip: "Re-encode the selected clips with your graphics card's AV1 encoder: about half the size, same quality";
+                tip-above: true;
+                clicked => { Lib.sel-act("av1"); }
             }
             Btn {
                 text: "Favourite";
@@ -1609,7 +1867,8 @@ export component AppWindow inherits Window {
             x: mvb.x;
             height: min(mvl.preferred-height, pbar.y - 80px);
             y: -self.height - 8px;
-            width: 280px;
+            // r2-layout (L26): Echo's #foldmenu min-width 250 grows with deep folder names (here up to 440 px)
+            width: max(280px, min(mvl.preferred-width, 440px));
             close-policy: close-on-click-outside;
             init => { nf.text = ""; }
             Rectangle {
@@ -1718,6 +1977,151 @@ export component AppWindow inherits Window {
         height: root.height - 52px;
         visible: root.view == "settings";
     }
+    // gaps (10 Nov): a header chip says "Press keys…" - clicking anywhere else cancels (Echo)
+    if S.listening && root.hk-listen >= 0: TouchArea {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        clicked => { S.cancel-listen(); }
+    }
+    // William (10 Nov): the status card's storage panel - next to the card while the mouse is on either; stays
+    // 250 ms after leaving so the mouse can cross the gap
+    Timer {
+        interval: 250ms;
+        running: root.st-show && !root.st-want;
+        triggered => { root.st-show = false; }
+    }
+    // William (10 Nov): opens UPWARDS from the card, same width as the card (was beside it, to the right)
+    stpop := Rectangle {
+        visible: root.st-show;
+        x: stcard.absolute-position.x - root.absolute-position.x;
+        y: max(8px, stcard.absolute-position.y - root.absolute-position.y - self.height - 8px);
+        width: stcard.width;
+        height: stl.preferred-height;
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: T.line;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+        drop-shadow-offset-y: 6px;
+        stpop-ta := TouchArea { }
+        stl := VerticalLayout {
+            padding: 14px;
+            spacing: 8px;
+            Text {
+                text: root.rail-mode;
+                font-size: 12px;
+                color: T.muted;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 1px; background: T.line; }
+            HorizontalLayout {
+                Text {
+                    text: "On this PC";
+                    font-size: 12.5px;
+                    font-weight: 600 + T.fw;
+                    color: T.text;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.storage-used;
+                    font-size: 12px;
+                    color: T.muted;
+                }
+            }
+            Rectangle {
+                height: 5px;
+                border-radius: 3px;
+                background: #ffffff12;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.storage-frac, 0, 1);
+                    border-radius: 3px;
+                    background: T.grad;
+                }
+            }
+            Text {
+                text: "Storage limit: " + root.local-limit;
+                font-size: 11.5px;
+                color: T.dim;
+            }
+            // William (10 Nov): every connected cloud on its own (Echo Cloud, Google Drive, …) - they were added together
+            for cu in (root.cloud-on ? root.cloud-uses : []): VerticalLayout {
+                padding-top: 4px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: cu.name;
+                        font-size: 12.5px;
+                        font-weight: 600 + T.fw;
+                        color: T.text;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: cu.text;
+                        font-size: 12px;
+                        color: T.muted;
+                    }
+                }
+                Rectangle {
+                    height: 5px;
+                    border-radius: 3px;
+                    background: #ffffff12;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(cu.frac, 0, 1);
+                        border-radius: 3px;
+                        background: T.grad;
+                    }
+                }
+            }
+            // the space manager is Echo Cloud's (other clouds are managed on their own sites)
+            if root.cloud-on && root.cloud-name == "Echo Cloud": Rectangle { height: 2px; }
+            if root.cloud-on && root.cloud-name == "Echo Cloud": Rectangle {
+                height: 34px;
+                border-radius: 9px;
+                border-width: 1px;
+                border-color: mca.has-hover ? T.muted : T.line;
+                background: T.panel2;
+                Text {
+                    text: "Manage cloud storage";
+                    font-size: 13px;
+                    color: T.text;
+                }
+                mca := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.st-show = false;
+                        root.manage-cloud();
+                    }
+                }
+            }
+        }
+    }
+    // the new keys for a header chip ("Press keys…"); Esc cancels. One fixed catcher outside the chip repeater
+    // (William 10 Nov: keys did nothing - the per-chip one was rebuilt away right after it got focus)
+    hkfs := FocusScope {
+        x: 0;
+        y: 0;
+        width: 0px;
+        height: 0px;
+        focus-on-tab-navigation: false; // L49: Tab walks the buttons, never this catcher
+        key-pressed(e) => {
+            if (!S.listening || root.hk-listen < 0) {
+                return reject;
+            }
+            if (e.text == Key.Escape) {
+                S.cancel-listen();
+                return accept;
+            }
+            S.key(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta);
+            accept
+        }
+    }
 
     // Chat B (night): Echo's background effect canvas (#bgfxc, z 2): over the pages, under the player / dialogs;
     // plain shapes only, so clicks go straight through
@@ -1742,6 +2146,7 @@ export component AppWindow inherits Window {
         side-w: root.side-w;
         side-x: root.width - 80px - root.side-w;
         side-on: root.side-w >= 170px;
+        top-h: 52px; // the title bar above (stays lit, see player.slint dim-y)
     }
 
     // ---------- editor (over the player; the player's video moves into its stage) ----------
@@ -1802,6 +2207,12 @@ export component AppWindow inherits Window {
         y: 0;
         width: root.width;
         height: root.height;
+        // r2-layout (L18): keys back to the page when it closes (not when a dialog took them, e.g. "Delete from the cloud?")
+        closed => {
+            if (!Dlg.open && !root.player-open && root.view == "library") {
+                keys.focus();
+            }
+        }
     }
     public function focus-tour() {
         tour.take-focus();
@@ -1819,9 +2230,13 @@ export component AppWindow inherits Window {
         FilterPanel {
             x: min(fbtn.absolute-position.x, root.width - self.width - 12px);
             y: fbtn.absolute-position.y + 38px;
+            max-h: max(160px, min(root.height * 0.7, root.height - self.y - 12px));
             lines: root.flines;
             toggle(g, k) => { root.ftoggle(g, k); }
             clear => { root.fclear(); }
+            query <=> root.fquery;
+            search(q) => { root.fsearch(q); }
+            close => { root.fopen = false; }
         }
     }    // William (9 Nov): Screenshots open in the app (Echo's openShot) - above the pages, below dialogs
     ShotViewer {
@@ -1829,6 +2244,21 @@ export component AppWindow inherits Window {
         y: 0;
         width: root.width;
         height: root.height;
+    }
+    // gaps-library row 1: Echo's #dropov while files are dragged over the window
+    DropOverlay {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+    // r2-layout (L40): Echo's #notes (z 140) sit UNDER the dialog's dim (#confirm z 400)
+    ToastLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        lift: root.picked-n > 0 && !root.player-open ? 60px : 0px;
     }
     // Echo's #confirm (above the player, like Echo's z-index 400)
     dl := DialogLayer {
@@ -1843,6 +2273,12 @@ export component AppWindow inherits Window {
         y: 0;
         width: root.width;
         height: root.height;
+        // r2-layout (L1): tooltips keep off the video window (Windows)
+        avoid: Over.video-win && (root.player-open || Ed.open);
+        ax: root.video-x;
+        ay: root.video-y;
+        aw: root.video-w;
+        ah: root.video-h;
     }
     // ---- Echo's power-user mode: Ctrl held 150 ms -> ctrl-held; let go -> no slide for 300 ms (body.ctrlinst) ----
     property <bool> ctrl-down;
@@ -1933,18 +2369,11 @@ export component AppWindow inherits Window {
             }
         }
     }
-    ToastLayer {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-        lift: root.picked-n > 0 && !root.player-open ? 60px : 0px;
-    }
     // a card being dragged onto a sidebar folder (Chat D)
     if CDrag.on: Rectangle {
         x: CDrag.px + 14px;
         y: CDrag.py + 10px;
-        width: cgl.preferred-width;
+        width: min(260px, cgl.preferred-width); // L44: Echo's #dragghost max-width 260 px + ellipsis
         height: 32px;
         background: T.panel2;
         border-radius: 8px;
@@ -1966,6 +2395,8 @@ export component AppWindow inherits Window {
             }
             Text {
                 text: CDrag.hit ? CDrag.label + "  →  " + CDrag.target-label : CDrag.label;
+                overflow: elide;
+                horizontal-stretch: 1;
                 font-size: 13px;
                 font-weight: 600 + T.fw;
                 color: T.text;
@@ -1977,7 +2408,7 @@ export component AppWindow inherits Window {
     if FDrag.on: Rectangle {
         x: FDrag.px + 14px;
         y: FDrag.py + 10px;
-        width: ghl.preferred-width;
+        width: min(260px, ghl.preferred-width); // L44
         height: 32px;
         background: T.panel2;
         border-radius: 8px;
@@ -1999,6 +2430,8 @@ export component AppWindow inherits Window {
             }
             Text {
                 text: FDrag.zone == "into" ? "Into " + FDrag.target : FDrag.zone == "top" ? "To the top level" : FDrag.zone == "before" || FDrag.zone == "after" ? "Put " + FDrag.label + " here" : FDrag.label;
+                overflow: elide;
+                horizontal-stretch: 1;
                 font-size: 13px;
                 font-weight: 600 + T.fw;
                 color: T.text;
@@ -2006,38 +2439,8 @@ export component AppWindow inherits Window {
             }
         }
     }
-    // night 9 Nov: the player's backdrop covers the title bar, so with a clip open the window couldn't be moved,
-    // maximized or closed (a click there closed the player instead). Like Echo's real frame: the bar keeps
-    // dragging (double-click = maximize) and the window buttons over the player; the rest of it stays dimmed.
-    if root.custom-frame && root.player-open && !Play.full && !Ed.open: Rectangle {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: 52px;
-        TouchArea {
-            pointer-event(e) => {
-                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
-                    root.win-act("drag");
-                }
-            }
-            double-clicked => { root.win-act("max"); }
-        }
-        HorizontalLayout {
-            alignment: end;
-            WinBtn {
-                kind: "min";
-                clicked => { root.win-act("min"); }
-            }
-            WinBtn {
-                kind: root.win-max ? "restore" : "max";
-                clicked => { root.win-act("max"); }
-            }
-            WinBtn {
-                kind: "close";
-                clicked => { root.win-act("close"); }
-            }
-        }
-    }
+    // (night 9 Nov's stand-in title bar over the player - drag + window buttons over the dimmed bar - is gone: since
+    // 10 Nov the player leaves the real bar lit and live, see PlayerView top-h)
     // William (9 Nov): the editor's window buttons. Not maximized: always there, right of Export (the editor keeps
     // win-pad free for them). Maximized: the editor bar is untouched (Export at the far right) and the buttons are
     // folded up out of sight - pushing the mouse against the top edge on the right folds them down over Undo / 9:16 /

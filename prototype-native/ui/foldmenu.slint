@@ -1,0 +1,87 @@
+// r2-layout (L20, round 2, 10 Nov 2026): the sidebar folder's right-click menu in Echo's own dark #ectx look (Echo's
+// folderCtx -> ctxMenu), like the card's menu (library.slint CardMenu). It was Slint's ContextMenuArea: an OS menu on
+// Windows, Slint's fluent menu on Linux. Same lines and actions as before.
+import { T } from "theme.slint";
+import { CtxRow, CtxSep } from "library.slint";
+
+export component FolderMenu inherits Rectangle {
+    in property <bool> real;          // a real folder on disk (else every line says how to make one: "notreal")
+    in property <bool> empty;         // no clips in it: "Delete folder" is offered
+    in property <[string]> merge-to;  // the other folders it can be merged into
+    callback act(string);             // "new" / "rename" / "merge:<to>" / "delete" / "open" / "notreal"
+    property <length> px;
+    property <length> py;
+    width: 0px;
+    height: 0px;
+    // at the mouse (window coordinates); Slint keeps the popup inside the window
+    public function open(x: length, y: length) {
+        self.px = x - self.absolute-position.x;
+        self.py = y - self.absolute-position.y;
+        pop.show();
+    }
+    function pick(k: string) {
+        pop.close();
+        root.act(k);
+    }
+    pop := PopupWindow {
+        x: root.px;
+        y: root.py;
+        width: body.width;
+        height: body.height;
+        close-policy: close-on-click-outside;
+        forward-focus: fs;
+        fs := FocusScope {
+            width: 0px;
+            height: 0px;
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    pop.close();
+                    return accept;
+                }
+                reject
+            }
+        }
+        body := Rectangle {
+            width: min(360px, max(220px, vl.preferred-width));
+            height: vl.preferred-height;
+            background: T.panel;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: T.line;
+            drop-shadow-blur: 40px;
+            drop-shadow-offset-y: 14px;
+            drop-shadow-color: #000000bb;
+            TouchArea { }
+            vl := VerticalLayout {
+                padding: 5px;
+                CtxRow {
+                    text: "New sub-folder…";
+                    clicked => { root.pick(root.real ? "new" : "notreal"); }
+                }
+                CtxRow {
+                    text: "Rename folder…";
+                    clicked => { root.pick(root.real ? "rename" : "notreal"); }
+                }
+                // gaps-library row 29: Echo's "Merge into <folder>" + "Merge into the main folder" (asks first)
+                if root.real: CtxSep { }
+                for o in root.merge-to: CtxRow {
+                    text: "Merge into " + o;
+                    clicked => { root.pick("merge:" + o); }
+                }
+                if root.real: CtxRow {
+                    text: "Merge into the main folder";
+                    clicked => { root.pick("merge:"); }
+                }
+                if root.real && root.empty: CtxRow {
+                    text: "Delete folder";
+                    clicked => { root.pick("delete"); }
+                }
+                CtxSep { }
+                CtxRow {
+                    text: "Open folder";
+                    clicked => { root.pick(root.real ? "open" : "notreal"); }
+                }
+            }
+        }
+    }
+}

@@ -13,7 +13,8 @@ routes = [{ pattern = "echoclip.link", custom_domain = true }]
 directory = "./site"
 binding = "ASSETS"
 
-# once a day: expired share links lose their share copy (frees Echo Cloud space)
+# once a day: expired share links lose their share copy (frees Echo Cloud space) and clips uploaded only for that
+# link; clips nobody watched for 60 days move to R2 Infrequent Access (tierObjects in src/index.js)
 [triggers]
 crons = ["23 3 * * *"]
 

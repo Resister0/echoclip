@@ -43,6 +43,29 @@ fn fetch(url: String, done: impl FnOnce(Image) + 'static) {
     );
 }
 
+/// the card picture of a clip on this PC: by the share's cloud key ("Echo/FiveM/Evidence/Evidence.mp4"), else by its
+/// title when that is a clip's file name (the server's default title)
+fn local_thumb(key: &str, title: &str) -> Option<Image> {
+    let lib = crate::LIB.with(|l| l.borrow().clone())?;
+    let by_key = key
+        .strip_prefix("Echo/")
+        .filter(|r| !r.is_empty())
+        .and_then(|r| lib.index_of_path(&lib.root().join(r.replace('\\', "/"))));
+    let idx = by_key.or_else(|| {
+        if title.is_empty() {
+            return None;
+        }
+        let hits: Vec<_> = lib.all().iter().filter(|c| c.path.file_stem().is_some_and(|s| s.to_string_lossy() == title)).map(|c| c.path.clone()).collect();
+        // only when the name is unique - a wrong picture is worse than none
+        if hits.len() == 1 {
+            lib.index_of_path(&hits[0])
+        } else {
+            None
+        }
+    })?;
+    lib.thumb_img(idx)
+}
+
 pub fn wire(app: &AppWindow) {
     let p = app.global::<crate::Pf>();
     p.set_swatches(ModelRc::new(VecModel::from(PF_COLORS.iter().map(|c| PfSwatch { hex: (*c).into(), c: hex(c) }).collect::<Vec<_>>())));
@@ -126,6 +149,18 @@ fn load(a: &AppWindow) {
         for (list, model) in [(on, on_m), (off, off_m)] {
             for (i, x) in list.iter().enumerate() {
                 let model = model.clone();
+                // William (10 Nov): a share link without a picture on the server (made on another PC / an older Echo)
+                // shows the clip's own picture from this PC - found by its cloud key ("Echo/<path>") or its name
+                if x["thumb"].as_str().unwrap_or("").is_empty() {
+                    if let Some(img) = local_thumb(x["key"].as_str().unwrap_or(""), x["title"].as_str().unwrap_or("")) {
+                        if let Some(mut c) = model.row_data(i) {
+                            c.thumb = img;
+                            c.has_thumb = true;
+                            model.set_row_data(i, c);
+                        }
+                    }
+                    continue;
+                }
                 fetch(x["thumb"].as_str().unwrap_or("").to_string(), move |img| {
                     if let Some(mut c) = model.row_data(i) {
                         c.thumb = img;

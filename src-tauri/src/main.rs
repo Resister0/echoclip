@@ -1048,7 +1048,7 @@ async fn import_clips(app: AppHandle, rec: State<'_, Recorder>, paths: Vec<Strin
         let mut l = last.lock().unwrap();
         if l.0 == done && l.1.elapsed().as_millis() < 240 && frac < 1.0 { return; }
         *l = (done, std::time::Instant::now());
-        let v = serde_json::json!({ "done": done, "total": total, "name": name, "pct": (frac * 1000.0).round() / 10.0 });
+        let v = serde_json::json!({ "done": done, "total": total, "name": name, "pct": (frac * 1000.0).round() / 10.0, "stage": rec.import_stage() });
         *IMPORT_PROG.lock().unwrap() = v.clone();
         let _ = app.emit("import-progress", v);
     }))
@@ -1057,8 +1057,13 @@ async fn import_clips(app: AppHandle, rec: State<'_, Recorder>, paths: Vec<Strin
 /// the import box also polls this (chat 30: the import-progress events never reached the box on Linux)
 static IMPORT_PROG: Mutex<serde_json::Value> = Mutex::new(serde_json::Value::Null);
 #[tauri::command]
-fn import_status() -> serde_json::Value {
-    IMPORT_PROG.lock().unwrap().clone()
+fn import_status(rec: State<Recorder>) -> serde_json::Value {
+    let mut v = IMPORT_PROG.lock().unwrap().clone();
+    // what the import does right now ("Checking the video…" / "Converting…" / "Copying…"), fresher than the last event
+    if let Some(o) = v.as_object_mut() {
+        o.insert("stage".into(), rec.import_stage().into());
+    }
+    v
 }
 
 /// the watchdog leaves the recorder alone while the FPS test pauses it

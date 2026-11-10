@@ -2,7 +2,7 @@ Echo - lightweight game clipping
 https://echoclip.link
 
 PRIVACY
-Echo keeps your clips, screenshots and settings on this PC. The only thing it does by itself is check echoclip.link every few hours for a newer version; that check contains only Echo's version number and your system type (Windows or Linux).
+Echo keeps your clips, screenshots and settings on this PC. The only thing it does by itself is check echoclip.link every few hours for a newer version; that check contains Echo's version number, your system type (Windows or Linux) and a few anonymous performance numbers: how much memory and processor time Echo itself used, the model names of your processor and graphics card, how much RAM the PC has, your Windows version and your recording settings (resolution, frame rate, encoder). No ID and nothing about you. You can turn the performance numbers off in Settings > App Settings > "Send anonymous performance numbers".
 
 Nothing else leaves your PC unless you choose it: connecting a cloud (Echo Cloud, Google Drive or your own storage), making a share link, sending feedback or sending a log.
 

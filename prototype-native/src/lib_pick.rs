@@ -14,14 +14,8 @@ pub fn pick_folder(title: &str) -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let out = std::process::Command::new("kdialog")
-            .args(["--title", title, "--getexistingdirectory", &home])
-            .output()
-            .or_else(|_| std::process::Command::new("zenity").args(["--file-selection", "--directory", "--title", title]).output())
-            .ok()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (out.status.success() && !s.is_empty()).then(|| PathBuf::from(s))
+        // kdialog, zenity, else the desktop's FileChooser portal (always the portal in the Flatpak)
+        crate::linux::pick(title, None, true)
     }
 }
 

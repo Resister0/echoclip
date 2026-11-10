@@ -65,7 +65,51 @@ struct Api {
     rc_render: unsafe extern "C" fn(*mut RenderCtx, *mut RenderParam) -> c_int,
     rc_report_swap: unsafe extern "C" fn(*mut RenderCtx),
     rc_free: unsafe extern "C" fn(*mut RenderCtx),
+    /// r2-layout (L1): mpv_command_ret + mpv_free_node_contents for "screenshot-raw" (optional: old libmpv = no still)
+    #[cfg_attr(not(windows), allow(dead_code))]
+    command_ret: Option<unsafe extern "C" fn(*mut Handle, *const *const c_char, *mut Node) -> c_int>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    free_node: Option<unsafe extern "C" fn(*mut Node)>,
 }
+
+// mpv_node (client.h) - only what "screenshot-raw" returns: a map of w / h / stride (int64), format (string), data
+// (byte array)
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))]
+union NodeU {
+    string: *mut c_char,
+    int64: i64,
+    list: *mut NodeList,
+    ba: *mut ByteArray,
+}
+#[repr(C)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct Node {
+    u: NodeU,
+    format: c_int,
+}
+#[repr(C)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct NodeList {
+    num: c_int,
+    values: *mut Node,
+    keys: *mut *mut c_char,
+}
+#[repr(C)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct ByteArray {
+    data: *mut c_void,
+    size: usize,
+}
+#[cfg(windows)]
+const FMT_STRING: c_int = 1;
+#[cfg(windows)]
+const FMT_INT64: c_int = 4;
+#[cfg(windows)]
+const FMT_NODE_MAP: c_int = 8;
+#[cfg(windows)]
+const FMT_BYTE_ARRAY: c_int = 9;
 
 fn load_api() -> Result<Api, String> {
     let names: &[&str] = if cfg!(windows) { &["libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"] } else { &["libmpv.so.2", "libmpv.so.1", "libmpv.so"] };
@@ -76,16 +120,37 @@ fn load_api() -> Result<Api, String> {
         if let Some(p) = d.parent().and_then(|p| p.parent()) {
             dirs.push(p.to_path_buf());
         }
+        // Linux AppImage: the bundled libmpv.so.1 (+ its libraries) sits in usr/lib next to usr/bin. Checked per name,
+        // so a system libmpv.so.2 (newer mpv, the distro's own VA-API drivers) still wins over the bundled .so.1.
+        if cfg!(target_os = "linux") {
+            if let Some(p) = d.parent() {
+                dirs.push(p.join("lib"));
+            }
+        }
     }
     let mut tried = vec![];
     let mut lib = None;
+    // ECHO_MPV_LIB=<file>: load exactly this libmpv first (testing the AppImage's bundled one on a PC that has mpv)
+    if let Some(p) = std::env::var_os("ECHO_MPV_LIB") {
+        match unsafe { libloading::Library::new(&p) } {
+            Ok(l) => lib = Some(l),
+            Err(e) => tried.push(format!("ECHO_MPV_LIB: {e}")),
+        }
+    }
     'outer: for n in names {
+        if lib.is_some() {
+            break;
+        }
         for d in &dirs {
             let p = d.join(n);
             if p.exists() {
-                if let Ok(l) = unsafe { libloading::Library::new(&p) } {
-                    lib = Some(l);
-                    break 'outer;
+                match unsafe { libloading::Library::new(&p) } {
+                    Ok(l) => {
+                        lib = Some(l);
+                        break 'outer;
+                    }
+                    // e.g. one of ITS libraries is missing: say so instead of a bare "not found"
+                    Err(e) => tried.push(format!("{}: {e}", p.display())),
                 }
             }
         }
@@ -97,7 +162,13 @@ fn load_api() -> Result<Api, String> {
             Err(e) => tried.push(format!("{n}: {e}")),
         }
     }
-    let lib = lib.ok_or_else(|| format!("libmpv not found ({})", tried.join("; ")))?;
+    // shown as "Can't play: ..." in the player; Linux: say which package brings it
+    let hint = if cfg!(windows) {
+        ""
+    } else {
+        " - install mpv (Fedora/Nobara: mpv-libs, Ubuntu/Debian: libmpv2 or libmpv1, Arch: mpv)"
+    };
+    let lib = lib.ok_or_else(|| format!("libmpv not found{hint} ({})", tried.join("; ")))?;
     unsafe {
         macro_rules! f {
             ($n:literal) => {
@@ -121,6 +192,8 @@ fn load_api() -> Result<Api, String> {
             rc_render: f!("mpv_render_context_render"),
             rc_report_swap: f!("mpv_render_context_report_swap"),
             rc_free: f!("mpv_render_context_free"),
+            command_ret: lib.get(b"mpv_command_ret\0").ok().map(|s| *s),
+            free_node: lib.get(b"mpv_free_node_contents\0").ok().map(|s| *s),
             _lib: lib,
         })
     }
@@ -138,10 +211,54 @@ pub struct Mpv {
     /// (PLAYBACK_RESTART after START_FILE). Set while reading events - any drain_events() call updates them.
     started: Cell<bool>,
     restarted: Cell<bool>,
+    /// gaps-player: the last file mpv couldn't open (END_FILE with reason "error"): mpv's reason text
+    load_error: std::cell::RefCell<Option<String>>,
+    /// gaps-cloud (row 5): the file couldn't be played (END_FILE with reason "error") - e.g. a cloud stream that broke
+    failed: Cell<bool>,
 }
 
 const EV_START_FILE: c_int = 6;
 const EV_PLAYBACK_RESTART: c_int = 21;
+const EV_END_FILE: c_int = 7;
+/// mpv_event_end_file (client.h): reason (4 = MPV_END_FILE_REASON_ERROR), error
+#[repr(C)]
+struct EndFile {
+    reason: c_int,
+    error: c_int,
+}
+/// mpv_event_end_file.reason = MPV_END_FILE_REASON_ERROR
+const END_REASON_ERROR: c_int = 4;
+
+/// Linux (OpenGL texture mode): how frames are handed to Echo's renderer. Drawing NV12 (2 planes, what VA-API gives)
+/// inside Slint's GL context showed black 128 px tiles at FIXED screen positions on some opens (9 Nov 2026, Nobara
+/// RX 9070 XT, H.264 + AV1, vaapi AND vaapi-copy); 3-plane VA surfaces (scale_vaapi=yuv420p) came out solid blue.
+/// GPU frames: the GPU's video processor makes single-plane RGB (zero-copy, same CPU as before: 38.3 vs 37.8 % of a
+/// core while playing). Frames in memory (copy-back / software / editor filters): CPU format=yuv420p (always clean).
+/// `copied` = the decoder hands over frames in memory. ECHO_NV12=1 = old behaviour.
+pub fn base_vf(copied: bool) -> &'static str {
+    if cfg!(windows) || std::env::var("ECHO_NV12").is_ok() {
+        ""
+    } else if copied {
+        "format=yuv420p"
+    } else {
+        "scale_vaapi=format=bgr0"
+    }
+}
+
+/// hwdec value -> frames come out in memory (no GPU surfaces)
+pub fn hwdec_copies(hwdec: &str) -> bool {
+    hwdec == "no" || hwdec.contains("copy")
+}
+
+/// `vf` with Echo's base filter appended (Linux), for "vf set"
+pub fn with_base_vf(vf: &str, copied: bool) -> String {
+    let base = base_vf(copied);
+    match (vf.is_empty(), base.is_empty()) {
+        (_, true) => vf.to_string(),
+        (true, false) => base.to_string(),
+        (false, false) => format!("{vf},{base}"),
+    }
+}
 
 /// Windows window mode: mpv's flip-model swap chain (default) or the old blit model (ECHO_D3D_FLIP=0)
 pub fn d3d_flip() -> bool {
@@ -157,7 +274,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create failed".into());
         }
-        let m = Mpv { api, h, rc: ptr::null_mut(), started: Cell::new(false), restarted: Cell::new(false) };
+        let m = Mpv { api, h, rc: ptr::null_mut(), started: Cell::new(false), restarted: Cell::new(false), load_error: Default::default(), failed: Cell::new(false) };
         match wid {
             Some(w) => {
                 m.set_option("vo", "gpu-next");
@@ -174,7 +291,13 @@ impl Mpv {
                 // after "stop" the window holds plain black instead of the last clip
                 m.set_option("force-window", "yes");
             }
-            None => m.set_option("vo", "libmpv"),
+            None => {
+                m.set_option("vo", "libmpv");
+                let vf = base_vf(hwdec_copies(hwdec));
+                if !vf.is_empty() {
+                    m.set_option("vf", vf);
+                }
+            }
         }
         for (k, v) in [
             ("hwdec", hwdec),
@@ -239,6 +362,56 @@ impl Mpv {
         self.get(k).and_then(|s| s.parse().ok())
     }
 
+    /// r2-layout (L1): the picture on screen now as RGB8 (w, h, pixels) - mpv's "screenshot-raw" (bgr0). `mode` =
+    /// "video" (the frame itself, no OSD) or "window". None when libmpv can't (old version, nothing decoded yet).
+    #[cfg(windows)]
+    pub fn screenshot_raw(&self, mode: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let (run, free) = (self.api.command_ret?, self.api.free_node?);
+        let args = [cs("screenshot-raw"), cs(mode), cs("bgr0")];
+        let mut p: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
+        p.push(ptr::null());
+        let mut node = Node { u: NodeU { int64: 0 }, format: 0 };
+        unsafe {
+            if run(self.h, p.as_ptr(), &mut node) < 0 {
+                return None;
+            }
+            let out = (|| {
+                if node.format != FMT_NODE_MAP || node.u.list.is_null() {
+                    return None;
+                }
+                let l = &*node.u.list;
+                let (mut w, mut h, mut stride, mut fmt, mut data) = (0i64, 0i64, 0i64, String::new(), None);
+                for i in 0..l.num.max(0) as usize {
+                    let k = CStr::from_ptr(*l.keys.add(i)).to_string_lossy();
+                    let v = &*l.values.add(i);
+                    match (k.as_ref(), v.format) {
+                        ("w", FMT_INT64) => w = v.u.int64,
+                        ("h", FMT_INT64) => h = v.u.int64,
+                        ("stride", FMT_INT64) => stride = v.u.int64,
+                        ("format", FMT_STRING) if !v.u.string.is_null() => fmt = CStr::from_ptr(v.u.string).to_string_lossy().into_owned(),
+                        ("data", FMT_BYTE_ARRAY) if !v.u.ba.is_null() => data = Some(&*v.u.ba),
+                        _ => {}
+                    }
+                }
+                let ba = data?;
+                if fmt != "bgr0" || w <= 0 || h <= 0 || stride < w * 4 || (ba.size as i64) < stride * h || ba.data.is_null() {
+                    return None;
+                }
+                let src = std::slice::from_raw_parts(ba.data as *const u8, ba.size);
+                let (w, h, stride) = (w as usize, h as usize, stride as usize);
+                let mut rgb = Vec::with_capacity(w * h * 3);
+                for y in 0..h {
+                    for px in src[y * stride..y * stride + w * 4].chunks_exact(4) {
+                        rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+                    }
+                }
+                Some((w as u32, h as u32, rgb))
+            })();
+            free(&mut node);
+            out
+        }
+    }
+
     pub fn command(&self, args: &[&str]) {
         let c: Vec<CString> = args.iter().map(|a| cs(a)).collect();
         let mut p: Vec<*const c_char> = c.iter().map(|a| a.as_ptr()).collect();
@@ -259,12 +432,29 @@ impl Mpv {
                     EV_START_FILE => {
                         self.started.set(true);
                         self.restarted.set(false);
+                        self.failed.set(false);
                     }
                     EV_PLAYBACK_RESTART if self.started.get() => self.restarted.set(true),
+                    // the data is mpv_event_end_file (reason, error). Error: the cloud overlay's fallback (`failed`,
+                    // gaps-cloud) and the player's "can't play" message (`load_error`, gaps-player) both need it.
+                    EV_END_FILE if !(*e).data.is_null() => {
+                        let ef = &*((*e).data as *const EndFile);
+                        if ef.reason == END_REASON_ERROR {
+                            self.failed.set(true);
+                            let why = CStr::from_ptr((self.api.error_string)(ef.error)).to_string_lossy().into_owned();
+                            *self.load_error.borrow_mut() = Some(why);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
+    }
+
+    /// gaps-player (row 40): the file just loaded couldn't be opened (damaged, still being written, not a video) - once
+    pub fn take_load_error(&self) -> Option<String> {
+        self.drain_events();
+        self.load_error.borrow_mut().take()
     }
 
     /// Call right BEFORE loadfile: forget old events, then wait for this file's own START_FILE + PLAYBACK_RESTART.
@@ -272,8 +462,21 @@ impl Mpv {
     /// loadfile - checking them showed the video window too early: black flash + a piece of the old clip.)
     pub fn arm_first_frame(&self) {
         self.drain_events();
+        *self.load_error.borrow_mut() = None;
         self.started.set(false);
         self.restarted.set(false);
+        self.failed.set(false);
+    }
+
+    /// gaps-cloud (row 5): the file mpv was opening / playing ended with an error (read and forget)
+    pub fn take_failed(&self) -> bool {
+        self.failed.replace(false)
+    }
+
+    /// gaps-cloud (row 5): the file loaded after arm_first_frame() has started playing (PLAYBACK_RESTART seen),
+    /// without reading events itself (main.rs's tick reads them)
+    pub fn has_played(&self) -> bool {
+        self.restarted.get()
     }
 
     /// The file loaded after arm_first_frame() has its first picture on screen.
