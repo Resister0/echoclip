@@ -51,7 +51,7 @@ fn desktop_entry() {
         return;
     }
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n{}",
+        "[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=link.echoclip.Echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n{}",
         if appimage.is_some() { "" } else { "NoDisplay=true\n" }
     );
     let f = data.join("applications/link.echoclip.Echo.desktop");
@@ -60,7 +60,7 @@ fn desktop_entry() {
             let _ = std::fs::create_dir_all(d);
         }
         match std::fs::write(&f, entry) {
-            Ok(()) => log_line("linux: app menu entry written (StartupWMClass=echo)"),
+            Ok(()) => log_line("linux: app menu entry written (StartupWMClass=link.echoclip.Echo)"),
             Err(e) => log_line(&format!("linux: couldn't write the app menu entry: {e}")),
         }
     }

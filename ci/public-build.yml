@@ -263,11 +263,11 @@ jobs:
           chmod +x "$T/linuxdeploy" "$T/appimagetool"
           cp prototype-native/target/release/echo-native-proto "$T/stage/echo-clips"
           cp src-tauri/icons/icon.png "$T/stage/echo-clips.png"
-          # StartupWMClass=echo: the native window's Wayland app_id / X11 class (prototype-native/src/popup.rs) -
+          # StartupWMClass=link.echoclip.Echo: the native window's Wayland app_id / X11 class (prototype-native/src/popup.rs) -
           # KDE / GNOME find the icon through it (also in the copy AppImageLauncher / Gear Lever install)
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Echo' 'GenericName=Game Clip Recorder' \
             'Comment=Save game highlights with one key' 'Exec=echo-clips' 'Icon=echo-clips' 'Terminal=false' \
-            'Categories=AudioVideo;Video;Recorder;' 'StartupWMClass=echo' 'SingleMainWindow=true' > "$T/stage/echo.desktop"
+            'Categories=AudioVideo;Video;Recorder;' 'StartupWMClass=link.echoclip.Echo' 'SingleMainWindow=true' > "$T/stage/echo.desktop"
           MPV=/usr/lib/x86_64-linux-gnu/libmpv.so.1
           test -e "$MPV"
           "$T/linuxdeploy" --appdir AppDir -e "$T/stage/echo-clips" -d "$T/stage/echo.desktop" -i "$T/stage/echo-clips.png" \
@@ -298,7 +298,10 @@ jobs:
           # pack with the update information inside (AppImageHub / AppImageUpdate; Echo itself updates via the .sig)
           ARCH=x86_64 "$T/appimagetool" --no-appstream -u "$INFO" AppDir Echo-native.AppImage
           chmod +x Echo-native.AppImage
-          info=$(./Echo-native.AppImage --appimage-updateinformation)
+          # read the .upd_info section - don't RUN the AppImage: with APPIMAGE_EXTRACT_AND_RUN it starts Echo itself,
+          # which panics on a runner without a display (2.0.0 run #51: "neither WAYLAND_DISPLAY nor ...")
+          objcopy --dump-section .upd_info="$T/upd_info" Echo-native.AppImage /dev/null
+          info=$(tr -d '\0' < "$T/upd_info")
           case "$info" in gh-releases-zsync*) echo "update information: $info" ;; *) echo "no update information: '$info'"; exit 1 ;; esac
           rm -f Echo-native.AppImage.zsync
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
@@ -330,7 +333,8 @@ jobs:
           set -e
           [ -f Echo-x86_64.AppImage ] || { echo "no AppImage"; exit 0; }
           chmod +x Echo-x86_64.AppImage
-          info=$(./Echo-x86_64.AppImage --appimage-updateinformation 2>/dev/null || true)
+          # read the section, don't run the AppImage (it would start Echo - see the AppImage step)
+          info=$(objcopy --dump-section .upd_info=upd_info.bin Echo-x86_64.AppImage /dev/null 2>/dev/null && tr -d '\0' < upd_info.bin || true); rm -f upd_info.bin
           echo "embedded update information: '$info'"
           case "$info" in
             gh-releases-zsync*) cp Echo-x86_64.AppImage Echo-new.AppImage ;;
@@ -342,7 +346,7 @@ jobs:
               rm -rf squashfs-root
               chmod +x Echo-new.AppImage
               # the re-packed file must start and say where its updates are
-              ./Echo-new.AppImage --appimage-updateinformation | grep -q '^gh-releases-zsync' ;;
+              objcopy --dump-section .upd_info=upd_info.bin Echo-new.AppImage /dev/null && tr -d '\0' < upd_info.bin | grep -q '^gh-releases-zsync'; rm -f upd_info.bin ;;
           esac
           rm -f Echo-new.AppImage.zsync
           if [ "$info" = "${info#gh-releases-zsync}" ]; then
@@ -356,7 +360,7 @@ jobs:
           fi
           # .zsync last, from the final file
           zsyncmake -u Echo-x86_64.AppImage -o Echo-x86_64.AppImage.zsync Echo-x86_64.AppImage
-          ./Echo-x86_64.AppImage --appimage-updateinformation
+          objcopy --dump-section .upd_info=upd_info.bin Echo-x86_64.AppImage /dev/null && tr -d '\0' < upd_info.bin; echo; rm -f upd_info.bin
           head -c 400 Echo-x86_64.AppImage.zsync | sed -n '1,8p'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -18,7 +18,7 @@ bin=prototype-native/target/release/echo-native-proto
 pkill -x Echo 2>/dev/null; pkill -x echo 2>/dev/null; sleep 1
 cp "$bin" ./Echo || exit 1
 # app menu entry + icon (Wayland shows the window/taskbar icon from the .desktop file). The window's Wayland app_id /
-# X11 class is "echo" (native app: prototype-native/src/popup.rs) -> echo.desktop + StartupWMClass=echo find the icon.
+# X11 class is "link.echoclip.Echo" (popup.rs; Echo itself writes link.echoclip.Echo.desktop) -> StartupWMClass finds the icon.
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
 cp src-tauri/icons/icon.png ~/.local/share/icons/hicolor/256x256/apps/echo-clips.png
 for id in dk.volkan.clipper echo; do
@@ -33,7 +33,7 @@ Path=$PWD
 Icon=echo-clips
 Terminal=false
 Categories=AudioVideo;Video;
-StartupWMClass=echo
+StartupWMClass=link.echoclip.Echo
 NoDisplay=$nd
 EOF
 done

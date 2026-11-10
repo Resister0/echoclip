@@ -1010,6 +1010,27 @@ async function countPerf(req, env, url, os, version) {
   } catch (e) { console.log("perf report error", e && e.message); }
 }
 
+// New installs (10 Nov 2026): Echo sends first=1 with its update check once per install (never again after a
+// 200/204). Counted as inst:<os> in stats (never pruned, so SUM = all-time total); uv only stops a retry counting twice.
+async function countInstall(req, env, os, version) {
+  try {
+    if (!UPDATE_FILES[os] || !/^\d{1,3}\.\d{1,3}\.\d{1,4}$/.test(version)) return;
+    const h = "i" + (await sha256(`${utcDay()}|${ipOf(req)}|inst:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
+    if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) await bump(env, "inst:" + os);
+  } catch (e) { console.log("install count error", e && e.message); }
+}
+// admin page: all-time installs + new ones in the last 1 / 7 / 30 days (UTC days, today included)
+async function installStats(env) {
+  try {
+    const r = (await env.DB.prepare(`SELECT SUM(n) AS total, SUM(CASE WHEN k = 'inst:windows' THEN n ELSE 0 END) AS windows,
+        SUM(CASE WHEN k = 'inst:linux' THEN n ELSE 0 END) AS linux, SUM(CASE WHEN day >= ? THEN n ELSE 0 END) AS d1,
+        SUM(CASE WHEN day >= ? THEN n ELSE 0 END) AS d7, SUM(CASE WHEN day >= ? THEN n ELSE 0 END) AS d30
+      FROM stats WHERE k LIKE 'inst:%'`).bind(utcDay(), utcDay(now() - 6 * 86400), utcDay(now() - 29 * 86400)).first()) || {};
+    return { total: r.total || 0, windows: r.windows || 0, linux: r.linux || 0, d1: r.d1 || 0, d7: r.d7 || 0, d30: r.d30 || 0 };
+  } catch (e) { console.log("install stats error", e && e.message); return null; }
+}
+
 // admin page: Echo's CPU / memory on real PCs, last 30 days. Averages are weighted by minutes measured.
 async function perfStats(env) {
   try {
@@ -1333,6 +1354,7 @@ async function adminStats(req, env) {
     site: await siteStats(env),
     apps: await appStats(env),
     perf: await perfStats(env),
+    installs: await installStats(env),
     releases: await releaseList(env),
   });
 }
@@ -2056,7 +2078,7 @@ async function adminRelease(req, env) {
 /// the newest real release (a "#" internal build isn't offered as an update, so it doesn't count as "newest").
 async function appStats(env) {
   const from = utcDay(now() - 13 * 86400);
-  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ? AND (k LIKE 'app:%' OR k LIKE 'appv:%' OR k LIKE 'appc:%' OR k LIKE 'appr:%')").bind(from).all()).results) || [];
+  const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ? AND (k LIKE 'app:%' OR k LIKE 'appv:%' OR k LIKE 'appc:%' OR k LIKE 'appr:%' OR k LIKE 'inst:%')").bind(from).all()).results) || [];
   let latest = null;
   try {
     const r = ((await env.DB.prepare("SELECT * FROM releases ORDER BY at DESC LIMIT 30").all()).results) || [];
@@ -2316,6 +2338,7 @@ export default {
       if (um && req.method === "GET") {
         if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
         if (url.searchParams.has("m")) { const p = countPerf(req, env, url, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
+        if (url.searchParams.get("first") === "1") { const p = countInstall(req, env, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         const res = await update(env, um[1], um[3]);
         const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
         if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }

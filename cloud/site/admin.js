@@ -128,6 +128,7 @@ function apps(A, site) {
     const p = per[r.day]; if (!p) continue;
     if (r.k === "app:windows") p.win += r.n; else if (r.k === "app:linux") p.lin += r.n;
     else if (r.k.startsWith("appr:")) p.ret = (p.ret || 0) + r.n;
+    else if (r.k.startsWith("inst:")) p.inst = (p.inst || 0) + r.n;
     else if (r.k.startsWith("appv:")) { const [, os, v] = r.k.split(":"); (p.v[v] = p.v[v] || { windows: 0, linux: 0 })[os] += r.n; }
     else if (r.k.startsWith("appc:")) { const [, , v, cc] = r.k.split(":"); const c = (p.c = p.c || {}); (c[v] = c[v] || {})[cc] = (c[v][cc] || 0) + r.n; }
   }
@@ -145,7 +146,7 @@ function apps(A, site) {
     : `<tr><td colspan="5" class="sub">No check-ins yet - they start after this server update</td></tr>`;
   const max = Math.max(1, ...days.map(tot)), W = 600, H = 120, bw = W / 14;
   const bars = days.map((d, i) => { const hw = per[d].win / max * (H - 4), hl = per[d].lin / max * (H - 4);
-    return `<g><title>${d}: ${tot(d)} copies (${per[d].win} Windows, ${per[d].lin} Linux)</title><rect x="${i * bw}" y="0" width="${bw}" height="${H}" fill="transparent"/>
+    return `<g><title>${d}: ${tot(d)} copies (${per[d].win} Windows, ${per[d].lin} Linux)${per[d].inst ? ` · ${per[d].inst} new installs` : ""}</title><rect x="${i * bw}" y="0" width="${bw}" height="${H}" fill="transparent"/>
       <rect x="${i * bw + 3}" y="${H - hw - hl}" width="${bw - 6}" height="${hl}" rx="2" fill="var(--accent)" opacity=".45"/>
       <rect x="${i * bw + 3}" y="${H - hw}" width="${bw - 6}" height="${hw}" rx="2" fill="var(--accent)"/></g>`; }).join("");
   // update speed: share of copies on the newest version, per day (from the version keys)
@@ -235,6 +236,8 @@ function draw(j) {
   const left = m.net_month - costs;
   const verdict = left >= 0 ? `<span class="pill good">▲ pays for itself</span>` : `<span class="pill bad">▼ costs you money</span>`;
   const u = j.users, a = j.active;
+  // Echo installs, all time (10 Nov 2026): Echo 2.0.1+ sends a one-time "new install" with its first update check
+  const I = j.installs || { total: 0, windows: 0, linux: 0, d1: 0, d7: 0 };
   // subscriptions that pay nothing (100% codes) or from before amounts were tracked aren't income
   const extra = (m.discounted_free ? ` · ${m.discounted_free} free via code` : "") + (m.unknown ? ` · ${m.unknown} older, not counted` : "");
   const rows = (list, f) => list.length ? list.map(f).join("") : `<tr><td colspan="9" class="sub">None</td></tr>`;
@@ -252,6 +255,7 @@ function draw(j) {
 
     <h2>People</h2>
     <div class="grid">
+      ${tile("Echo installs (all time)", I.total, I.total ? `+${I.d1} today · +${I.d7} this week · ${I.windows} Windows · ${I.linux} Linux` : "counting starts with Echo 2.0.1")}
       ${tile("Echo Cloud accounts", u.total, `+${u.new_1d} today · +${u.new_7d} this week · +${u.new_30d} in 30 days`)}
       ${tile("Echo Cloud users today", a.d1, `${a.d7} this week · ${a.d30} in 30 days`)}
       ${tile("Paying", m.paying, u.total ? `${(m.paying / u.total * 100).toFixed(1)}% of accounts` + (u.paid > m.paying ? ` · ${u.paid} with a plan` : "") : "")}

@@ -247,6 +247,7 @@ modules:
   - name: libplacebo
     buildsystem: meson
     config-opts:
+      - --libdir=lib               # meson picked lib64 -> mpv's pkg-config (/app/lib/pkgconfig) didn't find it (2.0.0 run #51)
       - -Dvulkan=disabled          # mpv draws through OpenGL here (vo=libmpv)
       - -Dglslang=disabled
       - -Dshaderc=disabled
@@ -262,6 +263,7 @@ modules:
   - name: mpv
     buildsystem: meson
     config-opts:
+      - --libdir=lib               # the echo module checks /app/lib/libmpv.so.2 (meson would pick lib64)
       - -Dlibmpv=true
       - -Dcplayer=false
       - -Dlua=disabled

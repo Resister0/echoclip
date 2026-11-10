@@ -551,8 +551,18 @@ pub fn check_updates(a: &AppWindow, by_hand: bool) {
         move || -> Result<Option<(serde_json::Value, Vec<(String, String)>)>, String> {
             // + the anonymous memory / CPU averages since the last check + the PC's specs (perf.rs, specs.rs; "" when
             // switched off in Settings > About)
-            let url = format!("{}/update/{os}/x86_64/{cur2}{}", crate::lib_net::ec_api(), crate::perf::query());
+            let mut url = format!("{}/update/{os}/x86_64/{cur2}{}", crate::lib_net::ec_api(), crate::perf::query());
+            // + "first=1" once per install for the server's all-time installs count (no ID, just one anonymous +1 like the
+            // daily check-in, so not tied to the perf switch); the marker file is only written once the server answered
+            let counted = echo_core::recorder::app_dir_pub().join("install-counted");
+            let first = !counted.exists();
+            if first {
+                url.push_str(if url.contains('?') { "&first=1" } else { "?first=1" });
+            }
             let (code, body) = crate::lib_net::request("GET", &url, vec![], None, 30)?;
+            if first && (code == 200 || code == 204) {
+                let _ = std::fs::write(&counted, b"1");
+            }
             if code == 204 || body.trim().is_empty() {
                 return Ok(None);
             }

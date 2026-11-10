@@ -9,7 +9,7 @@ App id: `link.echoclip.Echo`. Command inside the sandbox: `echo-clips`.
 | `link.echoclip.Echo.yml` | the manifest: GNOME 50 runtime, Rust build of the native app (`prototype-native`, since 2.0.0), plus ffmpeg (shared), libplacebo + libmpv (video player), gpu-screen-recorder, rclone, pactl/parec, wl-copy |
 | `cargo-sources.json` | every Rust crate, so the build works offline (Flathub builds without internet). Regenerate with `bash flatpak/update-cargo-sources.sh` whenever `prototype-native/Cargo.lock` changes |
 | `link.echoclip.Echo.metainfo.xml` | store page text, keywords, screenshots, releases |
-| `link.echoclip.Echo.desktop` / `.png` | app menu entry + icon (`StartupWMClass=echo` = the native window's app_id) |
+| `link.echoclip.Echo.desktop` / `.png` | app menu entry + icon (`StartupWMClass=link.echoclip.Echo` = the native window's app_id) |
 | `libayatana-appindicator3-0.1.yml` | (unused since 2.0.0) the old Tauri app's tray icon library |
 | `make-flathub-manifest.sh` | (unused since Flathub is off) writes `flatpak/flathub/` = the manifest building the published code |
 

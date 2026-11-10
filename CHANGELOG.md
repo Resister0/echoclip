@@ -3,6 +3,11 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.1 - 10 Nov
+- Echo 2.0 comes to the Flatpak too
+- Linux: Echo's icon shows in Alt+Tab (KDE)
+- Echo counts how many times it's installed: a new install sends a one-time anonymous signal with its first update check - nothing that identifies you is kept
+
 ## 2.0.0 - 10 Nov - Echo 2.0: rebuilt as a native app
 - Echo is now a native app on Windows and Linux, with a new, smoother video player (mpv, GPU playback)
 - About 150 MB of memory in the background and half the CPU while recording (0.6 % of the PC instead of 1.2 %)

@@ -38,13 +38,15 @@ pub fn select_backend() {
             if POPUP_NEXT.swap(false, Ordering::SeqCst) {
                 attrs.with_active(false).with_transparent(true).with_decorations(false).with_resizable(false)
             } else {
-                // Linux: Wayland app_id / X11 WM_CLASS "echo" = matches ~/.local/share/applications/echo.desktop
+                // Linux: Wayland app_id / X11 WM_CLASS "link.echoclip.Echo" = the desktop file name (linux.rs, Flatpak id). KWin's Alt+Tab
+                // only finds the icon through a desktop file named exactly like the app_id (10 Nov 2026: was "echo" - taskbar OK, Alt+Tab blank)
+                // was: "echo" = matches ~/.local/share/applications/echo.desktop
                 // (build.sh, Icon=echo-clips). Without it KDE showed the generic Wayland "W" in the taskbar (9 Nov 2026)
                 #[cfg(target_os = "linux")]
                 let attrs = {
                     use slint::winit_030::winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
-                    let a = WindowAttributesExtWayland::with_name(attrs, "echo", "echo");
-                    WindowAttributesExtX11::with_name(a, "echo", "echo")
+                    let a = WindowAttributesExtWayland::with_name(attrs, "link.echoclip.Echo", "echo");
+                    WindowAttributesExtX11::with_name(a, "link.echoclip.Echo", "echo")
                 };
                 attrs
             }
