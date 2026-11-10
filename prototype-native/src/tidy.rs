@@ -1,5 +1,5 @@
 //! Chat D - Echo's "Tidy up" (openTidy): clips saved twice (same game, time ranges overlap > 50 %, the LATEST is
-//! pre-marked KEEP - William, 10 Nov 2026: the newest save holds the last seconds that may matter), very short ones
+//! pre-marked KEEP - 10 Nov 2026: the newest save holds the last seconds that may matter), very short ones
 //! (< 5 s, pre-ticked), the biggest (top 10 over 100 MB, not ticked). Session cleanup (10 Nov 2026) adds two
 //! sections, both not ticked: an edit and its original (keep one), and clips that are in the cloud too (only the
 //! copy on this PC goes - their cloud copy is never deleted from here). Every section says how much it frees.
@@ -223,7 +223,7 @@ fn fill(a: &AppWindow, lib: &LibModel, s: Sorted, durs: HashMap<usize, f64>) {
     };
     if !groups.is_empty() {
         let n = groups.len();
-        // William (10 Nov 2026): the LATEST save is kept (it holds the last seconds that may matter), not the longest
+        // 10 Nov 2026: the LATEST save is kept (it holds the last seconds that may matter), not the longest
         // (Echo's was g.reduce((a, b) => dur(b) > dur(a) ? b : a)). Same save time: the later one in the group.
         let latest = |g: &Vec<usize>| g.iter().copied().fold(g[0], |a, b| if lib.clip(b).mtime >= lib.clip(a).mtime { b } else { a });
         let frees: u64 = groups.iter().map(|g| { let k = latest(g); g.iter().filter(|&&i| i != k).map(|&i| lib.clip(i).size).sum::<u64>() }).sum();
@@ -250,7 +250,7 @@ fn fill(a: &AppWindow, lib: &LibModel, s: Sorted, durs: HashMap<usize, f64>) {
             rows.push(clip_row(i, true, false, k == 0, k + 1 == short.len()));
         }
     }
-    // cleanup (William, 10 Nov 2026): an edit and its original - keep one. Never ticked (and never both).
+    // cleanup (10 Nov 2026): an edit and its original - keep one. Never ticked (and never both).
     if !pairs.is_empty() {
         let orig: Vec<usize> = pairs.iter().map(|g| g[0]).collect();
         rows.push(head("EDIT AND ORIGINAL", format!("Not selected - keep the edit or the original. Keeping only the edits frees {}", sz(lib, &orig))));

@@ -18,7 +18,7 @@ export global HomeState {
     in-out property <[int]> bars;          // clips per week, last 6 weeks (oldest first)
     in-out property <int> bars-max: 1;
     in-out property <bool> spark;          // at least 3 weeks with clips
-    in-out property <[int]> days;          // William (10 Nov): clips per day, last 7 days (today last)
+    in-out property <[int]> days;          // 10 Nov: clips per day, last 7 days (today last)
     in-out property <[string]> day-l;      // their day letters ("M", "T", …)
     in-out property <int> days-max: 1;
     // Get started (.hgs)
@@ -46,7 +46,7 @@ component HB inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    // William (10 Nov): three of these side by side under Copy for Discord - icon + label centred
+    // 10 Nov: three of these side by side under Copy for Discord - icon + label centred
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
@@ -69,7 +69,7 @@ component HB inherits Rectangle {
     }
 }
 
-// William (10 Nov): one of Home's four number boxes (was a bare strip between two lines)
+// 10 Nov: one of Home's four number boxes (was a bare strip between two lines)
 component StatBox inherits Rectangle {
     in property <string> n;
     in property <string> l;
@@ -141,7 +141,7 @@ export component HomePage inherits Rectangle {
             padding-left: 28px;
             padding-right: 36px;
             padding-bottom: 36px;
-            // 24 (was 4): "Your latest clip" sat right under the top bar (William, 10 Nov 2026)
+            // 24 (was 4): "Your latest clip" sat right under the top bar (10 Nov 2026)
             padding-top: 24px;
             spacing: 0;
             // .hempty
@@ -300,7 +300,7 @@ export component HomePage inherits Rectangle {
                                 }
                             }
                         }
-                        // William (10 Nov): the three actions side by side, equal width (were three stacked rows)
+                        // 10 Nov: the three actions side by side, equal width (were three stacked rows)
                         HorizontalLayout {
                             spacing: 8px;
                             HB {
@@ -414,7 +414,7 @@ export component HomePage inherits Rectangle {
                 }
             }
             // .hstrip: margin 22 0 6, padding 14 0, lines above + below, gap 28
-            // William (10 Nov): four equal boxes; the first holds clips per day for the last 7 days (today last,
+            // 10 Nov: four equal boxes; the first holds clips per day for the last 7 days (today last,
             // brighter), with the day letters under it - same colours as the old 6-week spark
             HorizontalLayout {
                 padding-top: 22px;

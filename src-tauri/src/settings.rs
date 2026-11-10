@@ -107,6 +107,8 @@ pub struct Settings {
     pub r2_url: String,
     /// hotkey that mutes / unmutes the mic ("" = off)
     pub mic_mute_key: String,
+    /// hotkey that shows Echo's window / sends it back to the tray ("" = off)
+    pub show_key: String,
     /// push-to-talk: mic is only recorded while this key is held
     pub push_to_talk: bool,
     pub ptt_key: String,
@@ -151,9 +153,6 @@ pub struct Settings {
     pub mix_music: bool,
     /// mic only sends one channel: copy it to both ears
     pub mic_mono: bool,
-    /// Echo Cloud gets the clip as it is (no smaller copy) - cloud-savings, 10 Nov 2026; off by default, meant to become
-    /// a paid-plan perk. The user's own clouds always get the original.
-    pub cloud_original: bool,
     /// cloud: delete the PC copy after an automatic upload
     pub cloud_free_after: bool,
     /// cloud share links expire after this many days (0 = never)
@@ -161,7 +160,7 @@ pub struct Settings {
     /// with several clouds: where new uploads go. "" = the one with the most free space (old behaviour),
     /// "echocloud" = Echo Cloud while it has room (Discord share links), or a cloud account id ("3")
     pub cloud_target: String,
-    /// copy the share link after uploading a clip by hand. OFF by default (chat 27, William): a link puts a copy in
+    /// copy the share link after uploading a clip by hand. OFF by default (chat 27): a link puts a copy in
     /// Echo Cloud, and Echo Cloud should only fill up when the user asks for it
     pub auto_copy_link: bool,
     /// 0 = file from when auto_copy_link was on by default (switched off once in load())
@@ -240,7 +239,7 @@ impl Default for Settings {
             name_by_game: true,
             game_folders: true,
             caption_model: "base".into(),
-            // Linux: Shift+F10 opens context menus in GTK/KDE apps and clashed with William's screenshot tool
+            // Linux: Shift+F10 opens context menus in GTK/KDE apps and clashed with the developer's screenshot tool
             screenshot_key: if cfg!(target_os = "linux") { "Alt+F12" } else { "Shift+F10" }.into(),
             shot_key_v: 1,
             bookmark_key: "Shift+F9".into(),
@@ -265,6 +264,7 @@ impl Default for Settings {
             r2_bucket: String::new(),
             r2_url: String::new(),
             mic_mute_key: String::new(),
+            show_key: String::new(),
             push_to_talk: false,
             ptt_key: String::new(),
             mic_denoise: true,
@@ -301,7 +301,6 @@ impl Default for Settings {
             mix_browser: false,
             mix_music: false,
             mic_mono: false,
-            cloud_original: false,
             cloud_free_after: false,
             link_days: 0,
             cloud_target: String::new(),

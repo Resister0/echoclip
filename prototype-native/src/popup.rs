@@ -118,7 +118,7 @@ pub fn show(title: &str, sub: &str, ok: bool, icon: &str) {
 /// show / hide without activating (Windows: Echo's overlay_visible = SetWindowPos NOACTIVATE / SW_HIDE)
 fn visible(w: &crate::PopupWin, hwnd: isize, on: bool) {
     // the handle often isn't there yet when ensure() runs (winit makes the window a moment after show()), which
-    // skipped the overlay styles AND the position (William: "notifs appear in wrong spots" = Windows' default
+    // skipped the overlay styles AND the position (reported: "notifs appear in wrong spots" = Windows' default
     // spot, top left). Fetch it now; the first time, make it Echo's no-focus overlay and remember it.
     #[cfg(windows)]
     let hwnd = if hwnd != 0 {
@@ -142,7 +142,7 @@ fn visible(w: &crate::PopupWin, hwnd: isize, on: bool) {
     #[cfg(windows)]
     if hwnd != 0 {
         if on {
-            // William: "notifs appear in wrong spots" - Slint's set_position at creation didn't stick (Windows put the
+            // reported: "notifs appear in wrong spots" - Slint's set_position at creation didn't stick (Windows put the
             // popup at its default spot, top left). Echo's spot, set right before every show: primary monitor's
             // right edge - 380, top + 24 (scaled).
             use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetWindowPos, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
@@ -211,7 +211,7 @@ fn ensure() -> Option<(crate::PopupWin, isize)> {
             echo_core::winutil::overlay_visible(hwnd, false);
         } else {
             // the handle often isn't there yet right after show(): the empty, see-through popup then stayed shown -
-            // in Alt+Tab as "Echo popup" from startup until the first real popup (William, 10 Nov 2026). Look again
+            // in Alt+Tab as "Echo popup" from startup until the first real popup (10 Nov 2026). Look again
             // every 50 ms (up to 5 s); once it's there: no-focus tool window (out of Alt+Tab / taskbar) + hidden.
             let ww = w.as_weak();
             let tries = std::rc::Rc::new(std::cell::Cell::new(0u32));

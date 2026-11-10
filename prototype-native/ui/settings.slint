@@ -19,7 +19,7 @@ export struct EcPlan {
     yid: string,
     ytext: string,
     save: string,    // "-17%" ("" = none)
-    current: bool,   // William (10 Nov): the plan this account pays for now (paid users see the cards too)
+    current: bool,   // 10 Nov: the plan this account pays for now (paid users see the cards too)
 }
 export global EcPlans {
     in-out property <[EcPlan]> plans;
@@ -110,7 +110,7 @@ export global S {
 }
 
 // Chat B: Echo's colour picker for custom themes (saturation/value square, hue bar, R G B) + RGB mode: double-click
-// the round preview = the colour cycles through the rainbow (William: "like Vape v4"). Rust: src/lib_color.rs.
+// the round preview = the colour cycles through the rainbow (asked: "like Vape v4"). Rust: src/lib_color.rs.
 export global Cp {
     in-out property <bool> open;
     in property <string> key;        // theme_accent / theme_bg / theme_hi
@@ -217,7 +217,7 @@ component SSlider inherits Rectangle {
 // <select>: button with the picked option + a menu
 // Settings dropdowns: ONE shared list drawn by SDropLayer (app.slint, above the page and the setup wizard). It was a
 // PopupWindow per select: Slint closed it on the PRESS of a click on an option (counted as outside) and the click
-// landed on whatever was under it (William's Settings pickers; same bug as the library filter). Every select does
+// landed on whatever was under it (the Settings pickers; same bug as the library filter). Every select does
 // S.set(key, value) when an option is picked.
 export global SDrop {
     in-out property <bool> open;
@@ -1555,7 +1555,7 @@ export component SettingsPage inherits Rectangle {
                     Rectangle { height: 6px; }
                     for n in S.nav: VerticalLayout {
                         spacing: 2px;
-                        // Echo's h4: margin 10px 10px 6px - the 10 px inset lines the header up with the items (William)
+                        // Echo's h4: margin 10px 10px 6px - the 10 px inset lines the header up with the items
                         if n.head != "": HorizontalLayout {
                             padding-left: 10px;
                             Text {

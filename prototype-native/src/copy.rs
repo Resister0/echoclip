@@ -153,7 +153,7 @@ fn copy_shrunk(a: &AppWindow, path: PathBuf, thumbs: PathBuf, mb: f64) {
         let prog = move |f: f64| {
             let _ = slint::invoke_from_event_loop(move || prog_set(pb, None, Some(&format!("{:.0}%", f * 100.0)), Some((f * 100.0) as f32)));
         };
-        // William (9 Nov): Echo's OWN shrink_clip - it adds the Echo watermark (Settings > Watermark) like the old app;
+        // 9 Nov: Echo's OWN shrink_clip - it adds the Echo watermark (Settings > Watermark) like the old app;
         // the copy below never did. Same cache folder (.thumbs/discord/<MB>), same sizes / encoders / 3 tries.
         let r = match crate::rec_core::rec() {
             Some(rec) => rec.shrink_clip(&path.to_string_lossy(), mb, &prog).map(PathBuf::from),

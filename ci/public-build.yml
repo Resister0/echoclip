@@ -20,7 +20,7 @@ jobs:
     if: github.repository == 'Resister0/echoclip'
     runs-on: windows-latest
     env:
-      # Echo's Google Drive login (read by src-tauri/build.rs; not in the code - chat 29)
+      # Echo's Google Drive login (read by echo-core's build.rs, prototype-native/echo-core/build.rs; not in the code - chat 29)
       ECHO_GDRIVE_SECRET: ${{ secrets.ECHO_GDRIVE_SECRET }}
       # Certum code signing (9 Nov 2026): only WHETHER it's set up - the secrets themselves go to the signing step
       # alone, never into the job (build scripts of dependencies must not be able to read them)
@@ -45,14 +45,14 @@ jobs:
           echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
           grep '"version"' src-tauri/tauri.conf.json
       - name: Native app
-        # 10 Nov 2026 (William): Echo 2.0 = the native app ONLY (prototype-native: Slint + mpv, Echo's recorder via
+        # 10 Nov 2026: Echo 2.0 = the native app ONLY (prototype-native: Slint + mpv, Echo's recorder via
         # echo-core). The old Tauri app is no longer built and there is no fallback to it: if this fails, the run fails.
         # EchoClip.exe, not Echo.exe (chat 31): Discord's own game detection showed "Playing ECHO" (a 2017 game) for Echo.exe.
         # The Installer step packs it with Tauri's NSIS bundler (a packing tool only - `tauri bundle` builds nothing),
         # so the install folder, uninstaller, hooks.nsh and the /P /R /UPDATE handling are exactly what 1.0.x's updater
-        # expects (tested on William's PC: update over 1.0.71 installed + relaunched it).
+        # expects (tested on the developer's PC: update over 1.0.71 installed + relaunched it).
         # libmpv-2.dll = shinchiro's mpv build 20261107 (git 9028187538), pinned + fingerprint: byte-identical to the
-        # DLL tested on William's PC. ECHO_VERSION (Version step) goes into the exe: its updater + version details.
+        # DLL tested on the developer's PC. ECHO_VERSION (Version step) goes into the exe: its updater + version details.
         shell: bash
         run: |
           mkdir -p dl
@@ -66,7 +66,7 @@ jobs:
           cp prototype-native/target/release/echo-native-proto.exe src-tauri/target/release/EchoClip.exe
           ls -la src-tauri/target/release/EchoClip.exe src-tauri/libmpv-2.dll
       - name: Code signing login (Certum)
-        # Certum "Open Source Code Signing in the Cloud" (Open Source Developer, William Albrektsen): logs SimplySign
+        # Certum "Open Source Code Signing in the Cloud" (Open Source Developer certificate): logs SimplySign
         # Desktop in on this runner with the TOTP secret behind the SimplySign phone codes, then Windows sees the
         # certificate like a smart card and signtool can use it. Action reviewed 9 Nov 2026 (its only download is
         # SimplySign Desktop from files.certum.eu; the secret is masked, never printed) - pinned to that commit.
@@ -93,7 +93,7 @@ jobs:
           SIGNTOOL: ${{ steps.certum.outputs.signtool-path }}
           CERT_SHA1: ${{ steps.certum.outputs.cert-thumbprint }}
         run: |
-          # the installer's first page shows which Echo it installs (William, 10 Nov 2026): "Echo 2.0.0 - ..."
+          # the installer's first page shows which Echo it installs (10 Nov 2026): "Echo 2.0.0 - ..."
           V=$(cat ../ci/version.txt 2>/dev/null | tr -d ' \r\n')
           [ -n "$V" ] && sed -i "1s/^Echo /Echo $V /" windows/installer-notice.txt && head -n 1 windows/installer-notice.txt
           UPD=""; [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && UPD=',"createUpdaterArtifacts":true'
@@ -168,9 +168,10 @@ jobs:
           APT="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update
           # 10 Nov 2026: the native app only (WebKit, libsoup and the GStreamer players were the old Tauri app's).
-          # Slint links fontconfig (+ xkbcommon), echo-core links D-Bus + ALSA; a few GTK crates are still in the lock.
+          # Slint links fontconfig (+ xkbcommon), echo-core links D-Bus + ALSA. No GTK / librsvg / appindicator: the
+          # GTK crates in Cargo.lock come from tray-icon, which is Windows-only (Linux's tray = ksni over D-Bus).
           # libmpv-dev = libmpv.so.1 (mpv 0.34) + its libraries, bundled into the AppImage.
-          sudo apt-get $APT install -y libgtk-3-dev librsvg2-dev libasound2-dev libdbus-1-dev libayatana-appindicator3-dev pkg-config \
+          sudo apt-get $APT install -y libasound2-dev libdbus-1-dev pkg-config \
             libfuse2 file patchelf zsync libfontconfig1-dev libxkbcommon-dev libmpv-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -188,7 +189,7 @@ jobs:
           echo "ECHO_VERSION=$V" >> "$GITHUB_ENV"
           echo "version $V"
       - name: Native app
-        # 10 Nov 2026 (2.0.0, William): the Linux downloads ship the native Echo ONLY (prototype-native: Slint + mpv,
+        # 10 Nov 2026 (2.0.0): the Linux downloads ship the native Echo ONLY (prototype-native: Slint + mpv,
         # Echo's recorder via echo-core) as echo-clips, like Windows. ECHO_VERSION (Version step) goes into the binary:
         # its updater + version details. No fallback to the old Tauri app: if this fails, the run fails.
         id: native
@@ -267,7 +268,7 @@ jobs:
           # KDE / GNOME find the icon through it (also in the copy AppImageLauncher / Gear Lever install)
           printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Echo' 'GenericName=Game Clip Recorder' \
             'Comment=Save game highlights with one key' 'Exec=echo-clips' 'Icon=echo-clips' 'Terminal=false' \
-            'Categories=AudioVideo;Video;Recorder;' 'StartupWMClass=link.echoclip.Echo' 'SingleMainWindow=true' > "$T/stage/echo.desktop"
+            'Categories=AudioVideo;Video;Recorder;' 'StartupWMClass=link.echoclip.Echo' 'X-GNOME-SingleWindow=true' > "$T/stage/echo.desktop"
           MPV=/usr/lib/x86_64-linux-gnu/libmpv.so.1
           test -e "$MPV"
           "$T/linuxdeploy" --appdir AppDir -e "$T/stage/echo-clips" -d "$T/stage/echo.desktop" -i "$T/stage/echo-clips.png" \
@@ -453,7 +454,7 @@ jobs:
           files=$(find out -type f \( -name 'Echo-Windows-portable.zip' -o -name 'Echo-Setup.exe' -o -name '*.tar.gz' -o -name '*.AppImage' -o -name '*.sig' -o -name '*.zsync' -o -name 'whisper-cli-*' \))
           notes="Built from: $msg
 
-          Windows: download Echo-Setup.exe (installs Echo with a Start menu entry) or Echo-Windows-portable.zip (no install: unzip it anywhere and run EchoClip.exe). First start: if Windows says it protected your PC, click More info > Run anyway.
+          Windows: download Echo-Setup.exe (installs Echo with a Start menu entry) or Echo-Windows-portable.zip (no install: unzip it anywhere and run EchoClip.exe). Both are signed with a Certum open-source code-signing certificate. The certificate is still new, so if Windows says it protected your PC, click More info > Run anyway.
           Linux: download Echo-x86_64.AppImage, make it runnable (right-click > Properties > Allow executing, or chmod +x) and start it. Also needs gpu-screen-recorder + ffmpeg from your distro.
           (Echo-linux-x86_64.tar.gz = the plain program, smaller; it also needs your distro's mpv library to play clips - Fedora/Nobara: mpv-libs, Ubuntu/Debian: libmpv2, Arch: mpv - see README.txt inside.)
           Windows build: ${{ needs.windows.result }} / Linux build: ${{ needs.linux.result }}"

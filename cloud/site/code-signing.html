@@ -4,15 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Code signing policy - Echo</title>
-<meta name="description" content="How Echo's Windows downloads are built and signed, who approves releases, and what data Echo sends.">
+<meta name="description" content="How Echo's Windows downloads are built from the public source by GitHub Actions and code-signed, who approves releases, and what data Echo sends.">
 <meta name="theme-color" content="#7c5cff">
+<!-- seo: managed by cloud/site-src/seo.py, edit there -->
+<link rel="canonical" href="https://echoclip.link/code-signing">
+<meta property="og:url" content="https://echoclip.link/code-signing">
 <meta property="og:title" content="Code signing policy - Echo">
-<meta property="og:description" content="How Echo's Windows downloads are built and signed, who approves releases, and what data Echo sends.">
+<meta property="og:description" content="How Echo's Windows downloads are built from the public source by GitHub Actions and code-signed, who approves releases, and what data Echo sends.">
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
 <meta property="og:image" content="https://echoclip.link/og.png?v=2">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Echo - lightweight game clipping for any PC. One key saves the last moments. Free, no ads, no account.">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<!-- /seo -->
 <link rel="stylesheet" href="/style.css">
 <script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
@@ -31,19 +42,21 @@
 <main>
 <article class="doc">
   <h1>Code signing policy</h1>
-  <p class="updated">Last updated: 8 November 2026</p>
+  <p class="updated">Last updated: 10 November 2026</p>
 
-  <p>Echo's Windows downloads (Echo-Setup.exe and Echo.exe) are built from the public source code by GitHub Actions and
-    signed with a <a href="https://www.certum.eu/">Certum</a> Open Source Code Signing certificate issued to
-    <b>Open Source Developer, William Albrektsen</b> (the certificate is being issued - until it's in place, Windows may show a
-    SmartScreen warning when you start the installer).</p>
-  <p>You can check a download: right-click the file, choose Properties, open the Digital Signatures tab and look for that name.</p>
+  <p>Echo's Windows downloads (Echo-Setup.exe and EchoClip.exe, the program in the installer and in the portable zip) are
+    built from the public source code by GitHub Actions and signed with a <a href="https://www.certum.eu/">Certum</a>
+    Open Source Code Signing certificate (issued to the project's developer, Resister0 on GitHub). Every Windows release
+    since Echo 2.0.0 (10 November 2026) is signed.</p>
+  <p>The certificate is new, so on some PCs Windows SmartScreen may still show "Windows protected your PC" until it has
+    built up trust. If that happens, click <b>More info</b>, then <b>Run anyway</b>.</p>
+  <p>You can check a download: right-click the file, choose Properties, open the Digital Signatures tab and check that the signature is valid and the certificate is from Certum.</p>
 
   <h2>What gets signed</h2>
   <ul>
     <li>Only files built from the public repository <a href="https://github.com/Resister0/echoclip">github.com/Resister0/echoclip</a>
       by its GitHub Actions workflow. Every release on GitHub shows the exact commit it was built from.</li>
-    <li>Echo's own program files (the installer and Echo.exe). Third-party tools that come with Echo - FFmpeg, rclone - are the
+    <li>Echo's own program files (the installer, its uninstaller and EchoClip.exe). Third-party tools that come with Echo - FFmpeg, rclone - are the
       unchanged official builds from their own projects and keep their authors' signatures, if they have any.</li>
     <li>Nothing is signed by hand on a personal computer.</li>
   </ul>
@@ -51,8 +64,8 @@
   <h2>Team and roles</h2>
   <div class="tablewrap"><table>
     <tr><th>Role</th><th>Who</th></tr>
-    <tr><td>Committers and reviewers</td><td>William Albrektsen (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
-    <tr><td>Approvers (every signed release is approved by hand)</td><td>William Albrektsen (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+    <tr><td>Committers and reviewers</td><td>Resister0 (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+    <tr><td>Approvers (every signed release is approved by hand)</td><td>Resister0 (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
   </table></div>
   <p>Everyone with access uses two-factor authentication on GitHub, and the signing key is protected by Certum's SimplySign one-time codes. Outside contributions are reviewed before
     they are merged.</p>

@@ -35,7 +35,7 @@ export struct EcmRow {
     st: string,     // gaps-cloud (row 27): Echo's ecmState - "pc" / "only" / "cp" (share copy) - the row's pill
 }
 
-// cleanup (William, 10 Nov 2026): a "Free up space" chip in the space manager - a category and what it frees
+// cleanup (10 Nov 2026): a "Free up space" chip in the space manager - a category and what it frees
 export struct EcmCat {
     key: string,    // "exp" / "old" / "pair" / "pc" (also a Show value)
     label: string,  // "Share link expired"
@@ -132,7 +132,7 @@ component Chip inherits Rectangle {
     }
 }
 
-// The menu itself. William (9 Nov 2026): a small drop-down under the cloud / Share button like the Copy menu (each
+// The menu itself. 9 Nov 2026: a small drop-down under the cloud / Share button like the Copy menu (each
 // button has its own PopupWindow with this inside - a click outside only closes it, Slint doesn't pass it on).
 // done() = the button's popup closes before the pick runs.
 export component CloudMenuBody inherits Rectangle {

@@ -16,14 +16,6 @@ fn bin() -> &'static str {
     }
 }
 
-fn s(n: usize) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
-}
-
 fn sync_all(a: &AppWindow, lib: &Rc<LibModel>) {
     lib.refresh();
     crate::home_fill(a, lib);
@@ -105,6 +97,7 @@ fn run(a: &AppWindow, lib: Rc<LibModel>, ids: Vec<usize>, cloud: bool) {
         id
     });
     let w = a.as_weak();
+    let before = crate::undo::before_delete(&lib, &ids); // 2.0.2: what Undo puts back
     // r2-threads (L5): the Recycle Bin / Trash runs on a worker, a clip at a time; the box and cards follow here
     slint::Timer::single_shot(Duration::from_millis(250), move || {
         let (l2, l3) = (lib.clone(), lib.clone());
@@ -118,21 +111,20 @@ fn run(a: &AppWindow, lib: Rc<LibModel>, ids: Vec<usize>, cloud: bool) {
                     l2.refresh();
                 }
             },
-            move |done, err| {
+            move |_done, err| {
                 if let Some(id) = bx {
                     crate::prog_set(id, None, Some(&format!("{total} of {total}")), Some(100.0));
-                    crate::prog_done(id, 600);
+                    crate::prog_done(id, 0); // 2.0.2: the result note (with Undo) takes its place
                 }
                 let Some(a) = w.upgrade() else { return };
                 lib.clear_picks();
                 sync_all(&a, &lib);
+                // 2.0.2: "Clip deleted · Undo" (repeats add up); an error stays on its own red note
                 if let Some(e) = err {
-                    crate::toast(&a, e);
-                } else if total == 1 {
-                    crate::toast(&a, if cloud { "Deleted from this PC - it's still in your cloud".to_string() } else { format!("Moved to {}", bin()) });
-                } else {
-                    crate::toast(&a, format!("Moved {done} clip{} to the {}", s(done), bin()));
+                    crate::notes::say(crate::notes::Kind::Err, e);
                 }
+                let went: Vec<_> = before.into_iter().filter(|g| !g.path.exists()).collect();
+                crate::undo::deleted(&a, &lib, went, cloud);
             },
         );
     });

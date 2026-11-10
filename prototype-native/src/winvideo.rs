@@ -137,7 +137,7 @@ impl VideoWindow {
             if moved {
                 // bottom of Slint's child windows: the poster window (below) sits on top of it while a clip opens
                 SetWindowPos(self.hwnd, HWND_BOTTOM, px, py, w, h, SWP_NOACTIVATE);
-                // William (9 Nov, measured with ECHO_DEBUG_OSD): mpv draws into its OWN window inside this one and
+                // 9 Nov, measured with ECHO_DEBUG_OSD: mpv draws into its OWN window inside this one and
                 // only noticed a new size ~340 ms later (going fullscreen showed its old small picture in the big
                 // window - the "black box"). Resize mpv's window right away, so it gets its WM_SIZE now.
                 let inner = GetWindow(self.hwnd, GW_CHILD);

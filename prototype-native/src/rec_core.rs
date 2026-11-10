@@ -96,6 +96,8 @@ static EVENTS: Mutex<Vec<Ev>> = Mutex::new(Vec::new());
 const BOOKMARK: u32 = u32::MAX;
 const SESSION: u32 = u32::MAX - 1;
 const MIC_MUTE: u32 = u32::MAX - 2;
+/// Show / hide Echo (showkey.rs; echo-core's hotkey_linux.rs knows this id for KDE's portal)
+const SHOW: u32 = crate::showkey::SHOW;
 
 /// what background threads tell the window
 pub enum Ev {
@@ -194,12 +196,14 @@ pub fn wire(app: &AppWindow) {
         recorder::log_line("native: another Echo holds the lock - recorder off in this window");
     } else {
         std::panic::set_hook(Box::new(|info| recorder::log_line(&format!("APP CRASH: {info}"))));
+        // cloud streaming servers an earlier Echo left running (10 Nov 2026: 3 were found, ~40-80 MB each)
+        std::thread::spawn(Recorder::reap_stale_serves);
         // a second launch (or the old Echo started later) brings this window up
         #[cfg(windows)]
         echo_core::winutil::listen_show(|| push(Ev::Show));
         #[cfg(target_os = "linux")]
         echo_core::linuxutil::listen_show(|| push(Ev::Show));
-        // William (9 Nov): Echo's Discord status ("Playing Echo · Ready to clip") - only the Echo that records
+        // 9 Nov: Echo's Discord status ("Playing Echo · Ready to clip") - only the Echo that records
         crate::discord::start();
         register_hotkeys(&cfg);
         start_hotkeys();
@@ -260,7 +264,7 @@ pub fn wire(app: &AppWindow) {
         if what == "long" && rec().is_some_and(|r| r.session_secs().is_some()) {
             a.set_rec_long("Saving…".into());
         }
-        // William: the mic icon lagged ~1 s behind the click (header status redraws once a second) - flip it now;
+        // the mic icon lagged ~1 s behind the click (header status redraws once a second) - flip it now;
         // do_mic_mute on the thread below flips the real state the same way
         if what == "mic" {
             a.set_rec_mic_off(!recorder::MIC_MUTED.load(Ordering::Relaxed));
@@ -458,9 +462,9 @@ fn draw_status(a: &AppWindow) {
     } else {
         "Settings → App → Restart recorder".to_string()
     }.into());
-    // William (10 Nov): compact status card - "GPU" / "CPU" on the right, the cloud's usage in the bar
+    // 10 Nov: compact status card - "GPU" / "CPU" on the right, the cloud's usage in the bar
     a.set_rail_tag(if !on { "" } else if mode == "gpu" { "GPU" } else { "CPU" }.into());
-    // William (10 Nov): each connected cloud on its own (they were added together): the card shows the first one
+    // 10 Nov: each connected cloud on its own (they were added together): the card shows the first one
     // (Echo Cloud when there is one), the hover panel all of them
     match crate::cloud::usages_for_sidebar(a).filter(|v| !v.is_empty()) {
         Some(list) => {
@@ -591,6 +595,7 @@ fn register_hotkeys(cfg: &Settings) {
         if !cfg.bookmark_key.is_empty() { list.push((cfg.bookmark_key.clone(), BOOKMARK)); }
         if !cfg.session_key.is_empty() { list.push((cfg.session_key.clone(), SESSION)); }
         if !cfg.mic_mute_key.is_empty() { list.push((cfg.mic_mute_key.clone(), MIC_MUTE)); }
+        if !cfg.show_key.is_empty() { list.push((cfg.show_key.clone(), SHOW)); }
         echo_core::hotkey::set_ptt(if cfg.push_to_talk { cfg.ptt_key.as_str() } else { "" });
         for bad in echo_core::hotkey::set(&list) {
             recorder::log_line(&format!("hotkey {bad} invalid"));
@@ -604,6 +609,7 @@ fn start_hotkeys() {
         BOOKMARK => do_bookmark(),
         SESSION => { let _ = do_session(); }
         MIC_MUTE => do_mic_mute(),
+        SHOW => crate::showkey::pressed(),
         s => { let _ = do_save(Some(s)); }
     }));
 }
@@ -780,8 +786,19 @@ fn autostart(on: bool) {
         let dir = std::env::var("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")).join("autostart");
         let f = dir.join("echo.desktop");
+        let exe = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| exe.to_string_lossy().to_string());
+        // 10 Nov 2026: leave an entry alone that starts ANOTHER Echo which still exists - a dev build (./Echo in the
+        // repo, also named "echo") kept replacing the developer's AppImage entry, and turning the switch off in it removed it
+        let other = std::fs::read_to_string(&f).ok().and_then(|s| {
+            let e = s.lines().find_map(|l| l.strip_prefix("Exec="))?.trim().to_string();
+            let path = match e.strip_prefix('"') { Some(r) => r.split('"').next()?.to_string(), None => e.split_whitespace().next()?.to_string() };
+            (path != exe && std::path::Path::new(&path).exists()).then_some(path)
+        });
+        if let Some(p) = other {
+            echo_core::recorder::log_line(&format!("autostart: left alone - it starts another Echo ({p})"));
+            return;
+        }
         if on {
-            let exe = std::env::var("APPIMAGE").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| exe.to_string_lossy().to_string());
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(&f, format!("[Desktop Entry]\nType=Application\nName=Echo\nExec=\"{exe}\" --autostart\nIcon=link.echoclip.Echo\nX-GNOME-Autostart-enabled=true\n"));
         } else {
@@ -828,6 +845,8 @@ fn watch_loop() {
     let mut down = 0u32;
     let mut last_fix = Instant::now() - Duration::from_secs(120);
     let mut mtime = settings_mtime();
+    // Linux: games seen before without an icon get one (background, once)
+    recorder::backfill_game_icons();
     loop {
         std::thread::sleep(Duration::from_secs(3));
         let m = settings_mtime();
@@ -889,7 +908,7 @@ fn watch_loop() {
                 }
                 if let Some((name, pid, exe)) = recorder::game_in_front() {
                     recorder::log_line(&format!("game: {name} (pid {pid})"));
-                    recorder::remember_game(&name, &exe);
+                    recorder::remember_game_pid(&name, &exe, pid);
                     game = Some((name, pid));
                 }
             }

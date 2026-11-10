@@ -70,7 +70,7 @@ global FDrag {
     in-out property <string> zone;       // "into" / "before" / "after" / "top" / ""
 }
 
-// William (10 Nov): one connected cloud in the status card's hover panel
+// 10 Nov: one connected cloud in the status card's hover panel
 export struct CloudUse {
     name: string,
     text: string,
@@ -459,7 +459,7 @@ component Edge inherits TouchArea {
 
 export component AppWindow inherits Window {
     title: "Echo";
-    // William (9 Nov, release): Echo's icon in the taskbar / Alt+Tab (was Windows' blank one); the exe's own icon
+    // 9 Nov, release: Echo's icon in the taskbar / Alt+Tab (was Windows' blank one); the exe's own icon
     // comes from build.rs (echo.ico, same picture)
     icon: @image-url("echo-icon.png");
     // Chat A: Echo's own title bar (option B, merged with the header) - no Windows frame. ECHO_NATIVE_FRAME=1 = old frame
@@ -506,7 +506,7 @@ export component AppWindow inherits Window {
             keys.focus();
         } else if (self.s-lis && self.hk-listen >= 0) {
             // a header chip waits for keys: give them to hkfs (the chip's own click handler runs inside a chip
-            // that S.listen just rebuilt, so focusing from there didn't stick - William, 10 Nov)
+            // that S.listen just rebuilt, so focusing from there didn't stick - 10 Nov)
             hkfs.focus();
         }
     }
@@ -534,7 +534,9 @@ export component AppWindow inherits Window {
     // "home" / "library" / "settings" (Settings sits over the main column; Home replaces the toolbar + grid).
     // Echo opens on Home.
     in-out property <string> view: "home";
-    // William (9 Nov): mouse Back button = back to the page before (main.rs nav_back)
+    // bumped from Rust (main.rs on_pick_filter) after a folder / filter's rows are in: the card list jumps to the top
+    in-out property <int> lib-top-seq;
+    // 9 Nov: mouse Back button = back to the page before (main.rs nav_back)
     out property <string> prev-view: "home";
     property <string> last-view: "home";
     changed view => {
@@ -595,7 +597,7 @@ export component AppWindow inherits Window {
     in property <bool> acct-on: true;
     in property <bool> acct-signed;
     callback acct-act(string);                // "open" / "hide"
-    // William (10 Nov): compact status card + its storage hover panel
+    // 10 Nov: compact status card + its storage hover panel
     in property <string> rail-tag;            // "GPU" / "CPU"
     in property <bool> cloud-on;              // a cloud with known usage (Echo Cloud)
     in property <float> cloud-frac;
@@ -631,7 +633,7 @@ export component AppWindow inherits Window {
         tdl.take-focus();
     }
 
-    // Chat A: full-width title bar (William's sketch B) above the sidebar + page
+    // Chat A: full-width title bar (sketch B) above the sidebar + page
     VerticalLayout {
         // see-through fullscreen (Windows): the library must not show through. (Not hidden otherwise: hiding it
         // stopped Slint from drawing the OpenGL video texture - Linux path)
@@ -643,7 +645,7 @@ export component AppWindow inherits Window {
         // Chat A: sketch D glow - a soft accent light from the top left, fading out to the right and down
         background: T.rail;
         clip: true;
-        // William (twice): less bright, and no hard edge where the bar meets the page - the glow now fades out
+        // twice: less bright, and no hard edge where the bar meets the page - the glow now fades out
         // completely toward the bar's bottom edge, so nothing is left to cut off there
         Rectangle {
             background: @linear-gradient(90deg, T.accent.with-alpha(0.15) 0%, T.accent.with-alpha(0.06) 28%, T.accent.with-alpha(0.0) 60%);
@@ -797,7 +799,7 @@ export component AppWindow inherits Window {
                 for h in root.hotkeys: hkc := Rectangle {
                     y: 12px;
                     height: 28px;
-                    // William: the bar's pill + chips slightly see-through (cleaner)
+                    // the bar's pill + chips slightly see-through (cleaner)
                     opacity: 0.72;
                     width: chl.preferred-width;
                     border-radius: 14px;
@@ -942,7 +944,7 @@ export component AppWindow inherits Window {
             Btn {
                 y: 10px;
                 height: 32px;
-                // Echo's #longbtn: red dot (William: "the nice fancy red icon"), red edge + blinking dot while recording
+                // Echo's #longbtn: red dot (asked: "the nice fancy red icon"), red edge + blinking dot while recording
                 dot: #ff5c7a;
                 blink-dot: root.rec-long-on;
                 edge: root.rec-long-on ? #ff5c7a : transparent;
@@ -1021,8 +1023,16 @@ export component AppWindow inherits Window {
                         on: root.view == "settings";
                         clicked => { root.page("Settings"); }
                     }
-                    Flickable {
+                    // The scrolling list's box: it starts 2px under Settings, and nothing in it is drawn above that.
+                    // (The Flickable clips by itself. In a short window, when the list is scrolled, a row cut at this
+                    // edge sat right under Settings with no line between them, so it looked like it overlapped
+                    // Settings. A line + a short fade at the edge, shown only while scrolled, fix that - 10 Nov 2026)
+                    Rectangle {
                         vertical-stretch: 1;
+                        clip: true;
+                    navfl := Flickable {
+                        width: parent.width;
+                        height: parent.height;
                         content-height: navcol.preferred-height;
                         // mouse drags move folders (FDrag), not the list - the wheel still scrolls
                         interactive: false;
@@ -1142,6 +1152,19 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // scrolled: a short fade + a line at the top edge (fades in over the first 16px of scroll)
+                    if navfl.content-y < 0: Rectangle {
+                        y: 0;
+                        height: 16px;
+                        opacity: min(1, -navfl.content-y / 16px);
+                        background: @linear-gradient(180deg, T.rail 0%, T.rail.with-alpha(0) 100%);
+                        Rectangle {
+                            y: 0;
+                            height: 1px;
+                            background: T.line;
+                        }
+                    }
+                    }
                     // #updcard (Echo: above the statcard, margin-bottom 8)
                     if Upd.on: UpdCard {
                         win-h: root.win-hh; // set from Rust (titlebar.rs): root.height here was a binding loop
@@ -1156,7 +1179,7 @@ export component AppWindow inherits Window {
                         border-radius: 12px;
                         border-width: 1px;
                         border-color: T.line;
-                        // William (10 Nov): hovering the status part shows the storage panel (stpop, root level)
+                        // 10 Nov: hovering the status part shows the storage panel (stpop, root level)
                         sthov := TouchArea {
                             height: sc.preferred-height - (root.acct-on ? 37px + 9px : 0px);
                             y: 0;
@@ -1168,7 +1191,7 @@ export component AppWindow inherits Window {
                             padding-top: 12px;
                             padding-bottom: 12px;
                             spacing: 9px;
-                            // William (9 Nov, release): Echo's own .statcard - #raildot + #railstate, #railmode,
+                            // 9 Nov, release: Echo's own .statcard - #raildot + #railstate, #railmode,
                             // #railhealth, the meter, the Echo Profile row (was the prototype's memory readout;
                             // that's in the log / ECHO_STATS now)
                             HorizontalLayout {
@@ -1188,7 +1211,7 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                     horizontal-stretch: 1;
                                 }
-                                // William (10 Nov): compact card - "GPU" on the right; the full sentence is in the
+                                // 10 Nov: compact card - "GPU" on the right; the full sentence is in the
                                 // hover panel
                                 Text {
                                     text: root.rail-tag;
@@ -1300,7 +1323,7 @@ export component AppWindow inherits Window {
                         }
                         return accept;
                     }
-                    // William (9 Nov): Echo's Ctrl+F - search clips (from any page it opens the Library first); in
+                    // 9 Nov: Echo's Ctrl+F - search clips (from any page it opens the Library first); in
                     // Settings it searches the settings
                     if (e.modifiers.control && (e.text == "f" || e.text == "F") && !root.player-open && !Dlg.open && !Ed.open) {
                         root.ctrl-off();
@@ -1431,10 +1454,10 @@ export component AppWindow inherits Window {
                     }
                     VerticalLayout {
                     // only in the library: Settings is drawn OVER this column, and a Slint background doesn't stop clicks -
-                    // with the grid still there, the cards under Settings' empty spots could be clicked (William, chat 4)
+                    // with the grid still there, the cards under Settings' empty spots could be clicked (chat 4)
                     visible: root.view == "library";
                     // .toolbar: padding 4 28 6
-                    // 54 / top 12 (was 46 / 4): a little more room under the top bar (William, 10 Nov 2026)
+                    // 54 / top 12 (was 46 / 4): a little more room under the top bar (10 Nov 2026)
                     Rectangle {
                         // r2-layout (L10): taller when the filter pills wrap onto a second line (Echo's .fbar)
                         height: max(54px, tbl.preferred-height);
@@ -1452,7 +1475,7 @@ export component AppWindow inherits Window {
                             spacing-horizontal: 10px;
                             spacing-vertical: 6px;
                             cross-axis-alignment: center;
-                            // William (9 Nov, sketch E): the list's name IS the filter button ("All clips ▾", "FiveM ▾"):
+                            // 9 Nov, sketch E: the list's name IS the filter button ("All clips ▾", "FiveM ▾"):
                             // no floating pill under the title bar line; the count follows it. (was: count, then a
                             // bordered "Filter" pill)
                             fbtn := Rectangle {
@@ -1506,7 +1529,7 @@ export component AppWindow inherits Window {
                                 }
                                 // Echo's #fmenu is drawn by FilterLayer (end of this file), not a PopupWindow: Slint's
                                 // popup closed on the PRESS of a chip click (counted as outside) and the release then
-                                // opened the clip behind it (William)
+                                // opened the clip behind it
                             }
                             // r2-layout (L10): Echo hides the count under 1150 px
                             if Over.win-w > 1150px: Text {
@@ -1690,7 +1713,12 @@ export component AppWindow inherits Window {
                         }
                         changed card-w => { Over.grid-card-w(self.card-w); }
                         changed cols => { root.set-cols(self.cols); }
-                        ListView {
+                        // 10 Nov 2026: back to the top when another folder / filter opens - the ListView kept the old
+                        // scroll position, so a short list (one clip) sat scrolled half out of view until it re-measured.
+                        // Rust bumps lib-top-seq AFTER the new rows are in, and once more when they're measured.
+                        property <int> top-seq: root.lib-top-seq;
+                        changed top-seq => { cards-lv.content-y = 0; }
+                        cards-lv := ListView {
                             for r in root.rows: Rectangle {
                                 // .group: padding-top 18, h2 (~21 px) + 12 below; rows: gap only BETWEEN rows of a group
                                 height: r.header != "" ? 51px : (root.list-view ? 101px : grid.card-h + r.extra * 1px) + (r.last ? 0 : grid.gap);
@@ -1985,14 +2013,14 @@ export component AppWindow inherits Window {
         height: root.height;
         clicked => { S.cancel-listen(); }
     }
-    // William (10 Nov): the status card's storage panel - next to the card while the mouse is on either; stays
+    // 10 Nov: the status card's storage panel - next to the card while the mouse is on either; stays
     // 250 ms after leaving so the mouse can cross the gap
     Timer {
         interval: 250ms;
         running: root.st-show && !root.st-want;
         triggered => { root.st-show = false; }
     }
-    // William (10 Nov): opens UPWARDS from the card, same width as the card (was beside it, to the right)
+    // 10 Nov: opens UPWARDS from the card, same width as the card (was beside it, to the right)
     stpop := Rectangle {
         visible: root.st-show;
         x: stcard.absolute-position.x - root.absolute-position.x;
@@ -2047,7 +2075,7 @@ export component AppWindow inherits Window {
                 font-size: 11.5px;
                 color: T.dim;
             }
-            // William (10 Nov): every connected cloud on its own (Echo Cloud, Google Drive, …) - they were added together
+            // 10 Nov: every connected cloud on its own (Echo Cloud, Google Drive, …) - they were added together
             for cu in (root.cloud-on ? root.cloud-uses : []): VerticalLayout {
                 padding-top: 4px;
                 spacing: 8px;
@@ -2103,7 +2131,7 @@ export component AppWindow inherits Window {
         }
     }
     // the new keys for a header chip ("Press keys…"); Esc cancels. One fixed catcher outside the chip repeater
-    // (William 10 Nov: keys did nothing - the per-chip one was rebuilt away right after it got focus)
+    // (10 Nov: keys did nothing - the per-chip one was rebuilt away right after it got focus)
     hkfs := FocusScope {
         x: 0;
         y: 0;
@@ -2181,7 +2209,7 @@ export component AppWindow inherits Window {
         width: root.width;
         height: root.height;
         hx: Tour.step == 0 ? grid.absolute-position.x + 28px : Tour.step == 1 ? hkchips.absolute-position.x : Tour.step == 2 ? savebtn.absolute-position.x : Tour.step == 3 ? fbtn.absolute-position.x : sp.absolute-position.x + 12px;
-        // William: steps 2/3/5/6 were off - fixed offsets from the old 68 px header. The chips sit at y 12 (28 tall) in
+        // steps 2/3/5/6 were off - fixed offsets from the old 68 px header. The chips sit at y 12 (28 tall) in
         // the 52 px bar, Save clip's own position already includes its y; Settings rows: Cloud 311 px / Clips &
         // Storage 275 px below the page top (measured on screen, 34 px tall)
         hy: Tour.step == 0 ? grid.absolute-position.y + 8px : Tour.step == 1 ? hkchips.absolute-position.y + 12px : Tour.step == 2 ? savebtn.absolute-position.y : Tour.step == 3 ? fbtn.absolute-position.y : Tour.step == 4 ? sp.absolute-position.y + 311px : sp.absolute-position.y + 275px;
@@ -2238,7 +2266,7 @@ export component AppWindow inherits Window {
             search(q) => { root.fsearch(q); }
             close => { root.fopen = false; }
         }
-    }    // William (9 Nov): Screenshots open in the app (Echo's openShot) - above the pages, below dialogs
+    }    // 9 Nov: Screenshots open in the app (Echo's openShot) - above the pages, below dialogs
     ShotViewer {
         x: 0;
         y: 0;
@@ -2441,7 +2469,7 @@ export component AppWindow inherits Window {
     }
     // (night 9 Nov's stand-in title bar over the player - drag + window buttons over the dimmed bar - is gone: since
     // 10 Nov the player leaves the real bar lit and live, see PlayerView top-h)
-    // William (9 Nov): the editor's window buttons. Not maximized: always there, right of Export (the editor keeps
+    // 9 Nov: the editor's window buttons. Not maximized: always there, right of Export (the editor keeps
     // win-pad free for them). Maximized: the editor bar is untouched (Export at the far right) and the buttons are
     // folded up out of sight - pushing the mouse against the top edge on the right folds them down over Undo / 9:16 /
     // Export, so "mouse into the top-right corner + click" closes, the middle one restores. Moving off them folds them

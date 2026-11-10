@@ -3,6 +3,21 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.2 - 10 Nov
+- New hotkey: Show / hide Echo - brings Echo up over your game, or back to the tray (Settings > Hotkeys, off by default)
+- Clearer notifications: icons and colours, Undo after deleting or moving clips, speed and time left on downloads and uploads, and buttons like Show in folder, Open and Play
+- AV1 clips: uploads say what's happening ("Converting AV1 to H.264… 42 %"), share links work for AV1 clips already in the cloud, and Free up space works when the cloud has an H.264 copy
+- Your own clouds (Google Drive, NAS, …) always get the original file, AV1 too. Echo Cloud always keeps the smaller copy
+- Stop sharing works for links in your own cloud too, Google Drive included. A link Echo can't stop tells you where to stop it
+- Download bars move smoothly, and Echo's cloud streaming helper closes together with Echo
+- Library: missing clip pictures are made again, the list no longer jumps or flickers when it refreshes, and another folder opens at the top. Renaming, moving or deleting a clip takes its pictures along
+- Sidebar: a soft edge shows where the list scrolls under the top
+- Player: Replace on a clip that's in the cloud updates the cloud copy too. Home's "Get started" edit step works on clips that are only in the cloud
+- The anonymous performance numbers now tell apart time in the tray, idle and in use (switch: "Send anonymous performance numbers")
+- Linux: Echo's icon really shows in Alt+Tab now (KDE)
+- Linux: game folders show the game's real icon (Steam, Lutris, Heroic), "Match system" follows your dark / light mode (also in the Flatpak), and sharper Echo Cloud copies
+- Linux: drag and drop videos from your file manager onto Echo
+
 ## 2.0.1 - 10 Nov
 - Echo 2.0 comes to the Flatpak too
 - Linux: Echo's icon shows in Alt+Tab (KDE)

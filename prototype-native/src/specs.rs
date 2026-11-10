@@ -1,4 +1,4 @@
-//! r2-perf (10 Nov 2026): the PC behind the performance numbers (perf.rs). William wants to see Echo's CPU / memory
+//! r2-perf (10 Nov 2026): the PC behind the performance numbers (perf.rs). The developer wants to see Echo's CPU / memory
 //! next to the hardware it ran on. Model names and recording settings only - nothing about the person, no ID.
 //! Hardware (CPU, RAM, GPU, OS) is read once and cached; the recording settings (resolution, fps, encoder) are read
 //! at each report, they change with Settings > Video. perf::query() appends `q()` to the update check.

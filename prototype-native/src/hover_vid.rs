@@ -1,4 +1,4 @@
-//! William (9 Nov): the card hover preview is the REAL clip again, like Echo on Windows (a muted looping <video>
+//! 9 Nov: the card hover preview is the REAL clip again, like Echo on Windows (a muted looping <video>
 //! after 450 ms, faded in, stopped after 20 s / when Echo isn't in front). The native app showed the 60-picture
 //! flipbook (Echo's Linux / weak-PC fallback) - "a picture frame scrolling through pictures, too fast".
 //! ffmpeg decodes the clip in real time (-re, one software thread - see start()), scaled + cropped to 640 x 360 (the
@@ -24,7 +24,7 @@ pub fn start(a: &AppWindow, row: i32, clip: PathBuf) {
     let Some(ff) = crate::sheets::ffmpeg() else { return };
     let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let mut c = crate::edrender::hidden_cmd(&ff);
-    // -threads 1, NO hardware decoding: measured on William's PC (1080p clip, 4 s) - hwaccel auto 406 MB private /
+    // -threads 1, NO hardware decoding: measured on the developer's PC (1080p clip, 4 s) - hwaccel auto 406 MB private /
     // d3d11va 319 MB (GPU frame buffers mapped in), default threads 149 MB, -threads 1 = 49 MB at ~15 % of one core
     c.args(["-hide_banner", "-loglevel", "error", "-threads", "1", "-stream_loop", "-1", "-re", "-i"]).arg(&clip);
     c.args([

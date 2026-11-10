@@ -57,7 +57,7 @@ impl Clip {
 pub fn find_clips_dir() -> PathBuf {
     // a folder given on the command line (testing) - never a flag: "Start with Windows" runs Echo with
     // --autostart, which used to become the clips folder = 0 clips after a reboot until Echo was restarted by hand
-    // (William, 10 Nov 2026)
+    // (10 Nov 2026)
     if let Some(a) = std::env::args().skip(1).find(|a| !a.starts_with('-') && Path::new(a).is_dir()) {
         return PathBuf::from(a);
     }
@@ -622,9 +622,8 @@ fn merge_files(src: &Path, dst: &Path, thumbs: &Path) -> FolderFiles {
         }
         let new_stem = to.file_stem().unwrap_or_default().to_string_lossy().to_string();
         if new_stem != stem {
-            for x in ["jpg", "dur", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
-                let _ = std::fs::rename(thumbs.join(format!("{stem}.{x}")), thumbs.join(format!("{new_stem}.{x}")));
-            }
+            // every .thumbs file of the clip follows (lib_thumbs: also card720 / hero / frames, were left behind)
+            crate::lib_thumbs::rename_files(thumbs, &f.file_name().to_string_lossy(), &to.file_name().unwrap_or_default().to_string_lossy());
             ff.renamed.push((stem, new_stem));
         }
     }
@@ -660,9 +659,9 @@ fn delete_file(j: &DelJob, root: &Path, thumbs: &Path) -> Result<(), String> {
     if let Some(par) = j.path.parent().filter(|p| *p != root) {
         let _ = std::fs::remove_dir(par);
     }
-    for x in ["jpg", "dur", "thumbt", "scrub.jpg", "strip.jpg", "strip2.jpg", "strip3.jpg", "a0.m4a", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a"] {
-        let _ = std::fs::remove_file(thumbs.join(format!("{}.{x}", j.name)));
-    }
+    // its .thumbs files (lib_thumbs: card720 / hero / frames too; the chosen picture moment, bookmarks, editor
+    // project and captions stay for Undo)
+    crate::lib_thumbs::remove_files(thumbs, &j.path.file_name().unwrap_or_default().to_string_lossy());
     Ok(())
 }
 
@@ -1168,7 +1167,7 @@ impl LibModel {
     }
 
     /// Echo's savingHere(): does the clip being saved belong in what the library shows now? Old Echo showed the
-    /// card in ANY folder for a moment (William: in a folder unrelated to the game, until it fixed itself).
+    /// card in ANY folder for a moment (seen in a folder unrelated to the game, until it fixed itself).
     fn saving_here(&self) -> bool {
         let s = self.saving.borrow();
         let Some(s) = s.as_ref() else { return false };
@@ -1261,7 +1260,10 @@ impl LibModel {
                 k += m;
             }
         }
-        self.rows.set_vec(rows);
+        // 10 Nov 2026: patch the rows in place - set_vec resets the model and Slint's ListView then throws away every
+        // row (new cards, pictures drawn again, its scroll estimate redone): after "Free up space", an upload, a
+        // rename or a delete the list jumped up and the pictures went blank for a moment
+        patch_rows(&self.rows, rows);
     }
 
     pub fn set_cols(&self, cols: usize) {
@@ -2056,10 +2058,11 @@ impl LibModel {
             let _ = self.set_meta(&old, vec![], String::new());
             let _ = self.set_meta(&name, m.tags, m.note);
         }
-        for e in ["jpg", "dur", "scrub.jpg", "thumbt", "strip.jpg", "strip2.jpg", "strip3.jpg", "a1.m4a", "a2.m4a", "a3.m4a", "a4.m4a", "a5.m4a", "marks.json", "levels.json", "words.json", "project.json"] {
-            let _ = std::fs::rename(c.thumbs.join(format!("{old}.{e}")), c.thumbs.join(format!("{name}.{e}")));
-        }
-        let own_thumb = c.own_thumb.as_ref().map(|t| {
+        // every .thumbs file of the clip follows (lib_thumbs: also card720 / hero / frames, were left behind)
+        let old_file = c.path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        crate::lib_thumbs::rename_files(&c.thumbs, &old_file, &new.file_name().unwrap_or_default().to_string_lossy());
+        // a picture already in .thumbs (editor export / Save copy) was renamed just above: the normal path finds it
+        let own_thumb = c.own_thumb.as_ref().filter(|t| t.parent() != Some(c.thumbs.as_path())).map(|t| {
             let f = t.file_name().map(|f| f.to_string_lossy().replace(&old, &name)).unwrap_or_default();
             let to = t.with_file_name(f);
             if std::fs::rename(t, &to).is_ok() { to } else { t.clone() }
@@ -2501,6 +2504,9 @@ impl LibModel {
         if !has && !self.suspended.get() && p.exists() && self.pending.borrow_mut().insert(idx) {
             // + the clip file (local clips): the loader makes a sharper 720 px still of the same moment once
             let _ = self.tx.send((idx, p, if c.cloud.is_none() { Some(c.path.clone()) } else { None }));
+        } else if !has && !self.suspended.get() && c.cloud.is_none() && !c.gone.get() && !p.exists() {
+            // 10 Nov: a clip on this PC with no card picture at all: make it (lib_thumbs; once per run)
+            crate::lib_thumbs::missing(idx, &c.path, &c.thumbs);
         }
         let (in_cloud, shared) = self.cloud_flags(&c);
         let m = self.meta.borrow();
@@ -2508,7 +2514,7 @@ impl LibModel {
             Some(e) => (e.tags.iter().map(|t| SharedString::from(t.as_str())).collect(), e.note.replace('\n', " ")),
             None => (vec![], String::new()),
         };
-        // William (9 Nov): Echo's .gico - the game's icon top-left on the picture (gameIcons[gameOf(c)]); the same
+        // 9 Nov: Echo's .gico - the game's icon top-left on the picture (gameIcons[gameOf(c)]); the same
         // icons/<game>.png + cache as the sidebar folders
         let game_top = c.game.split('/').next().unwrap_or("").to_string();
         let gicon = if game_top.is_empty() { None } else { self.game_icon(&game_top, &BTreeMap::new()) };
@@ -2635,4 +2641,112 @@ pub fn make_card_hi(clip: &Path, thumb: &Path, hi: &Path) -> bool {
 pub fn decode(path: &Path) -> Option<SharedPixelBuffer<Rgb8Pixel>> {
     let img = image::open(path).ok()?.to_rgb8();
     Some(SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height()))
+}
+
+/// What `patch_rows` did (for the tests).
+#[derive(Debug, Default, PartialEq)]
+pub struct Patch {
+    pub changed: usize,
+    pub added: usize,
+    pub removed: usize,
+    pub reset: bool,
+}
+
+/// 10 Nov 2026: `m` becomes `new` with as few model changes as possible: rows that differ are changed in place
+/// (Slint's ListView keeps the row and only gives it the new data), only the rows in between the same start and
+/// the same end are added / removed. `VecModel::set_vec` would reset the model, and a ListView drops every row on a
+/// reset - the list jumped up and every card's picture was drawn again. A very big change (another folder with
+/// hundreds of rows less / more) still resets: one reset is cheaper than hundreds of single adds / removes, and the
+/// list jumps to the top for another folder anyway (lib-top-seq).
+pub fn patch_rows<T: Clone + PartialEq + 'static>(m: &VecModel<T>, new: Vec<T>) -> Patch {
+    const MAX_ADD_REMOVE: usize = 300;
+    let (old_n, new_n) = (m.row_count(), new.len());
+    let same = |i: usize, j: usize| m.row_data(i).is_some_and(|r| r == new[j]);
+    let mut pre = 0;
+    while pre < old_n.min(new_n) && same(pre, pre) {
+        pre += 1;
+    }
+    let mut suf = 0;
+    while suf < (old_n - pre).min(new_n - pre) && same(old_n - 1 - suf, new_n - 1 - suf) {
+        suf += 1;
+    }
+    let (om, nm) = (old_n - pre - suf, new_n - pre - suf);
+    let mut p = Patch::default();
+    if om.abs_diff(nm) > MAX_ADD_REMOVE {
+        m.set_vec(new);
+        p.reset = true;
+        return p;
+    }
+    let both = om.min(nm);
+    for i in pre..pre + both {
+        if !same(i, i) {
+            m.set_row_data(i, new[i].clone());
+            p.changed += 1;
+        }
+    }
+    // the extra old rows go from the end of the middle (each remove shifts less); new ones go in order
+    for i in (pre + both..pre + om).rev() {
+        m.remove(i);
+        p.removed += 1;
+    }
+    for i in pre + both..pre + nm {
+        m.insert(i, new[i].clone());
+        p.added += 1;
+    }
+    p
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    fn run(old: &[i32], new: &[i32]) -> Patch {
+        let m = VecModel::from(old.to_vec());
+        let p = patch_rows(&m, new.to_vec());
+        assert_eq!(m.iter().collect::<Vec<_>>(), new, "{old:?} -> {new:?}");
+        p
+    }
+
+    #[test]
+    fn same_rows_change_nothing() {
+        // "Free up space" in All clips: the rows stay the same - nothing is touched, the ListView keeps every row
+        assert_eq!(run(&[1, 2, 3, 4], &[1, 2, 3, 4]), Patch::default());
+        assert_eq!(run(&[], &[]), Patch::default());
+    }
+
+    #[test]
+    fn one_row_changes_in_place() {
+        assert_eq!(run(&[1, 2, 3, 4], &[1, 9, 3, 4]), Patch { changed: 1, ..Default::default() });
+    }
+
+    #[test]
+    fn delete_shifts_without_reset() {
+        // a clip deleted: later rows' `first` shift by one (all differ) and the last row goes
+        let p = run(&[10, 20, 30, 40, 50], &[10, 21, 31, 41]);
+        assert!(!p.reset);
+        assert_eq!((p.changed, p.removed, p.added), (3, 1, 0));
+        let p = run(&[1, 2, 3], &[1, 2, 3, 4, 5]);
+        assert_eq!((p.changed, p.removed, p.added, p.reset), (0, 0, 2, false));
+        let p = run(&[1, 2, 3, 4, 5], &[1, 5]);
+        assert_eq!((p.changed, p.removed, p.added, p.reset), (0, 3, 0, false));
+        let p = run(&[1, 2, 3], &[]);
+        assert_eq!((p.changed, p.removed, p.added, p.reset), (0, 3, 0, false));
+        let p = run(&[], &[7, 8]);
+        assert_eq!((p.changed, p.removed, p.added, p.reset), (0, 0, 2, false));
+    }
+
+    #[test]
+    fn huge_change_resets() {
+        let big: Vec<i32> = (0..1000).collect();
+        assert!(run(&big, &[5]).reset);
+        assert!(run(&[5], &big).reset);
+    }
+
+    #[test]
+    fn grid_rows_compare_by_value() {
+        // GridRow (Slint struct) must compare by value for the patch to see "same row"
+        let r = |first: i32| GridRow { header: "".into(), count: "".into(), first, n: 4, extra: 0, last: false, saving: false };
+        let m = VecModel::from(vec![r(0), r(4), r(8)]);
+        assert_eq!(patch_rows(&m, vec![r(0), r(4), r(8)]), Patch::default());
+    }
 }

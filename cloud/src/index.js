@@ -572,7 +572,7 @@ async function feedback(req, env, user) {
 
 // ----- support logs: Echo → Settings → "Send log" uploads the log, the person pastes the link -----
 // Echo strips passwords, keys and email addresses before uploading. Readable by anyone with the link (14 random
-// characters, ~70 bits - can't be guessed), deleted after LOG_DAYS. Meant for William + Claude to read without
+// characters, ~70 bits - can't be guessed), deleted after LOG_DAYS. Meant for the developer + Claude to read without
 // passing files around (chat 18, Will's request).
 const LOG_DAYS = 14;
 const LOG_MAX = 400_000;
@@ -773,7 +773,7 @@ async function cleanupStrayCopies(env) {
 }
 
 // ----- over the plan (terms: email at least 30 days before clips above the plan are removed) -----
-// A paid plan that ended leaves its clips in R2 (William pays for them). Daily: warn by email, remind after
+// A paid plan that ended leaves its clips in R2 (the developer pays for them). Daily: warn by email, remind after
 // 23 days, after 30 days remove the oldest clips until the account fits its plan again (clips with a working
 // share link last). Never touches accounts with a paid plan; nothing is removed unless the warning email went
 // out. Freeing up space or paying again cancels it (next run / webhook).
@@ -971,26 +971,44 @@ async function countApp(req, env, os, version) {
     const h = "a" + (await sha256(`${utcDay()}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) {
-      await bump(env, "app:" + os); await bump(env, `appv:${os}:${version}`);
+      await bump(env, "app:" + os);
       // returning copies (chat 30): this computer was also counted YESTERDAY - checked with yesterday's own daily
       // hash (uv keeps 2 days), so no lasting ID is stored. Sandboxes/one-off scans never show up here.
       const yday = utcDay(now() - 86400);
       const hy = "a" + (await sha256(`${yday}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
       if (await env.DB.prepare("SELECT 1 AS x FROM uv WHERE day = ? AND h = ?").bind(yday, hy).first()) await bump(env, "appr:" + os);
     }
-    // country (Cloudflare's guess from the connection, e.g. "DK") - only the country is kept, chat 28. Its own
-    // once-a-day mark, so a computer already counted today (before this existed) still gets its country
-    const cc = String((req.cf && req.cf.country) || "").toUpperCase();
-    if (/^[A-Z]{2}$/.test(cc)) {
-      const hc = "c" + (await sha256(`${utcDay()}|${ipOf(req)}|appc:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
-      const rc = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), hc).run();
-      if (((rc && rc.meta) ? rc.meta.changes : rc && rc.changes) > 0) await bump(env, `appc:${os}:${version}:${cc}`);
+    // Versions + country (10 Nov 2026): each computer counts under its NEWEST version of the day - a computer that
+    // updates moves from the old version's row to the new one (before, the first check of the day won and nobody who
+    // updated showed as updated until the next day). The day's version sits in uv next to the daily hash
+    // ("v<hash>:<version>|<country>", kept 2 days like the rest) - still no lasting ID, only the country is kept.
+    const cc0 = String((req.cf && req.cf.country) || "").toUpperCase();
+    const cc = /^[A-Z]{2}$/.test(cc0) ? cc0 : "";
+    const vk = "v" + (await sha256(`${utcDay()}|${ipOf(req)}|appv:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 22) + ":";
+    const prev = await env.DB.prepare("SELECT h FROM uv WHERE day = ? AND h LIKE ?").bind(utcDay(), vk + "%").first();
+    const asOld = (v) => (v === "2.0.72" ? "1.99.0" : v); // the 2.0.72 test build is older than 2.0.0
+    if (!prev) {
+      await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), `${vk}${version}|${cc}`).run();
+      await bump(env, `appv:${os}:${version}`);
+      if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
+    } else {
+      const [pv, pc] = String(prev.h).slice(vk.length).split("|");
+      if (pv !== version && newer(asOld(version), asOld(pv))) {
+        await env.DB.prepare("DELETE FROM uv WHERE day = ? AND h = ?").bind(utcDay(), prev.h).run();
+        await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), `${vk}${version}|${cc}`).run();
+        await bump(env, `appv:${os}:${pv}`, -1); await bump(env, `appv:${os}:${version}`);
+        if (pc) await bump(env, `appc:${os}:${pv}:${pc}`, -1);
+        if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
+      }
     }
   } catch (e) { console.log("app count error", e && e.message); }
 }
 
 // Echo's performance report (perf.rs + specs.rs, 10 Nov 2026): rides along with the update check as query fields.
 // Numbers + hardware model names only - nothing about the person; the PC is only told apart within one day.
+// perf-states (10 Nov 2026): Echo with sv=1 also sends s_<state>=n,rn,m,mp,c,cp,rm,rc for each state it was in
+// (tray / idle / active / player, perf.rs) -> one row per state. Older Echo: one row, state "mixed".
+const PERF_STATES = ["tray", "idle", "active", "player"];
 async function countPerf(req, env, url, os, version) {
   try {
     const q = url.searchParams;
@@ -1002,11 +1020,22 @@ async function countPerf(req, env, url, os, version) {
     await migrate(env);
     const h = "p" + (await sha256(`${utcDay()}|${ipOf(req)}|perf:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const cc = String((req.cf && req.cf.country) || "").toUpperCase();
-    await env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(now(), utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc"),
-        int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, /^[A-Z]{2}$/.test(cc) ? cc : null)
-      .run();
+    // [state, m, mp, c, cp, rm, rc, n, rn]
+    const rows = [];
+    if (q.get("sv") === "1") {
+      const lim = [100000, 100000, 1e6, 1e6, 1000, 1000, 1e6, 1000];
+      for (const st of PERF_STATES) {
+        const v = String(q.get("s_" + st) || "").split(",").map((x, i) => { const y = Math.round(Number(x)); return Number.isFinite(y) && y >= 0 ? Math.min(y, lim[i] ?? 0) : null; });
+        if (v.length !== 8 || v.some((x) => x == null) || !v[0]) continue;
+        const [sn, srn, m, mp, c, cp, rm, rc] = v;
+        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn)]);
+      }
+    }
+    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0]);
+    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const at = now(), base = [at, utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc")];
+    await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st)));
   } catch (e) { console.log("perf report error", e && e.message); }
 }
 
@@ -1032,6 +1061,7 @@ async function installStats(env) {
 }
 
 // admin page: Echo's CPU / memory on real PCs, last 30 days. Averages are weighted by minutes measured.
+// perf-states: the same totals + tables per state too (by_state.tray / idle / active / player / mixed = older Echo).
 async function perfStats(env) {
   try {
     await migrate(env);
@@ -1040,20 +1070,34 @@ async function perfStats(env) {
       ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10, 2) AS cpu, ROUND(SUM(m * n) * 1.0 / NULLIF(SUM(n), 0)) AS mem,
       ROUND(SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10, 2) AS rcpu, ROUND(SUM(rm * rn) * 1.0 / NULLIF(SUM(rn), 0)) AS rmem,
       ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak`;
-    const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
-    const by = (col) => all(`SELECT ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY ${col} ORDER BY pcs DESC, mins DESC LIMIT 20`, from);
-    const total = (await env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ?`).bind(from).first()) || {};
     const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
-    return {
-      total, from,
-      gpu: await by("gpu"), cpu: await by("cpu"), os: await by("osname"), ver: await by("ver"), ram: await by(ramBucket), res: await by("res || ' @ ' || fps"),
-      recent: await all("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc FROM perf ORDER BY at DESC LIMIT 30"),
-    };
+    const cols = { gpu: "gpu", cpu: "cpu", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
+    // one round trip: per table the all-states rows + the per-state rows, then the totals
+    const qs = [];
+    for (const col of Object.values(cols)) {
+      qs.push(env.DB.prepare(`SELECT ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY ${col} ORDER BY pcs DESC, mins DESC LIMIT 20`).bind(from));
+      qs.push(env.DB.prepare(`SELECT state AS st, ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY state, ${col}`).bind(from));
+    }
+    qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ?`).bind(from));
+    qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? GROUP BY state`).bind(from));
+    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc, state FROM perf ORDER BY at DESC, rowid LIMIT 40"));
+    const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
+    const out = { total: res[12][0] || {}, from, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14] };
+    for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
+    Object.keys(cols).forEach((name, i) => {
+      out[name] = res[i * 2];
+      for (const r of res[i * 2 + 1]) {
+        const s = out.by_state[r.st || "mixed"] || (out.by_state[r.st || "mixed"] = { total: {} });
+        (s[name] = s[name] || []).push(r);
+      }
+      for (const s of Object.values(out.by_state)) if (s[name]) s[name] = s[name].sort((a, b) => b.pcs - a.pcs || b.mins - a.mins).slice(0, 20);
+    });
+    return out;
   } catch (e) { console.log("perf stats error", e && e.message); return null; }
 }
 // what the update check answered, once per computer per day and answer: upd:offered (got an update offer) or
 // upd:<reason> for "no update" although they're not on the newest (stale = the server's GitHub lookup was behind,
-// paused / hidden / internal = William's choice, no-signature / no-release = a broken release)
+// paused / hidden / internal = the developer's choice, no-signature / no-release = a broken release)
 async function countUpdAnswer(req, env, os, why) {
   try {
     const h = "u" + (await sha256(`${utcDay()}|${ipOf(req)}|upd:${os}:${why}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
@@ -1128,7 +1172,7 @@ async function profileSave(req, user, env, origin) {
   const handle = String(b.handle || "").trim().toLowerCase().replace(/^@/, "");
   if (!HANDLE_RE.test(handle)) return fail("Your @name needs 3-20 letters, numbers or _");
   const old = await profileOf(env, user.id);
-  // a reserved @name given by William (admin) can be kept when saving other changes
+  // a reserved @name given by the admin can be kept when saving other changes
   const mine = old && old.handle === handle;
   if (!mine && (RESERVED.has(handle) || (await env.DB.prepare("SELECT 1 AS x FROM banned_handles WHERE handle = ?").bind(handle).first())))
     return fail("That @name is reserved - pick another");
@@ -1299,7 +1343,7 @@ async function adminDenied(req, env) {
   return fail("Wrong admin key", 403);
 }
 
-/// William's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
+/// The admin's stats page (echoclip.link/admin -> GET /admin/stats with header x-admin-key = secret ADMIN_KEY).
 /// Storage numbers are the last counts Echo Cloud made per account (recounted whenever someone uses it).
 async function adminStats(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
@@ -1359,7 +1403,7 @@ async function adminStats(req, env) {
   });
 }
 
-/// Remove a profile (William or a moderator): the page, picture, pins and follows go (clips and share links stay);
+/// Remove a profile (admin or a moderator): the page, picture, pins and follows go (clips and share links stay);
 /// block = the @name can't be used again. Returns {handle, removed, blocked, owner} or {error, status}.
 async function profileRemove(env, handle, block) {
   const p = await env.DB.prepare("SELECT * FROM profiles WHERE handle = ?").bind(handle).first();
@@ -1370,7 +1414,7 @@ async function profileRemove(env, handle, block) {
   console.log("profile takedown", handle, block ? "(blocked)" : "");
   return { handle, removed: true, blocked: !!block, owner: owner ? owner.email : null };
 }
-/// William removes a reported profile: POST /admin/profile-takedown {handle, block?} with header x-admin-key.
+/// The admin removes a reported profile: POST /admin/profile-takedown {handle, block?} with header x-admin-key.
 async function profileTakedown(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
@@ -1381,7 +1425,7 @@ async function profileTakedown(req, env) {
   return json({ ok: true, ...r });
 }
 
-/// Change someone's @name (William or a moderator). who = their @name, /u/ link or account email (email: William only,
+/// Change someone's @name (admin or a moderator). who = their @name, /u/ link or account email (email: admin only,
 /// the moderator route refuses it); to = the new @name or "" = a random one (user_123456) they can change later.
 /// An account without a profile gets one when `to` is given. blockOld = nobody can take the old @name again.
 async function handleChange(env, who, toIn, blockOld) {
@@ -1420,8 +1464,8 @@ async function handleChange(env, who, toIn, blockOld) {
   console.log("profile handle", from, "->", to, blocked ? "(old blocked)" : "");
   return { from, to, blocked, owner: owner ? owner.email : null };
 }
-/// William changes someone's @name: POST /admin/profile-handle {who, to, block_old?} with header x-admin-key
-/// (reserved names allowed, e.g. "echo" for William himself).
+/// The admin changes someone's @name: POST /admin/profile-handle {who, to, block_old?} with header x-admin-key
+/// (reserved names allowed, e.g. "echo" for the developer).
 async function profileHandle(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
@@ -1432,7 +1476,7 @@ async function profileHandle(req, env) {
   return json({ ok: true, ...r });
 }
 
-/// Remove a share link (William or a moderator); deleteClip (William only) also deletes the clip in Echo Cloud.
+/// Remove a share link (admin or a moderator); deleteClip (admin only) also deletes the clip in Echo Cloud.
 async function shareTakedown(env, id, deleteClip) {
   const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
   if (!row) return { error: "No share link with that id", status: 404 };
@@ -1443,7 +1487,7 @@ async function shareTakedown(env, id, deleteClip) {
   console.log("takedown", id, row.key, deleteClip ? "(clip deleted)" : "");
   return { id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!deleteClip };
 }
-/// William removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
+/// The admin removes a reported link: POST /admin/takedown {id, delete_clip?} with header x-admin-key
 async function takedown(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   const b = await body(req);
@@ -1477,7 +1521,7 @@ async function migrate(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS pins (user_id TEXT NOT NULL, share_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (user_id, share_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS follows (follower TEXT NOT NULL, followee TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (follower, followee))"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS follows_followee ON follows (followee)"),
-    // @names William removed and blocked (can't be taken again)
+    // @names the admin removed and blocked (can't be taken again)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS banned_handles (handle TEXT PRIMARY KEY, at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
     // Echo's own CPU / memory on real PCs + the PC's specs (10 Nov 2026, perf.rs / specs.rs): one row per report
@@ -1486,6 +1530,7 @@ async function migrate(env) {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS perf (at INTEGER NOT NULL, day TEXT NOT NULL, h TEXT NOT NULL, os TEXT, ver TEXT,
       cpu TEXT, gpu TEXT, ram INTEGER, cores INTEGER, osname TEXT, res TEXT, fps INTEGER, enc TEXT,
       m INTEGER, mp INTEGER, c INTEGER, cp INTEGER, rm INTEGER, rc INTEGER, n INTEGER, rn INTEGER, cc TEXT)`),
+    // (the state column - tray / idle / active / player, "mixed" = older Echo - is added below)
     env.DB.prepare("CREATE INDEX IF NOT EXISTS perf_day ON perf (day)"),
     env.DB.prepare("DELETE FROM perf WHERE at < ?").bind(now() - 180 * 86400),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
@@ -1508,6 +1553,9 @@ async function migrate(env) {
     ["views", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
   }
+  // perf-states (10 Nov 2026): what Echo was doing in those minutes; rows from before = "mixed"
+  const pcols = new Set(((await env.DB.prepare("PRAGMA table_info(perf)").all()).results || []).map((c) => c.name));
+  if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
   await modTables(env);
   migrated = true;
 }
@@ -1570,7 +1618,7 @@ async function shareOembed(req, env, id) {
   const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
   return new Response(JSON.stringify({
     version: "1.0", type: "link", title: name,
-    // one line on top (William: two lines was too much); clicking it opens the download page
+    // one line on top (two lines was too much); clicking it opens the download page
     // with a profile the same line credits the clipper and links to their page
     provider_name: prof ? `${prof.name || prof.handle} (@${prof.handle}) on Echo · lightweight, ad-free clipping` : "Echo · lightweight, ad-free game clipping",
     provider_url: prof ? `${origin}/u/${prof.handle}` : `${origin}/download`,
@@ -1849,7 +1897,7 @@ const page = (title, text) => new Response(
 const DOWNLOADS = {
   "windows": "Echo-Setup.exe",
   // 2.0 (10 Nov 2026): the native app + libmpv-2.dll + tools/ as one zip. No fallback to the old EchoClip.exe / Echo.exe
-  // files: those are the old Tauri app (William: native Echo only)
+  // files: those are the old Tauri app (native Echo only)
   "windows-portable": "Echo-Windows-portable.zip",
   "linux": "Echo-x86_64.AppImage",
   "linux-tar": "Echo-linux-x86_64.tar.gz",
@@ -2013,7 +2061,7 @@ async function assetLink(env, rel, asset) {
 }
 
 async function download(env, what, from) {
-  // William (10 Nov 2026): "pause downloads until I release 2.0". While the newest public release is still the old
+  // 10 Nov 2026: "pause downloads until I release 2.0". While the newest public release is still the old
   // app (below 2.0.0, or the 2.0.72 test build, which was the old Tauri Echo) every download link shows this page
   // instead. Resumes by itself once 2.0.0 or newer is out - no second deploy needed. Unknown release = not paused.
   if (DOWNLOADS[what] || what === "flatpak" || what === "flatpakref") {
@@ -2058,7 +2106,7 @@ async function releaseList(env) {
     return out;
   } catch { return []; }
 }
-/// William edits a release: POST /admin/release {version, notes?, paused?} with header x-admin-key.
+/// The admin edits a release: POST /admin/release {version, notes?, paused?} with header x-admin-key.
 /// notes "" = hidden (changelog, What's new, not offered as an update); paused 1 = not offered as an update.
 async function adminRelease(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
@@ -2136,7 +2184,7 @@ async function update(env, target, current) {
     sigCache.set(sig.id, signature);
   }
   let notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
-  // chat 28: William can fix the text, hide or pause a release on echoclip.link/admin - the database row wins
+  // chat 28: the admin can fix the text, hide or pause a release on echoclip.link/admin - the database row wins
   let row = null;
   try { await releaseCols(env); row = await env.DB.prepare("SELECT notes, paused FROM releases WHERE version = ?").bind(version).first(); } catch { /* table missing */ }
   if (row) { if (row.paused) return none("paused"); notes = row.notes || ""; if (!notes.trim()) return none("hidden"); }
@@ -2155,7 +2203,7 @@ async function update(env, target, current) {
     if (!real) return none("internal");
     notes = String(real.notes).trim();
   }
-  // optional: a new release waits UPDATE_HOLD_MIN minutes before it's offered. OFF by default (William tests new
+  // optional: a new release waits UPDATE_HOLD_MIN minutes before it's offered. OFF by default (the developer tests new
   // builds with friends through auto-update right away, chat 28) - "Pause updates" on /admin is the brake instead
   const hold = Number(env.UPDATE_HOLD_MIN || 0), pub = Math.floor(Date.parse(rel.published_at || rel.created_at || "") / 1000) || 0;
   if (hold > 0 && pub && now() - pub < 60 * hold) return none("hold");
@@ -2165,7 +2213,7 @@ async function update(env, target, current) {
 }
 
 // ----- changelog: every published version + its "What changed?" text -----
-// Each publish is one commit in the public repo that changes ci/version.txt; its message is William's
+// Each publish is one commit in the public repo that changes ci/version.txt; its message is the developer's
 // "What changed?" text. Read from GitHub (no extra keys), kept in D1 table releases. Used by Echo's "What's new"
 // card (earlier updates you skipped) and echoclip.link/changelog.
 let changesSynced = 0;
@@ -2414,7 +2462,7 @@ export default {
 
 
 // ----- moderators + reports (chat 29) -----
-// William adds moderators in /admin (by the email of an existing Echo Cloud account). They sign in at echoclip.link/mod
+// The admin adds moderators in /admin (by the email of an existing Echo Cloud account). They sign in at echoclip.link/mod
 // with the normal Echo sign-in code (no account is made there) and can: see reports people sent from share pages and
 // profiles, remove share links (not the clip itself), remove profiles, change @names (not to reserved names).
 // Everything a moderator does is written to mod_log (shown in /admin). Moderators never see account emails.
@@ -2434,7 +2482,7 @@ async function modTables(env) {
 async function modLog(env, who, action, target, detail = "") {
   await env.DB.prepare("INSERT INTO mod_log (at, who, action, target, detail) VALUES (?, ?, ?, ?, ?)").bind(now(), who, action, target, String(detail).slice(0, 300)).run();
 }
-/// open reports about something are closed when a moderator / William acts on it
+/// open reports about something are closed when a moderator / the admin acts on it
 async function closeReports(env, kind, target, who, status = "done") {
   await env.DB.prepare("UPDATE reports SET status = ?, handled_by = ?, handled_at = ? WHERE kind = ? AND target = ? AND status = 'open'")
     .bind(status, who, now(), kind, target).run();
@@ -2572,7 +2620,7 @@ async function modApi(req, env, route) {
   return fail("Unknown", 404);
 }
 
-// --- William: moderators list + reports in /admin ---
+// --- admin: moderators list + reports in /admin ---
 async function adminMods(req, env) {
   const denied = await adminDenied(req, env); if (denied) return denied;
   if (req.method === "POST") {

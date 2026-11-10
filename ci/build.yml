@@ -38,9 +38,9 @@ jobs:
             echo "Something that looks like a key is in the files above - not publishing"; exit 1
           fi
           # the public repo builds the releases itself: its workflow + the version number of this build
-          # 2.0 (9 Nov 2026): the native app (Slint + mpv) - William: "make it 2.0". Still the run number at the end,
+          # 2.0 (9 Nov 2026): the native app (Slint + mpv) - asked: "make it 2.0". Still the run number at the end,
           # so every build is newer than the one before (2.0.x > 1.0.71 for the updater)
-          # William (9 Nov): the real release is 2.0.0 -> counted from run 73 (the publish after the 2.0.72 test
+          # 9 Nov: the real release is 2.0.0 -> counted from run 73 (the publish after the 2.0.72 test
           # build): run 73 = 2.0.0, 74 = 2.0.1, ... The server treats the one 2.0.72 test build as older than 2.0.0
           # (cloud/src/index.js update()).
           VER="2.0.$(( ${{ github.run_number }} - 73 ))"

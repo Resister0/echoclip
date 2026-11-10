@@ -1,4 +1,4 @@
-//! Chat A: Echo's own title bar (William's pick "B": title bar + header in one 52 px row). No Windows frame:
+//! Chat A: Echo's own title bar (pick "B": title bar + header in one 52 px row). No Windows frame:
 //! empty bar space drags the window (native move = Windows snap / Aero shake still work), double-click maximizes,
 //! own minimize / maximize / close (close = rec_core's close-to-tray rule), 5 px invisible edges resize.
 //! ECHO_NATIVE_FRAME=1 brings the normal frame back (fallback if something misbehaves on a PC).
@@ -27,7 +27,7 @@ fn fix_maximized_overhang(app: &AppWindow) {
             let r = (*p).rgrc[0];
             // going fullscreen: Windows still says "maximized" for a moment while the proposed rect is already the
             // whole monitor - leave it alone (clamping it to the work area showed the video at the maximized size
-            // for ~80 ms - William's "half fullscreen" frame)
+            // for ~80 ms - the "half fullscreen" frame)
             let fullscreen = |m: RECT| r.left == m.left && r.top == m.top && r.right == m.right && r.bottom == m.bottom;
             if GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 && !fullscreen(mi.rcMonitor) {
                 (*p).rgrc[0] = RECT { left: mi.rcWork.left, top: mi.rcWork.top, right: mi.rcWork.right, bottom: mi.rcWork.bottom };
@@ -44,7 +44,7 @@ fn fix_maximized_overhang(app: &AppWindow) {
 
 /// Windows: Slint's window is created see-through (winit: DWM blur-behind with an empty region), so every spot Slint
 /// hasn't painted yet shows the DESKTOP - e.g. for ~80 ms where the video window was when E opens the editor (measured
-/// with ui.ps1 burst, William: "flickers, shows my desktop background briefly"). Nothing needs see-through any more
+/// with ui.ps1 burst, reported: "flickers, shows my desktop background briefly"). Nothing needs see-through any more
 /// (winvideo set_behind is unused), so it's switched off: unpainted spots are black for a frame instead.
 /// ECHO_SEE_THROUGH=1 keeps the old behaviour.
 #[cfg(windows)]
@@ -64,7 +64,7 @@ thread_local! {
     static HOOK_TIMER: slint::Timer = slint::Timer::default();
 }
 
-/// William (9 Nov): the taskbar showed Windows' blank icon - winit only sets the window's SMALL icon (Slint's
+/// 9 Nov: the taskbar showed Windows' blank icon - winit only sets the window's SMALL icon (Slint's
 /// `icon:`), the taskbar uses the BIG one. It comes from the exe's own icon (build.rs embeds echo.ico as icon 1).
 #[cfg(windows)]
 fn big_icon(app: &AppWindow) {

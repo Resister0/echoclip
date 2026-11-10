@@ -59,7 +59,7 @@ export struct FLine {
     opts: [FOpt],
 }
 
-// William (9 Nov): the hover preview = the real clip playing (src/hover_vid.rs), like Echo's <video> on Windows
+// 9 Nov: the hover preview = the real clip playing (src/hover_vid.rs), like Echo's <video> on Windows
 export global HoverVid {
     in-out property <int> row: -1;       // view row of the card that plays it (-1 = none)
     in-out property <image> frame;
@@ -85,11 +85,11 @@ export global Lib {
     in-out property <bool> ctrl-inst;    // no slide while Ctrl goes down / up (Echo's body.ctrlinst, 300 ms)
     in-out property <int> hover-idx: -1; // the card under the mouse (its data.idx) - keys act on it
     // the card whose Copy / cloud drop-down is open: it stays 'hovered' (buttons out, lifted) while the menu is up -
-    // opening a PopupWindow takes the mouse away from the card (William, 9 Nov 2026)
+    // opening a PopupWindow takes the mouse away from the card (9 Nov 2026)
     in-out property <int> menu-idx: -1;
 // a drop-down just closed: the card lets go of 'hovered' 300 ms later, not at once - clicking the button again
 // (= outside the menu) closed it and Slint only re-checks hover on the release: the buttons slid shut and
-// straight back out (William). If the mouse is still on the card, real hover takes over before then.
+// straight back out. If the mouse is still on the card, real hover takes over before then.
 in-out property <bool> menu-closing;
     // Chat D: card drag onto sidebar folders, inline rename, Move to menu
     callback drag-start(int);            // row: Rust fills CDrag.label + stops the hover preview
@@ -253,7 +253,7 @@ export component CtxSep inherits Rectangle {
 }
 
 // The card's right-click menu, drawn like Echo's own menus (#ectx: panel, 1 px line, radius 10, padding 5, deep
-// shadow, no icons) instead of Slint's ContextMenuArea (looked like a plain OS menu - William, 10 Nov 2026).
+// shadow, no icons) instead of Slint's ContextMenuArea (looked like a plain OS menu - 10 Nov 2026).
 // Echo's card menu had: [Convert to AV1] / Make smaller / Make much smaller / - / Show in folder (an AV1 clip: "Already
 // AV1 - as small as it gets"); the native app's extra lines (play, favourite, select, rename, move, delete) stay.
 // Several clips picked and this card among them: the selection's actions (Echo's .pickbar, incl. Convert to AV1).
@@ -1045,7 +1045,7 @@ component CardButtons inherits HorizontalLayout {
             x: 0;
             // r2-layout (L34): Echo flips the menu above the button when it would run past the window bottom
             y: cg.absolute-position.y + cg.height + 6px + cmb.preferred-height + 8px > Over.win-h ? -cmb.preferred-height - 6px : cg.height + 6px;
-            // own size: Slint tests clicks against it (none = every click 'outside', fell through - William)
+            // own size: Slint tests clicks against it (none = every click 'outside', fell through)
             width: cmb.preferred-width;
             height: cmb.preferred-height;
             close-policy: close-on-click-outside;
@@ -1422,7 +1422,7 @@ export component FilterPanel inherits Rectangle {
     // swallow clicks so the popup doesn't close when a gap between chips is clicked
     TouchArea { }
     Flickable {
-        // William: a click on a chip opened the clip BEHIND the panel. A draggable Flickable delays the mouse press
+        // a click on a chip opened the clip BEHIND the panel. A draggable Flickable delays the mouse press
         // (to see if it's a drag) and Slint replays that delayed press on the main window's items, not this popup's.
         // interactive: false = no delay; the wheel still scrolls.
         interactive: false;

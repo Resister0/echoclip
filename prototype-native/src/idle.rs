@@ -1,4 +1,4 @@
-//! William (9 Nov): "efficiency mode" when Echo sits hidden in the tray. The old Echo got it for free: WebView2 put
+//! 9 Nov: "efficiency mode" when Echo sits hidden in the tray. The old Echo got it for free: WebView2 put
 //! its separate UI processes into Windows' efficiency mode. Here the UI and the recorder share ONE process, so the
 //! whole process must NOT go into efficiency mode (EcoQoS + idle priority would slow the capture / audio threads
 //! while a game runs - dropped frames, choppy sound). Instead, 30 s after the window was hidden:

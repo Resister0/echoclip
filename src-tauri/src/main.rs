@@ -1094,7 +1094,7 @@ fn open_echo_link(what: String) -> Result<(), String> {
     })
 }
 
-/// "Send log": uploads log + settings to echoclip.link and copies the link (paste it into Discord / to William).
+/// "Send log": uploads log + settings to echoclip.link and copies the link (paste it into Discord / to the developer).
 /// Upload failed: the .txt file goes on the clipboard instead, like before. Returns the link ("" = file copied).
 #[tauri::command]
 async fn send_log(rec: State<'_, Recorder>) -> Result<String, String> {
@@ -2181,7 +2181,7 @@ fn main() {
                         let mut want = if cfg.capture == "game" { game_hwnd } else if vr_hwnd != 0 && !winutil::window_alive(vr_hwnd) { 0 } else { vr_hwnd };
                         // a launcher / splash / crash-dump window (FiveM's 524x524 launcher, its 352x170 "dumpserver")
                         // isn't the game: keep recording the whole screen. Each switch restarts the recorder and
-                        // empties the replay buffer - William's FiveM start caused 4 restarts in a minute (chat 21)
+                        // empties the replay buffer - the developer's FiveM start caused 4 restarts in a minute (chat 21)
                         if want != 0 && want != vr_hwnd {
                             let (ww, wh) = winutil::window_size(want);
                             if ww < 800 || wh < 450 { want = 0; }

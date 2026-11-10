@@ -58,6 +58,8 @@ struct Api {
     free: unsafe extern "C" fn(*mut c_void),
     wait_event: unsafe extern "C" fn(*mut Handle, f64) -> *mut Event,
     error_string: unsafe extern "C" fn(c_int) -> *const c_char,
+    /// mpv_request_log_messages: mpv's own error lines as events (why a stream couldn't be opened)
+    request_log: Option<unsafe extern "C" fn(*mut Handle, *const c_char) -> c_int>,
     terminate_destroy: unsafe extern "C" fn(*mut Handle),
     rc_create: unsafe extern "C" fn(*mut *mut RenderCtx, *mut Handle, *mut RenderParam) -> c_int,
     rc_set_update_callback: unsafe extern "C" fn(*mut RenderCtx, Option<extern "C" fn(*mut c_void)>, *mut c_void),
@@ -185,6 +187,7 @@ fn load_api() -> Result<Api, String> {
             free: f!("mpv_free"),
             wait_event: f!("mpv_wait_event"),
             error_string: f!("mpv_error_string"),
+            request_log: lib.get(b"mpv_request_log_messages\0").ok().map(|s| *s),
             terminate_destroy: f!("mpv_terminate_destroy"),
             rc_create: f!("mpv_render_context_create"),
             rc_set_update_callback: f!("mpv_render_context_set_update_callback"),
@@ -215,11 +218,21 @@ pub struct Mpv {
     load_error: std::cell::RefCell<Option<String>>,
     /// gaps-cloud (row 5): the file couldn't be played (END_FILE with reason "error") - e.g. a cloud stream that broke
     failed: Cell<bool>,
+    /// mpv's last error line since arm_first_frame() ("tcp: Connection to tcp://127.0.0.1:53980 failed: ...")
+    last_err: std::cell::RefCell<String>,
 }
 
 const EV_START_FILE: c_int = 6;
 const EV_PLAYBACK_RESTART: c_int = 21;
 const EV_END_FILE: c_int = 7;
+const EV_LOG_MESSAGE: c_int = 2;
+/// mpv_event_log_message (client.h)
+#[repr(C)]
+struct LogMessage {
+    prefix: *const c_char,
+    level: *const c_char,
+    text: *const c_char,
+}
 /// mpv_event_end_file (client.h): reason (4 = MPV_END_FILE_REASON_ERROR), error
 #[repr(C)]
 struct EndFile {
@@ -274,7 +287,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create failed".into());
         }
-        let m = Mpv { api, h, rc: ptr::null_mut(), started: Cell::new(false), restarted: Cell::new(false), load_error: Default::default(), failed: Cell::new(false) };
+        let m = Mpv { api, h, rc: ptr::null_mut(), started: Cell::new(false), restarted: Cell::new(false), load_error: Default::default(), failed: Cell::new(false), last_err: Default::default() };
         match wid {
             Some(w) => {
                 m.set_option("vo", "gpu-next");
@@ -309,6 +322,9 @@ impl Mpv {
             ("osc", "no"),
             ("audio-client-name", "Echo"),
             ("hr-seek", "yes"),
+            // no yt-dlp: mpv runs it on every web address it couldn't open (a cloud stream that failed waited
+            // ~1-3 s more for it, then failed anyway)
+            ("ytdl", "no"),
             // small demuxer cache: these are local files
             ("demuxer-max-bytes", "16MiB"),
             ("demuxer-max-back-bytes", "8MiB"),
@@ -330,6 +346,9 @@ impl Mpv {
         let r = unsafe { (m.api.initialize)(m.h) };
         if r < 0 {
             return Err(format!("mpv_initialize: {}", m.err(r)));
+        }
+        if let Some(f) = m.api.request_log {
+            unsafe { f(m.h, cs("error").as_ptr()) };
         }
         Ok(m)
     }
@@ -435,6 +454,11 @@ impl Mpv {
                         self.failed.set(false);
                     }
                     EV_PLAYBACK_RESTART if self.started.get() => self.restarted.set(true),
+                    EV_LOG_MESSAGE if !(*e).data.is_null() => {
+                        let l = &*((*e).data as *const LogMessage);
+                        let part = |p: *const c_char| if p.is_null() { String::new() } else { CStr::from_ptr(p).to_string_lossy().trim().to_string() };
+                        *self.last_err.borrow_mut() = format!("{}: {}", part(l.prefix), part(l.text));
+                    }
                     // the data is mpv_event_end_file (reason, error). Error: the cloud overlay's fallback (`failed`,
                     // gaps-cloud) and the player's "can't play" message (`load_error`, gaps-player) both need it.
                     EV_END_FILE if !(*e).data.is_null() => {
@@ -463,9 +487,15 @@ impl Mpv {
     pub fn arm_first_frame(&self) {
         self.drain_events();
         *self.load_error.borrow_mut() = None;
+        self.last_err.borrow_mut().clear();
         self.started.set(false);
         self.restarted.set(false);
         self.failed.set(false);
+    }
+
+    /// mpv's last error line since the file was loaded (empty = none), for the log
+    pub fn last_error(&self) -> String {
+        self.last_err.borrow().clone()
     }
 
     /// gaps-cloud (row 5): the file mpv was opening / playing ended with an error (read and forget)

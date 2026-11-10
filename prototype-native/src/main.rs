@@ -14,8 +14,11 @@ mod library;
 mod lib_cards;
 mod lib_del; // gaps-library row 42: Echo's delete dialogs + progress
 mod lib_prefs; // gaps-library rows 20 + 44: remembered sort / view / filters, "Longest" probes lengths
+mod lib_thumbs; // 10 Nov: card pictures that were never made (black card)
 mod lib_merge; // gaps-library row 29: folder right-click "Merge into …"
 mod drop; // gaps-library row 1: drag and drop files onto the window (import / editor)
+#[cfg(target_os = "linux")]
+mod wl_dnd; // drag and drop on Linux Wayland (winit 0.30 has none there): feeds drop.rs
 mod lib_shots;
 mod lib_import;
 mod tidy;
@@ -36,12 +39,12 @@ mod pl_media;
 mod pl_layer; // Chat C/A: editor video layers (PiP) in the preview
 mod pl_sticker;
 mod pl_actions;
-mod pl_cuts; // William (9 Nov): cut out parts on the player's strip (Shift+drag, X)
-mod perf; // William (9 Nov): memory / CPU averages for the admin panel (sent with the update check)
+mod pl_cuts; // 9 Nov: cut out parts on the player's strip (Shift+drag, X)
+mod perf; // 9 Nov: memory / CPU averages for the admin panel (sent with the update check)
 mod specs; // r2-perf (10 Nov): the PC's hardware model names + recording settings, sent with those numbers
-mod hover_vid; // William (9 Nov): card hover preview = the real clip (was a flipbook)
-mod discord; // William (9 Nov): Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
-mod idle; // William (9 Nov): efficiency mode for the UI side while hidden in the tray
+mod hover_vid; // 9 Nov: card hover preview = the real clip (was a flipbook)
+mod discord; // 9 Nov: Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
+mod idle; // 9 Nov: efficiency mode for the UI side while hidden in the tray
 mod focus; // port leftovers L2: keys go back after a rename / overlay / dialog closes
 mod hdr_home; // gaps (10 Nov): header chips (KDE keys), "On this day" + milestones, Record button, error toasts -> log
 
@@ -50,9 +53,11 @@ thread_local! {
     static WIN_FOCUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 mod copy;
+mod dl_smooth; // 10 Nov: cloud download bars move evenly (rclone hands bytes over in 1 MiB lumps)
 mod bgwork; // r2-threads: PORT_LEFTOVERS L3-L55, blocking work moved off the UI thread
 // Chat A: Echo's real recorder (echo-core), in-game popup, tray
 mod rec_core;
+mod showkey; // 2.0.2: Show / hide Echo hotkey (tray <-> in front, over a game)
 mod titlebar;
 mod pl_zoom;
 mod popup;
@@ -61,6 +66,8 @@ mod tray;
 mod linux; // gaps-linux: ffmpeg lookup, Trash fallback, DnD tip, Flatpak first start, menu entry, pickers
 mod settings;
 mod sheets;
+mod undo; // 2.0.2: Undo on the notes (deleted clips back from the Trash, moved clips back)
+mod notes; // 2.0.2: the notes at the bottom (kinds, Undo, finished-job buttons, speed + time left)
 mod over; // r2-layout: menus over the video (L1), clicks that close a menu and go on (L39)
 #[cfg(windows)]
 mod winvideo;
@@ -120,7 +127,7 @@ thread_local! {
     static HELD_MODS: Cell<(bool, bool)> = const { Cell::new((false, false)) };
 }
 
-/// William (9 Nov): "Ctrl seemed stuck" - clicking a card selected it instead of playing it until it "fixed itself".
+/// 9 Nov: "Ctrl seemed stuck" - clicking a card selected it instead of playing it until it "fixed itself".
 /// When a key-up is missed (released while another window had focus), Slint keeps the modifier held. Before a click
 /// and when the window gets focus again: if Windows says Ctrl / Shift aren't really down, tell Slint they were let go.
 fn unstick_mods(win: &slint::Window) {
@@ -128,7 +135,7 @@ fn unstick_mods(win: &slint::Window) {
     {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_SHIFT};
         let down = |vk: u16| unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 };
-        // William saw it again with this check limited to "winit says held": Slint keeps its OWN modifier state, which
+        // It was seen again with this check limited to "winit says held": Slint keeps its OWN modifier state, which
         // can stay stuck while winit's is fine. So whenever Windows says the key is up, Slint is told so (a release of a
         // key that isn't held changes nothing; the Library's Ctrl mode just ends, which is right).
         let (ctrl, shift) = HELD_MODS.with(|x| x.get());
@@ -466,144 +473,8 @@ fn open_url(u: &str) {
     let _ = crate::bgwork::spawn_reaped(std::process::Command::new("xdg-open").arg(u)); // r2-threads (L52): reaped
 }
 
-// ---------- Echo's #notes: messages + progress boxes in ONE stack (theme.slint ToastLayer) ----------
-// Every popup goes through this list, so they stack (newest at the bottom) instead of covering each other.
-struct NoteState {
-    model: Rc<VecModel<Note>>,
-    next: i32,
-    gens: std::collections::HashMap<i32, u32>, // message id -> timer generation (the same text again restarts it)
-    btns: std::collections::HashMap<i32, Box<dyn Fn()>>,
-}
-thread_local! {
-    static NOTES: RefCell<NoteState> = RefCell::new(NoteState { model: Rc::new(VecModel::default()), next: 1, gens: Default::default(), btns: Default::default() });
-}
-
-fn notes_init(a: &AppWindow) {
-    NOTES.with(|n| a.global::<Notes>().set_items(ModelRc::from(n.borrow().model.clone())));
-    a.global::<Notes>().on_btn(|id| {
-        let f = NOTES.with(|n| n.borrow_mut().btns.remove(&id));
-        if let Some(f) = f {
-            f();
-        }
-    });
-}
-
-fn note_row(m: &VecModel<Note>, id: i32) -> Option<(usize, Note)> {
-    (0..m.row_count()).find_map(|i| m.row_data(i).filter(|n| n.id == id).map(|n| (i, n)))
-}
-
-/// fade a note out, then remove it
-fn note_out(id: i32) {
-    NOTES.with(|n| {
-        let n = n.borrow();
-        if let Some((i, mut r)) = note_row(&n.model, id) {
-            if r.out {
-                return;
-            }
-            r.out = true;
-            n.model.set_row_data(i, r);
-        }
-    });
-    slint::Timer::single_shot(Duration::from_millis(220), move || {
-        NOTES.with(|n| {
-            let mut n = n.borrow_mut();
-            if let Some((i, _)) = note_row(&n.model, id) {
-                n.model.remove(i);
-            }
-            n.gens.remove(&id);
-            n.btns.remove(&id);
-        })
-    });
-}
-
-/// Echo's toast(): a message; the same text again only restarts its timer; at most 3 messages at once
-fn toast(_a: &AppWindow, s: impl Into<SharedString>) {
-    let s: SharedString = s.into();
-    hdr_home::log_toast(&s); // gaps (10 Nov): errors go into Echo's log too
-    let ms = (s.chars().count() as u64 * 55).clamp(2600, 7000);
-    let (id, gen) = NOTES.with(|n| {
-        let mut n = n.borrow_mut();
-        let found = (0..n.model.row_count()).filter_map(|i| n.model.row_data(i)).find(|r| !r.prog && !r.out && r.title == s).map(|r| r.id);
-        let id = found.unwrap_or_else(|| {
-            let id = n.next;
-            n.next += 1;
-            n.model.push(Note { id, prog: false, title: s.clone(), text: "".into(), pct: -1.0, fin: false, btn: "".into(), out: false });
-            id
-        });
-        let g = n.gens.entry(id).or_insert(0);
-        *g += 1;
-        let gen = *g;
-        // more than 3 messages: the oldest goes
-        let msgs: Vec<i32> = (0..n.model.row_count()).filter_map(|i| n.model.row_data(i)).filter(|r| !r.prog && !r.out).map(|r| r.id).collect();
-        let extra = if msgs.len() > 3 { Some(msgs[0]) } else { None };
-        drop(n);
-        if let Some(e) = extra {
-            note_out(e);
-        }
-        (id, gen)
-    });
-    slint::Timer::single_shot(Duration::from_millis(ms), move || {
-        if NOTES.with(|n| n.borrow().gens.get(&id) == Some(&gen)) {
-            note_out(id);
-        }
-    });
-}
-
-/// Echo's progBox(): its own box per job. Returns the id for prog_set / prog_btn / prog_done.
-fn prog_box(title: &str) -> i32 {
-    NOTES.with(|n| {
-        let mut n = n.borrow_mut();
-        let id = n.next;
-        n.next += 1;
-        n.model.push(Note { id, prog: true, title: title.into(), text: "".into(), pct: 0.0, fin: false, btn: "".into(), out: false });
-        id
-    })
-}
-
-/// change a box: title / text (None = keep), pct (None = keep, < 0 = no bar)
-#[allow(dead_code)]
-fn prog_set(id: i32, title: Option<&str>, text: Option<&str>, pct: Option<f32>) {
-    NOTES.with(|n| {
-        let n = n.borrow();
-        if let Some((i, mut r)) = note_row(&n.model, id) {
-            if let Some(t) = title {
-                r.title = t.into();
-            }
-            if let Some(t) = text {
-                r.text = t.into();
-            }
-            if let Some(p) = pct {
-                r.pct = p;
-            }
-            n.model.set_row_data(i, r);
-        }
-    });
-}
-
-/// a small button on a box (e.g. "Cancel"), once per box
-#[allow(dead_code)]
-fn prog_btn(id: i32, label: &str, f: impl Fn() + 'static) {
-    NOTES.with(|n| {
-        let mut n = n.borrow_mut();
-        if let Some((i, mut r)) = note_row(&n.model, id) {
-            r.btn = label.into();
-            n.model.set_row_data(i, r);
-            n.btns.insert(id, Box::new(f));
-        }
-    });
-}
-
-/// the job ended: the spinner stops; the box goes after `ms`
-fn prog_done(id: i32, ms: u64) {
-    NOTES.with(|n| {
-        let n = n.borrow();
-        if let Some((i, mut r)) = note_row(&n.model, id) {
-            r.fin = true;
-            n.model.set_row_data(i, r);
-        }
-    });
-    slint::Timer::single_shot(Duration::from_millis(ms), move || note_out(id));
-}
+// ---------- Echo's #notes: messages + progress boxes in ONE stack -> notes.rs (2.0.2) ----------
+use notes::{notes_init, prog_box, prog_btn, prog_done, prog_set, toast};
 
 // ---------- Home ----------
 thread_local! {
@@ -628,7 +499,7 @@ fn gs_next(lib: &library::LibModel) -> (Vec<bool>, Option<usize>) {
     let signed = s.as_ref().and_then(|v| v.get("cloud_accounts")).and_then(|a| a.as_array()).is_some_and(|a| a.iter().any(|x| x.get("provider").and_then(|p| p.as_str()) == Some("echocloud")));
     let cloud = s.as_ref().and_then(|v| v.get("cloud")).is_some_and(|c| !c.is_null() && c != &serde_json::Value::Bool(false) && c != "");
     let all = lib.all();
-    // William: the line kept coming back - "share" was hard-coded false and Skip / Hide weren't saved. Now like
+    // The line kept coming back - "share" was hard-coded false and Skip / Hide weren't saved. Now like
     // Echo: share = any share link or Copy used once; skips + hide kept per PC in native_ui.json
     // Echo's shared_clips (shared.json + links that still work) - the same set as Echo's Home step
     let shared = bgwork::shared_any(&lib.root()) || lib_fx::ui_get("gs_copied").as_bool().unwrap_or(false); // r2-threads (L29)
@@ -665,7 +536,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
     h.set_bars_max(bars.iter().copied().max().unwrap_or(1).max(1) as i32);
     h.set_spark(bars.iter().filter(|&&n| n > 0).count() >= 3);
     h.set_bars(ModelRc::new(VecModel::from(bars.iter().map(|&n| n as i32).collect::<Vec<_>>())));
-    // William (10 Nov): Home's first number box - clips per calendar day, last 7 days (today last) + day letters;
+    // 10 Nov: Home's first number box - clips per calendar day, last 7 days (today last) + day letters;
     // "clips this week" = the same 7 days, so the number and the bars always agree
     {
         use chrono::{Datelike, Local};
@@ -889,6 +760,11 @@ fn main() {
             if let Some(a) = w.upgrade() {
                 toast(&a, "Copied - paste it into Discord or anywhere");
                 toast(&a, "Added to favourites");
+                // 2.0.2: every kind + a button (the error stays until clicked)
+                notes::say_act(notes::Kind::Done, "Clip deleted", "Undo", || {});
+                notes::say(notes::Kind::Err, "Couldn't move it to the Trash, so nothing was deleted (test)");
+                prog_done(link, 0);
+                notes::say_act(notes::Kind::Done, "Link copied - expires in 7 days", "Open", || {});
             }
         });
     }
@@ -912,7 +788,7 @@ fn main() {
             });
         };
         while let Ok((idx, path, clip)) = rx.recv() {
-            // William (9 Nov): sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
+            // 9 Nov: sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
             // 1440p screen. A 720 px still of the SAME moment (Echo's .thumbt, else 0.5 s) is made once per clip as
             // <name>.card720.jpg next to it (remade when Echo's picture changes, e.g. Use as thumbnail).
             let hi = library::card_hi_path(&path);
@@ -968,7 +844,7 @@ fn main() {
             let total: u64 = lib.all().iter().map(|c| c.size).sum();
             a.set_storage_used(format!("{} used", library::fmt_size(total)).into());
             a.set_storage_cap(if cap_gb > 0 { format!("of {}", library::fmt_size(cap_gb * 1_000_000_000)) } else { "no limit".into() }.into());
-            // William (10 Nov): the status card's hover panel
+            // 10 Nov: the status card's hover panel
             a.set_local_limit(if cap_gb > 0 { library::fmt_size(cap_gb * 1_000_000_000) } else { "No limit".into() }.into());
             a.set_storage_frac(if cap_gb > 0 { total as f32 / (cap_gb as f32 * 1e9) } else { (total as f32 / 50e9).min(1.0) });
             a.set_picked_n(lib.picked.borrow().len() as i32);
@@ -979,7 +855,7 @@ fn main() {
                 a.set_nav(ModelRc::new(VecModel::from(lib.nav_items())));
                 lib_cards::fill_folders(&a, &lib);
             }
-            // William (9 Nov, sketch E): the library's toolbar names the list (the sidebar entry) - it opens the filter
+            // 9 Nov, sketch E: the library's toolbar names the list (the sidebar entry) - it opens the filter
             let f = a.get_filter();
             let name = a.get_nav().iter().find(|n| n.id == f).map(|n| n.label.to_string()).unwrap_or_else(|| "All clips".into());
             a.set_list_name(name.into());
@@ -1019,9 +895,24 @@ fn main() {
                 // Chat B: "cloud" = the library filtered to clips in the cloud (cloud-only ones included)
                 a.set_view("library".into());
                 a.set_filter(id.clone());
+                // the same list again (disk sync, rename, upload, trim, Free up space call this to refresh): keep the
+                // scroll place - only another folder / filter goes to the top
+                let other = *lib.nav.borrow() != id.as_str();
                 *lib.nav.borrow_mut() = id.to_string();
                 lib.refresh();
                 sync(false);
+                if !other {
+                    return;
+                }
+                // 10 Nov 2026: the card list to the top now that the new rows are in, and again once the ListView
+                // has measured them (it kept the old folder's scroll position: a one-clip folder sat half out of view)
+                a.set_lib_top_seq(a.get_lib_top_seq() + 1);
+                let w2 = a.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(120), move || {
+                    if let Some(a) = w2.upgrade() {
+                        a.set_lib_top_seq(a.get_lib_top_seq() + 1);
+                    }
+                });
             }
         });
     }
@@ -1155,15 +1046,14 @@ fn main() {
             ids.sort();
             // r2-threads (L13): the files move on a worker
             let (w, l2, sync, folder) = (a.as_weak(), lib.clone(), sync.clone(), folder.to_string());
+            let was = undo::before_move(&lib, &ids); // 2.0.2: Undo moves them back
             lib.move_clips_bg(&ids, &folder.clone(), move |n, err| {
                 let Some(a) = w.upgrade() else { return };
                 let lib = l2;
-                // Echo's moveClips toast: no quotes round the folder, the last error after it (r2-texts L48)
+                // Echo's moveClips toast: no quotes round the folder, the last error after it (r2-texts L48) + Undo
                 if n > 0 {
                     lib.clear_picks();
-                    let to = library::clean_folder(&folder);
-                    let last = err.map(|e| format!(" - {e}")).unwrap_or_default();
-                    toast(&a, format!("Moved {n} clip{} to {}{last}", if n == 1 { "" } else { "s" }, if to.is_empty() { "the main folder".to_string() } else { to }));
+                    undo::moved(&a, &lib, was, n, &library::clean_folder(&folder), err);
                 } else {
                     toast(&a, err.unwrap_or_else(|| "Nothing moved".into()));
                 }
@@ -1579,6 +1469,7 @@ fn main() {
                         "mark" => "bookmark_key",
                         "long" => "session_key",
                         "mute" => "mic_mute_key",
+                        "show" => "show_key",
                         _ => "ptt_key",
                     };
                     msg = st.set(k, "");
@@ -1596,7 +1487,7 @@ fn main() {
                 } else if act == "discord" {
                     open_url("https://discord.gg/JPVewEfUQs");
                 } else if act == "changelog" {
-                    // the page (/changes is the JSON the update card reads - William saw raw data)
+                    // the page (/changes is the JSON the update card reads - raw data was seen)
                     open_url("https://echoclip.link/changelog");
                 } else {
                     let what = match act {
@@ -1628,7 +1519,7 @@ fn main() {
         lib_profile::wire(&app);
     }
     lib_set::wire(&app, store.clone());
-    // Settings > Clips & Storage open: other apps' clip counts follow their folders (Chat B, William chat 5)
+    // Settings > Clips & Storage open: other apps' clip counts follow their folders (Chat B, chat 5)
     let import_timer = slint::Timer::default();
     import::set_refresh(srefresh.clone()); // r2-threads (L28): the scan runs on a worker, the page follows
     {
@@ -1874,7 +1765,7 @@ fn main() {
                 }
                 // the seek-bar pictures of a clip that's likely to be opened next (Echo: "filmstrip" on hover)
                 let _ = ask2(idx);
-                // William (9 Nov): the real clip, like Echo on Windows (was the 60-picture flipbook)
+                // 9 Nov: the real clip, like Echo on Windows (was the 60-picture flipbook)
                 let c = lib2.clip(idx);
                 if c.cloud.is_none() {
                     hover_vid::start(&a, row, c.path.clone());
@@ -2102,6 +1993,10 @@ fn main() {
                     let (_, next) = gs_next(&lib);
                     match next.map(|i| GS_STEPS[i].0) {
                         Some("edit") => {
+                            // a cloud-only clip downloads first, then Home's "edit" opens the editor
+                            if cloud::home_needs_local(&a, "edit") {
+                                return;
+                            }
                             if let Some(i) = lib.index_at(library::HOME_BASE) {
                                 open_editor(i);
                             }
@@ -2146,7 +2041,7 @@ fn main() {
             }
         });
     }
-    // William (10 Nov): the status card's hover panel - "Manage cloud storage" = Settings > Cloud + its space manager
+    // 10 Nov: the status card's hover panel - "Manage cloud storage" = Settings > Cloud + its space manager
     {
         let w = app.as_weak();
         app.on_manage_cloud(move || {
@@ -2450,7 +2345,7 @@ fn main() {
             match what.as_str() {
                 "folder" => show_in_folder(&lib.clip(idx).path),
                 "edit" => {
-                    // William (9 Nov): the editor opens where the player was, with the trim + cuts already made
+                    // 9 Nov: the editor opens where the player was, with the trim + cuts already made
                     let carry = pl_cuts::take_for_editor(&a, &p);
                     open_editor(idx);
                     if let Some(cv) = carry {
@@ -2559,6 +2454,7 @@ fn main() {
             let pb = prog_box(if has_cuts || exact { "Exporting (re-encoding)…" } else { "Exporting…" }); // Echo's texts
             prog_set(pb, None, None, Some(-1.0));
             let (src, w2, root2) = (c.path.clone(), w.clone(), root.clone());
+            let tdir = root.join(".thumbs");
             let job = move || -> Result<(PathBuf, PathBuf, Option<f64>), String> {
                 // gaps-player (row 35): Exact / cuts re-encode with Echo's chain (AMF -> NVENC -> QSV -> libx264)
                 pl_actions::encode_trim(&ff, &src, s0, s1, exact, &keep, has_cuts, d, &tmp)?;
@@ -2566,8 +2462,8 @@ fn main() {
                     let _ = std::fs::remove_file(&tmp);
                     return Err(e.to_string());
                 }
-                // its card picture: in the prototype's own temp folder (Echo makes its own when it sees the file)
-                let tdir = std::env::temp_dir().join("echo-proto-thumbs");
+                // its card picture: <clips>/.thumbs/<name>.jpg like every clip (10 Nov: it went to a temp folder and
+                // was lost after a restart = a black card, e.g. "transfer summary"); its length below -> <name>.dur
                 let _ = std::fs::create_dir_all(&tdir);
                 let thumb = tdir.join(format!("{}.jpg", out.file_stem().unwrap_or_default().to_string_lossy()));
                 let mut t = std::process::Command::new(&ff);
@@ -2597,6 +2493,9 @@ fn main() {
                     .output()
                     .ok()
                     .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok());
+                if let Some(d) = len.filter(|d| *d > 0.0) {
+                    let _ = std::fs::write(tdir.join(format!("{}.dur", out.file_stem().unwrap_or_default().to_string_lossy())), d.to_string());
+                }
                 Ok((out, thumb, len))
             };
             std::thread::spawn(move || {
@@ -2830,7 +2729,7 @@ fn main() {
                                 // black video area meanwhile)
                                 _ if mpv::d3d_flip() && !full => pl.swap = vw.is_shown(),
                                 Some(po) if pl.mode == Mode::Window && !full => {
-                                    // plain black until the first picture (William: the video is there at once, the thumbnail
+                                    // plain black until the first picture (the video is there at once, the thumbnail
                                     // step only got in the way). ECHO_POSTER=1 = show the thumbnail on a fresh open again.
                                     let px = pl.poster_px.as_ref().filter(|_| at <= 0.5 && std::env::var("ECHO_POSTER").is_ok());
                                     po.set_picture(px.map(|b| (b.as_bytes(), b.width(), b.height())));
@@ -2850,7 +2749,10 @@ fn main() {
                     // (cloud-only clips: left to the cloud's own streaming fallback)
                     if let Some(why) = m.take_load_error() {
                         let cloud = pl.clip.is_some_and(|i| LIB.with(|l| l.borrow().as_ref().is_some_and(|l| l.clip(i).cloud.is_some())));
-                        log_to(&mut pl.log, format!("player: mpv couldn't open the clip ({why})"));
+                        // (never the streaming server's secret path: logs get shared)
+                        let detail = m.last_error().replace(echo_core::recorder::serve_token_pub(), "…");
+                        let detail = if detail.is_empty() { String::new() } else { format!(" - {detail}") };
+                        log_to(&mut pl.log, format!("player: mpv couldn't open the clip ({why}){detail}"));
                         if !cloud {
                             toast(&a, format!("Can't play this clip ({why}) - the file may be damaged"));
                         }
@@ -2896,7 +2798,7 @@ fn main() {
                                 if a.get_preview_on() && !flip {
                                     holes.push((px(a.get_preview_x() - a.get_video_x()), px(a.get_preview_y() - a.get_video_y()), px(a.get_preview_w()), px(a.get_preview_h())));
                                 }
-                                // William (9 Nov): going fullscreen showed the video at the OLD window size for ~80 ms
+                                // 9 Nov: going fullscreen showed the video at the OLD window size for ~80 ms
                                 // (Windows grows the window a few frames after F) and mpv drew that size for another
                                 // ~170 ms - the "half fullscreen" black box. Measured with ECHO_DEBUG_OSD (FRAGILE
                                 // rule 1). While the window is still catching up, the video window gets its FINAL size
@@ -3158,14 +3060,16 @@ fn main() {
             if tick % 12 == 6 && lib.saving_expire() {
                 lib.rebuild_rows();
             }
-            // every 3 s: clips deleted / added outside Echo (file manager) leave / join the library (William, chat 5)
+            // every 3 s: clips deleted / added outside Echo (file manager) leave / join the library (chat 5)
             // r2-threads (L3): the walk runs on a worker (bgwork.rs), the library follows on the UI thread
             if tick % 12 == 6 && a.window().is_visible() && !a.window().is_minimized() {
                 bgwork::disk_tick(&a, &lib, &root);
             }
-            // William (9 Nov): hidden (tray / minimized) for 30 s = efficiency mode for the UI side (idle.rs: fast
+            // 9 Nov: hidden (tray / minimized) for 30 s = efficiency mode for the UI side (idle.rs: fast
             // timers paused, UI thread EcoQoS + lower priority); the recorder's threads are never touched
             let hidden = a.window().is_minimized() || !a.window().is_visible();
+            // perf-states: tray / idle / active / player for this tick (perf.rs: each minute counts under one state)
+            perf::ui_tick(!hidden, a.get_player_open(), MOUSE.with(|m| m.borrow().last_move.elapsed()));
             if hidden {
                 if idle_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(30) {
                     idle::sleep();
@@ -3337,12 +3241,12 @@ fn main() {
         }
         sync(false);
     }
-    // mouse wheel: Slint scrolls 60 px per wheel step in one jump - with ~300 px card rows that "doesn't do much"
-    // (William). ECHO_SCROLL px per step (default 160, ~ a browser; 0 = Slint's own scrolling) is given out
+    // mouse wheel: Slint scrolls 60 px per wheel step in one jump - with ~300 px card rows that "doesn't do much".
+    // ECHO_SCROLL px per step (default 160, ~ a browser; 0 = Slint's own scrolling) is given out
     // ONCE PER DRAWN FRAME (the render hook's AfterRendering), easing out over ~150 ms - so it glides at the
     // monitor's refresh rate (240 Hz and up), not at a timer's pace. Touchpad pixel scrolling is left alone.
     let step: f32 = std::env::var("ECHO_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(160.0);
-    // William (9 Nov): mouse side buttons, browser-style. Back = one step back (leave the editor, close the player,
+    // 9 Nov: mouse side buttons, browser-style. Back = one step back (leave the editor, close the player,
     // or from Settings / Screenshots back to the page before); Forward = undo that Back (reopen the clip / the page).
     let nav: Rc<dyn Fn(&AppWindow, bool)> = {
         let (play, p, lib) = (play.clone(), player.clone(), lib.clone());
@@ -3389,6 +3293,8 @@ fn main() {
         let wk = app.as_weak();
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
+            #[cfg(target_os = "linux")]
+            wl_dnd::start(&wk, win); // first event only: Wayland drag and drop listener (wl_dnd.rs)
             // fullscreen controls: wake on any movement inside the window
             let wake = |w: &slint::Weak<AppWindow>| {
                 if let Some(a) = w.upgrade() {

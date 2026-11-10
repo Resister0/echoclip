@@ -1,4 +1,4 @@
-//! Session cleanup (William, 10 Nov 2026): more ways to free space, for Tidy up (tidy.rs) and Echo Cloud's
+//! Session cleanup (10 Nov 2026): more ways to free space, for Tidy up (tidy.rs) and Echo Cloud's
 //! Manage space (cloud.rs space manager).
 //! - an edit and its original ("x" + "x (edit)" / "x (trim 2)"), by name
 //! - clips on this PC with a full copy in the cloud (cloud.json)
@@ -71,9 +71,15 @@ pub fn edit_pairs(named: &[(usize, String)]) -> Vec<Vec<usize>> {
 
 /// cloud.json's list: rel (lower-case, "/") -> size of the cloud copy
 pub fn cloud_sizes(thumbs: &Path) -> HashMap<String, u64> {
-    read(&thumbs.join("cloud.json"))["files"]
+    let v = read(&thumbs.join("cloud.json"));
+    // av1-upload-fix (10 Nov 2026): a cloud copy that isn't the clip itself (Echo Cloud's smaller copy, an AV1
+    // clip's H.264 copy) is complete when it's the one Echo uploaded: "smaller" = {rel: [cloud size, PC size]}
+    let copy = |rel: &str, size: u64| {
+        v["smaller"][rel].as_array().and_then(|a| (a.first()?.as_u64()? == size).then(|| a.get(1)?.as_u64()).flatten()).unwrap_or(size)
+    };
+    v["files"]
         .as_array()
-        .map(|a| a.iter().filter_map(|f| Some((norm(f["rel"].as_str()?), f["size"].as_u64()?))).collect())
+        .map(|a| a.iter().filter_map(|f| { let rel = f["rel"].as_str()?; Some((norm(rel), copy(rel, f["size"].as_u64()?))) }).collect())
         .unwrap_or_default()
 }
 

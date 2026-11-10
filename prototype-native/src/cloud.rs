@@ -80,16 +80,33 @@ fn link_life(d: u32) -> String {
 }
 
 /// a job with a progress box: work(progress 0..1) on a thread, done on the UI thread
-pub fn job(a: &AppWindow, title: &str, work: impl FnOnce(&dyn Fn(f64)) -> Result<String, String> + Send + 'static, done: impl FnOnce(&AppWindow, Result<String, String>) + 'static) -> i32 {
+/// `rel` (lower-case): the clip this job makes a share link for - while a copy of it is made first, the box says so
+/// ("Converting AV1 to H.264 so it plays everywhere… 40%") and gets a Cancel (av1-upload-fix, 10 Nov 2026)
+pub fn job(a: &AppWindow, title: &str, rel: Option<String>, work: impl FnOnce(&dyn Fn(f64)) -> Result<String, String> + Send + 'static, done: impl FnOnce(&AppWindow, Result<String, String>) + 'static) -> i32 {
     let id = crate::prog_box(title);
     crate::prog_set(id, None, None, Some(-1.0));
     let pct = Arc::new(AtomicU32::new(u32::MAX));
     let p2 = pct.clone();
     let t = slint::Timer::default();
+    let cancel_shown = std::cell::Cell::new(false);
     t.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
         let v = p2.load(Ordering::Relaxed);
         if v != u32::MAX {
-            crate::prog_set(id, None, Some(&format!("{}%", v / 10)), Some(v as f32 / 10.0));
+            let making = rel.as_ref().and_then(|r| {
+                let p = echo_core::recorder::UP_PROGRESS.lock().ok()?;
+                (p.got == 0 && p.rel.to_lowercase() == *r).then(|| crate::cloud_live::stage_text(&p.stage, &p.dest).map(|t| (t, p.stage != "convert")))?
+            });
+            let txt = match making {
+                Some((what, can_cancel)) => {
+                    // the steps that can be stopped (Echo Cloud's share copy converts without a stop)
+                    if can_cancel && !cancel_shown.replace(true) {
+                        cancel_upload_btn(id);
+                    }
+                    format!("{what}… {}%", v / 10)
+                }
+                None => format!("{}%", v / 10),
+            };
+            crate::prog_set(id, None, Some(&txt), Some(v as f32 / 10.0));
         }
     });
     let w = a.as_weak();
@@ -130,11 +147,21 @@ pub fn quick(a: &AppWindow, msg: &str, work: impl FnOnce() -> Result<String, Str
 }
 
 fn shared_rels() -> HashSet<String> {
+    links_where(|_| true)
+}
+
+/// av1-upload-fix: links in the user's own cloud (no Echo Cloud object, "key" empty in links.json) - "Stop sharing"
+/// deletes their share copy, also without Echo Cloud, or says how to end a link to the clip itself
+fn own_shared_rels() -> HashSet<String> {
+    links_where(|e| e["key"].as_str().is_none_or(|k| k.is_empty()))
+}
+
+fn links_where(keep: impl Fn(&serde_json::Value) -> bool) -> HashSet<String> {
     let Some(l) = lib() else { return HashSet::new() };
     std::fs::read_to_string(l.thumbs_dir.join("links.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
-        .map(|m| m.keys().map(|k| k.replace('\\', "/").to_lowercase()).collect())
+        .map(|m| m.iter().filter(|(_, e)| keep(e)).map(|(k, _)| k.replace('\\', "/").to_lowercase()).collect())
         .unwrap_or_default()
 }
 
@@ -227,7 +254,7 @@ pub fn menu(a: &AppWindow, idx: usize, only_link: bool) {
             } else {
                 items.push(item("Upload to the cloud", "upload", ""));
             }
-            if (c.cloud.is_some() || l.in_cloud(idx) || shared) && has_ec() {
+            if ((c.cloud.is_some() || l.in_cloud(idx) || shared) && has_ec()) || own_shared_rels().contains(&rel_of(&c).to_lowercase()) {
                 items.push(item("Stop sharing", "unshare", ""));
             }
         }
@@ -270,9 +297,8 @@ pub fn copy_link(a: &AppWindow, idx: usize, days: Option<u32>) {
     }
     let multi_filen = conf.cloud == "multi" && has_filen;
     let title = if local_only { "Uploading and making a link…" } else { "Making a link…" };
-    if local_only {
-        LINKING.with(|s| s.borrow_mut().insert(rel.to_lowercase()));
-    }
+    // av1-upload-fix: also a clip that's already in the cloud - an AV1 clip's link may upload its H.264 share copy
+    LINKING.with(|s| s.borrow_mut().insert(rel.to_lowercase()));
     let key = rel.to_lowercase();
     // cleanup: remembered for Manage space's "Share link expired" (uploaded only for this link?)
     let hist = (l.thumbs_dir.clone(), rel.clone(), days.unwrap_or(conf.link_days));
@@ -280,6 +306,7 @@ pub fn copy_link(a: &AppWindow, idx: usize, days: Option<u32>) {
     let id = job(
         a,
         title,
+        Some(key.clone()),
         move |p| {
             let url = if local_only { r.upload_and_link(&path, days, p)? } else { r.cloud_link(&rel, days, p)? };
             crate::lib_net::copy_text(&url)?;
@@ -296,7 +323,9 @@ pub fn copy_link(a: &AppWindow, idx: usize, days: Option<u32>) {
                         crate::lib_fx::ui_set("sharegone", serde_json::json!(true));
                         crate::toast(a, format!("Uploaded - link copied, {life}. This upload goes away when the link expires"));
                     } else {
-                        crate::toast(a, if local_only { format!("Uploaded - link copied, {life}") } else { format!("Link copied - {life}") });
+                        // 2.0.2: the box turns into this note, with Open (the share page in the browser)
+                        let u = url.clone();
+                        crate::notes::say_act(crate::notes::Kind::Done, if local_only { format!("Uploaded - link copied, {life}") } else { format!("Link copied - {life}") }, "Open", move || crate::open_url(&u));
                     }
                     wm_hint(a, "link");
                 }
@@ -354,28 +383,29 @@ fn menu_pick(a: &AppWindow, v: &str) {
             );
         }
         "free" => {
-            if !busy_start(a, &rel) {
+            if BUSY.with(|b| b.borrow().contains(&rel.to_lowercase())) {
+                crate::toast(a, "Already working on this clip…");
                 return;
             }
-            if a.get_player_open() {
-                a.global::<crate::Play>().invoke_close();
-            }
+            let shown = c.shown.to_string();
             let w = a.as_weak();
-            slint::Timer::single_shot(Duration::from_millis(200), move || {
-                let Some(a) = w.upgrade() else {
-                    busy_end(&rel);
-                    return;
-                };
-                // cloud-savings: say so when what stays is Echo Cloud's smaller copy
-                quick(&a, "Freeing up space…", move || r.cloud_remove_local(&path).map(|_| if r.cloud_smaller(&path) { "s".into() } else { String::new() }), move |a, res| {
-                    busy_end(&rel);
-                    match res {
-                        Ok(s) if s == "s" => crate::toast(a, "Removed from this PC - Echo Cloud keeps its smaller copy"),
-                        Ok(_) => crate::toast(a, "Removed from this PC - still in the cloud"),
-                        Err(e) => crate::toast(a, e),
-                    }
-                    sync_ui(a);
-                });
+            let r2 = r;
+            let p2 = path.clone();
+            // av1-upload-fix (coordinator, 10 Nov 2026): ask first only when the cloud keeps a copy, not the clip
+            // itself (an AV1 clip's H.264 copy / Echo Cloud's smaller copy); the same file stays one click
+            crate::lib_net::bg(move || r2.cloud_copy_info(&p2), move |(kind, cloud, local)| {
+                let Some(a) = w.upgrade() else { return };
+                let fsz = crate::library::fmt_size;
+                let go = move |a: &AppWindow| free_local(a, r, rel, path);
+                match kind {
+                    "h264" => crate::confirm_box(&a, "Free up space on this PC?",
+                        &format!("The cloud keeps an H.264 copy of \"{shown}\" (plays everywhere, {}). The AV1 original ({}) is deleted from this PC.", fsz(cloud), fsz(local)),
+                        "Free up space", go),
+                    "smaller" => crate::confirm_box(&a, "Free up space on this PC?",
+                        &format!("Echo Cloud keeps a smaller copy of \"{shown}\" (up to 1080p, only the mixed sound track, {}). The original ({}) is deleted from this PC.", fsz(cloud), fsz(local)),
+                        "Free up space", go),
+                    _ => go(&a),
+                }
             });
         }
         "download" => download(a, idx),
@@ -423,6 +453,34 @@ fn menu_pick(a: &AppWindow, v: &str) {
         }),
         _ => {}
     }
+}
+
+/// "Free up space on this PC" once it's decided: delete the PC copy (the cloud keeps the clip)
+fn free_local(a: &AppWindow, r: &'static Recorder, rel: String, path: String) {
+    if !busy_start(a, &rel) {
+        return;
+    }
+    if a.get_player_open() {
+        a.global::<crate::Play>().invoke_close();
+    }
+    let w = a.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(200), move || {
+        let Some(a) = w.upgrade() else {
+            busy_end(&rel);
+            return;
+        };
+        // cloud-savings: say so when what stays is Echo Cloud's smaller copy / an AV1 clip's H.264 copy (av1-upload-fix)
+        quick(&a, "Freeing up space…", move || r.cloud_remove_local(&path).map(|_| r.cloud_copy_kind(&path).to_string()), move |a, res| {
+            busy_end(&rel);
+            match res {
+                Ok(s) if s == "smaller" => crate::toast(a, "Removed from this PC - Echo Cloud keeps its smaller copy"),
+                Ok(s) if s == "h264" => crate::toast(a, "Removed from this PC - the cloud keeps its H.264 copy (plays everywhere)"),
+                Ok(_) => crate::toast(a, "Removed from this PC - still in the cloud"),
+                Err(e) => crate::toast(a, e),
+            }
+            sync_ui(a);
+        });
+    });
 }
 
 /// cloud-only clip -> this PC ("Download to this PC" in the cloud menu), with Echo's download progress
@@ -514,15 +572,6 @@ pub fn player_needs_local(a: &AppWindow, idx: usize, what: &str) -> bool {
     })
 }
 
-fn fmt_left(secs: f64) -> String {
-    let s = secs.round() as u64;
-    if s < 60 {
-        format!("{s} s")
-    } else {
-        format!("{} min", (secs / 60.0).round() as u64)
-    }
-}
-
 fn fetch(a: &AppWindow, idx: usize, done_msg: &'static str, then: Then) {
     let (Some(l), Some(r)) = (lib(), rec()) else { return };
     let c = l.clip(idx);
@@ -554,31 +603,40 @@ fn fetch(a: &AppWindow, idx: usize, done_msg: &'static str, then: Then) {
     crate::prog_set(id, None, Some("Starting…"), Some(0.0));
     DL_SHOWN.with(|d| d.borrow_mut().insert(key.clone(), (0.0, "Starting…".into())));
     let (rel2, key2) = (rel.clone(), key.clone());
-    let t0 = Instant::now();
-    let best = Cell::new(0u64);
+    let aw = a.as_weak();
     let t = slint::Timer::default();
-    t.start(slint::TimerMode::Repeated, Duration::from_millis(300), move || {
+    // 20x a second; the bars (bottom box, player overlay) and their text show the smoothed bytes (dl_smooth.rs: the
+    // bytes arrive in 1 MiB lumps, the raw value made the bar move-stop-move - "choppy", 10 Nov 2026). Slint's linear
+    // width animation (100 / 200 ms, longer than this tick) joins the steps into one steady motion.
+    let mut sm = crate::dl_smooth::Smooth::new(std::time::Instant::now());
+    t.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
         let (got, total) = Recorder::cloud_dl_progress(&rel2);
         let tot = if total > 0 { total } else { size };
-        // never less than before (a late answer must not make it jump back)
-        let got = got.max(best.get());
-        best.set(got);
+        let got = sm.step(got, tot, std::time::Instant::now());
         let f = (got as f64 / tot as f64).clamp(0.0, 1.0);
-        let secs = t0.elapsed().as_secs_f64();
-        let left = (got > 0 && f > 0.02).then(|| secs * (1.0 - f) / f).filter(|l| *l > 1.0);
+        // 2.0.2: speed + time left ("4.2 MB/s · 12 s left"); the % until there's a fair guess
         let txt = format!(
-            "{} of {} · {:.0}%{}",
+            "{} of {} · {}",
             crate::library::fmt_size(got),
             crate::library::fmt_size(tot),
-            f * 100.0,
-            left.map(|l| format!(" · about {} left", fmt_left(l))).unwrap_or_default()
+            crate::notes::rate(id, got, tot).unwrap_or_else(|| format!("{:.0}%", f * 100.0))
         );
         crate::prog_set(id, None, Some(&txt), Some((f * 100.0) as f32));
+        // the player shows this download: its bar right away, not at the player's next tick
+        if let Some(a) = aw.upgrade().filter(|_| crate::cloud_live::open_clip() == Some(idx)) {
+            let pl = a.global::<crate::Play>();
+            if pl.get_cl_on() && pl.get_cl_title().starts_with("Downloading") {
+                pl.set_cl_pct(f as f32);
+            }
+        }
         DL_SHOWN.with(|d| d.borrow_mut().insert(key2.clone(), (f as f32, txt)));
     });
     let w = a.as_weak();
     crate::lib_net::bg(move || r.cloud_download(&rel), move |res| {
         drop(t);
+        if res.is_ok() {
+            crate::prog_set(id, None, None, Some(100.0)); // the smoothed bar may be a little behind: full at the end
+        }
         crate::prog_done(id, 300);
         DL_SHOWN.with(|d| d.borrow_mut().remove(&key));
         let thens = LOCAL_JOBS.with(|j| j.borrow_mut().remove(&key)).unwrap_or_default();
@@ -586,7 +644,19 @@ fn fetch(a: &AppWindow, idx: usize, done_msg: &'static str, then: Then) {
         match res {
             Ok(p) => {
                 sync_ui(&a);
-                crate::toast(&a, done_msg);
+                // 2.0.2: a plain Download (nothing waiting on it) gets Play on its note
+                let lib_idx = lib().and_then(|l| l.index_of_path(Path::new(&p)));
+                match lib_idx.filter(|_| thens.is_empty()) {
+                    Some(i) => {
+                        let w = a.as_weak();
+                        crate::notes::say_act(crate::notes::Kind::Done, done_msg, "Play", move || {
+                            if let (Some(a), Some(l)) = (w.upgrade(), lib()) {
+                                crate::hdr_home::open_clip(&a, &l, i);
+                            }
+                        });
+                    }
+                    None => crate::toast(&a, done_msg),
+                }
                 // the clip turned into a normal clip in place (library sync_disk); look it up by its file to be sure
                 let at = lib().and_then(|l| l.index_of_path(Path::new(&p)).or_else(|| (!cloud_only(&l.clip(idx))).then_some(idx)));
                 if let Some(i) = at {
@@ -662,8 +732,7 @@ pub fn delete_cloud_only(a: &AppWindow, ids: Vec<usize>) {
 
 /// Echo's trim_clip(replace): a clip that's in the cloud was overwritten with its trimmed part - upload the cut
 /// version over the cloud copy (in the background; the upload box shows it). For the player's Replace (player
-/// session's pl_actions.rs replace(), one call after the rename).
-#[allow(dead_code)]
+/// pl_actions.rs replace(), after the rename).
 pub fn after_replace(path: &Path) {
     let Some(r) = rec() else { return };
     let p = path.to_string_lossy().to_string();
@@ -728,8 +797,10 @@ pub fn cloud_only_files() -> Vec<(String, u64, u64)> {
 thread_local! {
     /// r2-threads (L6): cloud-only clip file -> (when asked, its stream address; None = not in the cloud / no server)
     static URLS: RefCell<HashMap<PathBuf, (Instant, Option<String>)>> = RefCell::new(HashMap::new());
-    /// files whose address is being worked out on a worker right now
-    static RESOLVING: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
+    /// files whose address is being worked out on a worker right now -> who waits for it (one `ready` per place
+    /// in the code that asked - they ask again on every tick / redraw)
+    #[allow(clippy::type_complexity)]
+    static RESOLVING: RefCell<HashMap<PathBuf, Vec<(&'static std::panic::Location<'static>, Box<dyn FnOnce()>)>>> = RefCell::new(HashMap::new());
     /// last keep-alive of the streaming server while a cloud clip plays
     static KEEP_AT: Cell<Option<Instant>> = const { Cell::new(None) };
 }
@@ -742,9 +813,15 @@ const URL_FRESH: Duration = Duration::from_secs(60);
 /// The first call starts Echo's rclone streaming server (about a second per port it tries).
 fn stream_url(root: &Path, p: &Path) -> Option<String> {
     let r = rec()?;
+    let t0 = Instant::now();
     let rel = p.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
     let f = r.cloud_files().into_iter().find(|f| f.rel.eq_ignore_ascii_case(&rel))?;
-    let base = r.cloud_stream_base().ok().filter(|b| !b.is_empty())?;
+    let base = r.cloud_stream_base();
+    // a slow start (rclone connecting to every cloud, new Echo Cloud keys) shows in the log
+    if t0.elapsed() > Duration::from_secs(2) {
+        crate::lib_net::log_line(&format!("cloud: stream address after {:.1} s{}", t0.elapsed().as_secs_f32(), base.as_ref().err().map(|e| format!(" ({e})")).unwrap_or_default()));
+    }
+    let base = base.ok().filter(|b| !b.is_empty())?;
     r.cloud_touch(&f.rel); // cloud-savings: Echo Cloud keeps clips in use in its fast storage
     let path = if f.path.is_empty() { f.rel } else { f.path };
     let enc: Vec<String> = path.split('/').map(url_enc).collect();
@@ -753,7 +830,9 @@ fn stream_url(root: &Path, p: &Path) -> Option<String> {
 
 /// r2-threads (L6): is `play_path(p)` ready without waiting? A file on this PC / an address: yes. A cloud-only
 /// clip: once its stream address was worked out on a worker (started here; `ready` runs when it is).
+#[track_caller]
 pub fn play_ready(p: &Path, ready: impl FnOnce() + 'static) -> bool {
+    let at = std::panic::Location::caller();
     if p.exists() || p.to_string_lossy().starts_with("http") {
         return true;
     }
@@ -761,16 +840,30 @@ pub fn play_ready(p: &Path, ready: impl FnOnce() + 'static) -> bool {
         return true;
     }
     let Some(l) = lib() else { return true };
-    if RESOLVING.with(|r| !r.borrow_mut().insert(p.to_path_buf())) {
-        return false; // already asked: `ready` of the first caller
+    // already asked: this caller waits too. (Only the first caller's `ready` ran before - when the cloud overlay
+    // asked first, the player's "redraw, then load" never came: the clip sat on "Starting the stream…" until
+    // something else redrew the window, 10 Nov 2026.)
+    let asked = RESOLVING.with(|r| {
+        let mut r = r.borrow_mut();
+        let first = !r.contains_key(p);
+        let w = r.entry(p.to_path_buf()).or_default();
+        if !w.iter().any(|(l, _)| *l == at) {
+            w.push((at, Box::new(ready)));
+        }
+        !first
+    });
+    if asked {
+        return false;
     }
     let (root, p1, p2) = (l.root(), p.to_path_buf(), p.to_path_buf());
     crate::lib_net::bg(
         move || stream_url(&root, &p1),
         move |url| {
-            RESOLVING.with(|r| r.borrow_mut().remove(&p2));
+            let waiting = RESOLVING.with(|r| r.borrow_mut().remove(&p2)).unwrap_or_default();
             URLS.with(|u| u.borrow_mut().insert(p2, (Instant::now(), url)));
-            ready();
+            for (_, f) in waiting {
+                f();
+            }
         },
     );
     false
@@ -1245,7 +1338,7 @@ fn plan_cards(v: &serde_json::Value) -> Vec<crate::EcPlan> {
                 yid: y.and_then(|p| p["id"].as_str()).unwrap_or("").into(),
                 ytext: y.map(|p| txt(p, "year")).unwrap_or_default().into(),
                 save: if save > 0 { format!("-{save}%") } else { String::new() }.into(),
-                // William (10 Nov): paid users see the cards too - their own size is marked
+                // 10 Nov: paid users see the cards too - their own size is marked
                 current: ec_paid_total().is_some_and(|t| (t as f64 - gb as f64 * 1e9).abs() < gb as f64 * 1e9 * 0.02),
             }
         })
@@ -1294,7 +1387,7 @@ fn ec_paid_total() -> Option<u64> {
 /// a plan card's button: Polar checkout in the browser, then watch for the bigger space (Echo's ecWaitUpgrade)
 fn buy(a: &AppWindow, product: String) {
     let Some(rc) = rec() else { return };
-    // William (10 Nov): someone who already pays changes plans on Polar's subscription page - a new checkout would
+    // 10 Nov: someone who already pays changes plans on Polar's subscription page - a new checkout would
     // start a SECOND subscription
     if ec_paid_total().is_some() {
         crate::toast(a, "Switch plans on the Polar page that opens - your space changes right after");
@@ -1399,7 +1492,7 @@ pub fn usage_for_sidebar(a: &AppWindow) -> Option<(u64, u64)> {
     })
 }
 
-/// William (10 Nov): a connected cloud's name for the sidebar - the provider only, never the account label (it can
+/// 10 Nov: a connected cloud's name for the sidebar - the provider only, never the account label (it can
 /// hold an email, and the sidebar shows in screenshots / streams)
 pub fn provider_name(p: &str) -> &'static str {
     match p {
@@ -1416,7 +1509,7 @@ pub fn provider_name(p: &str) -> &'static str {
     }
 }
 
-/// William (10 Nov): every connected cloud on its own (name, used, total, error) - Echo Cloud first; a second account of
+/// 10 Nov: every connected cloud on its own (name, used, total, error) - Echo Cloud first; a second account of
 /// the same kind gets " 2". The old summary (usage_for_sidebar) added them all together.
 pub fn usages_for_sidebar(a: &AppWindow) -> Option<Vec<(String, u64, u64, String)>> {
     usage_for_sidebar(a)?; // also asks for fresh numbers every 10 min
@@ -1610,7 +1703,7 @@ fn space_cats(a: &AppWindow, files: &[serde_json::Value], live: Option<&HashSet<
 /// list generation: a refill (filter / sort) or a new open stops the previous picture loader
 static ECM_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Echo's #ecm .tt pictures (William, 10 Nov 2026: the native list had none): clips on this PC use Echo's
+/// Echo's #ecm .tt pictures (10 Nov 2026: the native list had none): clips on this PC use Echo's
 /// .thumbs/<name>.jpg, cloud-only ones are fetched like Echo's cloud_thumb (once, then cached there). One at a time
 /// on a thread, shrunk to the row's size (a long list stays light); each row gets its picture when it's ready.
 fn space_thumbs(a: &AppWindow) {
@@ -1714,13 +1807,18 @@ fn space_download(a: &AppWindow, list: Vec<EcmRow>, done: impl FnOnce(&AppWindow
     let t = slint::Timer::default();
     {
         let at = at.clone();
-        t.start(slint::TimerMode::Repeated, Duration::from_millis(500), move || {
+        // 20x a second with smoothed bytes, like a single download (dl_smooth.rs: they arrive in 1 MiB lumps; the
+        // bar went in steps every 500 ms before, 10 Nov 2026)
+        let mut sm = crate::dl_smooth::Smooth::new(std::time::Instant::now());
+        t.start(slint::TimerMode::Repeated, Duration::from_millis(50), move || {
             let (i, name, before, rel) = at.lock().map(|x| x.clone()).unwrap_or_default();
             if rel.is_empty() {
                 return;
             }
-            let got = Recorder::cloud_dl_progress(&rel).0;
-            crate::prog_set(id, None, Some(&format!("{} of {n} · {name}", i + 1)), Some(((before + got) as f64 / need.max(1) as f64 * 100.0).min(100.0) as f32));
+            let got = sm.step(before + Recorder::cloud_dl_progress(&rel).0, need, std::time::Instant::now());
+            // 2.0.2: + speed and time left for all of them
+            let rate = crate::notes::rate(id, got, need).map(|r| format!(" · {r}")).unwrap_or_default();
+            crate::prog_set(id, None, Some(&format!("{} of {n} · {name}{rate}", i + 1)), Some((got as f64 / need.max(1) as f64 * 100.0).min(100.0) as f32));
         });
     }
     let stop2 = stop.clone();
@@ -1798,7 +1896,7 @@ fn space_run(a: &AppWindow, del: bool) {
     if copies > 0 {
         parts.push(format!("{copies} share link{} working.", if copies == 1 { " stops" } else { "s stop" }));
     }
-    // cleanup (William, 10 Nov 2026): cloud deletes are permanent - say so
+    // cleanup (10 Nov 2026): cloud deletes are permanent - say so
     parts.push("Echo Cloud has no bin - this can't be undone.".into());
     let go = move |a: &AppWindow| {
         a.global::<Ecm>().set_busy(true);

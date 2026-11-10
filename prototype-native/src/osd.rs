@@ -1,5 +1,5 @@
 //! Fullscreen controls drawn BY MPV over the video (Windows window mode: nothing else can draw over mpv's
-//! Direct3D window, and William doesn't want the OpenGL path). The prototype paints the bottom band - filmstrip,
+//! Direct3D window, and the OpenGL path isn't wanted). The prototype paints the bottom band - filmstrip,
 //! progress, play head, trim handles, play/volume/fullscreen buttons, time, seek preview - into a picture (tiny-skia,
 //! text with ab_glyph) and hands it to mpv with `overlay-add`; mpv blends it on the GPU: really see-through.
 //! Slint still does all the mouse handling: its own (invisible) controls sit at exactly the same places.
@@ -36,7 +36,7 @@ pub struct State {
     pub muted: bool,
     pub preview: Option<(f32, f32, f32, String)>, // x, y (window coordinates), fraction, time label
     pub hover_strip: bool,
-    // William (9 Nov): same look as the normal player - theme accent (progress, volume) + highlight (trim ends),
+    // 9 Nov: same look as the normal player - theme accent (progress, volume) + highlight (trim ends),
     // the light lines on the strip, cut-out parts and the Shift+drag highlight (pl_cuts)
     pub accent: (u8, u8, u8),
     pub hi: (u8, u8, u8),

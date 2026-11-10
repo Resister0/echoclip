@@ -60,6 +60,7 @@ pub fn kde_blocks(a: &AppWindow, st: &crate::settings::Store, id: &str) -> bool 
         "mark" => st.s("bookmark_key"),
         "long" => st.s("session_key"),
         "mute" => st.s("mic_mute_key"),
+        "show" => st.s("show_key"),
         _ => id
             .strip_prefix("hk:")
             .and_then(|n| n.parse::<usize>().ok())
@@ -215,7 +216,7 @@ pub fn charm(a: &AppWindow, lib: &LibModel) {
 }
 
 /// open a clip (library id) in the player: at its spot in the library view, else from Home's list
-fn open_clip(a: &AppWindow, lib: &LibModel, idx: usize) {
+pub fn open_clip(a: &AppWindow, lib: &LibModel, idx: usize) {
     let row = lib.view_row_of(idx).map(|r| r as i32).or_else(|| {
         (0..16).map(|i| crate::library::HOME_BASE + i).find(|&r| lib.index_at(r) == Some(idx)).map(|r| r as i32)
     });

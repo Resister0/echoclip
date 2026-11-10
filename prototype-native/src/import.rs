@@ -1,6 +1,6 @@
 //! Settings > Clips & Storage > "Bring in clips from other apps": Medal / SteelSeries Moments / Outplayed / Insights
 //! folders found on this PC (port of Echo's recorder.rs import_sources).
-//! William (native chat 5): in the old Echo the Medal line kept showing the OLD number of clips / GB after a friend
+//! native chat 5: in the old Echo the Medal line kept showing the OLD number of clips / GB after a friend
 //! deleted most of his Medal clips in Explorer. Here the folders are read again every time the page shows them and
 //! every few seconds while it's open, files that are gone are simply not counted, and clips Echo already imported
 //! (Echo's .thumbs/imported.json) are counted apart - so the line always says what an import would bring in now.

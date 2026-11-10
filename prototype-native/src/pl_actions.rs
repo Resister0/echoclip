@@ -129,13 +129,16 @@ fn free_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     (1..).map(|n| dir.join(if n == 1 { format!("{stem}.{ext}") } else { format!("{stem} ({n}).{ext}") })).find(|p| !p.exists()).unwrap()
 }
 
+/// what a job made: its message + the file (2.0.2: the note gets "Show in folder")
+type Made = Result<(String, Option<PathBuf>), String>;
+
 /// work on a thread, a toast with the result
-fn job(a: &AppWindow, busy: &str, f: impl FnOnce() -> Result<String, String> + Send + 'static) {
+fn job(a: &AppWindow, busy: &str, f: impl FnOnce() -> Made + Send + 'static) {
     job_then(a, busy, f, |_| {});
 }
 
 /// `job` + `done` on the UI thread when it ends (L14: the GIF clears Play.gif-busy)
-fn job_then(a: &AppWindow, busy: &str, f: impl FnOnce() -> Result<String, String> + Send + 'static, done: impl FnOnce(&AppWindow) + Send + 'static) {
+fn job_then(a: &AppWindow, busy: &str, f: impl FnOnce() -> Made + Send + 'static, done: impl FnOnce(&AppWindow) + Send + 'static) {
     let pb = prog_box(busy);
     prog_set(pb, None, None, Some(-1.0));
     let w = a.as_weak();
@@ -145,8 +148,15 @@ fn job_then(a: &AppWindow, busy: &str, f: impl FnOnce() -> Result<String, String
             prog_done(pb, 300);
             if let Some(a) = w.upgrade() {
                 done(&a);
+                // the box turns into the result; a file made gets "Show in folder"
                 match r {
-                    Ok(m) | Err(m) => toast(&a, m),
+                    Ok((m, Some(f))) => {
+                        crate::notes::say_act(crate::notes::Kind::Done, m, "Show in folder", move || crate::show_in_folder(&f));
+                    }
+                    Ok((m, None)) => toast(&a, m),
+                    Err(m) => {
+                        crate::notes::say(crate::notes::Kind::Err, m);
+                    }
                 }
             }
         });
@@ -177,10 +187,11 @@ pub fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, thumbs: &Path, w
             let out = dir.join(format!("{stem} @{pos:.1}s.png"));
             run_ff(&ff, &["-ss", &format!("{pos:.3}")], &src, &["-frames:v", "1", "-update", "1"], &out).map_err(|_| "Couldn't grab this frame".to_string())?;
             // Echo: "Frame copied - saved in Screenshots"
-            match crate::copy::clipboard_file(&out) {
-                Ok(()) => Ok("Frame copied - saved in Screenshots".into()),
-                Err(e) => Ok(format!("Frame saved in Screenshots ({e})")),
-            }
+            let m = match crate::copy::clipboard_file(&out) {
+                Ok(()) => "Frame copied - saved in Screenshots".to_string(),
+                Err(e) => format!("Frame saved in Screenshots ({e})"),
+            };
+            Ok((m, Some(out)))
         }),
         // Use as thumbnail: <stem>.jpg + <stem>.thumbt (the moment, for share previews) in .thumbs (Echo's set_thumb)
         // chat 23 (Linux): the files were written but the card kept its cached picture -> "does nothing". Now the
@@ -239,10 +250,11 @@ pub fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, thumbs: &Path, w
                 let enc: &[&str] = if wav { &["-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-ar", "48000"] } else { &["-map", "0:a:0", "-vn", "-c:a", "libmp3lame", "-b:a", "192k"] };
                 run_ff(&ff, &[], &src, enc, &out).map_err(|_| "Couldn't save the sound (does this clip have any?)".to_string())?;
                 let what = if wav { "WAV" } else { "MP3" };
-                match crate::copy::clipboard_file(&out) {
-                    Ok(()) => Ok(format!("{what} copied - saved in the Audio folder")),
-                    Err(e) => Ok(format!("{what} saved in the Audio folder ({e})")),
-                }
+                let m = match crate::copy::clipboard_file(&out) {
+                    Ok(()) => format!("{what} copied - saved in the Audio folder"),
+                    Err(e) => format!("{what} saved in the Audio folder ({e})"),
+                };
+                Ok((m, Some(out)))
             });
         }
         // GIF of the trim selection (or the first 30 s) into <clips>/GIFs, shrinking until it's under ~10 MB
@@ -256,10 +268,10 @@ pub fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, thumbs: &Path, w
             if len < 0.3 {
                 return Err("The selection is too short for a GIF".into());
             }
-            // William (9 Nov): Echo's OWN make_gif (same sizes / palette) - it adds the Echo watermark like the old app
+            // 9 Nov: Echo's OWN make_gif (same sizes / palette) - it adds the Echo watermark like the old app
             if let Some(rec) = crate::rec_core::rec() {
                 let out = rec.make_gif(&src.to_string_lossy(), s0, s1).map_err(|e| format!("Couldn't make a GIF: {e}"))?;
-                return Ok(gif_msg(Path::new(&out)));
+                return Ok((gif_msg(Path::new(&out)), Some(PathBuf::from(out))));
             }
             let dir = root.join("GIFs");
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -273,7 +285,7 @@ pub fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, thumbs: &Path, w
                 let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
                 if size > 0 && (size <= 10 * 1024 * 1024 || w == 270) {
                     std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
-                    return Ok(gif_msg(&out));
+                    return Ok((gif_msg(&out), Some(out)));
                 }
             }
             let _ = std::fs::remove_file(&tmp);
@@ -375,6 +387,11 @@ fn replace(a: &AppWindow, p: &Rc<RefCell<Player>>, ff: PathBuf, src: PathBuf, th
                     prog_done(pb, 300);
                     let Some(a) = w2.upgrade() else { return };
                     a.global::<Play>().set_busy(false);
+                    // Echo's trim_clip(replace): a clip that's in the cloud gets the cut version uploaded over its
+                    // cloud copy (background; does nothing for a clip that isn't in the cloud)
+                    if res.is_ok() {
+                        crate::cloud::after_replace(&src);
+                    }
                     let lib = crate::LIB.with(|l| l.borrow().clone());
                     let idx = lib.as_ref().and_then(|l| l.index_of_path(&src));
                     if let (Some(l), Some(idx)) = (lib.as_ref(), idx) {

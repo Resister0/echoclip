@@ -499,7 +499,7 @@ pub fn open(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn Fn
     open_with(a, p, idx, play, None);
 }
 
-/// William (9 Nov): E / Edit from the player - the player's trim + strip cuts become cuts in the fresh edit (one undo
+/// 9 Nov: E / Edit from the player - the player's trim + strip cuts become cuts in the fresh edit (one undo
 /// step: Ctrl+Z gives the whole clip back) and the play head lands where the player was. Skipped when the editor
 /// opened a project instead (or asked first): those pieces aren't the plain clip.
 pub fn carry_in(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, cv: crate::pl_cuts::Carry) {
@@ -753,7 +753,7 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
     a.global::<Ed>().set_sticker_menu(false);
     a.global::<Ed>().set_open(false);
     a.global::<Play>().set_paused(true);
-    // William: like Echo's closeEditor - leaving the editor goes back to the library / Home, never to the player
+    // like Echo's closeEditor - leaving the editor goes back to the library / Home, never to the player
     // (it used to reopen the player when the editor was opened from it)
     a.global::<Play>().invoke_close();
     a.window().request_redraw();
@@ -2090,7 +2090,14 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
                         }
                         return;
                     }
-                    toast(&a, format!("Exported as \"{}\" - press Edit on it later to change the project again", out.file_stem().unwrap_or_default().to_string_lossy()));
+                    // 2.0.2: with Show in folder (the export box turns into this note)
+                    let f = out.clone();
+                    crate::notes::say_act(
+                        crate::notes::Kind::Done,
+                        format!("Exported as \"{}\" - press Edit on it later to change the project again", out.file_stem().unwrap_or_default().to_string_lossy()),
+                        "Show in folder",
+                        move || crate::show_in_folder(&f),
+                    );
                 }
                 Err(x) => toast(&a, format!("Couldn't export: {x}")),
             }

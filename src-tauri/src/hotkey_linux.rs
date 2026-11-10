@@ -21,6 +21,17 @@ static PORTAL_DIRTY: AtomicBool = AtomicBool::new(false);
 /// really uses ("" = none). KDE keeps the key from the first confirmation; changing it in Echo doesn't change it there.
 static ID_KEYS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 static TRIGGERS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+/// the native app's Show / hide Echo action id (rec_core.rs SHOW)
+const SHOW: u32 = u32::MAX - 3;
+/// XDG activation token from the portal's last Activated signal for the Show / hide key, and when it came
+static TOKEN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// The activation token the KDE portal sent with the last Show / hide key press (taken once; None = evdev,
+/// an older portal without tokens, or older than 5 s).
+pub fn activation_token() -> Option<String> {
+    let t = TOKEN.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    (t.1.elapsed() < Duration::from_secs(5)).then_some(t.0)
+}
 
 /// The keys KDE really uses for Echo's settings (None = not using the KDE portal).
 pub fn kde_keys() -> Option<HashMap<String, String>> {
@@ -269,6 +280,13 @@ fn portal_loop() -> Result<(), String> {
         let ids = ids.clone();
         conn.add_match(MatchRule::new_signal(iface, sig), move |_: (), _, msg| {
             if let (Some(_), Some(id)) = msg.get2::<dbus::Path, String>() {
+                // the Show / hide Echo key: the portal may hand over an XDG activation token, so KWin lets the
+                // window come to the front (focus stealing prevention) - the native app takes it (activation_token())
+                if id == "show" && down {
+                    let (_, _, _, o) = msg.get4::<dbus::Path, String, u64, PropMap>();
+                    let tok = o.as_ref().and_then(|o| o.get("activation_token")).and_then(|v| v.0.as_str().map(String::from));
+                    *TOKEN.lock().unwrap_or_else(|e| e.into_inner()) = tok.filter(|t| !t.is_empty()).map(|t| (t, Instant::now()));
+                }
                 if id == "ptt" {
                     crate::recorder::PTT_HELD.store(down, Ordering::Relaxed);
                 } else if down {
@@ -320,8 +338,10 @@ fn portal_loop() -> Result<(), String> {
             let mut map = HashMap::new();
             let mut idk: HashMap<String, String> = HashMap::new();
             for (i, c) in COMBOS.lock().unwrap().iter().enumerate() {
-                let id = format!("k{i}");
+                // Show / hide Echo keeps one id, so KDE keeps its key when save keys are added / removed
+                let id = if c.seconds == SHOW { "show".to_string() } else { format!("k{i}") };
                 let what = match c.seconds { 0 => "Screenshot".to_string(), s if s == u32::MAX => "Bookmark".into(),
+                    SHOW => "Show / hide Echo".into(),
                     s if s > 100_000 => "Echo action".into(), s => format!("Save last {s} s") };
                 let mut m = PropMap::new();
                 m.insert("description".into(), Variant(Box::new(format!("Echo: {what}")) as Box<dyn RefArg>));

@@ -1,6 +1,6 @@
 //! Chat B: colour picker for custom themes (Settings > Appearance > Your own colours) + RGB mode.
 //! Picker = Echo's colour input (square for saturation / brightness, hue bar, R G B). Double-click the round
-//! preview = that colour cycles through the rainbow (William: "like Vape v4"); settings.json "theme_rgb" = the
+//! preview = that colour cycles through the rainbow (asked: "like Vape v4"); settings.json "theme_rgb" = the
 //! keys that cycle (theme_accent / theme_bg / theme_hi). The stored colour keeps its saturation + brightness, only
 //! the hue turns (one turn every 6 s). Only drawn while Echo shows a custom theme; the file is never written per frame.
 use crate::settings::Store;

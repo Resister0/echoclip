@@ -227,7 +227,7 @@ fn sidebar(_a: &AppWindow) {
 }
 
 pub fn wire(app: &AppWindow, clips: PathBuf) {
-    // William (9 Nov): open IN the app like Echo's openShot (was: the system viewer - Paint on his PC). The full-size
+    // 9 Nov: open IN the app like Echo's openShot (was: the system viewer - Paint on his PC). The full-size
     // picture is decoded on a worker thread; the viewer (lib_shots.slint ShotViewer) zooms / pans it.
     let w = app.as_weak();
     app.global::<Shots>().on_open(move |i| {

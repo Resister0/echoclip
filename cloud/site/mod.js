@@ -1,5 +1,5 @@
 // echoclip.link/mod (chat 29): moderators sign in with their Echo Cloud email (6-digit code) and handle reports.
-// Only accounts William added in /admin get a code. Session token lives in this tab only (sessionStorage).
+// Only accounts the developer added in /admin get a code. Session token lives in this tab only (sessionStorage).
 const $ = (s) => document.querySelector(s);
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.max(1, Math.round(d / 60)) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
@@ -91,8 +91,8 @@ function draw(j) {
     <h2>Recent actions</h2>
     <div class="wrap"><table><tr><th>When</th><th>Who</th><th>What</th><th>On</th></tr>
       ${j.log.length ? j.log.map((l) => `<tr><td>${ago(l.at)}</td><td>${esc(l.who)}</td><td>${esc(l.action)}</td><td>${esc(l.target)}</td></tr>`).join("") : `<tr><td colspan="4" class="sub">Nothing yet</td></tr>`}</table></div>
-    <div class="note">Removing something closes its open reports. Everything done here is listed under Recent actions and visible to William.
-      Deleting clips or accounts is only possible for William - write to him if a clip itself has to go.</div>`;
+    <div class="note">Removing something closes its open reports. Everything done here is listed under Recent actions and visible to the developer.
+      Deleting clips or accounts is only possible for the developer - write to support@echoclip.link if a clip itself has to go.</div>`;
   $("#re").onclick = load;
   $("#out").onclick = async () => { try { await api("POST", "/auth/logout"); } catch { } forget(); login(); };
   const run = async (path, b, out, okText) => {

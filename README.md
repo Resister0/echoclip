@@ -19,7 +19,7 @@ Website and downloads: **https://echoclip.link**
 
 Get the newest version from **https://echoclip.link**. Installed copies update themselves.
 
-- Windows 10/11: `Echo-Setup.exe` (Echo isn't code-signed yet: if Windows warns, click *More info → Run anyway*).
+- Windows 10/11: `Echo-Setup.exe` or the portable zip, both signed with a Certum open-source code-signing certificate. The certificate is still new, so if SmartScreen warns, click *More info → Run anyway*.
 - Linux: `Echo-x86_64.AppImage` (needs `gpu-screen-recorder` and `ffmpeg` from your distribution). Tested on Fedora / Nobara with KDE (Wayland).
 
 ## Build it yourself
@@ -27,8 +27,8 @@ Get the newest version from **https://echoclip.link**. Installed copies update t
 **Windows**
 
 ```
-setup.cmd     (once: installs Rust, the MSVC build tools, ffmpeg and WebView2)
-build.cmd     (builds Echo.exe in this folder)
+setup.cmd     (once: installs Rust, the MSVC build tools, ffmpeg and libmpv-2.dll, the video player)
+build.cmd     (builds and starts prototype-native\EchoProto.exe)
 ```
 
 **Linux**
@@ -37,7 +37,7 @@ build.cmd     (builds Echo.exe in this folder)
 bash build.sh && ./Echo
 ```
 
-Needs Rust plus the WebKitGTK 4.1, GTK 3, ALSA and D-Bus development packages (see `ci/build.yml` for the exact list on Ubuntu).
+`build.sh` installs what it needs on Fedora / Nobara (Rust, mpv-libs and the ALSA, D-Bus, fontconfig and xkbcommon development packages). On Ubuntu see `ci/public-build.yml` (job `linux`) for the exact list. More about the app itself: [prototype-native/README.md](prototype-native/README.md).
 
 Builds you make yourself have version `0.1.0` and never update themselves.
 
@@ -67,7 +67,7 @@ Packagers are welcome: if you'd like Echo in your distro's repository (AUR, COPR
 
 Echo is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License, version 3 or (at your option) any later version**. See [LICENSE](LICENSE).
 
-Copyright (C) 2026 William Albrektsen ([@Resister0](https://github.com/Resister0)).
+Copyright (C) 2026 Resister0 ([@Resister0](https://github.com/Resister0)).
 
 Echo uses or downloads these tools, each under its own licence: [FFmpeg](https://ffmpeg.org) (GPL), [rclone](https://rclone.org) (MIT), [gpu-screen-recorder](https://git.dec05eba.com/gpu-screen-recorder/about/) (GPL-3.0, Linux), [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (MIT, auto captions), [RNNoise](https://github.com/xiph/rnnoise) (BSD, noise removal), [Tauri](https://tauri.app) (MIT / Apache-2.0).
 

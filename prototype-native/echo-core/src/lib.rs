@@ -8,6 +8,8 @@
 pub mod net;
 #[path = "../../../src-tauri/src/recorder.rs"]
 pub mod recorder;
+#[path = "../../../src-tauri/src/childtie.rs"]
+pub mod childtie; // helper processes end with Echo (10 Nov 2026)
 #[path = "../../../src-tauri/src/settings.rs"]
 pub mod settings;
 #[path = "../../../src-tauri/src/pad.rs"]
@@ -18,6 +20,9 @@ pub mod keyring_linux;
 #[cfg(target_os = "linux")]
 #[path = "../../../src-tauri/src/linuxutil.rs"]
 pub mod linuxutil;
+#[cfg(target_os = "linux")]
+#[path = "../../../src-tauri/src/gameicon_linux.rs"]
+pub mod gameicon_linux;
 #[cfg(windows)]
 #[path = "../../../src-tauri/src/gpucap.rs"]
 pub mod gpucap;

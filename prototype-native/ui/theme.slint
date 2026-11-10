@@ -63,7 +63,7 @@ export global Ic {
     out property <string> plus: "M12 5v14 M5 12h14";
     out property <string> scissors: "M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M20 4L8.1 15.9 M14.5 14.5L20 20 M8.1 8.1L12 12";
     out property <string> tidy: "M4 20h16 M7 20l2-9h6l2 9 M12 11V4";
-    // William (10 Nov): Home's Share link / Captions buttons
+    // 10 Nov: Home's Share link / Captions buttons
     out property <string> link: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1 M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1";
     out property <string> cc: "M3 6h18v12H3z M7 13h3 M14 13h3 M7 10h10";
 }
@@ -189,7 +189,9 @@ export component TipLayer {
 // Echo's #notes: ONE column at the bottom centre, newest at the bottom, gap 8 - messages (.note.msg, at most 3,
 // the same text again only restarts its timer) and progress boxes (.note.prog: spinner, title, text, bar, optional
 // button). Everything goes through this stack, so two jobs (e.g. shrinking for Discord + making a share link) can
-// never cover each other. Rust owns the list (main.rs notes::*).
+// never cover each other. Rust owns the list (src/notes.rs).
+// 2.0.2: messages have a kind (icon + colour), an optional button (Undo, Show in folder, Open, Play); a finished
+// box turns into a message in place; hovering a message holds its timer, a click puts it away.
 export struct Note {
     id: int,
     prog: bool,       // progress box (else a message)
@@ -197,13 +199,16 @@ export struct Note {
     text: string,     // box: text on the right (or under the bar when there is a button)
     pct: float,       // box: 0..100, < 0 = no bar
     fin: bool,        // box: finished (spinner stops)
-    btn: string,      // box: small button ("Cancel" ...), "" = none
+    btn: string,      // box / message: small button ("Cancel", "Undo" ...), "" = none
     out: bool,        // fading out (Rust removes it a moment later)
+    kind: int,        // message: 0 info (no icon), 1 done (green tick), 2 error (red, stays), 3 running (spinner)
 }
 
 export global Notes {
     in-out property <[Note]> items;
-    callback btn(int);   // a box's button
+    callback btn(int);           // a box's / message's button
+    callback dismiss(int);       // a message (or finished box) was clicked
+    callback hover(int, bool);   // the mouse is on a message: its timer waits
 }
 
 component Spinner inherits Rectangle {
@@ -227,17 +232,65 @@ component Spinner inherits Rectangle {
     }
 }
 
+// done = a tick in a soft green ring, error = "!" in a soft red ring (T.ok / T.bad)
+component KindIcon inherits Rectangle {
+    in property <bool> bad;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    background: (bad ? T.bad : T.ok).with-alpha(0.16);
+    Icon {
+        x: 3px;
+        y: 3px;
+        width: 12px;
+        height: 12px;
+        stroke: bad ? T.bad : T.ok;
+        stroke-width: 3px;
+        commands: bad ? "M12 6v7.5 M12 18h.01" : Ic.check;
+    }
+}
+
+// the small outlined button (Echo's .pbx)
+component NoteBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> strong;     // Undo / Play: the text is bright, so it reads as the thing to press
+    out property <bool> hov: bta.has-hover;
+    callback clicked;
+    width: bt.preferred-width + 18px;
+    height: 22px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: bta.has-hover ? T.muted : T.line;
+    background: bta.has-hover ? T.hover.with-alpha(0.5) : transparent;
+    bt := Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: root.strong ? 600 + T.fw : 400 + T.fw;
+        color: bta.has-hover || root.strong ? T.text : T.muted;
+    }
+    bta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 component NoteView inherits Rectangle {
     in property <Note> n;
     in property <length> avail;
     property <bool> shown;
     init => { self.shown = true; }
     property <bool> on: shown && !n.out;
+    // the mouse on the panel or on its button (the button's own TouchArea takes the hover from the panel's)
+    property <bool> btn-hov;
+    property <bool> hovering: ta.has-hover || (btn-hov && n.btn != "");
+    changed hovering => { Notes.hover(n.id, self.hovering); }
     opacity: on ? 1 : 0;
     animate opacity { duration: 200ms; }
-    height: n.prog ? box.preferred-height : max(40px, mt.preferred-height + 22px);
-    // the panel (msg: text width + padding; prog: 400 px)
-    property <length> w: n.prog ? min(400px, avail) : min(mt.preferred-width + 36px + 2px, avail);
+    height: n.prog ? box.preferred-height : max(40px, mrow.preferred-height);
+    animate height { duration: 160ms; }
+    // the panel (msg: icon + text + button + padding; prog: 400 px)
+    property <length> w: n.prog ? min(400px, avail) : min(mrow.preferred-width + 2px, avail);
+    animate w { duration: 160ms; }
     Rectangle {
         x: (parent.width - root.w) / 2;
         y: root.on ? 0 : 14px;
@@ -247,23 +300,48 @@ component NoteView inherits Rectangle {
         background: T.panel2;
         border-radius: n.prog ? 12px : 11px;
         border-width: 1px;
-        border-color: T.line;
+        border-color: !n.prog && n.kind == 2 ? T.bad.with-alpha(0.55) : T.line;
         drop-shadow-blur: 30px;
         drop-shadow-offset-y: 10px;
         drop-shadow-color: #00000088;
-        TouchArea { }
-        mt := Text {
-                visible: !n.prog;
-                x: 18px;
-                width: parent.width - 36px;
-                height: parent.height;
+        // a click puts a message (or a finished box) away; a running job's box stays
+        ta := TouchArea {
+            clicked => {
+                if (!n.prog || n.fin) {
+                    Notes.dismiss(n.id);
+                }
+            }
+        }
+        mrow := HorizontalLayout {
+            visible: !n.prog;
+            padding-left: n.kind == 0 ? 18px : 14px;
+            padding-right: n.btn != "" ? 10px : 18px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 9px;
+            if n.kind == 1 || n.kind == 2: KindIcon {
+                y: (parent.height - self.height) / 2;
+                bad: n.kind == 2;
+            }
+            if n.kind == 3: Spinner {
+                y: (parent.height - self.height) / 2;
+            }
+            mt := Text {
                 text: n.title;
                 font-size: 14px;
                 color: T.text;
                 wrap: word-wrap;
-                horizontal-alignment: center;
+                horizontal-alignment: n.kind == 0 && n.btn == "" ? center : left;
                 vertical-alignment: center;
             }
+            if n.btn != "": NoteBtn {
+                y: (parent.height - self.height) / 2;
+                label: n.btn;
+                strong: n.btn == "Undo" || n.btn == "Play";
+                changed hov => { root.btn-hov = self.hov; }
+                clicked => { Notes.btn(n.id); }
+            }
+        }
         box := VerticalLayout {
             visible: n.prog;
             padding-left: 16px;
@@ -292,22 +370,11 @@ component NoteView inherits Rectangle {
                     color: T.muted;
                     vertical-alignment: center;
                 }
-                if n.btn != "": Rectangle {
-                    width: bt.preferred-width + 18px;
-                    height: 22px;
+                if n.btn != "": NoteBtn {
                     y: (parent.height - self.height) / 2;
-                    border-radius: 7px;
-                    border-width: 1px;
-                    border-color: bta.has-hover ? T.muted : T.line;
-                    bt := Text {
-                        text: n.btn;
-                        font-size: 12px;
-                        color: bta.has-hover ? T.text : T.muted;
-                    }
-                    bta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { Notes.btn(n.id); }
-                    }
+                    label: n.btn;
+                    changed hov => { root.btn-hov = self.hov; }
+                    clicked => { Notes.btn(n.id); }
                 }
             }
             if n.pct >= 0: VerticalLayout {
@@ -320,7 +387,7 @@ component NoteView inherits Rectangle {
                     Rectangle {
                         x: 0;
                         width: parent.width * clamp(n.pct, 0, 100) / 100;
-                        animate width { duration: 200ms; }
+                        animate width { duration: 200ms; easing: linear; } // linear + longer than the update tick (50-250 ms): an ease curve restarted on each = stutter
                         background: T.hi;
                         border-radius: 3px;
                     }
@@ -364,7 +431,7 @@ export component IconBtn inherits Rectangle {
     in property <length> icon-size: 17px;
     in property <brush> idle-bg: transparent;
     in property <color> icon-color: T.muted;
-    in property <float> idle-opacity: 1; // William: toolbar controls slightly see-through until hovered
+    in property <float> idle-opacity: 1; // toolbar controls slightly see-through until hovered
     // L15: Echo's button:disabled - opacity .55, default cursor, no hover; a click does nothing (and isn't passed on)
     in property <bool> enabled: true;
     out property <bool> ctrl;       // Ctrl was held on the last press (Copy: Ctrl+click = the size menu)
@@ -449,7 +516,7 @@ export component Btn inherits Rectangle {
     in property <bool> right-half;  // right part of a split button (chevron)
     in property <color> dot: transparent; // a coloured dot in front of the text (Echo's Record button)
     in property <bool> tip-above;   // tooltip above the button (the selection bar at the bottom)
-    in property <float> idle-opacity: 1; // William: toolbar controls slightly see-through until hovered
+    in property <float> idle-opacity: 1; // toolbar controls slightly see-through until hovered
     // Echo's #longbtn.on: red edge + pink text, the dot blinks (1 s) while a long recording runs
     in property <color> edge: transparent;
     in property <color> text-color: transparent;
@@ -605,7 +672,7 @@ export component Pill inherits Rectangle {
         }
     }
     // over the pill, not in its row: in the row a child (the recording pill's TouchArea) took a slot + 8 px of
-    // spacing, which left empty space on the right (William, 9 Nov)
+    // spacing, which left empty space on the right (9 Nov)
     @children
 }
 

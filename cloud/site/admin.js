@@ -103,7 +103,8 @@ function website(s) {
 }
 
 // ----- Echo apps: copies that asked for updates, per UTC day (Flatpak copies update through flatpak - not counted) -----
-const vnum = (v) => String(v).split(".").map((x) => parseInt(x, 10) || 0);
+// 10 Nov 2026: the 2.0.72 test build counts as older than 2.0.0 (like the server's update()), not "newest"
+const vnum = (v) => (String(v) === "2.0.72" ? "1.99.0" : String(v)).split(".").map((x) => parseInt(x, 10) || 0);
 const vcmp = (a, b) => { const x = vnum(a), y = vnum(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 // share links: views on echoclip.link/s/... (people watching), link previews fetched by Discord & co (= links pasted), most watched
 function shareStats(sh, site) {
@@ -184,9 +185,18 @@ function apps(A, site) {
 }
 
 // ----- Echo's CPU / memory on real PCs + their specs (10 Nov 2026: perf.rs / specs.rs, sent with the update check) -----
+// perf-states (10 Nov 2026): each minute counts under what Echo was doing (perf.rs); "mixed" = reports from older Echo
+const PSTATE = {
+  all: ["All", "every state together"],
+  tray: ["In the tray", "window hidden or minimized"],
+  idle: ["Open, not used", "window shown, no mouse / keys in Echo for 60 s+"],
+  active: ["In use", "window shown and used: home, library, settings"],
+  player: ["Playing a clip", "a clip open in the player or the editor"],
+  mixed: ["Mixed (older Echo)", "reports from before the split - all states together"],
+};
 function perf(P) {
   if (!P) return "";
-  const T = P.total || {};
+  const T = P.total || {}, S = P.by_state || {};
   const pc = (v) => v == null ? "-" : (+v).toFixed(v < 10 ? 2 : 1) + " %";
   const mb = (v) => v == null ? "-" : Math.round(v) + " MB";
   const hrs = (m) => !m ? "0 h" : m < 120 ? m + " min" : (m / 60).toFixed(m < 6000 ? 1 : 0) + " h";
@@ -195,22 +205,44 @@ function perf(P) {
     ${rows && rows.length ? rows.map((r) => `<tr><td>${esc(r.k || "unknown")}</td><td class="n">${r.pcs}</td><td class="n">${pc(r.rcpu)}</td><td class="n">${mb(r.rmem)}</td>
       <td class="n">${pc(r.cpu)}</td><td class="n">${mb(r.mem)}</td><td class="n">${mb(r.mem_peak)}</td><td class="n">${hrs(r.mins)}</td></tr>`).join("")
       : `<tr><td colspan="8" class="sub">No reports yet</td></tr>`}</table></div>`;
-  const recent = (P.recent || []).map((r) => `<tr><td class="sub">${ago(r.at)}</td><td>${esc(r.ver)} · ${esc(r.osname || r.os)}${r.cc ? " · " + flag(r.cc) : ""}</td>
+  // tiles + the six tables for one state (or all of them)
+  const block = (st, X) => { const t = X.total || {};
+    return `<div class="pst" data-st="${st}"${st === "all" ? "" : ' style="display:none"'}>
+    <div class="grid">
+      ${tile("CPU while recording", pc(t.rcpu), `average · ${hrs(t.rmins)} recorded`)}
+      ${tile("Memory while recording", mb(t.rmem), "average")}
+      ${tile("CPU overall", pc(t.cpu), `peak ${t.cpu_peak == null ? "-" : t.cpu_peak + " %"}`)}
+      ${tile("Memory overall", mb(t.mem), `peak ${mb(t.mem_peak)}`)}
+      ${tile("Measured", hrs(t.mins), `${t.pcs || 0} PC-days · ${esc(PSTATE[st][1])}`)}
+    </div>
+    ${table("Graphics card", X.gpu)}${table("Processor", X.cpu)}${table("System memory", X.ram)}${table("Recording at", X.res)}${table("Windows / Linux", X.os)}${table("Echo version", X.ver)}</div>`; };
+  const states = (P.states || []).filter((s) => S[s]);
+  // one compact row per state: where the minutes went, and what each costs
+  const srows = states.map((s) => { const t = S[s].total || {};
+    return `<tr><td><b>${esc(PSTATE[s] ? PSTATE[s][0] : s)}</b><div class="sub">${esc(PSTATE[s] ? PSTATE[s][1] : "")}</div></td><td class="n">${t.pcs || 0}</td>
+      <td class="n">${hrs(t.mins)}<div class="sub">${T.mins ? Math.round((t.mins || 0) * 100 / T.mins) + " %" : ""}</div></td>
+      <td class="n">${mb(t.mem)}</td><td class="n">${pc(t.cpu)}</td><td class="n">${t.rmins ? mb(t.rmem) : "-"}</td><td class="n">${t.rmins ? pc(t.rcpu) : "-"}</td><td class="n">${mb(t.mem_peak)}</td></tr>`; }).join("");
+  const picker = ["all", ...states].map((s) => `<button class="pstb" data-st="${s}"${s === "all" ? ' style="border-color:var(--accent)"' : ""}>${esc(PSTATE[s] ? PSTATE[s][0] : s)}</button>`).join(" ");
+  const recent = (P.recent || []).map((r) => `<tr><td class="sub">${ago(r.at)}</td><td>${esc(PSTATE[r.state] ? PSTATE[r.state][0] : r.state || "Mixed (older Echo)")}</td><td>${esc(r.ver)} · ${esc(r.osname || r.os)}${r.cc ? " · " + flag(r.cc) : ""}</td>
       <td>${esc(r.cpu || "?")}${r.cores ? ` <span class="sub">(${r.cores} threads)</span>` : ""}<div class="sub">${esc(r.gpu || "?")} · ${r.ram ? r.ram + " GB" : "?"}</div></td>
       <td class="sub">${esc(r.res || "?")}${r.fps ? " @ " + r.fps : ""}${r.enc ? "<br>" + esc(r.enc) : ""}</td>
       <td class="n">${r.rn ? pc(r.rc / 10) : "-"}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td><td class="n">${hrs(r.n)}</td></tr>`).join("");
   return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · ${T.pcs || 0} PC-days</span></summary>
-    <p class="sub" style="margin:10px 0 10px">Echo + its encoder, measured once a minute on each PC (CPU = share of the whole PC, like Task Manager). Sent with the update check, anonymous: numbers and hardware names only. "Recording" = only the minutes Echo was recording.</p>
-    <div class="grid">
-      ${tile("CPU while recording", pc(T.rcpu), `average · ${hrs(T.rmins)} recorded`)}
-      ${tile("Memory while recording", mb(T.rmem), "average")}
-      ${tile("CPU overall", pc(T.cpu), `peak ${T.cpu_peak == null ? "-" : T.cpu_peak + " %"}`)}
-      ${tile("Memory overall", mb(T.mem), `peak ${mb(T.mem_peak)}`)}
-      ${tile("Measured", hrs(T.mins), `${T.pcs || 0} PC-days`)}
-    </div>
-    ${table("Graphics card", P.gpu)}${table("Processor", P.cpu)}${table("System memory", P.ram)}${table("Recording at", P.res)}${table("Windows / Linux", P.os)}${table("Echo version", P.ver)}
-    <div class="wrap" style="margin-top:10px"><table><tr><th>When</th><th>Echo · system</th><th>Hardware</th><th>Recording at</th><th class="n">Rec CPU</th><th class="n">Rec memory</th><th class="n">CPU</th><th class="n">Memory</th><th class="n">Measured</th></tr>
-      ${recent || `<tr><td colspan="9" class="sub">No reports yet - they start once a version with this is out and the server is deployed</td></tr>`}</table></div></details>`;
+    <p class="sub" style="margin:10px 0 10px">Echo + its encoder, measured once a minute on each PC (CPU = share of the whole PC, like Task Manager). Sent with the update check, anonymous: numbers and hardware names only. "Recording" = only the minutes Echo was recording.
+      Each minute counts under what Echo was doing then (the state it was in most of that minute).</p>
+    <div class="wrap"><table><tr><th>What Echo was doing</th><th class="n">PCs</th><th class="n">Measured</th><th class="n">Memory</th><th class="n">CPU</th><th class="n">Rec memory</th><th class="n">Rec CPU</th><th class="n">Peak memory</th></tr>
+      ${srows || `<tr><td colspan="8" class="sub">No reports yet</td></tr>`}</table></div>
+    <div id="pstpick" style="margin:12px 0 10px;display:flex;flex-wrap:wrap;gap:6px">${picker}</div>
+    ${block("all", P)}${states.map((s) => block(s, S[s])).join("")}
+    <div class="wrap" style="margin-top:10px"><table><tr><th>When</th><th>State</th><th>Echo · system</th><th>Hardware</th><th>Recording at</th><th class="n">Rec CPU</th><th class="n">Rec memory</th><th class="n">CPU</th><th class="n">Memory</th><th class="n">Measured</th></tr>
+      ${recent || `<tr><td colspan="10" class="sub">No reports yet - they start once a version with this is out and the server is deployed</td></tr>`}</table></div></details>`;
+}
+// the state buttons above the tiles: show that state's tiles + tables
+function perfPick() {
+  const box = $("#pstpick"); if (!box) return;
+  box.onclick = (e) => { const b = e.target.closest(".pstb"); if (!b) return;
+    document.querySelectorAll(".pstb").forEach((x) => x.style.borderColor = x === b ? "var(--accent)" : "");
+    document.querySelectorAll(".pst").forEach((d) => d.style.display = d.dataset.st === b.dataset.st ? "" : "none"); };
 }
 
 // ----- releases: fix the "What changed?" text, hide a release, pause it as an update (chat 28) -----
@@ -321,6 +353,7 @@ function draw(j) {
       Website: counted without cookies or stored IP addresses (bots and scripts skipped); "visitors" are unique per day, days are UTC.
       "Came from" only lists other websites (Discord, Reddit, Google…); direct visits aren't listed.</div>`;
   $("#re").onclick = load;
+  perfPick();
   // takedowns: the owner's email comes back so you can write to them if needed
   const post = async (path, b, out) => {
     out.textContent = "…";

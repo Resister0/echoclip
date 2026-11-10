@@ -77,3 +77,7 @@ for src in sorted((ROOT / "pages").glob("*.html")):
     '<stop offset="0" stop-color="#8b6cff"/><stop offset=".55" stop-color="#6a4cf5"/><stop offset="1" stop-color="#4f7bff"/></linearGradient></defs>'
     '<rect width="256" height="256" rx="64" fill="url(#g)"/>' + LOGO.replace('<svg viewBox="0 0 256 256" aria-hidden="true">', '<g>').replace('</svg>', '</g>') + '</svg>',
     encoding="utf-8")
+
+# canonical/Open Graph/JSON-LD/sitemap: the HEAD above has none of that, seo.py adds it back to site/*.html
+import seo
+seo.main()

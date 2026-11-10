@@ -1,4 +1,4 @@
-//! Chat D - Import REAL (William: yes): port of Echo's recorder.rs import_folder / import_one.
+//! Chat D - Import REAL (approved): port of Echo's recorder.rs import_folder / import_one.
 //! Copies every video under a folder into the clips folder (originals stay), one Echo folder per game folder,
 //! keeps the file dates (the library sorts by them), skips what Echo already imported (.thumbs/imported.json) and
 //! files deleted in the meantime, checks there is room first (everything + 5 GB), converts what Echo can't play

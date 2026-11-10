@@ -1,6 +1,6 @@
 // Player overlay, styled like Echo's #player: top bar with button groups, the video in a panel (.pwrap), the
 // filmstrip seek bar with yellow trim handles (.pstrip), controls (.ctl) and the key hints (.phint).
-// The Title / Tags / Note panel (#pside) sits on the RIGHT (William, chat 33).
+// The Title / Tags / Note panel (#pside) sits on the RIGHT (chat 33).
 // Positions are absolute: Rust needs the exact video rectangle (Windows window mode puts its own video window there)
 // and the seek-preview rectangle (cut out of that window so the preview shows above the video).
 import { Cm, CloudMenuBody } from "cloud.slint";
@@ -40,7 +40,7 @@ export global Play {
     in-out property <bool> exact;
     in-out property <bool> busy;           // saving a trimmed copy
     in-out property <bool> gif-busy;       // L14: a GIF of the selection is being made (Echo: trim.busy + #tgif disabled)
-    // William (9 Nov): cut out middle parts on the strip - Shift+drag highlights (h0..h1), X cuts it; cuts = flat
+    // 9 Nov: cut out middle parts on the strip - Shift+drag highlights (h0..h1), X cuts it; cuts = flat
     // [a0, b0, a1, b1, ...] fractions, skipped while playing, left out of Save copy, carried into the editor (E)
     in-out property <float> h0: -1;
     in-out property <float> h1: -1;
@@ -351,7 +351,7 @@ export component PlayerView inherits Rectangle {
     // topmost item, so moving onto the strip looked like "the mouse left" and made them blink)
     // fullscreen + Windows window mode: clear, the video window sits behind Slint's window
     background: Play.full ? (Play.video-window ? transparent : black) : transparent;
-    // William (10 Nov): the window's title bar (top-h tall) stays lit and live with a clip open - the dim layer, the
+    // 10 Nov: the window's title bar (top-h tall) stays lit and live with a clip open - the dim layer, the
     // "click beside = close" area and the key scope all start below it (fullscreen: the whole window as before)
     in property <length> top-h: 52px;
     property <length> dim-y: Play.full ? 0 : root.top-h;
@@ -454,7 +454,7 @@ export component PlayerView inherits Rectangle {
                 Play.toggle-full();
                 return accept;
             }
-            // William (9 Nov): S at two spots = cut out the part between (first S marks the play head, second cuts)
+            // 9 Nov: S at two spots = cut out the part between (first S marks the play head, second cuts)
             if (e.text == "s" || e.text == "S") {
                 if (Play.h0 < 0) {
                     Play.h0 = Play.progress;
@@ -487,7 +487,7 @@ export component PlayerView inherits Rectangle {
 
     // ---- top bar (#player .bar): title, then groups: share · edit · file, Close ----
     // clicks on the bar's empty space aren't "beside the video" (behind the row: inside it, this took a stretchy slot
-    // and pushed the clip name toward the middle - William, 9 Nov)
+    // and pushed the clip name toward the middle - 9 Nov)
     if !Play.full: TouchArea {
         x: root.vx;
         y: root.vy - 50px;
@@ -534,7 +534,7 @@ export component PlayerView inherits Rectangle {
             cm := PopupWindow {
                 x: 0;
                 y: 42px;
-                // own size: Slint tests clicks against it (none = every click 'outside', fell through - William)
+                // own size: Slint tests clicks against it (none = every click 'outside', fell through)
                 width: cmb.preferred-width;
                 height: cmb.preferred-height;
                 close-policy: close-on-click-outside;
@@ -720,7 +720,7 @@ export component PlayerView inherits Rectangle {
         height: root.vh + root.strip-h + root.ctl-h + (Play.full ? 0 : 2px);
         background: T.panel;
         border-width: Play.full ? 0 : 1px;
-        // William (like Medal): a faint white outline so the popup's edges read clearly against the dimmed library -
+        // like Medal: a faint white outline so the popup's edges read clearly against the dimmed library -
         // one outline around video + strip + controls (no separate video / bar boxes)
         border-color: #ffffff26;
         border-radius: Play.full ? 0 : 12px;
@@ -791,7 +791,7 @@ export component PlayerView inherits Rectangle {
                     property <float> run;
                     x: Play.cl-pct < 0 ? (self.run * 1.3 - 0.3) * parent.width : 0;
                     width: Play.cl-pct < 0 ? parent.width * 0.3 : parent.width * min(1, Play.cl-pct);
-                    animate width { duration: 300ms; }
+                    animate width { duration: 100ms; easing: linear; } // 2x the 50 ms tick (cloud.rs fetch, smoothed bytes - dl_smooth.rs): one steady motion
                     background: T.accent;
                     // .ind: a 30 % piece sliding along while nothing is known
                     Timer {
@@ -840,7 +840,7 @@ export component PlayerView inherits Rectangle {
             double-clicked => { Play.toggle-full(); }
         }
     }
-    // William (9 Nov): a slightly brighter outline hugging the clip itself (top, sides AND where it meets the strip).
+    // 9 Nov: a slightly brighter outline hugging the clip itself (top, sides AND where it meets the strip).
     // Drawn 1 px OUTSIDE the picture: in window mode mpv's own window covers the picture, nothing Slint draws inside
     // it would show. The panel's fainter border around everything stays.
     if !Play.full: Rectangle {
@@ -850,7 +850,7 @@ export component PlayerView inherits Rectangle {
         width: root.vw + 2px;
         height: root.vh + 2px;
         border-width: 1px;
-        border-color: #ffffff30; // toned down (William: "a bit less on the actual player")
+        border-color: #ffffff30; // toned down (asked: "a bit less on the actual player")
         border-radius: 12px;
     }
     if Play.has-prev && !Play.full: NavArrow {
@@ -1000,7 +1000,7 @@ export component PlayerView inherits Rectangle {
                 border-width: 2px;
                 border-color: T.hi;
             }
-            // William (9 Nov): a light line along the top and bottom of the kept part, joining the two yellow ends
+            // 9 Nov: a light line along the top and bottom of the kept part, joining the two yellow ends
             // (the ends are the sides) - not while trimming, the yellow outline is there then
             if !Play.trimming: Rectangle {
                 x: parent.width * Play.t0 + 12px;
@@ -1441,7 +1441,7 @@ export component PlayerView inherits Rectangle {
         width: root.side-w;
         height: sv.preferred-height;
         // clicks on the fields don't close the player - but the details text at the bottom (#sinfo) does, like any
-        // click beside the video (William kept hitting it when clicking off the clip)
+        // click beside the video (kept being hit when clicking off the clip)
         TouchArea {
             y: 0;
             height: parent.height - sinfo.height - 12px;

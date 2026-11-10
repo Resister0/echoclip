@@ -1,5 +1,5 @@
 //! Echo's Discord Rich Presence - a port of src-tauri/src/discord.rs (that file needs Tauri's AppHandle, so it can't
-//! go into echo-core unchanged). William (9 Nov): the native app never showed "Playing Echo" at all.
+//! go into echo-core unchanged). 9 Nov: the native app never showed "Playing Echo" at all.
 //! "Playing Echo" + "Ready to clip" / "Clipping <game>" + "N clips saved", elapsed timer, Echo logo, "Get Echo"
 //! button. Talks to the local Discord app over its IPC pipe (no crate, no login, no token):
 //! Linux $XDG_RUNTIME_DIR/discord-ipc-N (+ Flatpak/Snap Discord paths), Windows \\.\pipe\discord-ipc-N.

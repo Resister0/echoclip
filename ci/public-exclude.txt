@@ -6,6 +6,8 @@
 /LINUX_HANDOFF.md
 /MONETIZATION.md
 /WINDOWS_NOTES.md
+/CLAUDE.md
+/.claude/
 /README.txt
 /publish.cmd
 /publish.sh

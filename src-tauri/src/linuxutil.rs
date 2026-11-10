@@ -77,7 +77,7 @@ pub fn notify(title: &str, sub: &str, ok: bool) {
             let p = c.with_proxy("org.freedesktop.Notifications", "/org/freedesktop/Notifications", std::time::Duration::from_secs(3));
             // KDE turns on Do Not Disturb by itself while the screen is shared - and the Flatpak records THROUGH screen
             // sharing, so nothing pops up (chat 26). Remember it: the window shows a one-time tip (desktop_dnd).
-            // ("critical" urgency gets past DND, but KDE keeps those up until clicked away - William said no.)
+            // ("critical" urgency gets past DND, but KDE keeps those up until clicked away - rejected.)
             use dbus::blocking::stdintf::org_freedesktop_dbus::Properties;
             if let Ok(on) = p.get::<bool>("org.freedesktop.Notifications", "Inhibited") { DND.store(if on { 2 } else { 1 }, Ordering::Relaxed); }
             let mut hints = PropMap::new();
@@ -229,7 +229,7 @@ pub fn portal_autostart(on: bool) {
 
 // ---------------- Flatpak first start: one dialog at a time ----------------
 // The sandbox asks the desktop for everything: shortcuts (KDE dialog) and screen recording (screen-share
-// dialog). All of them at once on top of the Welcome screen was a mess (William, chat 25): the shortcut dialog
+// dialog). All of them at once on top of the Welcome screen was a mess (chat 25): the shortcut dialog
 // waits for the Welcome screen, the screen-share dialog waits for the shortcut dialog.
 
 static PORTALS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

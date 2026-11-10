@@ -1,19 +1,21 @@
-<!-- title: Code signing policy - Echo | desc: How Echo's Windows downloads are built and signed, who approves releases, and what data Echo sends. -->
+<!-- title: Code signing policy - Echo | desc: How Echo's Windows downloads are built from the public source by GitHub Actions and code-signed, who approves releases, and what data Echo sends. -->
 <article class="doc">
   <h1>Code signing policy</h1>
-  <p class="updated">Last updated: 4 November 2026</p>
+  <p class="updated">Last updated: 10 November 2026</p>
 
-  <p>Echo's Windows downloads (Echo-Setup.exe and Echo.exe) are built from the public source code by GitHub Actions and are meant
-    to be signed through the <a href="https://signpath.org/">SignPath Foundation</a>'s free code signing for open-source projects
-    (application in progress). Until that's in place, Windows may show a SmartScreen warning when you start the installer.</p>
-  <p>Once approved: <b>Free code signing provided by <a href="https://about.signpath.io/">SignPath.io</a>, certificate by
-    <a href="https://signpath.org/">SignPath Foundation</a>.</b></p>
+  <p>Echo's Windows downloads (Echo-Setup.exe and EchoClip.exe, the program in the installer and in the portable zip) are
+    built from the public source code by GitHub Actions and signed with a <a href="https://www.certum.eu/">Certum</a>
+    Open Source Code Signing certificate (issued to the project's developer, Resister0 on GitHub). Every Windows release
+    since Echo 2.0.0 (10 November 2026) is signed.</p>
+  <p>The certificate is new, so on some PCs Windows SmartScreen may still show "Windows protected your PC" until it has
+    built up trust. If that happens, click <b>More info</b>, then <b>Run anyway</b>.</p>
+  <p>You can check a download: right-click the file, choose Properties, open the Digital Signatures tab and check that the signature is valid and the certificate is from Certum.</p>
 
   <h2>What gets signed</h2>
   <ul>
     <li>Only files built from the public repository <a href="https://github.com/Resister0/echoclip">github.com/Resister0/echoclip</a>
       by its GitHub Actions workflow. Every release on GitHub shows the exact commit it was built from.</li>
-    <li>Echo's own program files (the installer and Echo.exe). Third-party tools that come with Echo - FFmpeg, rclone - are the
+    <li>Echo's own program files (the installer, its uninstaller and EchoClip.exe). Third-party tools that come with Echo - FFmpeg, rclone - are the
       unchanged official builds from their own projects and keep their authors' signatures, if they have any.</li>
     <li>Nothing is signed by hand on a personal computer.</li>
   </ul>
@@ -21,22 +23,23 @@
   <h2>Team and roles</h2>
   <div class="tablewrap"><table>
     <tr><th>Role</th><th>Who</th></tr>
-    <tr><td>Committers and reviewers</td><td>Kimbo (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
-    <tr><td>Approvers (every signed release is approved by hand)</td><td>Kimbo (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+    <tr><td>Committers and reviewers</td><td>Resister0 (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
+    <tr><td>Approvers (every signed release is approved by hand)</td><td>Resister0 (<a href="https://github.com/Resister0">@Resister0</a>)</td></tr>
   </table></div>
-  <p>Everyone with access uses two-factor authentication on GitHub and SignPath. Outside contributions are reviewed before
+  <p>Everyone with access uses two-factor authentication on GitHub, and the signing key is protected by Certum's SimplySign one-time codes. Outside contributions are reviewed before
     they are merged.</p>
 
   <h2>Privacy</h2>
   <p>Echo does not send any data to other computers unless you ask it to, with one exception: an installed Echo checks
     echoclip.link every few hours for a newer version. That check contains only Echo's version number and your system type
-    (Windows or Linux).</p>
+    (Windows or Linux); echoclip.link counts how many copies of each version check in per day and from which country,
+    without keeping IP addresses.</p>
   <p>Everything else happens only when you choose it: connecting a cloud (Echo Cloud, Google Drive or your own storage),
     making a share link, sending feedback or sending a log. The full details are in the <a href="/privacy">privacy policy</a>,
     which the Windows installer also links to.</p>
 
   <h2>Reporting a problem</h2>
   <p>If you think a signed Echo file was tampered with or behaves maliciously, email
-    <a href="mailto:support@echoclip.link">support@echoclip.link</a>. Signing certificates can be revoked by SignPath if
+    <a href="mailto:support@echoclip.link">support@echoclip.link</a>. The signing certificate can be revoked by Certum if
     this policy is broken.</p>
 </article>

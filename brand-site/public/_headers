@@ -1,0 +1,22 @@
+# Security headers for the hub (Cloudflare Workers static assets / Pages read this file).
+# The hub has no scripts at all (JSON-LD is a data block, not a script), so script-src is 'none'.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000
+
+/og.png
+  Cache-Control: public, max-age=86400
+/favicon.*
+  Cache-Control: public, max-age=86400
+/icon-*
+  Cache-Control: public, max-age=86400
+/apple-touch-icon.png
+  Cache-Control: public, max-age=86400
+
+# the 404 page is also reachable at /404.html: keep it out of search results
+/404.html
+  X-Robots-Tag: noindex

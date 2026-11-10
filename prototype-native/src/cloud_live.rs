@@ -1,7 +1,7 @@
 //! gaps-cloud (10 Nov 2026, NATIVE_GAPS rows 5, 6, 24, 26): the cloud things that run by themselves, ported from
 //! Echo's ui/index.html:
 //! - the player while a cloud-only clip streams in: "Loading from the cloud…" / "Starting the stream…" /
-//!   "<size> clip · buffering" with a bar; a broken stream or no picture after 25 s = "Couldn't stream this clip -
+//!   "<size> clip · buffering" with a bar; a broken stream or no picture after 15 s = "Couldn't stream this clip -
 //!   downloading it instead", the download's progress inside the video, then the local copy plays (cloudLoading)
 //! - background uploads (auto uploads, favourites, Upload to the cloud): the card's bar + "☁ Uploading 40%", one box
 //!   at the bottom with ETA + Cancel, the player's "☁ Uploading 40% · 1 min left", the cloud badge when done
@@ -49,6 +49,8 @@ struct UpState {
     idle_at: Option<Instant>,
     boxid: Option<i32>,
     idx: Option<usize>,
+    /// UpProgress.stage last seen: a new step restarts the "(N s)" count and the time-left guess
+    stage: String,
 }
 
 thread_local! {
@@ -130,7 +132,8 @@ pub fn player_tick(a: &AppWindow, m: Option<&crate::mpv::Mpv>, open: Option<usiz
     let fresh = PS.with(|s| s.borrow().as_ref().is_none_or(|x| x.idx != idx));
     if fresh {
         // r2-threads (L6): the stream address is worked out on a worker (rclone start-up) - until then this box
-        if !crate::cloud::play_ready(&c.path, || {}) {
+        let w = a.as_weak();
+        if !crate::cloud::play_ready(&c.path, move || if let Some(a) = w.upgrade() { a.window().request_redraw() }) {
             overlay(&pl, "Loading from the cloud…", "Starting the stream…", -1.0);
             return;
         }
@@ -163,9 +166,10 @@ pub fn player_tick(a: &AppWindow, m: Option<&crate::mpv::Mpv>, open: Option<usiz
         overlay_off(&pl);
         return;
     }
-    // the stream broke, or no picture after 25 s (the first look-up can take a while: the streaming server
-    // searches every connected cloud): download the clip instead and play the local copy
-    if failed || (!played && elapsed > Duration::from_secs(25)) {
+    // the stream broke, or no picture 15 s after the address was ready (the server already answers by then - Echo
+    // waits for that - but the first look-up searches every connected cloud): download the clip instead and play
+    // the local copy
+    if failed || (!played && elapsed > Duration::from_secs(15)) {
         PS.with(|s| s.borrow_mut().as_mut().map(|x| x.fallback = true));
         m.command(&["stop"]);
         overlay(&pl, "Downloading from the cloud…", "Starting…", 0.0);
@@ -196,6 +200,26 @@ pub fn player_tick(a: &AppWindow, m: Option<&crate::mpv::Mpv>, open: Option<usiz
 }
 
 // ---------- row 6: background upload progress ----------
+/// av1-upload-fix (10 Nov 2026): what happens before the upload itself (UpProgress.stage), for the boxes.
+/// `dest` = the cloud ("Google Drive"). None = no such step (uploading / getting ready).
+pub fn stage_text(stage: &str, dest: &str) -> Option<String> {
+    match stage {
+        "h264" | "convert" => Some("Converting AV1 to H.264 so it plays everywhere".into()),
+        "smaller" => Some("Making a smaller copy for Echo Cloud".into()),
+        "fetch" => Some(format!("Downloading from {} to make a share copy", if dest.is_empty() { "the cloud" } else { dest })),
+        _ => None,
+    }
+}
+
+/// stage_text() for small places (card, player, sidebar)
+fn stage_short(stage: &str) -> &'static str {
+    match stage {
+        "fetch" => "Downloading",
+        "smaller" => "Making copy",
+        _ => "Converting",
+    }
+}
+
 fn up_tick(a: &AppWindow) {
     if !a.window().is_visible() || !crate::cloud::on() {
         return; // in the tray: nothing to draw
@@ -219,6 +243,10 @@ fn up_tick(a: &AppWindow) {
             u.last = p.rel.clone();
             u.t0 = Some(Instant::now());
             u.idx = None;
+        }
+        if p.stage != u.stage {
+            u.stage = p.stage.clone();
+            u.t0 = Some(Instant::now());
         }
         (fin, u.t0.unwrap_or_else(Instant::now))
     });
@@ -247,7 +275,16 @@ fn up_tick(a: &AppWindow) {
         pl.set_up_on(false);
         return;
     }
-    let f = if p.total > 0 { (p.got as f64 / p.total as f64).min(1.0) } else { 0.0 };
+    // av1-upload-fix (10 Nov 2026): while a copy is made the bar shows how far that is (it sat at 0 % for ~40 s
+    // as "Getting ready (22 s)…", which looked like a slow server)
+    let making = p.got == 0 && stage_text(&p.stage, "").is_some();
+    let f = if making {
+        (p.stage_f as f64).clamp(0.0, 1.0)
+    } else if p.total > 0 {
+        (p.got as f64 / p.total as f64).min(1.0)
+    } else {
+        0.0
+    };
     let pc = (f * 100.0).round();
     let secs = t0.elapsed().as_secs_f64();
     let left = (f > 0.03).then(|| secs * (1.0 - f) / f).filter(|l| *l > 1.0);
@@ -262,9 +299,20 @@ fn up_tick(a: &AppWindow) {
         if p.got > 0 && p.got >= p.total {
             format!("All sent - waiting for {dest} to finish…")
         } else if p.got > 0 {
-            format!("{} of {} · {pc:.0}%{}", fsz(p.got), fsz(p.total), left.map(|l| format!(" · about {} left", left_text(l))).unwrap_or_default())
+            // 2.0.2: speed + time left on the box ("4.2 MB/s · 12 s left"); before that (or with no box) as it was
+            let rate = UP.with(|u| u.borrow().boxid).and_then(|id| crate::notes::rate(id, p.got, p.total));
+            format!("{} of {} · {}", fsz(p.got), fsz(p.total), rate.unwrap_or_else(|| format!("{pc:.0}%{}", left.map(|l| format!(" · about {} left", left_text(l))).unwrap_or_default())))
+        } else if making {
+            let what = stage_text(&p.stage, &dest).unwrap_or_default();
+            let time = left.map(|l| format!(" · about {} left", left_text(l))).unwrap_or_default();
+            format!("{what}… {}", if f > 0.0 { format!("{pc:.0}%{time}") } else { format!("({} s)", secs.round() as u64) })
         } else {
-            format!("Getting ready{}… · {}", if secs > 8.0 { format!(" ({} s)", secs.round() as u64) } else { String::new() }, fsz(p.total))
+            let waited = if secs > 8.0 { format!(" ({} s)", secs.round() as u64) } else { String::new() };
+            if p.stage == "send" {
+                format!("Starting the upload to {dest}{waited}… · {}", fsz(p.total))
+            } else {
+                format!("Getting ready{waited}… · {}", fsz(p.total))
+            }
         }
     );
     // the clip's card (library view and Home)
@@ -287,7 +335,16 @@ fn up_tick(a: &AppWindow) {
     lb.set_up_row(row);
     lb.set_up_home(home);
     lb.set_up_pct(f as f32);
-    lb.set_up_label(if p.got > 0 { format!("☁ Uploading {pc:.0}%") } else { "☁ Getting ready…".to_string() }.into());
+    lb.set_up_label(
+        if p.got > 0 {
+            format!("☁ Uploading {pc:.0}%")
+        } else if making {
+            format!("☁ {} {pc:.0}%", stage_short(&p.stage))
+        } else {
+            "☁ Getting ready…".to_string()
+        }
+        .into(),
+    );
     // its own box at the bottom - not for a share link's upload (that one has its own box already)
     let linking = crate::cloud::LINKING.with(|s| s.borrow().contains(&p.rel.to_lowercase()));
     let boxid = UP.with(|u| u.borrow().boxid);
@@ -321,7 +378,14 @@ fn up_tick(a: &AppWindow) {
     pl.set_up_on(here);
     if here {
         pl.set_up_pct(f as f32);
-        pl.set_up_text(format!("☁ Uploading {pc:.0}%{}", left.map(|l| format!(" · {} left", left_text(l))).unwrap_or_default()).into());
+        pl.set_up_text(
+            if making {
+                format!("☁ {} {pc:.0}%", stage_short(&p.stage))
+            } else {
+                format!("☁ Uploading {pc:.0}%{}", left.map(|l| format!(" · {} left", left_text(l))).unwrap_or_default())
+            }
+            .into(),
+        );
     }
 }
 
@@ -437,10 +501,17 @@ pub fn health_lines(a: &AppWindow, r: &Recorder) -> Vec<(i32, String)> {
     let busy = r.cloud_busy.lock().map(|b| b.clone()).unwrap_or_default();
     if !busy.is_empty() {
         let p = UP_PROGRESS.lock().map(|p| p.clone()).unwrap_or_default();
-        let pct = if !p.rel.is_empty() && p.total > 0 { format!(" {}%", (p.got as f64 / p.total as f64 * 100.0).round()) } else { String::new() };
+        // av1-upload-fix: while the copy is made, how far that is (it said 0 %)
+        let pct = if !p.rel.is_empty() && p.got == 0 && stage_text(&p.stage, "").is_some() {
+            format!(" - {} {}%", stage_short(&p.stage).to_lowercase(), (p.stage_f * 100.0).round())
+        } else if !p.rel.is_empty() && p.total > 0 {
+            format!(" {}%", (p.got as f64 / p.total as f64 * 100.0).round())
+        } else {
+            String::new()
+        };
         out.push((0, format!("☁ {busy}{pct}")));
     }
-    // William (10 Nov): the usage is the status card's bar now - a line only for a cloud that's almost full, each
+    // 10 Nov: the usage is the status card's bar now - a line only for a cloud that's almost full, each
     // connected cloud on its own (they were added together)
     for (name, used, total, _) in crate::cloud::usages_for_sidebar(a).unwrap_or_default() {
         if total > 0 && used as f64 / total as f64 > 0.9 {

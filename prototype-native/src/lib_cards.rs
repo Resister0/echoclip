@@ -364,18 +364,14 @@ pub fn move_ui(a: &AppWindow, lib: &Rc<LibModel>, ids: Vec<usize>, folder: Strin
         60
     };
     let (w, lib) = (a.as_weak(), lib.clone());
+    let was = crate::undo::before_move(&lib, &todo); // 2.0.2: Undo moves them back
     // r2-threads (L13): the files move on a worker
     let l2 = lib.clone();
     slint::Timer::single_shot(Duration::from_millis(wait), move || l2.move_clips_bg(&todo, &to.clone(), move |n, err| {
         let Some(a) = w.upgrade() else { return };
         if n > 0 {
             lib.clear_picks();
-            let dest = if to.is_empty() { "the main folder".to_string() } else { to.clone() }; // Echo: no quotes (r2-texts L48)
-            let msg = format!("Moved {n} clip{} to {dest}", if n == 1 { "" } else { "s" });
-            crate::toast(&a, match &err {
-                Some(e) => format!("{msg} - {e}"),
-                None => msg,
-            });
+            crate::undo::moved(&a, &lib, was, n, &to, err); // Echo's "Moved N clips to X" + Undo
         } else if let Some(e) = err {
             crate::toast(&a, e);
         }

@@ -145,6 +145,9 @@ struct LinkEntry {
     #[serde(default)] sig: String,
     /// what the share page shows (sent again when only the lifetime changes)
     #[serde(default)] meta: serde_json::Value,
+    /// av1-upload-fix: the H.264 share copy in the user's own cloud this link plays (rclone path,
+    /// "gdrive_1:Echo/.shared/<folder>/<name>.mp4") - deleted when the link ends
+    #[serde(default)] own: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -767,16 +770,26 @@ fn safe_name(s: &str) -> String {
 
 /// Games seen while recording ("games.json": name -> exe) + their icons, for the sidebar / Settings > Games.
 pub fn remember_game(name: &str, exe: &str) {
+    remember_game_pid(name, exe, 0);
+}
+
+/// remember_game() + the running game's pid (Linux: Steam app id / Wine's .exe of the process find its icon).
+pub fn remember_game_pid(name: &str, exe: &str, pid: u32) {
     let p = app_dir().join("games.json");
     let mut m: std::collections::BTreeMap<String, String> = fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let icon = app_dir().join("icons").join(format!("{}.png", safe_name(name)));
     if m.get(name).map_or(false, |e| e == exe) {
+        // Linux: a game seen before still without an icon gets another try (once per run)
+        #[cfg(target_os = "linux")]
+        linux_game_icon(name, exe, pid, &icon);
         return;
     }
     m.insert(name.into(), exe.into());
     let _ = fs::create_dir_all(app_dir());
     let _ = fs::write(&p, serde_json::to_string_pretty(&m).unwrap_or_default());
+    #[cfg(target_os = "linux")]
+    linux_game_icon(name, exe, pid, &icon);
     // exe icon -> png (once)
-    let icon = app_dir().join("icons").join(format!("{}.png", safe_name(name)));
     if !exe.is_empty() && !icon.exists() {
         let _ = fs::create_dir_all(app_dir().join("icons"));
         #[cfg(windows)]
@@ -788,6 +801,37 @@ pub fn remember_game(name: &str, exe: &str) {
                     .arg(&raw).args(["-frames:v", "1"]).arg(&icon).stdout(Stdio::null()).stderr(Stdio::null()).status();
                 let _ = fs::remove_file(&raw);
             }
+        }
+    }
+}
+
+/// Linux: the game's icon from Steam / Lutris / Heroic / its .exe / its app menu entry (gameicon_linux.rs).
+/// Each game is tried once per run; nothing found = the folder keeps its letter.
+#[cfg(target_os = "linux")]
+fn linux_game_icon(name: &str, exe: &str, pid: u32, icon: &Path) {
+    static TRIED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    if icon.exists() || name.is_empty() { return; }
+    match TRIED.lock() {
+        Ok(mut t) if !t.iter().any(|x| x == name) => t.push(name.to_string()),
+        _ => return,
+    }
+    let _ = fs::create_dir_all(app_dir().join("icons"));
+    // in the background: a search through Wine prefixes can take a moment (the library picks the file up when it's there)
+    let (name, exe, icon) = (name.to_string(), exe.to_string(), icon.to_path_buf());
+    std::thread::spawn(move || match crate::gameicon_linux::make(&name, &exe, pid, &icon, ffmpeg) {
+        Some(src) => log_line(&format!("game icon: {name} <- {src}")),
+        None => log_line(&format!("game icon: {name} - none found")),
+    });
+}
+
+/// Start-up (Linux): games in games.json without an icon get one, in the background (once per run).
+pub fn backfill_game_icons() {
+    #[cfg(target_os = "linux")]
+    {
+        let games: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        for (name, exe) in &games {
+            linux_game_icon(name, exe, 0, &app_dir().join("icons").join(format!("{}.png", safe_name(name))));
         }
     }
 }
@@ -1250,6 +1294,38 @@ fn skip_enc(venc: &[&str]) -> bool {
     venc.iter().any(|a| a.ends_with("_amf") || a.ends_with("_qsv") || (a.ends_with("_nvenc") && !cuda))
 }
 
+/// Run ffmpeg `c` (with "-progress pipe:1 -nostats" in its options) until it ends: `progress` gets 0..1 of `dur`
+/// seconds from its out_time_us lines, `cancel` stops it. true = it finished OK. (av1-upload-fix, 10 Nov 2026)
+fn ffmpeg_watch(c: &mut Command, dur: f64, progress: &dyn Fn(f64), cancel: &dyn Fn() -> bool) -> bool {
+    let Ok(mut ch) = c.stdout(Stdio::piped()).spawn() else { return false };
+    let us = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reader = ch.stdout.take().map(|out| {
+        let us = us.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<u64>().ok()) {
+                    us.store(v, Ordering::Relaxed);
+                }
+            }
+        })
+    });
+    let dur = dur.max(1.0);
+    let ok = loop {
+        match ch.try_wait() {
+            Ok(Some(s)) => break s.success(),
+            Ok(None) if cancel() => { let _ = ch.kill(); let _ = ch.wait(); break false; }
+            Ok(None) => {
+                progress((us.load(Ordering::Relaxed) as f64 / 1e6 / dur).clamp(0.0, 1.0));
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(_) => break false,
+        }
+    };
+    if let Some(r) = reader { let _ = r.join(); }
+    ok
+}
+
 /// ffmpeg error lines that health() treats as "the recorder's encoder stopped" - but written by log_line (an
 /// export's / shrink's ffmpeg output), not by the recorder's own ffmpeg. health() subtracts these.
 const REC_FAIL_MARKS: [&str; 3] = ["Terminating thread with return code", "Error submitting audio frame", "Error submitting video frame"];
@@ -1447,6 +1523,15 @@ pub fn av1_ready() -> bool {
 /// (the clip itself is uploaded as it is - re-encoding for a burned-in logo was too slow, chat 16). "off" = none.
 fn share_wm(cfg: &crate::settings::Settings) -> &str {
     if cfg.share_watermark && cfg.watermark_style != "off" { match cfg.watermark_style.as_str() { "echo" => "echo", "link" => "link", _ => "kimbo" } } else { "off" }
+}
+
+/// File name of an AV1 clip's H.264 copy in .thumbs/h264/: its place in the library ("Valorant~x.mp4"), or just
+/// its name for a file outside the clips folder. (av1-upload-fix, 10 Nov 2026)
+fn h264_cache_name(rel: Option<&str>, file_name: &str) -> String {
+    match rel {
+        Some(r) => r.replace(['/', '\\'], "~"),
+        None => file_name.to_string(),
+    }
 }
 
 pub fn is_av1(path: &str) -> bool {
@@ -2212,8 +2297,14 @@ pub struct UpProgress {
     pub total: u64,
     pub idx: u32,
     pub count: u32,
+    /// av1-upload-fix (10 Nov 2026): what happens before any byte goes up, for the progress box - "" getting ready,
+    /// "h264" making the H.264 copy of an AV1 clip, "smaller" making Echo Cloud's smaller copy, "send" the copy is
+    /// ready and the upload is starting
+    pub stage: String,
+    /// how far "h264" / "smaller" is, 0..1 (from ffmpeg's -progress)
+    pub stage_f: f32,
 }
-pub static UP_PROGRESS: Mutex<UpProgress> = Mutex::new(UpProgress { rel: String::new(), dest: String::new(), got: 0, total: 0, idx: 0, count: 0 });
+pub static UP_PROGRESS: Mutex<UpProgress> = Mutex::new(UpProgress { rel: String::new(), dest: String::new(), got: 0, total: 0, idx: 0, count: 0, stage: String::new(), stage_f: 0.0 });
 /// "Cancel" on the upload box: stops the running upload (rclone is stopped, an Echo Cloud upload is aborted)
 pub static UP_CANCEL: AtomicBool = AtomicBool::new(false);
 /// clips whose upload was cancelled: the background sync leaves them alone until Echo restarts
@@ -2841,7 +2932,7 @@ impl Recorder {
             // The noise filter can output NaN (ffmpeg 8/9 arnndn: on silence and at the end; tested chat 18).
             // One NaN stops that track's AAC encoder for good -> mix + mic tracks empty/dead, clips can't save.
             // aeval turns NaN/Inf into 0 (cheap: 4 s of audio in 0.13 s).
-            // (9 Nov 2026: a mono noise filter - average of both sides - halved its cost but made William's HyperX mic
+            // (9 Nov 2026: a mono noise filter - average of both sides - halved its cost but made the developer's HyperX mic
             // ~5 dB quieter in clips, hard to hear under game sound: reverted, stereo as before)
             let nr = nr.map(|f| {
                 let e = (0..if ch == 1 { 1 } else { 2 }).map(|i| format!("if(isnan(val({i}))+isinf(val({i})),0,val({i}))")).collect::<Vec<_>>().join("|");
@@ -4757,6 +4848,12 @@ impl Recorder {
     /// What leaves the PC (Discord copy, cloud upload, share link): AV1 clips as a cached H.264 copy in .thumbs/h264/
     /// (plays on every phone and browser), every other clip as itself.
     pub fn shareable(&self, path: &str) -> Result<String, String> {
+        self.shareable_with(path, &|_| {}, &|| false)
+    }
+
+    /// shareable() with the conversion's progress (0..1, first called when converting starts - a cached copy calls
+    /// it never) and a way to stop it (Err("Upload cancelled")).
+    pub fn shareable_with(&self, path: &str, progress: &dyn Fn(f64), cancel: &dyn Fn() -> bool) -> Result<String, String> {
         if !is_av1(path) {
             return Ok(path.into());
         }
@@ -4764,39 +4861,74 @@ impl Recorder {
         let dir = self.thumbs_dir().join("h264");
         fs::create_dir_all(&dir).map_err(err)?;
         let name = src.file_name().ok_or("bad clip path")?;
-        let out = dir.join(name);
+        let out = dir.join(h264_cache_name(self.rel_of(path).as_deref(), &name.to_string_lossy()));
         let sm = fs::metadata(&src).map_err(err)?;
+        // av1-upload-fix: the copy is named after the clip's place in the library (two "Clip_1.mp4" in different
+        // folders shared one copy - the newer file's copy went out for both) and checked against the clip's size +
+        // time (.sig), not only "newer than the clip"
+        let sig = format!("{}:{}", sm.len(), sm.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()));
+        let sig_file = PathBuf::from(format!("{}.sig", out.to_string_lossy()));
         if let Ok(m) = fs::metadata(&out) {
-            if m.len() > 0 && m.modified().ok() >= sm.modified().ok() {
+            if m.len() > 0 && m.modified().ok() >= sm.modified().ok() && fs::read_to_string(&sig_file).map_or(false, |s| s.trim() == sig) {
                 return Ok(out.to_string_lossy().into());
             }
         }
-        let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0).max(1.0);
+        let _ = fs::remove_file(&sig_file);
+        let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+        self.make_h264(&src, &out, dur, progress, cancel)?;
+        let _ = fs::write(&sig_file, &sig);
+        Ok(out.to_string_lossy().into())
+    }
+
+    /// The H.264 copy of AV1 clip `src` into `out` (shareable(), and a cloud-only clip fetched for its share link).
+    /// `dur` = the clip's length (0 = ask ffprobe). Err("Upload cancelled") when `cancel` says so.
+    fn make_h264(&self, src: &Path, out: &Path, dur: f64, progress: &dyn Fn(f64), cancel: &dyn Fn() -> bool) -> Result<(), String> {
+        let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let sm = fs::metadata(src).map_err(err)?;
+        let dur = if dur > 0.0 { dur } else {
+            hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(src).output().ok()
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok()).unwrap_or(0.0)
+        }.max(1.0);
         // H.264 needs about twice the bitrate of AV1 for the same quality
-        let kbps = ((sm.len() as f64 * 8.0 / dur / 1000.0 - 192.0 * self.audio_tracks(path).max(1) as f64) * 2.0).clamp(4000.0, 60000.0) as u64;
+        let kbps = ((sm.len() as f64 * 8.0 / dur / 1000.0 - 192.0 * self.audio_tracks(&src.to_string_lossy()).max(1) as f64) * 2.0).clamp(4000.0, 60000.0) as u64;
         let b = format!("{kbps}k");
-        let tmp = dir.join(format!("{}.tmp", src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
+        let tmp = PathBuf::from(format!("{}.tmp", out.to_string_lossy()));
         let t0 = Instant::now();
-        let run = |venc: &[&str]| -> bool {
-            if skip_enc(venc) { return false; }
-            ffmpeg().args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src)
-                .args(["-map", "0", "-c:a", "copy"]).args(venc)
-                .args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp)
-                .stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
-                && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+        progress(0.0);
+        let run = |venc: &[&str], vaapi: bool| -> bool {
+            if skip_enc(venc) || cancel() { return false; }
+            let mut c = ffmpeg();
+            c.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-y"]);
+            if vaapi {
+                let Some(d) = vaapi_device() else { return false };
+                c.args(["-vaapi_device", &d]);
+            }
+            c.arg("-i").arg(src).args(["-map", "0", "-c:a", "copy"]);
+            if vaapi { c.args(["-vf", "format=nv12,hwupload"]); }
+            c.args(venc).args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp).stderr(Stdio::null());
+            ffmpeg_watch(&mut c, dur, progress, cancel) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
         };
-        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b])
-            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b])
-            || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b])
-            || run(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b, "-pix_fmt", "yuv420p"]);
+        // Linux: VA-API (AMD / Intel GPU) like Echo Cloud's copy (cloudsave.rs, constant QP 23 there too) - libx264 on
+        // the CPU took 51 s for a 3 min 1080p clip, VA-API 31 s and 40 % smaller (av1-upload-fix, 10 Nov 2026)
+        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b], false)
+            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b], false)
+            || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b], false)
+            || (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "23"], true))
+            || run(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b, "-pix_fmt", "yuv420p"], false);
+        if cancel() {
+            let _ = fs::remove_file(&tmp);
+            log_line(&format!("av1: H.264 copy of {name} stopped (cancelled)"));
+            return Err("Upload cancelled".into());
+        }
         if !ok {
             let _ = fs::remove_file(&tmp);
             return Err("Couldn't make a playable copy of this AV1 clip - see the log".into());
         }
-        let _ = fs::remove_file(&out);
-        fs::rename(&tmp, &out).map_err(err)?;
-        log_line(&format!("av1: H.264 copy of {} for sharing in {:.0}s", name.to_string_lossy(), t0.elapsed().as_secs_f32()));
-        Ok(out.to_string_lossy().into())
+        let _ = fs::remove_file(out);
+        fs::rename(&tmp, out).map_err(err)?;
+        progress(1.0);
+        log_line(&format!("av1: H.264 copy of {name} for sharing in {:.0}s", t0.elapsed().as_secs_f32()));
+        Ok(())
     }
 
     /// Make a clip smaller in place: re-encode the video at `factor` of its bitrate (all audio tracks kept, length unchanged).
@@ -5127,7 +5259,7 @@ impl Recorder {
 
     /// Editor timeline dragging: sharp single pictures every 0.1 s (at most 450, spread over longer clips), up to
     /// 1280x720, good JPEG quality with full colour detail (the player's 640x360 sheet looked grainy/green in the
-    /// editor, where lining up exact moments matters - William, chat 26). Kept for the last 3 clips opened.
+    /// editor, where lining up exact moments matters - chat 26). Kept for the last 3 clips opened.
     /// Returns {prefix, step, count}: picture k = `<prefix><k:04>.jpg` = time k * step.
     /// `player` = the lighter set for dragging the player's seek bar on Linux (chat 26): one every 0.2 s (max 300),
     /// 960x540, -q:v 3, last 5 clips kept - between the 60-picture sheet (grainy) and the editor's set.
@@ -5470,8 +5602,8 @@ impl Recorder {
 
     /// Writes "Echo log <time>.txt" (log + previous log + settings without passwords/keys) for sending to a friend.
     pub fn support_file(&self) -> Result<String, String> {
-        // ECHO_VERSION is set by the GitHub build (1.0.<n>); own builds say 0.1.0
-        let mut out = format!("Echo {} - {}\n", option_env!("ECHO_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        // ECHO_VERSION is set by the GitHub build (2.0.<n>); a hand build says "0.1.0 (built by hand)"
+        let mut out = format!("Echo {} - {}\n", option_env!("ECHO_VERSION").unwrap_or(concat!(env!("CARGO_PKG_VERSION"), " (built by hand)")), chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
         let mut cfg = serde_json::to_value(self.settings()).unwrap_or_default();
         if let Some(m) = cfg.as_object_mut() {
             for (k, v) in m.iter_mut() {
@@ -5523,7 +5655,7 @@ impl Recorder {
     }
 
     /// "Send log": uploads the log file to echoclip.link (email addresses removed) and returns the link
-    /// (William pastes it to Claude, who reads it directly). Kept 14 days by the server.
+    /// (the developer pastes it to Claude, who reads it directly). Kept 14 days by the server.
     pub fn upload_log(&self, file: &str) -> Result<String, String> {
         let text = fs::read_to_string(file).map_err(err)?;
         let mut text = redact_emails(&text);
@@ -6304,7 +6436,11 @@ struct CloudState {
     /// link unless Echo says they're kept - favourite / auto upload / removed from this PC, see cloudsave.rs)
     share_only: std::collections::BTreeSet<String>,
     /// cloud-savings: Echo Cloud has a smaller copy of these clips: [cloud size, size of the clip on this PC]
+    /// av1-upload-fix (10 Nov 2026): also every other cloud copy that isn't the clip itself - an AV1 clip's H.264
+    /// copy (those are in `h264` too), so "Free up space" knows the cloud has the whole clip
     smaller: std::collections::BTreeMap<String, [u64; 2]>,
+    /// av1-upload-fix: the cloud copy of these AV1 clips is their H.264 copy (plays everywhere), not a smaller one
+    h264: std::collections::BTreeSet<String>,
     /// cloud-savings: the same clip is on this PC twice; Echo Cloud keeps it once, as the other name
     dups: std::collections::BTreeMap<String, String>,
 }
@@ -7410,7 +7546,8 @@ impl Recorder {
         }
         let share_only = days.map(|d| d.min(3650)).unwrap_or(cfg.link_days) > 0;
         // a share copy (watermark / AV1) is all the link needs: the whole clip doesn't have to go up first
-        if !(has_ec && is_av1(path)) && !self.cloud_state().files.iter().any(|f| f.rel == rel) {
+        // (av1-upload-fix: on the user's own clouds too - cloud_link_new makes it)
+        if !is_av1(path) && !self.cloud_state().files.iter().any(|f| f.rel == rel) {
             let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             let to_ec = upload_target(&cfg, fsize, true).map_or(cfg.cloud_accounts.len() == 1, |a| a.provider == "echocloud");
             if has_ec && !to_ec {
@@ -7421,9 +7558,17 @@ impl Recorder {
                 // the upload's progress shows on the card as "Making link N%" (it used to sit at 0% until the link)
                 let r = std::thread::scope(|sc| {
                     let h = sc.spawn(|| self.upload_inner(path, true, share_only));
+                    // av1-upload-fix: a copy made first (AV1 -> H.264 / Echo Cloud's smaller copy) is the first half
+                    let mut made = false;
                     while !h.is_finished() {
-                        let f = { let p = UP_PROGRESS.lock().unwrap(); (p.rel == rel && p.total > 0).then(|| p.got as f64 / p.total as f64) };
-                        if let Some(f) = f { progress(f.min(1.0) * 0.95); }
+                        let f = {
+                            let p = UP_PROGRESS.lock().unwrap();
+                            if p.rel != rel { None }
+                            else if p.got == 0 && matches!(p.stage.as_str(), "h264" | "smaller") { made = true; Some(p.stage_f as f64 * 0.5) }
+                            else if p.total > 0 { let f = (p.got as f64 / p.total as f64).min(1.0); Some(if made { 0.5 + f * 0.45 } else { f * 0.95 }) }
+                            else { None }
+                        };
+                        if let Some(f) = f { progress(f.min(0.95)); }
                         std::thread::sleep(Duration::from_millis(250));
                     }
                     h.join().unwrap_or_else(|_| Err("upload crashed".into()))
@@ -7484,7 +7629,13 @@ impl Recorder {
             let mut p = UP_PROGRESS.lock().unwrap();
             if p.count == 0 { p.idx = 1; p.count = 1; }
             p.rel = rel.clone(); p.got = 0; p.total = orig_size; p.dest = dest.clone();
+            p.stage.clear(); p.stage_f = 0.0;
         }
+        // av1-upload-fix: the copy being made shows in the progress box ("Converting AV1 to H.264… 40%")
+        let stage = |s: &str, f: f64| {
+            let mut p = UP_PROGRESS.lock().unwrap();
+            if p.rel == rel { if p.stage != s { p.stage = s.to_string(); } p.stage_f = f as f32; }
+        };
         let up_done = || {
             let mut p = UP_PROGRESS.lock().unwrap();
             if p.rel == rel { p.rel.clear(); if p.idx >= p.count { p.idx = 0; p.count = 0; } }
@@ -7497,13 +7648,29 @@ impl Recorder {
                 return Ok(other);
             }
         }
-        // Echo Cloud gets a smaller copy (cloudsave.rs); other clouds: AV1 clips go up as H.264, so share links play
-        // on every phone and browser, every other clip as itself
-        let made_copy = if to_ec { self.cloud_copy(path, &rel) } else { self.shareable(path).map(|p| (p, false)) };
-        let (up, temp) = match made_copy { Ok(x) => x, Err(e) => { up_done(); return Err(e); } };
+        // Echo Cloud gets a smaller copy (cloudsave.rs); the user's own clouds always get the clip itself, AV1 too
+        // (William, 10 Nov 2026 - they used to get an AV1 clip's H.264 copy; its share link now plays an H.264 share
+        // copy next to it instead, cloudsave.rs link_via_own_copy)
+        let made_copy = if to_ec { self.cloud_copy(path, &rel, &stage) } else { Ok((path.to_string(), false)) };
+        let (up, temp) = match made_copy {
+            Ok(x) => x,
+            Err(e) => {
+                up_done();
+                // cancelled while the AV1 clip's H.264 copy was made: not again on its own (like a cancelled upload)
+                if UP_CANCEL.swap(false, Ordering::Relaxed) {
+                    log_line(&format!("cloud: upload of {rel} cancelled while making its copy"));
+                    let mut sk = UP_SKIPPED.lock().unwrap();
+                    if !sk.contains(&rel) { sk.push(rel.clone()); }
+                    return Err("Upload cancelled".into());
+                }
+                return Err(e);
+            }
+        };
         let path = up.as_str();
+        // what goes up isn't the clip itself: Echo Cloud's smaller copy, or an AV1 clip's H.264 copy
+        let is_copy = up != orig;
         let fsize = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        { let mut p = UP_PROGRESS.lock().unwrap(); if p.rel == rel { p.total = fsize; } }
+        { let mut p = UP_PROGRESS.lock().unwrap(); if p.rel == rel { p.total = fsize; p.stage = "send".into(); p.stage_f = 0.0; } }
         // pause instead of going over the plan: a clip that doesn't fit isn't uploaded
         // (the server also stops handing out upload keys once the account is full)
         if only_ec {
@@ -7568,14 +7735,18 @@ impl Recorder {
         if self.cloud_serve.lock().unwrap().is_some() { SERVE_STALE.store(true, Ordering::Relaxed); }
         log_line(&format!("cloud: uploaded {rel} to {dest} in {:.0}s ({}{}{})", t0.elapsed().as_secs_f32(),
             if via_server { "Echo Cloud, size-checked upload link" } else if to_ec { "Echo Cloud, keys" } else { "rclone" },
-            if temp { format!(", smaller copy {:.1} of {:.1} MB", fsize as f64 / 1e6, orig_size as f64 / 1e6) } else { String::new() },
+            if temp { format!(", smaller copy {:.1} of {:.1} MB", fsize as f64 / 1e6, orig_size as f64 / 1e6) }
+            else if is_copy { format!(", H.264 copy {:.1} MB of the {:.1} MB AV1 clip", fsize as f64 / 1e6, orig_size as f64 / 1e6) } else { String::new() },
             if kept_share_only { ", only for its share link" } else { "" }));
         let mut st = self.cloud_state();
         st.keep_remote.remove(&rel);
         st.no_upload.remove(&rel);
         st.dups.remove(&rel);
         if kept_share_only { st.share_only.insert(rel.clone()); } else { st.share_only.remove(&rel); }
-        if temp { st.smaller.insert(rel.clone(), [fsize, orig_size]); } else { st.smaller.remove(&rel); }
+        // av1-upload-fix: remember any copy (not only Echo Cloud's smaller one) - "Free up space" compared the AV1
+        // clip with its H.264 copy in Google Drive and said "The cloud copy isn't complete yet" (10 Nov 2026)
+        if is_copy { st.smaller.insert(rel.clone(), [fsize, orig_size]); } else { st.smaller.remove(&rel); }
+        if is_copy && !temp { st.h264.insert(rel.clone()); } else { st.h264.remove(&rel); }
         st.files.retain(|f| f.rel != rel);
         let p = Path::new(&rel);
         st.files.push(CloudFile {
@@ -7693,7 +7864,19 @@ impl Recorder {
         }
         let tmp = PathBuf::from(format!("{}.echodl", out.to_string_lossy()));
         let mut f = fs::File::create(&tmp).map_err(err)?;
-        let n = match std::io::copy(&mut r, &mut f) { Ok(n) => n, Err(e) => { drop(f); let _ = fs::remove_file(&tmp); return Err(err(e)); } };
+        // copy in pieces and report every piece: the player's download bar moves with the bytes (the file-size
+        // watcher in cloud_download only looks every 300 ms - the bar went in steps)
+        let copy = |r: &mut BufReader<std::net::TcpStream>, f: &mut fs::File| -> std::io::Result<u64> {
+            use std::io::Read;
+            let (mut buf, mut n) = (vec![0u8; 64 << 10], 0u64);
+            loop {
+                let k = match r.read(&mut buf) { Ok(0) => return Ok(n), Ok(k) => k, Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue, Err(e) => return Err(e) };
+                f.write_all(&buf[..k])?;
+                n += k as u64;
+                if let Some(p) = DL_PROGRESS.lock().unwrap().get_mut(rel) { p.0 = p.0.max(n); }
+            }
+        };
+        let n = match copy(&mut r, &mut f) { Ok(n) => n, Err(e) => { drop(f); let _ = fs::remove_file(&tmp); return Err(err(e)); } };
         if let Some(t) = modified { let _ = f.set_modified(t); }
         drop(f);
         if n == 0 || len.map_or(false, |l| l != n) {
@@ -7711,7 +7894,8 @@ impl Recorder {
         let v: Vec<serde_json::Value> = serde_json::from_str(&j).unwrap_or_default();
         // cloud-savings: Echo Cloud may hold the smaller copy Echo made of exactly this file
         let cloud_size = v.first().and_then(|f| f["Size"].as_u64());
-        if !cloud_size.map_or(false, |c| self.same_clip(&self.cloud_state(), &rel, c, size)) {
+        // av1-upload-fix: an AV1 clip uploaded before Echo remembered its H.264 copy - check that copy on this PC
+        if !cloud_size.map_or(false, |c| self.same_clip(&self.cloud_state(), &rel, c, size) || self.h264_copy_matches(path, &rel, c, size)) {
             return Err("The cloud copy isn't complete yet - upload it first".into());
         }
         // uploaded only for a share link: Echo Cloud must keep it now (it's the only copy left)
@@ -7731,7 +7915,10 @@ impl Recorder {
         // a link that plays a share copy (Echo/.shared/…) keeps working after the clip's cloud copy is deleted
         // (the server only ends links of the deleted file) - so remember it, or "Shared" + "Stop sharing" vanished
         // while the link still worked (chat 27)
-        if !self.links().get(rel).map_or(false, |e| e.key.contains("/.shared/")) { self.forget_link(rel); }
+        // av1-upload-fix: same for a share copy in the user's own cloud while the clip is still on this PC ("Delete from
+        // the cloud"); deleted everywhere / a cloud-only clip: the link and its share copy go
+        let here = self.clips_dir().join(rel).exists();
+        if !self.links().get(rel).map_or(false, |e| e.key.contains("/.shared/") || (here && !e.own.is_empty())) { self.forget_link(rel); }
         let cp = self.cpath(rel);
         let cfg = self.settings();
         // Echo Cloud: delete through the server (works with read-only keys); other clouds: rclone as before
@@ -7754,6 +7941,7 @@ impl Recorder {
         st.keep_remote.remove(rel);
         st.share_only.remove(rel);
         st.smaller.remove(rel);
+        st.h264.remove(rel);
         st.dups.retain(|k, v| k != rel && v != rel);
         // still on this PC: the background sync must not upload it straight back
         if self.clips_dir().join(rel).exists() { st.no_upload.insert(rel.to_string()); }
@@ -7883,11 +8071,39 @@ impl Recorder {
     /// "Stop sharing": the clip's Echo Cloud link stops working (the clip stays).
     pub fn cloud_unshare(&self, rel: &str) -> Result<(), String> {
         let cfg = self.settings();
+        let entry = self.links().get(rel).cloned();
+        // av1-upload-fix: a link that plays an H.264 share copy in the user's own cloud - deleting that copy ends it
+        if let Some(e) = entry.as_ref().filter(|e| !e.own.is_empty()) {
+            cloudsave::own_copy_delete(&e.own)?;
+            let mut m = self.links();
+            m.remove(rel);
+            self.save_links(&m);
+            log_line(&format!("cloud: stopped sharing {rel} (share copy deleted)"));
+            return Ok(());
+        }
+        // av1-upload-fix: a link straight to the clip's file in the user's own cloud (older Echo, or a cloud that
+        // can't copy on its own): Echo can't end it - say where it's done, and keep the link (it still works)
+        if entry.as_ref().is_some_and(|e| e.key.is_empty()) {
+            let name = self.own_link_cloud(rel);
+            log_line(&format!("cloud: can't stop {rel}'s link in {name} from Echo (a link to the clip itself) - told the user"));
+            return Err(if name == "Google Drive" {
+                "Google Drive links can't be stopped from Echo - in Google Drive: the clip → Share → General access → Restricted".to_string()
+            } else {
+                format!("{name} links can't be stopped from Echo - remove the clip's link in {name}'s sharing settings")
+            });
+        }
         if cfg.ec_token.is_empty() { return Err("Sign in to Echo Cloud first".into()); }
         let mut paths = vec![format!("Echo/{}", self.cpath(rel).trim_start_matches('/'))];
-        if let Some(n) = Path::new(rel).file_name() { paths.push(format!("Echo/.shared/{}", n.to_string_lossy())); }
-        // the exact object the link plays (a share copy keeps its old name when the clip is renamed later)
-        if let Some(e) = self.links().get(rel) { if !e.key.is_empty() && !paths.contains(&e.key) { paths.push(e.key.clone()); } }
+        // the exact object the link plays (a share copy keeps its old name when the clip is renamed later). Without
+        // one (links.json lost): this clip's share copy, and the old by-name place (av1-upload-fix: only then - it may
+        // be another clip's with the same name)
+        match self.links().get(rel).filter(|e| !e.key.is_empty()) {
+            Some(e) => { if !paths.contains(&e.key) { paths.push(e.key.clone()); } }
+            None => {
+                paths.push(format!("Echo/.shared/{}", rel.trim_start_matches('/')));
+                if let Some(n) = Path::new(rel).file_name() { paths.push(format!("Echo/.shared/{}", n.to_string_lossy())); }
+            }
+        }
         let mut removed = 0;
         let mut upload_gone = false;
         for p in paths {
@@ -7895,18 +8111,23 @@ impl Recorder {
             removed += j["removed"].as_u64().unwrap_or(0);
             upload_gone |= j["upload_deleted"].as_bool().unwrap_or(false);
         }
-        self.forget_link(rel);
+        // av1-upload-fix: forgotten only when the link is really gone - it was removed now, or Echo Cloud has no link
+        // on the object Echo remembered (it ended already). Forgetting it first lost a link Echo Cloud couldn't
+        // remove (Vice_Clip_23, 10 Nov 2026: a Google Drive link, "This clip had no share link" and gone from Echo)
+        let known_dead = entry.as_ref().is_some_and(|e| !e.key.is_empty());
+        if removed > 0 || known_dead { self.forget_link(rel); }
         // cloud-savings: the clip was uploaded only for this link - the server deleted it with the link
         if upload_gone {
             let mut st = self.cloud_state();
             st.files.retain(|f| f.rel != rel);
             st.share_only.remove(rel);
             st.smaller.remove(rel);
+            st.h264.remove(rel);
             self.save_cloud_state(&st);
             log_line(&format!("cloud: {rel} was uploaded only for its link - removed from Echo Cloud with it"));
         }
-        log_line(&format!("cloud: stopped sharing {rel} ({removed} link(s))"));
-        if removed == 0 { return Err("This clip had no share link".into()); }
+        log_line(&format!("cloud: stopped sharing {rel} ({removed} link(s){})", if removed == 0 && known_dead { ", it had ended already" } else { "" }));
+        if removed == 0 && !known_dead { return Err("This clip had no share link".into()); }
         Ok(())
     }
 
@@ -7970,6 +8191,7 @@ impl Recorder {
         // cloud-savings marks follow the clip (the server moves its own with /move)
         if st.share_only.remove(&old_rel) { st.share_only.insert(new_rel.clone()); }
         if let Some(v) = st.smaller.remove(&old_rel) { st.smaller.insert(new_rel.clone(), v); }
+        if st.h264.remove(&old_rel) { st.h264.insert(new_rel.clone()); }
         if let Some(v) = st.dups.remove(&old_rel) { st.dups.insert(new_rel.clone(), v); }
         for v in st.dups.values_mut().filter(|v| **v == old_rel) { *v = new_rel.clone(); }
         self.save_cloud_state(&st);
@@ -8016,6 +8238,12 @@ impl Recorder {
         }
     }
 
+    /// Streaming servers an earlier Echo left running (before childtie, or killed some other way): stop them.
+    pub fn reap_stale_serves() {
+        let n = crate::childtie::reap_orphans(&cloud_conf());
+        if n > 0 { log_line(&format!("cloud: stopped {n} streaming server(s) left over from an earlier Echo")); }
+    }
+
     /// Local streaming address for cloud clips (starts "rclone serve http" once).
     pub fn cloud_stream_base(&self) -> Result<String, String> {
         SERVE_USED.store(now_unix(), Ordering::Relaxed);
@@ -8034,18 +8262,35 @@ impl Recorder {
             }
         }
         let pref = SERVE_PORT.load(Ordering::Relaxed);
+        let open = |port: u16| std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(200)).is_ok();
         for port in std::iter::once(pref).filter(|p| *p != 0).chain(53980u16..53990) {
-            let mut c = rclone_cmd()?
-                .args(["serve", "http", CLOUD_ROOT, "--read-only", "--addr", &format!("127.0.0.1:{port}"), "--vfs-cache-mode", "minimal",
-                       "--baseurl", &format!("/{}", serve_token())])
-                .stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(err)?;
-            std::thread::sleep(Duration::from_millis(900));
-            if matches!(c.try_wait(), Ok(None)) {
-                log_line(&format!("cloud: streaming server on port {port}"));
+            if open(port) {
+                continue; // another program has this port: its "yes" below would look like rclone's
+            }
+            let t0 = Instant::now();
+            let mut c = rclone_cmd()?;
+            c.args(["serve", "http", CLOUD_ROOT, "--read-only", "--addr", &format!("127.0.0.1:{port}"), "--vfs-cache-mode", "minimal",
+                    "--baseurl", &format!("/{}", serve_token())])
+                .stdout(Stdio::null()).stderr(Stdio::null());
+            // ends together with Echo (quit, crash, restart) - servers were left running before (10 Nov 2026)
+            let mut c = crate::childtie::spawn(c).map_err(err)?;
+            // rclone listens only once it has connected to every cloud (Google Drive: a few seconds). Handing the
+            // address out before that = "connection refused" for the player (native player on Linux: "Couldn't
+            // stream this clip", 10 Nov 2026) - wait until it answers (or quits: port taken / bad config)
+            let ready = loop {
+                if !matches!(c.try_wait(), Ok(None)) { break false; }
+                if open(port) { break true; }
+                if t0.elapsed() > Duration::from_secs(20) { break matches!(c.try_wait(), Ok(None)); }
+                std::thread::sleep(Duration::from_millis(100));
+            };
+            if ready {
+                log_line(&format!("cloud: streaming server on port {port} (ready after {:.1} s)", t0.elapsed().as_secs_f32()));
                 SERVE_PORT.store(port, Ordering::Relaxed);
                 *g = Some((c, port));
                 return Ok(format!("http://127.0.0.1:{port}/{}", serve_token()));
             }
+            let _ = c.kill();
+            let _ = c.wait();
         }
         Err("could not start the streaming server".into())
     }
@@ -8088,7 +8333,9 @@ impl Recorder {
         let dir = self.thumbs_dir().join("shared");
         fs::create_dir_all(&dir).map_err(err)?;
         let stem = src.file_stem().ok_or("bad clip path")?.to_string_lossy().to_string();
-        let out = dir.join(format!("{stem}.{style}.mp4"));
+        // av1-upload-fix: one cached copy per clip (by name only, a same-named clip in another folder could reuse it)
+        let place = self.rel_of(&s).map(|r| h264_cache_name(Some(r.trim_end_matches(".mp4").trim_end_matches(".MP4")), "")).unwrap_or_else(|| stem.clone());
+        let out = dir.join(format!("{place}.{style}.mp4"));
         let sm = fs::metadata(src).map_err(err)?;
         if let Ok(m) = fs::metadata(&out) {
             if m.len() > 0 && m.modified().ok() >= sm.modified().ok() {
@@ -8103,7 +8350,7 @@ impl Recorder {
         let cap = if h <= 720 { 5000.0 } else if h <= 1080 { 8000.0 } else if h <= 1440 { 12000.0 } else { 20000.0 };
         let kbps = ((sm.len() as f64 * 8.0 / dur / 1000.0 - 192.0 * tracks) * if av1 { 2.0 } else { 1.0 }).clamp(2500.0, cap) as u64;
         let b = format!("{kbps}k");
-        let tmp = dir.join(format!("{stem}.sharing.tmp"));
+        let tmp = dir.join(format!("{place}.sharing.tmp"));
         let graph = match if style == "off" { None } else { self.watermark_graph("v0", "out", h) } {
             Some(w) => format!("[in]null[v0];{w}"),
             None => TV_YUV.to_string(),
@@ -8172,13 +8419,15 @@ impl Recorder {
         Ok(())
     }
 
-    /// Share link through a copy in Echo Cloud (Echo/.shared/<name>.mp4): H.264 + watermark, also for clips that
+    /// Share link through a copy in Echo Cloud (Echo/.shared/<folder>/<name>.mp4): H.264 + watermark, also for clips that
     /// are only on another cloud (Google Drive links don't play in Discord). The clip itself isn't touched.
     fn link_via_copy(&self, rel: &str, days: u32, progress: &dyn Fn(f64), try_old: bool) -> Result<(String, String, u64, serde_json::Value), String> {
         let cfg = self.settings();
         let local = self.clips_dir().join(rel);
-        let name = Path::new(rel).file_name().ok_or("bad clip path")?.to_string_lossy().to_string();
-        let key = format!("Echo/.shared/{name}");
+        // av1-upload-fix (10 Nov 2026): one place per clip - with the file name only, two "Clip_1.mp4" in different
+        // folders overwrote each other's copy (the older link then played the other clip). Copies made before stay
+        // at Echo/.shared/<name>.mp4 (links.json "key" points there; the server cleans both up the same way)
+        let key = format!("Echo/.shared/{}", rel.trim_start_matches('/'));
         // shared before (by an older Echo, or links.json was lost): the copy is still in Echo Cloud -
         // link it again instead of fetching, converting and uploading the whole clip once more
         if try_old {
@@ -8191,17 +8440,21 @@ impl Recorder {
                 }
             }
         }
+        // av1-upload-fix: the boxes say what's going on ("Downloading from Google Drive to make a share copy… N%",
+        // "Converting AV1 to H.264…"); a failed download is a clear error and leaves nothing behind
+        let others: Vec<_> = cfg.cloud_accounts.iter().filter(|a| a.provider != "echocloud").collect();
+        let lp = cloudsave::LinkProg::begin(rel, if others.len() == 1 { cloud_name(&others[0].provider) } else { "the cloud" });
         let mut fetched = None;
         let src = if local.exists() { local } else {
             // only in a cloud: fetch it next to the share copies, just for this
-            let tmp = self.thumbs_dir().join("shared").join(format!("dl_{name}"));
-            fs::create_dir_all(tmp.parent().unwrap()).map_err(err)?;
-            rclone_out(&["copyto", &remote(&self.cpath(rel)), &tmp.to_string_lossy()]).map_err(|e| format!("Couldn't fetch the clip from the cloud: {e}"))?;
+            let tmp = self.fetch_for_share(rel, &lp, progress, 0.0, 0.3)?;
             fetched = Some(tmp.clone());
             tmp
         };
-        progress(0.0);
-        let copy = self.share_copy(&src, &|f| progress(f * 0.45));
+        let at = if fetched.is_some() { 0.3 } else { 0.0 };
+        progress(at);
+        let copy = self.share_copy(&src, &|f| { lp.stage("convert", f); progress(at + f * (0.45 - at)); });
+        lp.stage("send", 0.0);
         let copy = match copy { Ok(c) => c, Err(e) => { if let Some(f) = &fetched { let _ = fs::remove_file(f); } return Err(e); } };
         let up = self.ec_put(&copy, &key, &|f| progress(0.45 + f * 0.55));
         if let Some(f) = &fetched { let _ = fs::remove_file(f); }
@@ -8281,7 +8534,11 @@ impl Recorder {
     /// The clip's link must not be handed out again (stopped sharing, deleted, moved, signed out…).
     pub fn forget_link(&self, rel: &str) {
         let mut m = self.links();
-        if m.remove(rel).is_some() { self.save_links(&m); }
+        if let Some(e) = m.remove(rel) {
+            self.save_links(&m);
+            // av1-upload-fix: its share copy in the user's own cloud goes too (no orphans)
+            if !e.own.is_empty() { self.drop_own_copy(&e.own); }
+        }
     }
     /// Size + change time of the clip (or its cloud copy): a link made for an older version isn't reused.
     fn link_sig(&self, rel: &str) -> String {
@@ -8295,13 +8552,19 @@ impl Recorder {
     fn remember_link(&self, rel: &str, url: &str, key: &str, days: u32, expires: u64, req: &serde_json::Value) {
         let mut meta = req.clone();
         if let Some(o) = meta.as_object_mut() { o.remove("thumb"); o.remove("path"); o.remove("days"); }
-        let e = LinkEntry { url: url.into(), key: key.into(), days, expires, wm: share_wm(&self.settings()).to_string(), sig: self.link_sig(rel), meta };
+        let own = meta.as_object_mut().and_then(|o| o.remove("own_copy")).and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        let e = LinkEntry { url: url.into(), key: key.into(), days, expires, wm: share_wm(&self.settings()).to_string(), sig: self.link_sig(rel), meta, own: own.clone() };
         let mut m = self.links();
         // the share-link file names expire anyway; keep the list small
         let now = now_unix();
+        // av1-upload-fix: an expired link's share copy in the user's own cloud goes with it (not the one just made)
+        let gone: Vec<String> = m.values().filter(|v| v.expires != 0 && v.expires <= now && !v.own.is_empty() && v.own != own).map(|v| v.own.clone()).collect();
         m.retain(|_, v| v.expires == 0 || v.expires > now);
+        // a link made again for the same clip whose copy went to another place (renamed clip / other cloud): the old copy goes
+        if let Some(old) = m.get(rel) { if !old.own.is_empty() && old.own != own { self.drop_own_copy(&old.own); } }
         m.insert(rel.to_string(), e);
         self.save_links(&m);
+        if !gone.is_empty() { std::thread::spawn(move || for p in gone { let _ = cloudsave::own_copy_delete(&p); }); }
     }
     /// The link Echo made before, when it still works (same clip, same watermark, not expired or removed).
     /// Only the lifetime is different: Echo Cloud changes it on the same link.
@@ -8320,6 +8583,9 @@ impl Recorder {
         if !alive {
             m.remove(rel);
             self.save_links(&m);
+            // av1-upload-fix: an expired own-cloud link's share copy goes (a changed clip's new copy goes to the same
+            // place and replaces it)
+            if !e.own.is_empty() && e.expires != 0 && e.expires <= now_unix() + 3600 { self.drop_own_copy(&e.own); }
             return Err(true);
         }
         if e.days == days {
@@ -8368,12 +8634,21 @@ impl Recorder {
         // share copy (an AV1 clip): an H.264 copy goes to Echo Cloud, so the link plays everywhere
         let has_ec = cfg.cloud_accounts.iter().any(|a| a.provider == "echocloud") && !cfg.ec_token.is_empty();
         let local = self.clips_dir().join(rel);
-        if has_ec && local.exists() && is_av1(&local.to_string_lossy()) {
+        // av1-upload-fix (William, 10 Nov 2026): the link would play an AV1 file (the clip on this PC that isn't
+        // uploaded yet, or the cloud's file - also a cloud-only clip): it plays an H.264 share copy instead. A cloud
+        // that already has Echo's H.264 copy (Echo Cloud's smaller copy, old AV1 uploads) is linked as it is.
+        let needs_copy = self.link_needs_h264(rel, &local);
+        if has_ec && needs_copy {
             match self.link_via_copy(rel, days, progress, !stale) {
                 Ok(r) => return Ok(r),
                 Err(e) if e.contains("full") => log_line(&format!("cloud: no room for a share copy ({e}) - linking the clip itself")),
                 Err(e) => return Err(e),
             }
+        }
+        // own clouds only (av1-upload-fix, William 10 Nov 2026): they keep the AV1 original, so the link plays an
+        // H.264 share copy next to it
+        if !has_ec && needs_copy {
+            if let Some(r) = self.link_via_own_copy(rel, &local, days, progress)? { return Ok(r); }
         }
         // Echo Cloud first and without a listing: the server checks the clip itself and answers in ~1 s
         // (looking the file up in e.g. a big Google Drive first took up to a minute)
@@ -8397,12 +8672,20 @@ impl Recorder {
                 Err(e) => return Err(format!("Couldn't make a link: {e}")),
             }
         }
+        let mut holder = None;
         for a in cfg.cloud_accounts.iter().filter(|a| a.provider != "echocloud") {
             let p = acc_path(a, &format!("Echo/{}", cp.trim_start_matches('/')));
             if rclone_out(&["lsjson", &p]).map_or(false, |j| j.contains("\"Path\"")) {
                 r = p;
+                holder = Some(a.clone());
                 break;
             }
+        }
+        // av1-upload-fix (10 Nov 2026): the link plays a share copy next to the clip (a copy inside the cloud, nothing
+        // downloaded), so "Stop sharing" / expiry / deleting the clip can end it - Google Drive links can't be
+        // switched off from Echo, and they never expire. A cloud that can't copy by itself: the clip's own link.
+        if let Some(acc) = &holder {
+            if let Some(x) = self.link_via_server_copy(rel, acc, &r, days, progress)? { return Ok(x); }
         }
         args.push(r.as_str());
         let url = rclone_out(&args).map_err(|e| format!("Couldn't make a link: {e}"))?.trim().lines().last().unwrap_or("").to_string();
@@ -8450,6 +8733,8 @@ impl Recorder {
         let mut changed = false;
         let Ok(files) = self.cloud_refresh() else { return false };
         self.tidy_cloud_folders(&cfg);
+        // av1-upload-fix: expired own-cloud links take their share copies with them
+        self.sweep_own_share_copies();
         let in_cloud: std::collections::HashSet<String> = files.iter().map(|f| f.rel.clone()).collect();
         // 1) uploads
         if cfg.cloud_upload != "off" {
@@ -8955,5 +9240,47 @@ mod import_probe_tests {
         // no video: vc empty (import_one says "no video stream")
         assert_eq!(parse_import_probe("streams.stream.0.codec_type=\"audio\"\nstreams.stream.0.codec_name=\"aac\"\n").vc, "");
         assert_eq!(parse_import_probe(""), ImportProbe::default());
+    }
+}
+
+#[cfg(test)]
+mod av1_upload_tests {
+    use super::*;
+
+    #[test]
+    fn h264_copy_is_named_after_the_clips_place() {
+        // two "Clip_1.mp4" in different folders must not share one H.264 copy
+        assert_eq!(h264_cache_name(Some("Valorant/Clip_1.mp4"), "Clip_1.mp4"), "Valorant~Clip_1.mp4");
+        assert_eq!(h264_cache_name(Some("Minecraft/Clip_1.mp4"), "Clip_1.mp4"), "Minecraft~Clip_1.mp4");
+        assert_eq!(h264_cache_name(None, "Clip_1.mp4"), "Clip_1.mp4");
+    }
+
+    /// ffmpeg_watch: progress goes up to ~1 on a generated 4 s video, and cancel stops it. Skipped without ffmpeg.
+    #[test]
+    fn ffmpeg_watch_reports_progress_and_cancels() {
+        if hidden("ffmpeg").arg("-version").output().map_or(true, |o| !o.status.success()) { return; }
+        let dir = std::env::temp_dir().join(format!("echo-av1-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("t.mp4");
+        // -re: reads the generated video in real time, so the 200 ms polls see it move
+        let cmd = |secs: &str| {
+            let mut c = hidden("ffmpeg");
+            c.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-y", "-re", "-f", "lavfi", "-i"])
+                .arg(format!("testsrc=size=320x240:rate=30:duration={secs}"))
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-f", "mp4"]).arg(&out).stderr(Stdio::null());
+            c
+        };
+        let last = std::cell::Cell::new(0.0f64);
+        let ok = ffmpeg_watch(&mut cmd("2"), 2.0, &|f| last.set(last.get().max(f)), &|| false);
+        assert!(ok, "ffmpeg failed");
+        assert!(fs::metadata(&out).map_or(0, |m| m.len()) > 0);
+        // the last progress line may land after the final poll: well on the way is enough
+        assert!(last.get() > 0.3 && last.get() <= 1.0, "progress {}", last.get());
+        let t0 = Instant::now();
+        let ok = ffmpeg_watch(&mut cmd("600"), 600.0, &|_| {}, &|| t0.elapsed() > Duration::from_millis(300));
+        assert!(!ok, "cancel didn't stop ffmpeg");
+        assert!(t0.elapsed() < Duration::from_secs(10));
+        let _ = fs::remove_dir_all(&dir);
+        eprintln!("progress seen: {:.2}", last.get());
     }
 }

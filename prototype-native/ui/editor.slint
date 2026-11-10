@@ -857,7 +857,7 @@ export component EditorView inherits Rectangle {
     out property <length> vx: (area-w - vw) / 2;
     out property <length> vy: top-h + max(0px, (area-h - vh) / 2);
     property <length> lp: 104px;
-    // William (9 Nov): frameless window - room for the window buttons (app.slint draws them over the bar's right
+    // 9 Nov: frameless window - room for the window buttons (app.slint draws them over the bar's right
     // end) and the bar's empty space moves the window / double-click maximizes, like the main title bar
     in property <length> win-pad;
     in property <bool> win-drag;
@@ -1620,7 +1620,7 @@ export component EditorView inherits Rectangle {
             drop-shadow-offset-y: s.drag ? 8px : 0;
             drop-shadow-color: s.drag ? #000000b0 : T.hi.with-alpha(0.25);
             property <length> tw: 64px * 16 / 9;
-            // William (9 Nov): only the tiles in view (was the first 200 - past ~22000 px, zoomed in, the strip went grey)
+            // 9 Nov: only the tiles in view (was the first 200 - past ~22000 px, zoomed in, the strip went grey)
             property <int> k0: max(0, floor((root.lp - self.x) / self.tw));
             property <int> n: Play.sheet-ok && !s.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
             Rectangle {
@@ -1880,7 +1880,7 @@ export component EditorView inherits Rectangle {
                 return accept;
             }
         }
-        // horizontal scrollbar - ABOVE the timeline's mouse area (William: it was under it, so hovering / dragging it
+        // horizontal scrollbar - ABOVE the timeline's mouse area (it was under it, so hovering / dragging it
         // did nothing). Drag the thumb, or click the track to jump there; Rust keeps the scroll ("scrollto:<px>").
         sbar := Rectangle {
             property <float> content: max(1, Ed.total * tl.pps + 200);

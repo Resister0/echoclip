@@ -149,7 +149,7 @@ fn load(a: &AppWindow) {
         for (list, model) in [(on, on_m), (off, off_m)] {
             for (i, x) in list.iter().enumerate() {
                 let model = model.clone();
-                // William (10 Nov): a share link without a picture on the server (made on another PC / an older Echo)
+                // 10 Nov: a share link without a picture on the server (made on another PC / an older Echo)
                 // shows the clip's own picture from this PC - found by its cloud key ("Echo/<path>") or its name
                 if x["thumb"].as_str().unwrap_or("").is_empty() {
                     if let Some(img) = local_thumb(x["key"].as_str().unwrap_or(""), x["title"].as_str().unwrap_or("")) {

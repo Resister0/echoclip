@@ -23,7 +23,7 @@ rustup-init.exe -y --default-toolchain stable-msvc --profile minimal || goto fai
 
 
 :ffmpeg
-where ffmpeg >nul 2>&1 && (echo [3/4] ffmpeg already installed - skipping) && goto webview
+where ffmpeg >nul 2>&1 && (echo [3/4] ffmpeg already installed - skipping) && goto mpv
 echo [3/4] ffmpeg...
 curl -L -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip || goto fail
 rmdir /s /q "%LOCALAPPDATA%\Programs\ffmpeg" 2>nul
@@ -31,12 +31,20 @@ mkdir "%LOCALAPPDATA%\Programs\ffmpeg"
 tar -xf ffmpeg.zip -C "%LOCALAPPDATA%\Programs\ffmpeg" || goto fail
 powershell -NoProfile -Command "$b=(Get-ChildItem \"$env:LOCALAPPDATA\Programs\ffmpeg\" -Recurse -Filter ffmpeg.exe | Select -First 1).DirectoryName; $p=[Environment]::GetEnvironmentVariable('Path','User'); if($p -notlike \"*$b*\"){[Environment]::SetEnvironmentVariable('Path',\"$p;$b\",'User')}; Write-Host \"    ffmpeg at $b\""
 
-:webview
-echo [4/4] WebView2 runtime (skips if already installed)...
-curl -L -o webview2.exe https://go.microsoft.com/fwlink/p/?LinkId=2124703 && webview2.exe /silent /install
+:mpv
+rem Echo's video player: libmpv-2.dll next to the build (prototype-native\). The same pinned file + fingerprints as
+rem the release build (ci/public-build.yml, "Native app" step) - shinchiro's mpv build 20261107.
+if exist "%~dp0prototype-native\libmpv-2.dll" (echo [4/4] libmpv-2.dll already there - skipping) & goto done
+echo [4/4] libmpv-2.dll (the video player, about 30 MB download)...
+curl -L -o mpv.7z https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261107/mpv-dev-x86_64-20261107-git-9028187538.7z || goto fail
+powershell -NoProfile -Command "if((Get-FileHash mpv.7z -Algorithm SHA256).Hash -ne 'DF7C433A2D481FDAF6163B201F26ABBB0EFF0C215C51368397088C6D8F7A001B'){exit 1}" || (echo     mpv.7z fingerprint is wrong & goto fail)
+tar -xf mpv.7z libmpv-2.dll || goto fail
+powershell -NoProfile -Command "if((Get-FileHash libmpv-2.dll -Algorithm SHA256).Hash -ne 'C91949577AE9CC2D500208DA51F2C4A24CFA7A02D0CE6E130BF67EC738B450BB'){exit 1}" || (echo     libmpv-2.dll fingerprint is wrong & goto fail)
+copy /y libmpv-2.dll "%~dp0prototype-native\libmpv-2.dll" >nul || goto fail
 
+:done
 echo.
-echo Done. Close this window, open a NEW cmd window, and run build.cmd
+echo Done. Close this window, open a NEW cmd window, and run build.cmd (it builds and starts prototype-native\EchoProto.exe)
 pause
 exit /b 0
 

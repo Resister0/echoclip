@@ -292,7 +292,7 @@ pub enum Drag {
     BoxMove { i: usize, x0: f64, y0: f64, bx0: f64, by0: f64, pushed: bool },
     /// a box's corner: the opposite corner stays put
     BoxSize { i: usize, corner: (bool, bool), orig: BoxFx, pushed: bool },
-    /// plain drag on empty timeline = yellow range (William's v2, chat 19); a click without moving = playhead
+    /// plain drag on empty timeline = yellow range (v2, chat 19); a click without moving = playhead
     Range { x0: f64, moved: bool },
     /// Ctrl+drag on empty timeline: a box that selects everything it touches (content coordinates)
     Marq { x0: f64, y0: f64, x1: f64, y1: f64, moved: bool },

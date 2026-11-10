@@ -33,14 +33,14 @@ fn defaults() -> Value {
         "bookmark_key": "Shift+F9", "show_overlay": true, "on_this_day": true, "idle_pause_min": 0,
         "copy_default": "full", "discord_free_mb": 20.0, "discord_basic_mb": 50.0, "discord_nitro_mb": 1000.0, "discord_custom_mb": 100.0,
         "games": [], "only_while_game": false, "sound_on_mark": true, "sound_on_shot": true, "sound_on_stop": true,
-        "sound_files": {}, "session_key": "", "mic_mute_key": "", "push_to_talk": false, "ptt_key": "",
+        "sound_files": {}, "session_key": "", "mic_mute_key": "", "show_key": "", "push_to_talk": false, "ptt_key": "",
         "mic_denoise": true, "cleanup_days": 0, "lib_view": "grid",
         "shrink_old": false, "shrink_days": 30, "shrink_av1": true, "smart_bitrate": true, "capture_cursor": true,
         "share_watermark": true, "smart_quality": 72, "pad_buttons": 0, "pad_seconds": 0, "watermark_style": "kimbo",
         "theme": if cfg!(target_os = "linux") { "system" } else { "" }, "theme_accent": "", "theme_bg": "", "theme_hi": "",
         "monitor": "", "mix_mode": "all", "vol_game": 1.0, "vol_discord": 1.0, "vol_browser": 1.0, "vol_music": 1.0,
         "mix_game": true, "mix_discord": true, "mix_browser": false, "mix_music": false, "mic_mono": false,
-        "cloud_free_after": false, "cloud_original": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": true,
+        "cloud_free_after": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": true,
         "capture": "screen", "codec": "h264", "ec_email": "", "cloud_accounts": [], "cloud_target": ""
     })
 }
@@ -293,6 +293,7 @@ impl Store {
             "mark" => Some("bookmark_key"),
             "long" => Some("session_key"),
             "mute" => Some("mic_mute_key"),
+            "show" => Some("show_key"),
             _ => None,
         };
         let names = |i: &str| match i {
@@ -300,6 +301,7 @@ impl Store {
             "mark" => "Bookmark",
             "long" => "Record",
             "mute" => "Mute mic",
+            "show" => "Show / hide Echo",
             _ => "another save key",
         };
         let mut hk = self.hotkeys();
@@ -309,7 +311,7 @@ impl Store {
                 None => i.strip_prefix("hk:").and_then(|n| n.parse::<usize>().ok()).and_then(|n| hk.get(n)).and_then(|h| h["keys"].as_str()).unwrap_or("").to_string(),
             }
         };
-        let mut all: Vec<String> = ["shot", "mark", "long", "mute"].iter().map(|s| s.to_string()).collect();
+        let mut all: Vec<String> = ["shot", "mark", "long", "mute", "show"].iter().map(|s| s.to_string()).collect();
         all.extend((0..hk.len()).map(|i| format!("hk:{i}")));
         let old = get(self, &hk, &me);
         let other = all.iter().find(|i| **i != me && get(self, &hk, i) == combo).cloned();
@@ -713,6 +715,7 @@ impl Store {
                 rows.push(self.hk("mark", "Bookmark", "Marks a moment in the buffer - it shows as a yellow marker on the next clip you save", &self.s("bookmark_key")));
                 rows.push(self.hk("long", "Record", "Start / stop recording by hand (like the Record button) - saved as a clip when you stop", &self.s("session_key")));
                 rows.push(self.hk("mute", "Mute mic", "Turns your mic off / on in recordings (a popup shows which)", &self.s("mic_mute_key")));
+                rows.push(self.hk("show", "Show / hide Echo", "Brings Echo up over your game, or back to the tray - no alt-tab", &self.s("show_key")));
                 let ptt_sub = format!(
                     "{} - a single key (e.g. V, Caps Lock, Left Alt)",
                     if self.b("push_to_talk") { "Hold it to record your mic" } else { "Turn on Push-to-talk under Audio to use it" }
@@ -1069,7 +1072,7 @@ impl Store {
                     limits,
                     R { kind: "button", label: "Currently used".into(), vtext: crate::library::fmt_size(self.total), ..Default::default() },
                 ]);
-                // other apps' clip folders, read again each time (William: counts must follow clips deleted there)
+                // other apps' clip folders, read again each time (counts must follow clips deleted there)
                 let mut imp: Vec<R> = crate::import::lines(std::path::Path::new(&self.s("clips_dir")))
                     .into_iter()
                     .enumerate()
@@ -1123,7 +1126,7 @@ impl Store {
                                     opt("ecsignout", "Sign out"),
                                     opth("ecdelete", "Delete account…", "sm"),
                                 ];
-                                // William (10 Nov): paid users see the plans too ("Plans" next to Manage plan)
+                                // 10 Nov: paid users see the plans too ("Plans" next to Manage plan)
                                 if paid {
                                     o.insert(1, opt("ecplans", "Plans"));
                                 }
@@ -1230,13 +1233,9 @@ impl Store {
                     sync.push(self.sel("cloud_target", "Upload new clips to", "With several clouds. Echo Cloud first gives you share links that play in Discord; when it's full, clips go to your other clouds.", o));
                 }
                 sync.extend([
-                    self.sw("cloud_free_after", "Free up space after uploading", "Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud - from Echo Cloud as its smaller copy, unless Original quality is on)"),
-                    // cloud-savings (10 Nov 2026): off by default, can become a paid-plan perk later
-                    self.sw(
-                        "cloud_original",
-                        "Original quality in Echo Cloud",
-                        "Off: Echo Cloud gets a smaller copy that looks the same (H.264, up to 1080p, the sound players hear) and uses much less space. The clip on this PC stays as it is. Your own clouds always get the original.",
-                    ),
+                    self.sw("cloud_free_after", "Free up space after uploading", "Automatic uploads are removed from this PC once they're safely in the cloud (they stay in your library and play from the cloud - from Echo Cloud as its smaller copy)"),
+                    // the "Original quality in Echo Cloud" switch was removed (William, 10 Nov 2026): Echo Cloud always
+                    // gets the smaller copy
                     self.sel(
                         "link_days",
                         "Share links expire",
@@ -1262,7 +1261,7 @@ impl Store {
             "profile" => {
                 // gaps-settings: Echo moves its whole Echo Cloud box here (chat 30, h3 "Sign in"): email-code sign-in,
                 // usage bar, Upgrade / Manage plan, Manage space, Sign out, Delete account…, plan cards. Same rows as
-                // Settings > Cloud (taken from there, so both stay one box). The section keeps William's name
+                // Settings > Cloud (taken from there, so both stay one box). The section keeps the name the developer picked,
                 // "Echo Profile".
                 let rows: Vec<R> = self.section("cloud").2.into_iter().next().map(|b| b.rows).unwrap_or_default();
                 (
@@ -1581,7 +1580,7 @@ const THEMES: [(&str, &str, &str, &str, [&str; 3], &str); 19] = [
     ("ocean", "Ocean", "#2fa8e0", "#7cc9f0", ["#4cc3f0", "#2f8fe0", "#3b5cf0"], "#0b0e12"),
     ("ember", "Ember", "#f07a1a", "#ffa154", ["#ffa154", "#f07a1a", "#e0484a"], "#100d0b"),
     ("emerald", "Emerald", "#2fbf86", "#6fd9ab", ["#6fd9ab", "#2fbf86", "#1d9a9a"], "#0b100e"),
-    // William (9 Nov): Crimson = his Custom look (accent #e03232 on #0d0d10; the rest derived like Custom does)
+    // 9 Nov: Crimson = his Custom look (accent #e03232 on #0d0d10; the rest derived like Custom does)
     ("crimson", "Crimson", "#e03232", "#e97070", ["#e55151", "#e03232", "#a82626"], "#0d0d10"),
     ("rose", "Rosé", "#e0609e", "#f29ac4", ["#f29ac4", "#e0609e", "#9b5be0"], "#100c0f"),
     ("slate", "Slate", "#8a96a8", "#c3ccd8", ["#c3ccd8", "#8a96a8", "#5d6a7c"], "#0c0d0f"),
@@ -1673,6 +1672,19 @@ fn ask_light() -> bool {
 #[cfg(not(windows))]
 fn ask_light() -> bool {
     let out = |c: &str, a: &[&str]| std::process::Command::new(c).args(a).stderr(std::process::Stdio::null()).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase()).unwrap_or_default();
+    // 10 Nov 2026: the desktop portal first - the standard light/dark answer on KDE, GNOME and others, and the only
+    // one that works inside the Flatpak (no gsettings / kreadconfig there). color-scheme: 1 = dark, 2 = light,
+    // 0 = no preference (-> the checks below). ReadOne is newer; older portals only have Read (same answer).
+    for m in ["ReadOne", "Read"] {
+        let p = out("dbus-send", &["--session", "--print-reply=literal", "--reply-timeout=1500", "--dest=org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop", &format!("org.freedesktop.portal.Settings.{m}"), "string:org.freedesktop.appearance", "string:color-scheme"]);
+        match p.split_whitespace().last() {
+            Some("1") => return false,
+            Some("2") => return true,
+            Some("0") => break,
+            _ => {}
+        }
+    }
     let g = out("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"]);
     if g.contains("dark") {
         return false;
@@ -1826,4 +1838,41 @@ pub fn monitors() -> Vec<(String, String)> {
 #[cfg(not(windows))]
 pub fn monitors() -> Vec<(String, String)> {
     vec![]
+}
+
+#[cfg(test)]
+mod show_key_tests {
+    use super::*;
+
+    fn store(name: &str) -> Store {
+        let file = std::env::temp_dir().join(format!("echo-showkey-test-{}-{name}.json", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let Value::Object(v) = defaults() else { panic!() };
+        Store { file, v, found: false, listening: String::new(), sec: "hotkeys".into(), query: String::new(), games: vec![], usage: vec![], total: 0, monitors: vec![], mics: vec![], mic_test: String::new(), mic_default: String::new() }
+    }
+
+    #[test]
+    fn show_key_off_by_default() {
+        assert_eq!(defaults()["show_key"], json!(""));
+        assert_eq!(echo_core::settings::Settings::default().show_key, "");
+    }
+
+    #[test]
+    fn show_key_set_and_swapped() {
+        let mut s = store("swap");
+        s.listening = "show".into();
+        assert_eq!(s.key("Alt+F9"), None);
+        assert_eq!(s.s("show_key"), "Alt+F9");
+        // a key another action uses: they swap (the save key gets the old Show / hide key)
+        s.listening = "show".into();
+        let msg = s.key("Alt+F10").unwrap_or_default();
+        assert!(msg.contains("swapped"), "{msg}");
+        assert_eq!(s.s("show_key"), "Alt+F10");
+        assert_eq!(s.hotkeys()[0]["keys"], json!("Alt+F9"));
+        // and the other way: the screenshot key takes the Show / hide key
+        s.listening = "shot".into();
+        let msg = s.key("Alt+F10").unwrap_or_default();
+        assert!(msg.contains("Show / hide Echo"), "{msg}");
+        let _ = std::fs::remove_file(&s.file);
+    }
 }

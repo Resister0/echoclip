@@ -1,4 +1,4 @@
-//! William (9 Nov): cut out middle parts in the player's strip, without opening the editor. Shift+drag on the
+//! 9 Nov: cut out middle parts in the player's strip, without opening the editor. Shift+drag on the
 //! strip highlights a part (Play.h0 / h1), X cuts it. Cuts are fractions of the clip in Play.cuts
 //! ([a0, b0, a1, b1, ...], sorted, merged). Playing jumps over them, Save copy leaves them out (re-encode), and
 //! E / Edit carries them + the trim + the play head into the editor (edui::carry_in). Click the x on a cut = back.

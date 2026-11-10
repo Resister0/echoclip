@@ -125,7 +125,7 @@ pub fn make_overlay(hwnd: isize) {
         let h = HWND(hwnd as *mut core::ffi::c_void);
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
         // without WS_EX_APPWINDOW (winit sets it on every top-level window): APPWINDOW wins over TOOLWINDOW and
-        // kept the native popup in Alt+Tab as "Echo popup" (William, 10 Nov 2026). Hidden while the style changes:
+        // kept the native popup in Alt+Tab as "Echo popup" (10 Nov 2026). Hidden while the style changes:
         // Windows only re-reads it for the taskbar / Alt+Tab list when the window is shown again (the caller shows it).
         let _ = ShowWindow(h, SW_HIDE);
         let ex = (ex & !(WS_EX_APPWINDOW.0 as isize)) | (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0) as isize;

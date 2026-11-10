@@ -38,6 +38,11 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 ksni = { version = "0.3", features = ["blocking"] }
 # gaps-linux: the Flatpak's Trash portal (already in Cargo.lock through echo-core - no new crate)
 dbus = "0.9"
+# wayland-dnd: drag and drop on Wayland (wl_dnd.rs) - both already in Cargo.lock through winit, same features
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+# show-hide-hotkey: xdg_activation_v1 brings Echo's window to the front on Wayland (showkey.rs) - in Cargo.lock through winit
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [build-dependencies]
 slint-build = "1"

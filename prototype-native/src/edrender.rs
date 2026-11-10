@@ -1157,7 +1157,7 @@ impl Editor {
             g.push(format!("[{last}]scale=-2:{oh}:flags=lanczos,setsar=1[vout]"));
             last = "vout".into();
         }
-        // William (9 Nov): the Echo watermark (Settings > Watermark; off = none) like Echo's render_edit - same
+        // 9 Nov: the Echo watermark (Settings > Watermark; off = none) like Echo's render_edit - same
         // filter from Echo's own recorder.rs, sized to the output height, after texts / scaling, before the colour fix
         if let Some(wm) = crate::rec_core::rec().and_then(|r| r.watermark_graph(&last, "vwm", out_h.filter(|&oh| oh >= 240).unwrap_or(h))) {
             g.push(wm);
@@ -1788,7 +1788,7 @@ pub fn transcribe(ff: &Path, clip: &Path, tracks: u32, log: &dyn Fn(String)) -> 
             Some((w.replace('_', " "), a.parse().ok()?, b.parse().ok()?))
         }).collect());
     }
-    // audit (William, 9 Nov): Echo's own transcribe (echo-core) - it follows Settings > Speech model (this copy always
+    // audit (9 Nov): Echo's own transcribe (echo-core) - it follows Settings > Speech model (this copy always
     // took "small if it's there"), listens to the mic + the Discord track when Discord had sound (friends' voices
     // get captions too), downloads the chosen model with Echo's checksums. The code below is only the fallback.
     if let Some(r) = crate::rec_core::rec() {

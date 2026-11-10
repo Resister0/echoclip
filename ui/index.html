@@ -27,7 +27,7 @@
   :focus-visible { outline:2px solid var(--accent2); outline-offset:2px; }
 
   /* sidebar */
-  /* chat 28 (William): sidebar a little bigger overall - 264 px wide (was 228), rows 42 px (was 38), 14.5 px text */
+  /* chat 28: sidebar a little bigger overall - 264 px wide (was 228), rows 42 px (was 38), 14.5 px text */
   .rail { width:264px; flex:none; background:var(--rail); border-right:1px solid var(--line); display:flex; flex-direction:column; padding:18px 12px 14px; gap:2px; }
   .brandrow { display:flex; align-items:center; gap:10px; padding:2px 8px 20px; }
   .logo { width:34px; height:34px; border-radius:10px; background:var(--grad); display:grid; place-items:center; box-shadow:0 6px 18px rgba(var(--accent-rgb),0.33), inset 0 1px 0 #ffffff40; }
@@ -43,7 +43,7 @@
   .flt.on { color:var(--text); background:var(--panel); }
   .flt.on .n { color:var(--accent2); }
   /* the selected clip filter / folder gets the same look as the old Library button: accent tint, border, glow on
-     hover, accent bar, accent icon (William: keep those effects) */
+     hover, accent bar, accent icon (asked: keep those effects) */
   .flt.on { background:rgba(var(--accent-rgb),.10); border-color:rgba(var(--accent-rgb),.22); box-shadow:none; color:var(--text); }
   .flt.on:hover { box-shadow:0 0 16px rgba(var(--accent-rgb),.28); }
   .flt.on::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:2px; border-radius:0 3px 3px 0; background:var(--accent); opacity:.9; }
@@ -207,7 +207,7 @@
   .group { padding:18px 28px 0; }
   .group h2 { font-size:15px; font-weight:600; display:flex; align-items:baseline; gap:8px; margin-bottom:12px; }
   .group h2 small { color:var(--dim); font-size:12.5px; font-weight:400; }
-  /* chat 28 (William): the same 4 cards per row at 1080p and 1440p (was 3 vs 5 from minmax(400px)) - fewer only
+  /* chat 28: the same 4 cards per row at 1080p and 1440p (was 3 vs 5 from minmax(400px)) - fewer only
      when the window itself is narrow */
   .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:22px; }
   @media (max-width:1500px) { .grid:not(.list) { grid-template-columns:repeat(3,minmax(0,1fr)); } }
@@ -291,7 +291,7 @@
     transition:max-width .18s ease, margin .18s ease, opacity .15s .05s; }
   .ovl .more .ib { flex:none; }
   body.ctrlheld .card .ovl .more { max-width:150px; margin-right:6px; opacity:1; visibility:visible; }
-  /* holding Ctrl: the extra buttons are there at once, no slide (William, chat 26) - also when Ctrl is let go */
+  /* holding Ctrl: the extra buttons are there at once, no slide (chat 26) - also when Ctrl is let go */
   body.ctrlinst .card .ovl .more, body.ctrlinst #keyhint { transition:none !important; }
   #keyhint { position:fixed; left:50%; bottom:18px; transform:translate(-50%,8px); z-index:40; opacity:0; pointer-events:none; transition:.15s;
     background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 14px; font-size:12px; color:var(--muted); box-shadow:0 10px 30px #0008; white-space:nowrap; }
@@ -331,7 +331,7 @@
   html.linux .card:hover { box-shadow:0 8px 16px #0008, 0 0 0 1px rgba(var(--accent-rgb),0.2); }
   html.linux .card.picked:hover { box-shadow:0 8px 16px #0008; }
   /* tints as a COLOUR fade on an overlay, not an opacity fade of the picture: WebKitGTK (Linux) runs opacity /
-     transform fades as GPU layers that flicker on William's PC (chat 24 notifications, chat 26 here); a colour
+     transform fades as GPU layers that flicker on the developer's PC (chat 24 notifications, chat 26 here); a colour
      change is painted with the page = smooth everywhere */
   .card .thumb::before { content:""; position:absolute; inset:0; background:transparent; pointer-events:none; z-index:1; transition:background-color .15s; }
   .card.picked .thumb::before { background:rgba(var(--accent-rgb),0.16); }
@@ -1486,7 +1486,7 @@
   }
   async function updManual() {
     const b = $("updnow"), st = $("updstate");
-    // 0.1.0 = made by hand with build.cmd (William's own copy, or an Echo.exe he sent a tester): never updates.
+    // 0.1.0 = made by hand with build.cmd (the developer's own copy, or an Echo.exe he sent a tester): never updates.
     // Testers kept running such a copy and thought updates were broken -> say it plainly + one click to the installer
     if (appVer === "0.1.0") {
       st.textContent = "This copy of Echo was built by hand and never updates itself. Install Echo from echoclip.link to get updates.";
@@ -1648,7 +1648,7 @@
   let lastAct = "";   // the last clip action (for the log line below)
   function toast(msg) {
     msg = plat(String(msg)); const box = $("notes");
-    // errors go into Echo's log too (William's "os error 32" toast left no trace in the log)
+    // errors go into Echo's log too (the "os error 32" toast left no trace in the log)
     if (/os error|error|couldn't|could not|can't|failed|is open in/i.test(msg)) invoke("ui_log", { msg: (lastAct ? `[${lastAct}] ` : "") + msg }).catch(() => {});
     let t = [...box.querySelectorAll(".note.msg")].find(e => e.textContent === msg && !e._out);
     if (!t) {
@@ -3398,7 +3398,7 @@
     });
   }
   // Linux: a clip's first frames sometimes come out squashed (WebKitGTK / GStreamer still settling on the picture
-  // size, length not known yet - William's 3 screenshots, chat 26): black box -> squashed picture -> right picture.
+  // size, length not known yet - 3 screenshots, chat 26): black box -> squashed picture -> right picture.
   // Keep it covered (black) until the clip really plays (time moving, length known); 1.5 s at most.
   let pHoldGen = 0;
   function pHold(v) {
@@ -5574,7 +5574,7 @@
     }, 30);
   }
   let closeGen = 0;
-  // clip sound with the player closed / Echo in the background (William, 5 Nov): the player video must never play
+  // clip sound with the player closed / Echo in the background (5 Nov): the player video must never play
   // while closed; anything else making sound while Echo isn't in front gets a log line saying what it was
   document.addEventListener("play", e => {
     const m = e.target; if (!(m instanceof HTMLMediaElement)) return;

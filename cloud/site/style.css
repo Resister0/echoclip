@@ -180,7 +180,7 @@ header .wrap { position:relative; }
 section[id] { scroll-margin-top:72px; }
 
 /* hero picture: a small, accurate copy of Echo's Library screen */
-.app { max-width:960px; margin:56px auto 0; display:grid; grid-template-columns:190px 1fr; background:var(--bg); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 30px 80px #00000080; text-align:left; position:relative; font-size:12.5px; }
+.app { max-width:960px; margin:56px auto 0; display:grid; grid-template-columns:190px 1fr; grid-template-rows:auto 1fr; background:var(--bg); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:0 30px 80px #00000080; text-align:left; position:relative; font-size:12.5px; }
 .app svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
 .arail { background:#0a0a0c; border-right:1px solid var(--line); padding:14px 10px; display:flex; flex-direction:column; gap:2px; }
 .abrand { display:flex; align-items:center; gap:8px; font-weight:700; font-size:14px; padding:0 6px 12px; }
@@ -198,7 +198,12 @@ section[id] { scroll-margin-top:72px; }
 .astat small { color:var(--muted); font-size:11px; } .astat .ok { color:var(--ok); }
 .amain { padding:14px 16px 16px; background:radial-gradient(600px 220px at 70% -80px, rgba(var(--accent-rgb),.10), transparent 70%); min-width:0; }
 .atop, .atool { display:flex; align-items:center; gap:8px; }
-.atop h4 { font-size:17px; margin-right:4px; }
+/* title bar across the whole window, like Echo 2.0: logo + page name, recorder pill, hotkeys, Record / Save clip, window buttons */
+.atop { grid-column:1 / -1; padding:8px 8px 8px 12px; border-bottom:1px solid var(--line); background:linear-gradient(90deg,rgba(var(--accent-rgb),.08),transparent 45%),#0b0b0e; }
+.atop h4 { display:flex; align-items:center; gap:8px; font-size:15px; margin:0 2px 0 0; padding-right:10px; border-right:1px solid var(--line); }
+.aplain { display:grid; place-items:center; width:26px; height:26px; color:var(--muted); }
+.awin { display:flex; gap:2px; margin-left:2px; padding-left:8px; border-left:1px solid var(--line); color:var(--muted); }
+.awin i { display:grid; place-items:center; width:26px; height:24px; } .awin svg { width:12px; height:12px; }
 .apill { display:flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:99px; padding:3px 9px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .apill i { width:6px; height:6px; border-radius:50%; background:var(--ok); }
 kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:2px 4px; color:var(--text); }
@@ -206,8 +211,11 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .abtn { display:flex; align-items:center; gap:6px; border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:5px 10px; font-weight:600; white-space:nowrap; }
 .abtn .rec { width:7px; height:7px; border-radius:50%; background:#fb5c7c; }
 .abtn.pri { background:var(--grad); border-color:transparent; box-shadow:0 4px 14px rgba(var(--accent-rgb),.3); }
-.atool { margin:14px 0 4px; color:var(--muted); font-size:11.5px; }
-.asearch { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:5px 10px; width:150px; color:var(--dim); }
+.atool { margin:0 0 4px; color:var(--muted); font-size:11.5px; }
+.aname { display:flex; align-items:center; gap:4px; color:var(--text); font-weight:600; font-size:14px; padding:3px 6px; margin-left:-6px; border-radius:7px; }
+.aname svg { width:12px; height:12px; }
+.atool > span { white-space:nowrap; }
+.asearch { display:flex; align-items:center; gap:6px; border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:5px 10px; width:160px; color:var(--dim); } .asearch svg { width:12px; height:12px; }
 .agroup { font-weight:700; font-size:13px; margin:10px 0 8px; } .agroup em { font-style:normal; color:var(--dim); font-weight:400; margin-left:4px; }
 .agrid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
 .mclip { border:1px solid var(--line); background:var(--panel); border-radius:10px; overflow:hidden; transition:transform .18s, border-color .18s; }
@@ -237,7 +245,7 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 .t1 { background:radial-gradient(circle at 30% 70%,#e0a24a55,transparent 45%),linear-gradient(160deg,#4a6fa5,#1f2f4a 60%,#2b3a2a); }
 .t2 { background:radial-gradient(circle at 70% 40%,#ff465566,transparent 40%),linear-gradient(160deg,#5b2a3a,#1d1a2e 70%); }
 .t3 { background:radial-gradient(ellipse at 50% 90%,#2fbf8655,transparent 55%),linear-gradient(170deg,#2a5aa8,#122a4a 65%,#1b3a2a); }
-@media (max-width:820px) { .app { grid-template-columns:1fr; } .arail { display:none; } .agrid { grid-template-columns:1fr 1fr; } .agrid .mclip:nth-child(3) { display:none; } .apill { display:none; } .asearch { display:none; } .atool .abtn:last-child { display:none; } }
+@media (max-width:820px) { .app { grid-template-columns:1fr; } .arail { display:none; } .agrid { grid-template-columns:1fr 1fr; } .agrid .mclip:nth-child(3) { display:none; } .apill { display:none; } .asearch { display:none; } .awin, .aplain, .atool .aico, .atool .abtn:nth-last-child(2) { display:none; } .atool .abtn:last-child { display:none; } }
 
 /* conveniences grid */
 .conv { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:4px 28px; }
@@ -373,7 +381,10 @@ kbd { font:600 10px/1 inherit; font-family:inherit; background:var(--panel2); bo
 
 /* preview status card + toolbar like the app (chat 28) */
 .astat .abar { display:block; height:4px; border-radius:2px; background:var(--panel2); overflow:hidden; margin-top:3px; }
-.astat .abar i { display:block; width:6%; height:100%; background:var(--accent); }
+.astat .abar i { display:block; width:6%; height:100%; background:var(--grad); }
+.aacct { display:flex; align-items:center; gap:8px; border-top:1px solid var(--line); margin-top:6px; padding-top:8px; }
+.aacct > i { width:24px; height:24px; border-radius:50%; background:var(--panel2); color:var(--muted); display:grid; place-items:center; flex:none; } .aacct > i svg { width:12px; height:12px; }
+.aacct b { display:block; font-size:11.5px; } .astat .aacct small { display:block; color:var(--accent2); font-size:10.5px; }
 .abtn.aico { padding-left:7px; padding-right:7px; }
 
 /* 2.0: measured Echo vs Medal (index.html #light) */

@@ -24,7 +24,7 @@ App id: `link.echoclip.Echo`. Command inside the sandbox: `echo-clips`.
 - **Game detection uses sound streams.** The sandbox can't see other programs, so Echo finds the game by its sound (pactl): Wine/Proton `.exe` games, Minecraft, and native games Echo has seen before. The log says "game: X (Flatpak: found by its sound …)". A game is only found once it has made a sound.
 - **Captions use a bundled whisper.cpp** (`whisper-cli`). The speech models still download on first use.
 
-## Stage 2 - William's test on Nobara (about 15 min plus the build)
+## Stage 2 - the developer's test on Nobara (about 15 min plus the build)
 
 ```bash
 # one-time: the builder + Flathub remote

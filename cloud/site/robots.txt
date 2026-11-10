@@ -1,0 +1,16 @@
+# echoclip.link - Echo, the free game clip recorder. Sitemap below lists the website pages.
+# /download/* are the file downloads themselves (they count downloads), the rest are the app's API and staff pages.
+User-agent: *
+Allow: /
+Disallow: /download/
+Disallow: /admin
+Disallow: /mod
+Disallow: /auth/
+Disallow: /report
+Disallow: /thanks
+Disallow: /me
+Disallow: /creds
+Disallow: /plans
+Disallow: /polar/
+
+Sitemap: https://echoclip.link/sitemap.xml

@@ -29,8 +29,8 @@ pub fn early() {
 /// Port of src-tauri main.rs linux_desktop_entry(): the app menu entry + icon in the user's own folders,
 /// rewritten only when they change. The old Tauri app wrote StartupWMClass=link.echoclip.Echo; the native window's
 /// id is "echo" (popup.rs), so after the auto-update from Tauri KDE showed a generic taskbar icon. Same file name
-/// as before = no second menu entry. Only the AppImage gets a visible entry (tar.gz / own build: hidden, it just
-/// gives the window its icon). The Flatpak brings its own.
+/// as before = no second menu entry. Visible for every copy (a hidden entry gives no Alt+Tab icon on KDE); a copy
+/// never takes over an entry that starts another existing Echo. The Flatpak brings its own.
 fn desktop_entry() {
     if linuxutil::in_flatpak() {
         return;
@@ -50,11 +50,23 @@ fn desktop_entry() {
     if exe.is_empty() {
         return;
     }
+    // 10 Nov 2026: never hidden (NoDisplay) - KDE's Alt+Tab / task switcher only takes the window's icon from a
+    // visible entry, so the tar.gz and hand builds showed no icon there
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=link.echoclip.Echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n{}",
-        if appimage.is_some() { "" } else { "NoDisplay=true\n" }
+        "[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=link.echoclip.Echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n"
     );
     let f = data.join("applications/link.echoclip.Echo.desktop");
+    // 10 Nov 2026: leave an entry alone that starts ANOTHER Echo which still exists (a dev build in the repo took
+    // over William's AppImage entry, like autostart in rec_core.rs) - the window still gets the icon from it
+    let other = std::fs::read_to_string(&f).ok().and_then(|s| {
+        let e = s.lines().find_map(|l| l.strip_prefix("Exec="))?.trim().to_string();
+        let path = match e.strip_prefix('"') { Some(r) => r.split('"').next()?.to_string(), None => e.split_whitespace().next()?.to_string() };
+        (path != exe && std::path::Path::new(&path).exists()).then_some(path)
+    });
+    if let Some(p) = other {
+        log_line(&format!("linux: app menu entry left alone - it starts another Echo ({p})"));
+        return;
+    }
     if std::fs::read_to_string(&f).map_or(true, |s| s != entry) {
         if let Some(d) = f.parent() {
             let _ = std::fs::create_dir_all(d);

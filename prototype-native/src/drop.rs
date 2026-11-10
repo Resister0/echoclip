@@ -9,8 +9,9 @@
 //! The import itself is Echo's own (echo-core recorder.import_clips: converts what Echo can't play, sounds become
 //! clips in "Sounds", dropped folders are imported whole, keeps the file dates).
 //! winit 0.30 sends one HoveredFile / DroppedFile per file and no mouse position during the drag: the files are
-//! batched, and on Windows the mouse is read from the OS (GetCursorPos). ⚠ Linux: winit 0.30 has no drag and drop
-//! on Wayland (X11 only), and the position there is the last one the window saw.
+//! batched, and on Windows the mouse is read from the OS (GetCursorPos). Linux: winit 0.30 has no drag and drop
+//! on Wayland (X11 only, the position there is the last one the window saw): wl_dnd.rs listens itself and calls
+//! wl_hover / wl_drop below.
 use crate::library;
 use crate::{AppWindow, DropG, Lib};
 use slint::winit_030::winit;
@@ -93,19 +94,50 @@ pub fn winit_event(wk: &slint::Weak<AppWindow>, win: &slint::Window, ev: &winit:
         winit::event::WindowEvent::HoveredFileCancelled => overlay(&a, false),
         winit::event::WindowEvent::DroppedFile(p) => {
             set_mouse(&a, here());
-            PENDING.with(|v| v.borrow_mut().push(p.clone()));
-            // one DroppedFile per file: act once they are all in (and the sidebar row under the mouse has answered)
-            let w = wk.clone();
-            let t = slint::Timer::default();
-            t.start(slint::TimerMode::SingleShot, Duration::from_millis(120), move || {
-                if let Some(a) = w.upgrade() {
-                    dropped(&a);
-                }
-            });
-            FIRE.with(|f| *f.borrow_mut() = Some(t));
+            files_in(&a, vec![p.clone()]);
         }
         _ => {}
     }
+}
+
+/// files are in: act once they are all in (winit sends one DroppedFile per file) and the sidebar row under the
+/// mouse has answered
+fn files_in(a: &AppWindow, paths: Vec<PathBuf>) {
+    PENDING.with(|v| v.borrow_mut().extend(paths));
+    let w = a.as_weak();
+    let t = slint::Timer::default();
+    t.start(slint::TimerMode::SingleShot, Duration::from_millis(120), move || {
+        if let Some(a) = w.upgrade() {
+            dropped(&a);
+        }
+    });
+    FIRE.with(|f| *f.borrow_mut() = Some(t));
+}
+
+/// Linux Wayland (wl_dnd.rs): a drag with files over the window at `p` (logical px), None = it left / was cancelled
+#[cfg(target_os = "linux")]
+pub fn wl_hover(a: &AppWindow, p: Option<(f32, f32)>) {
+    match p {
+        Some(p) => {
+            set_mouse(a, p);
+            if !a.global::<DropG>().get_on() {
+                overlay(a, true);
+            }
+        }
+        None => overlay(a, false),
+    }
+}
+
+/// Linux Wayland (wl_dnd.rs): the files dropped at `p`
+#[cfg(target_os = "linux")]
+pub fn wl_drop(a: &AppWindow, paths: Vec<PathBuf>, p: (f32, f32)) {
+    set_mouse(a, p);
+    if paths.is_empty() {
+        overlay(a, false);
+        crate::toast(a, "Only files from this PC can be dropped here");
+        return;
+    }
+    files_in(a, paths);
 }
 
 fn dropped(a: &AppWindow) {
