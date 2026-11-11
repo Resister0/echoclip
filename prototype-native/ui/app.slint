@@ -154,7 +154,7 @@ component NavBtn inherits Rectangle {
     border-width: 1px;
     background: zone == "into" || card-over ? T.accent.with-alpha(0.16) : on ? (page ? T.accent.with-alpha(0.10) : T.panel) : ta.has-hover && !FDrag.on ? T.accent.with-alpha(0.06) : transparent;
     border-color: zone == "into" || card-over ? T.accent : on && page ? T.accent.with-alpha(0.22) : ta.has-hover && !on && !FDrag.on ? T.accent.with-alpha(0.32) : transparent;
-    animate background, border-color { duration: 200ms; }
+    animate background, border-color { duration: 200ms; enabled: !T.rgb-live; }
     transform-scale: ta.pressed && !root.dragged ? 0.98 : 1;
     animate transform-scale { duration: 90ms; }
     ta := TouchArea {
@@ -1484,7 +1484,7 @@ export component AppWindow inherits Window {
                                 width: min(fhl.preferred-width, 320px);
                                 border-radius: 8px;
                                 background: fta.has-hover || root.fopen ? #ffffff0f : transparent;
-                                animate background { duration: T.fade; }
+                                animate background { duration: T.fade; enabled: !T.rgb-live; }
                                 fta := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => { root.fopen = !root.fopen; }

@@ -3,6 +3,10 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.4 - 11 Nov
+- Echo uses much less CPU while its window is open: nothing redraws when nothing changes (the RGB theme was redrawing the whole window non-stop - it keeps its speed but now pauses when Echo isn't in front)
+- Linux: the AppImage starts on even more systems (its keyboard libraries now find each other inside the AppImage)
+
 ## 2.0.3 - 10 Nov
 - Trimming is smooth: dragging the trim ends or the play head no longer makes Echo (or the mouse) lag, and it lands on the exact frame when you let go
 - Opening a clip again shows its preview strip at once (Linux kept making it again on every open)

@@ -182,7 +182,7 @@ component ShotCard inherits Rectangle {
     border-radius: T.radius;
     border-width: 1px;
     border-color: s.picked ? T.accent : hov ? T.accent.with-alpha(0.4) : T.line;
-    animate border-color { duration: T.fade; }
+    animate border-color { duration: T.fade; enabled: !T.rgb-live; }
     clip: true;
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -216,7 +216,7 @@ component ShotCard inherits Rectangle {
         // selected: accent tint; something else selected: this one is dimmed (like the clip cards)
         Rectangle {
             background: s.picked ? T.accent.with-alpha(0.16) : Shots.picked-n > 0 ? (root.hov ? #0a0a0c26 : #0a0a0c73) : transparent;
-            animate background { duration: T.fade; }
+            animate background { duration: T.fade; enabled: !T.rgb-live; }
         }
         ShotTick {
             x: 9px;

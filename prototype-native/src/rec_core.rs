@@ -245,6 +245,13 @@ pub fn wire(app: &AppWindow) {
         if tick % 2 == 0 {
             draw_status(&a);
         }
+        // the Record button's dot blinks (on 0.5 s, dim 0.5 s) while a long recording runs; an unchanged value is no
+        // repaint, so this costs nothing otherwise (theme.slint T.blink)
+        let blink = a.get_rec_long_on() && tick % 2 == 1;
+        let tg = a.global::<crate::T>();
+        if tg.get_blink() != blink {
+            tg.set_blink(blink);
+        }
         // the mic icon follows within 0.5 s when the mute HOTKEY changes it (a click flips it at once, see rec_act)
         let muted = recorder::MIC_MUTED.load(Ordering::Relaxed);
         if a.get_rec_mic_off() != muted {
@@ -499,7 +506,16 @@ fn draw_status(a: &AppWindow) {
                 .iter()
                 .map(|(n, u, t, e)| crate::CloudUse { name: n.as_str().into(), text: text(*u, *t, e).into(), frac: frac(*u, *t) })
                 .collect();
-            a.set_cloud_uses(slint::ModelRc::new(slint::VecModel::from(rows)));
+            // 11 Nov (idle CPU): a NEW list every second rebuilt the hover panel's rows and repainted the window
+            // once a second for nothing - only replace it when a row changed
+            let same = {
+                use slint::Model;
+                let m = a.get_cloud_uses();
+                m.row_count() == rows.len() && rows.iter().enumerate().all(|(i, r)| m.row_data(i).as_ref() == Some(r))
+            };
+            if !same {
+                a.set_cloud_uses(slint::ModelRc::new(slint::VecModel::from(rows)));
+            }
         }
         None => a.set_cloud_on(false),
     }

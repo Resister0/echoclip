@@ -160,21 +160,37 @@ pub fn wire(app: &AppWindow, store: Rc<RefCell<Store>>, r: Rc<dyn Fn()>) {
             crate::toast(&a, if on { "RGB on - this colour cycles through the rainbow" } else { "RGB off" });
         });
     }
-    // RGB mode: ~30 fps hue turn while the custom theme is shown and the window is visible
-    let t0 = Instant::now();
+    // RGB mode: the hue turns once every 6 s while the custom theme is shown AND Echo is the window in front.
+    // 11 Nov (idle CPU, a user's report: window open = ~1 core on an RTX 5060 / Windows): it was 30 steps a second, and
+    // each step restarted the colour fades, so the whole window repainted at the monitor's full rate nonstop. Now:
+    // ~30 steps a second (2 deg each, same speed as before: users like how quick it cycles; 10 a second looked
+    // steppy), T.rgb-live switches the colour fades off (1 step = 1 repaint), and nothing
+    // turns while another window is in front (= while you play), minimized or hidden. The hue continues where it
+    // stopped (it only moves while running), so coming back doesn't jump.
+    let hue = std::cell::Cell::new(0.0f32);
+    let last = std::cell::Cell::new(Instant::now());
     let t = slint::Timer::default();
     let w = app.as_weak();
     t.start(slint::TimerMode::Repeated, Duration::from_millis(33), move || {
         let Some(a) = w.upgrade() else { return };
         let st = store.borrow();
-        if st.s("theme") != "custom" || !a.window().is_visible() || a.window().is_minimized() {
+        let dt = last.replace(Instant::now()).elapsed().as_secs_f32().min(0.2);
+        let keys = if st.s("theme") == "custom" { rgb_keys(&st) } else { Vec::new() };
+        let win = a.window();
+        let front = win.is_visible() && !win.is_minimized() && {
+            use slint::winit_030::WinitWindowAccessor;
+            win.with_winit_window(|w| w.has_focus()).unwrap_or(true)
+        };
+        let live = !keys.is_empty() && front;
+        let tg = a.global::<T>();
+        if tg.get_rgb_live() != live {
+            tg.set_rgb_live(live);
+        }
+        if !live {
             return;
         }
-        let keys = rgb_keys(&st);
-        if keys.is_empty() {
-            return;
-        }
-        let turn = (t0.elapsed().as_secs_f32() * 60.0) % 360.0; // one turn every 6 s
+        hue.set((hue.get() + dt * 60.0) % 360.0); // one turn every 6 s
+        let turn = hue.get();
         let over: Vec<(String, String)> = keys
             .iter()
             .map(|k| {

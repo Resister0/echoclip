@@ -40,12 +40,19 @@
   details.sec > summary h2 { margin:0; } details.sec > summary::after { content:"▸"; color:var(--muted); }
   details.sec[open] > summary::after { content:"▾"; } details.sec { margin:28px 0 8px; }
   .err { color:var(--bad); margin-top:8px; } .note { color:var(--faint); font-size:12px; margin-top:24px; }
-  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; } @media (max-width:720px) { .two { grid-template-columns:1fr; } }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; } .two > * { min-width:0; } @media (max-width:720px) { .two { grid-template-columns:1fr; } }
   .chart { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px 8px; margin-top:10px; }
   .chart svg { width:100%; height:150px; display:block; } .chart .lg { color:var(--muted); font-size:12px; display:flex; gap:14px; margin-bottom:6px; }
   .chart .lg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
   .chart .ax { display:flex; justify-content:space-between; color:var(--faint); font-size:11px; margin-top:4px; }
   @media (max-width:520px) { .hero { grid-column:span 1; } }
+  .tabs { position:sticky; top:0; z-index:5; background:var(--bg); display:flex; gap:2px; overflow-x:auto; scrollbar-width:none; margin:14px -16px 0; padding:6px 16px 0; border-bottom:1px solid var(--line); }
+  .tabs::-webkit-scrollbar { display:none; }
+  .tabs a { color:var(--muted); text-decoration:none; font-weight:600; font-size:13.5px; padding:9px 12px 10px; white-space:nowrap; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tabs a:hover { color:var(--text); } .tabs a.on { color:var(--text); border-bottom-color:var(--accent); }
+  .tabs .cnt { display:inline-block; min-width:18px; margin-left:6px; padding:0 5px; border-radius:99px; font-size:11px; line-height:18px; text-align:center; color:#fff; background:var(--bad); }
+  .tabs .cnt[hidden] { display:none; }
+  .tab > h2:first-child, .tab > details.sec:first-child, .tab > div:first-child > h2:first-child { margin-top:22px; }
 </style>
 </head>
 <body>

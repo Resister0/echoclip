@@ -86,6 +86,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.4" date="2026-11-11">
+      <description>
+        <p>Echo 2.0.4: much less CPU while Echo's window is open (the RGB theme pauses when Echo isn't in front), and the Linux AppImage starts on more systems.</p>
+      </description>
+    </release>
     <release version="2.0.3" date="2026-11-10">
       <description>
         <p>Echo 2.0.3: smooth trimming (no more lag while dragging the trim ends), clip previews open instantly the second time, and the Linux AppImage starts on more systems.</p>

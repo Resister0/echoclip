@@ -28,6 +28,14 @@ export global T {
     // Echo uses .15 s for buttons and .18 s for cards; the glow/shadow is NOT animated (it smeared into a trail)
     out property <duration> fade: 150ms;
     out property <duration> lift: 180ms;
+    // 11 Nov (idle CPU): true while RGB mode turns the colours (src/lib_color.rs). The colour fades
+    // (`animate background / border-color`) are then off (`enabled: !T.rgb-live`): every hue step restarted them, so
+    // the window redrew at the monitor's full rate nonstop (60-165 fps) instead of once per step. A 0 ms duration still
+    // cost a 2nd frame per step; enabled: false doesn't. Opacity / movement fades stay.
+    in-out property <bool> rgb-live;
+    // the Record button's blinking dot: flipped every 0.5 s from Rust (rec_core.rs) while a long recording runs.
+    // animation-tick() there redrew the whole window every frame for a dot that changes twice a second.
+    in-out property <bool> blink;
 }
 
 // 24x24 stroke icons, the same paths as Echo's ui/index.html
@@ -218,7 +226,15 @@ component Spinner inherits Rectangle {
     border-radius: 5.5px;
     border-width: 2px;
     border-color: still ? T.hi : T.line;
-    // the coloured quarter (border-top-color in Echo), turning once per 0.8 s
+    // the coloured quarter (border-top-color in Echo), turning once per 0.8 s - in 16 steps of 22.5 deg from a 50 ms
+    // Timer (11 Nov, idle CPU): animation-tick() redrew the whole window at the monitor's full rate (up to 165 fps)
+    // for as long as a progress box with a spinner was on screen
+    property <int> step;
+    Timer {
+        interval: 50ms;
+        running: !root.still;
+        triggered => { root.step = mod(root.step + 1, 16); }
+    }
     if !root.still: Path {
         width: 11px;
         height: 11px;
@@ -228,7 +244,7 @@ component Spinner inherits Rectangle {
         stroke-width: 2px;
         fill: transparent;
         commands: "M 1.6 3.3 A 4.5 4.5 0 0 1 9.4 3.3";
-        transform-rotation: mod(animation-tick() / 1ms, 800) / 800 * 360deg;
+        transform-rotation: root.step * 22.5deg;
     }
 }
 
@@ -443,7 +459,7 @@ export component IconBtn inherits Rectangle {
     height: size;
     border-radius: 9px;
     background: hov ? T.panel2 : idle-bg;
-    animate background { duration: T.fade; }
+    animate background { duration: T.fade; enabled: !T.rgb-live; }
     // L49: Tab reaches the button (never a click: the page keeps the keys), Enter / Space press it, Echo's
     // :focus-visible ring (2 px accent2, 2 px out)
     fs := FocusScope {
@@ -543,7 +559,7 @@ export component Btn inherits Rectangle {
     drop-shadow-blur: primary ? 20px : 0;
     drop-shadow-offset-y: primary ? 6px : 0;
     drop-shadow-color: T.accent.with-alpha(0.25);
-    animate background, border-color { duration: T.fade; }
+    animate background, border-color { duration: T.fade; enabled: !T.rgb-live; }
     property <color> fg: text-color != transparent ? text-color : active ? T.hi : danger && hov ? T.bad : T.text;
     // L49: Tab reaches the button (never a click: the page keeps the keys), Enter / Space press it, Echo's
     // :focus-visible ring (2 px accent2, 2 px out)
@@ -609,7 +625,7 @@ export component Btn inherits Rectangle {
             height: 9px;
             border-radius: 4.5px;
             background: root.dot;
-            opacity: root.blink-dot && mod(animation-tick(), 1000ms) >= 500ms ? 0.2 : 1;
+            opacity: root.blink-dot && T.blink ? 0.2 : 1;
         }
         if root.icon != "": Icon {
             y: (parent.height - self.height) / 2;

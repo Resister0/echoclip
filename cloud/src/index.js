@@ -923,6 +923,11 @@ async function bump(env, k, n = 1) {
   await env.DB.prepare("INSERT INTO stats (day, k, n) VALUES (?, ?, ?) ON CONFLICT(day, k) DO UPDATE SET n = n + excluded.n")
     .bind(utcDay(), k, n).run();
 }
+// one less for today's key; the row goes once it reaches 0
+async function unbump(env, k) {
+  await bump(env, k, -1);
+  await env.DB.prepare("DELETE FROM stats WHERE day = ? AND k = ? AND n <= 0").bind(utcDay(), k).run();
+}
 async function hit(req, env) {
   const done = new Response(null, { status: 204 });
   if (isBot(req) || !(await allow(env, `hit:${ipOf(req)}`, 300, 3600))) return done;
@@ -996,8 +1001,10 @@ async function countApp(req, env, os, version) {
       if (pv !== version && newer(asOld(version), asOld(pv))) {
         await env.DB.prepare("DELETE FROM uv WHERE day = ? AND h = ?").bind(utcDay(), prev.h).run();
         await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), `${vk}${version}|${cc}`).run();
-        await bump(env, `appv:${os}:${pv}`, -1); await bump(env, `appv:${os}:${version}`);
-        if (pc) await bump(env, `appc:${os}:${pv}:${pc}`, -1);
+        // the old version's row (and its country) goes down by one - and is removed at 0, so "Where" doesn't keep
+        // showing a country nobody is on any more (11 Nov 2026: 2.0.1 showed 0 / 0 but "DK · US")
+        await unbump(env, `appv:${os}:${pv}`); await bump(env, `appv:${os}:${version}`);
+        if (pc) await unbump(env, `appc:${os}:${pv}:${pc}`);
         if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
       }
     }

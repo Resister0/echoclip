@@ -174,7 +174,7 @@ component NavArrow inherits Rectangle {
     border-width: 1px;
     border-color: T.line;
     background: ta.has-hover ? #26262e : #17171ccc;
-    animate background { duration: T.fade; }
+    animate background { duration: T.fade; enabled: !T.rgb-live; }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -953,7 +953,7 @@ export component PlayerView inherits Rectangle {
             // dimmed so it reads as UI, brighter on hover
             Rectangle {
                 background: sa.has-hover || seek.drag != "" ? #0000003b : #00000070;
-                animate background { duration: T.fade; }
+                animate background { duration: T.fade; enabled: !T.rgb-live; }
             }
             // outside the trim selection
             Rectangle {

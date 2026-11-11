@@ -280,6 +280,10 @@ jobs:
           [ -e AppDir/usr/lib/libmpv.so.1 ] || ln -s "$(basename "$(readlink -f "$MPV")")" AppDir/usr/lib/libmpv.so.1
           # winit's X11 keyboard library (dlopen'ed as libxkbcommon-x11.so.0) + its libxcb-xkb; libxkbcommon.so.0 and libxcb stay the system's
           for L in libxkbcommon-x11.so.0 libxcb-xkb.so.1; do cp -L "/usr/lib/x86_64-linux-gnu/$L" AppDir/usr/lib/; done
+          # hand-copied libraries get no RUNPATH from linuxdeploy: without $ORIGIN, libxkbcommon-x11 looks for its own
+          # libxcb-xkb only in the system folders (AppImageHub retest 2.0.3 failed on exactly that, 10 Nov 2026)
+          for L in libxkbcommon-x11.so.0 libxcb-xkb.so.1; do patchelf --set-rpath '$ORIGIN' "AppDir/usr/lib/$L"; done
+          readelf -d AppDir/usr/lib/libxkbcommon-x11.so.0 | grep -q 'RUNPATH.*\$ORIGIN' || { echo 'libxkbcommon-x11 has no $ORIGIN RUNPATH'; exit 1; }
           if ldd AppDir/usr/lib/libxkbcommon-x11.so.0 | grep 'not found'; then echo "bundled libxkbcommon-x11 misses libraries"; exit 1; fi
           readelf -d AppDir/usr/bin/echo-clips | grep -qE 'R(UN)?PATH.*\$ORIGIN/\.\./lib' || { echo "echo-clips has no \$ORIGIN/../lib RUNPATH - bundled libraries would not be found"; exit 1; }
           readelf -d AppDir/usr/bin/echo-clips | grep -iE 'runpath|rpath' || true

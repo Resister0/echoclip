@@ -204,7 +204,7 @@ component Chip inherits Rectangle {
     border-width: 1px;
     border-color: on ? T.text : ta.has-hover ? T.hover : T.line;
     background: on ? T.text : ta.has-hover ? T.panel2 : transparent;
-    animate background, border-color { duration: T.fade; }
+    animate background, border-color { duration: T.fade; enabled: !T.rgb-live; }
     lb := Text {
         text: root.text;
         font-size: 12.5px;
@@ -330,7 +330,7 @@ component Toggle inherits Rectangle {
     height: 22px;
     border-radius: 11px;
     background: on ? T.accent : T.hover;
-    animate background { duration: T.fade; }
+    animate background { duration: T.fade; enabled: !T.rgb-live; }
     Rectangle {
         x: root.on ? 18px : 2px;
         y: 2px;
@@ -395,7 +395,7 @@ component Tool inherits Rectangle {
     border-radius: 7px;
     background: on ? T.hi.with-alpha(0.08) : ta.has-hover && enabled ? #ffffff12 : transparent;
     opacity: enabled ? 1 : 0.35;
-    animate background { duration: T.fade; }
+    animate background { duration: T.fade; enabled: !T.rgb-live; }
     property <color> fg: on ? T.hi : ta.has-hover && enabled ? T.text : T.muted;
     ta := TouchArea {
         enabled: root.enabled;

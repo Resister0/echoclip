@@ -142,7 +142,7 @@ component SSwitch inherits Rectangle {
     border-radius: 12px;
     background: on ? T.accent : #3a3a3a;
     opacity: dim ? 0.45 : 1;
-    animate background { duration: 150ms; }
+    animate background { duration: 150ms; enabled: !T.rgb-live; }
     Rectangle {
         x: root.on ? 21px : 3px;
         y: 3px;
@@ -356,7 +356,7 @@ component SSeg inherits Rectangle {
             width: st.preferred-width + 28px;
             border-radius: 8px;
             background: o.value == root.value ? T.panel2 : transparent;
-            animate background { duration: 150ms; }
+            animate background { duration: 150ms; enabled: !T.rgb-live; }
             st := Text {
                 text: o.label;
                 font-size: 13px;
@@ -932,7 +932,7 @@ export component RowView inherits Rectangle {
                     horizontal-stretch: 1;
                     border-radius: 8px;
                     background: o.value == root.r.value ? T.panel2 : transparent;
-                    animate background { duration: 150ms; }
+                    animate background { duration: 150ms; enabled: !T.rgb-live; }
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
@@ -1585,7 +1585,7 @@ export component SettingsPage inherits Rectangle {
                         border-width: 1px;
                         border-color: dca.has-hover ? T.accent.with-alpha(0.45) : T.line;
                         background: T.accent.with-alpha(dca.has-hover ? 0.14 : 0.06);
-                        animate background, border-color { duration: 150ms; }
+                        animate background, border-color { duration: 150ms; enabled: !T.rgb-live; }
                         HorizontalLayout {
                             padding-left: 12px;
                             padding-right: 12px;

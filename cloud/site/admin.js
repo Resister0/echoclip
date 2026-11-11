@@ -93,7 +93,6 @@ function website(s) {
     </div>
     <div class="chart"><div class="lg"><span><i style="background:var(--accent);opacity:.35"></i>Visitors</span><span><i style="background:var(--accent)"></i>Downloads</span><span style="margin-left:auto">last 30 days · hover a day</span></div>
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg><div class="ax"><span>${short(d[0] && d[0].day)}</span><span>max ${max} a day</span><span>today</span></div></div>
-    ${crashes(k)}
     <h2>Clicks and downloads</h2>
     <div class="wrap"><table>${head("Button")}${clicks}</table></div>
     <div class="two" style="margin-top:10px">
@@ -121,8 +120,7 @@ function shareStats(sh, site) {
     <div class="wrap" style="margin-top:10px"><table><tr><th>Link</th><th>Clip</th><th>Owner</th><th class="n">Views</th><th>Made</th></tr>${top}</table></div>`;
 }
 const flag = (cc) => /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : "";
-function apps(A, site) {
-  if (!A) return "";
+function appDays(A) {
   const days = [...Array(14)].map((_, i) => new Date(Date.parse(A.today + "T12:00:00Z") - (13 - i) * 864e5).toISOString().slice(0, 10));
   const per = {}; for (const d of days) per[d] = { win: 0, lin: 0, v: {} };
   for (const r of A.rows) {
@@ -133,16 +131,22 @@ function apps(A, site) {
     else if (r.k.startsWith("appv:")) { const [, os, v] = r.k.split(":"); (p.v[v] = p.v[v] || { windows: 0, linux: 0 })[os] += r.n; }
     else if (r.k.startsWith("appc:")) { const [, , v, cc] = r.k.split(":"); const c = (p.c = p.c || {}); (c[v] = c[v] || {})[cc] = (c[v][cc] || 0) + r.n; }
   }
+  return { days, per };
+}
+function apps(A, site) {
+  if (!A) return "";
+  const { days, per } = appDays(A);
   const tot = (d) => per[d].win + per[d].lin, today = days[13], yest = days[12];
   // versions: today once it has numbers, else yesterday (the UTC day starts at 1:00 in Denmark)
-  const vd = tot(today) ? today : yest, vers = Object.keys(per[vd].v).sort((a, b) => vcmp(b, a));
+  // (11 Nov 2026: a version every PC moved away from today sits at 0 - not listed, nor its countries)
+  const vd = tot(today) ? today : yest, vers = Object.keys(per[vd].v).filter((v) => per[vd].v[v].windows + per[vd].v[v].linux > 0).sort((a, b) => vcmp(b, a));
   const newest = A.latest, isNew = (v) => newest && vcmp(v, newest) >= 0;
   let onNew = 0, old = 0;
   for (const v of vers) { const n = per[vd].v[v].windows + per[vd].v[v].linux; if (isNew(v)) onNew += n; else old += n; }
   const all7 = days.slice(7).reduce((a, d) => a + tot(d), 0);
   const pct = (n) => (onNew + old) ? Math.round(n / (onNew + old) * 100) + "%" : "-";
   const vrows = vers.length ? vers.map((v) => { const x = per[vd].v[v];
-      const cs = (per[vd].c && per[vd].c[v]) || {}, where = Object.keys(cs).sort((a, b) => cs[b] - cs[a]).map((cc) => `${flag(cc)} ${esc(cc)}${cs[cc] > 1 ? " ×" + cs[cc] : ""}`).join(" · ");
+      const cs = (per[vd].c && per[vd].c[v]) || {}, where = Object.keys(cs).filter((cc) => cs[cc] > 0).sort((a, b) => cs[b] - cs[a]).map((cc) => `${flag(cc)} ${esc(cc)}${cs[cc] > 1 ? " ×" + cs[cc] : ""}`).join(" · ");
       return `<tr><td>${esc(v)}</td><td class="n">${x.windows}</td><td class="n">${x.linux}</td><td class="sub">${where || "-"}</td><td>${isNew(v) ? '<span class="pill good">newest</span>' : '<span class="pill bad">outdated</span>'}</td></tr>`; }).join("")
     : `<tr><td colspan="5" class="sub">No check-ins yet - they start after this server update</td></tr>`;
   const max = Math.max(1, ...days.map(tot)), W = 600, H = 120, bw = W / 14;
@@ -261,6 +265,29 @@ function releases(list) {
     <div class="wrap"><table id="rels"><tr><th>Version</th><th>What changed</th><th></th><th></th></tr>${rows}</table></div></details>`;
 }
 
+// ----- tabs (11 Nov 2026): the chosen tab is in the address (#apps, ...) so a link opens it, and remembered in this browser -----
+const TABS = [["overview", "Overview"], ["apps", "Apps & versions"], ["perf", "Performance & PCs"], ["web", "Website"], ["cloud", "Echo Cloud"], ["mod", "Moderation"]];
+const isTab = (t) => TABS.some((x) => x[0] === t);
+function curTab() {
+  const h = location.hash.slice(1); if (isTab(h)) return h;
+  let t = ""; try { t = localStorage.getItem("echo_admin_tab") || ""; } catch { }
+  return isTab(t) ? t : "overview";
+}
+function showTab(t) {
+  const bar = document.querySelector(".tabs"); if (!bar) return;
+  document.querySelectorAll(".tab").forEach((x) => x.hidden = x.dataset.tab !== t);
+  bar.querySelectorAll("a").forEach((a) => a.classList.toggle("on", a.dataset.tab === t));
+  const on = bar.querySelector("a.on"); if (on) bar.scrollLeft = Math.max(0, on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2); // phone: keep it in view
+  try { localStorage.setItem("echo_admin_tab", t); } catch { }
+  if (location.hash.slice(1) !== t) history.replaceState(null, "", "#" + t);
+}
+window.addEventListener("hashchange", () => {
+  showTab(curTab());
+  // a new tab starts at its top (measured from the title row: the sticky bar's own offsetTop moves with it)
+  const top = document.querySelector(".top"), y = top ? top.offsetTop + top.offsetHeight : 0;
+  if (top && window.scrollY > y) window.scrollTo(0, y);
+});
+
 function draw(j) {
   const m = j.money, cur = m.currency;
   // costs are in USD (Cloudflare bills USD); shown next to EUR income, close enough for a glance
@@ -273,9 +300,25 @@ function draw(j) {
   // subscriptions that pay nothing (100% codes) or from before amounts were tracked aren't income
   const extra = (m.discounted_free ? ` · ${m.discounted_free} free via code` : "") + (m.unknown ? ` · ${m.unknown} older, not counted` : "");
   const rows = (list, f) => list.length ? list.map(f).join("") : `<tr><td colspan="9" class="sub">None</td></tr>`;
+  // tabs (11 Nov 2026): everything is drawn once from the one /admin/stats answer; a tab only shows / hides its part
+  const sec = (t, html) => `<section class="tab" data-tab="${t}" hidden>${html}</section>`;
+  const A = j.apps ? appDays(j.apps) : null, at = A && A.per[A.days[13]], ay = A && A.per[A.days[12]];
+  const SK = (j.site && j.site.keys) || {}, sk = (n) => SK[n] || [0, 0, 0];
+  const dls = Object.keys(SK).filter((x) => x.startsWith("dl:")).reduce((t, x) => t.map((v, i) => v + SK[x][i]), [0, 0, 0]);
   $("#app").innerHTML = `
     <div class="top"><h1>Echo stats</h1><span class="sub">updated ${new Date(j.at * 1000).toLocaleTimeString()}</span><span class="sp"></span>
       <button id="re">Refresh</button><button id="out">Sign out</button></div>
+    <nav class="tabs">${TABS.map(([t, n]) => `<a href="#${t}" data-tab="${t}">${n}${t === "mod" ? '<span class="cnt" id="modcnt" hidden></span>' : ""}</a>`).join("")}</nav>
+
+    ${sec("overview", `
+    <h2>Today</h2>
+    <div class="grid">
+      ${A ? tile("Apps today", at.win + at.lin, `${at.win} Windows · ${at.lin} Linux · ${ay.win + ay.lin} yesterday`) : ""}
+      ${A ? tile("Returning today", at.ret || 0, `also here yesterday · ${ay.ret || 0} the day before`) : ""}
+      ${tile("New installs today", I.d1, `+${I.d7} this week · ${I.total} all time`)}
+      ${j.site ? tile("Downloads today", dls[0], `${dls[1]} this week · ${dls[2]} in 30 days`) : ""}
+      ${j.site ? tile("Visitors today", sk("visitors")[0], `${sk("visitors")[1]} this week · ${sk("visitors")[2]} in 30 days`) : ""}
+    </div>
 
     <h2>Money per month</h2>
     <div class="grid">
@@ -295,14 +338,17 @@ function draw(j) {
       ${tile("Share links", j.shares.live, `+${j.shares.new_7d} this week · ${j.shares.total} made`)}
       ${tile("Profiles", j.profiles ? j.profiles.total : 0, j.profiles ? `+${j.profiles.new_7d} this week · ${j.profiles.follows} follows` : "")}
       ${tile("Logs sent (14 days)", j.logs, j.backup ? "last backup " + esc(j.backup.replace("backups/db-", "").replace(".json.gz", "")) : "no backup yet")}
-    </div>
+    </div>`)}
 
-    ${apps(j.apps, j.site)}
-    ${perf(j.perf)}
-    ${shareStats(j.shares, j.site)}
+    ${sec("apps", `${apps(j.apps, j.site)}
+    ${crashes(SK)}
+    ${releases(j.releases)}`)}
 
-    ${website(j.site)}
+    ${sec("perf", perf(j.perf))}
 
+    ${sec("web", website(j.site))}
+
+    ${sec("cloud", `
     <h2>Plans</h2>
     <div class="wrap"><table><tr><th>Plan</th><th class="n">Accounts</th><th class="n">Stored</th></tr>
       ${rows(j.plans, (p) => `<tr><td>${esc(p.plan)}</td><td class="n">${p.n}</td><td class="n">${gb(p.used)}</td></tr>`)}</table></div>
@@ -320,6 +366,11 @@ function draw(j) {
     <div class="wrap"><table><tr><th>Email</th><th>Plan</th><th>Joined</th><th></th></tr>
       ${rows(j.newest, (n) => `<tr><td>${esc(n.email)}</td><td>${esc(n.plan)}</td><td>${ago(n.created)}</td><td><button class="mkmod" data-e="${esc(n.email)}">Make moderator</button></td></tr>`)}</table></div>
 
+    ${shareStats(j.shares, j.site)}`)}
+
+    ${sec("mod", `
+    <div id="modsec"><h2>Moderators and reports</h2><div class="sub">Loading…</div></div>
+
     <h2>Profiles</h2>
     <div class="tile" style="margin-bottom:12px"><div class="k">Change an @name</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
@@ -331,10 +382,6 @@ function draw(j) {
     <div class="wrap"><table><tr><th>@name</th><th>Name</th><th>Email</th><th class="n">Followers</th><th class="n">Pinned</th><th>Made</th><th></th></tr>
       ${rows((j.profiles && j.profiles.list) || [], (q) => `<tr><td><a href="/u/${esc(q.handle)}" target="_blank" rel="noopener">@${esc(q.handle)}</a></td><td>${esc(q.name || "")}</td><td>${esc(q.email || "")}</td><td class="n">${q.followers}</td><td class="n">${q.pins}</td><td>${ago(q.created)}</td><td><button class="hpick" data-h="${esc(q.handle)}">Change</button></td></tr>`)}</table></div>
 
-    ${releases(j.releases)}
-
-    <div id="modsec"><h2>Moderators and reports</h2><div class="sub">Loading…</div></div>
-
     <h2>Remove something</h2>
     <div class="two">
       <div class="tile"><div class="k">Reported share link</div>
@@ -345,13 +392,14 @@ function draw(j) {
         <input id="rmprof" placeholder="@name or https://echoclip.link/u/…" style="width:100%;margin:8px 0">
         <label class="sub"><input type="checkbox" id="rmblock" checked> block the @name so nobody can take it again</label>
         <div style="margin-top:10px"><button id="rmprofgo">Remove profile</button> <span class="sub" id="rmprofmsg"></span></div></div>
-    </div>
+    </div>`)}
 
     <div class="note">Only Echo Cloud accounts are counted (people who only record or use their own cloud aren't visible here).
       Storage is the last count per account. Income is what each subscription pays per month after discounts (yearly plans divided by 12), before Polar's fee and VAT;
       Polar → Finance has the exact numbers. Costs: Cloudflare R2 storage + the domain; Workers and D1 are on the free plan.
       Website: counted without cookies or stored IP addresses (bots and scripts skipped); "visitors" are unique per day, days are UTC.
       "Came from" only lists other websites (Discord, Reddit, Google…); direct visits aren't listed.</div>`;
+  showTab(curTab());
   $("#re").onclick = load;
   perfPick();
   // takedowns: the owner's email comes back so you can write to them if needed
@@ -419,6 +467,7 @@ function drawMods(m) {
       <td class="n">${o.n}</td><td>${o.items.map((i) => esc(i.reason) + (i.details ? ": " + esc(i.details) : "") + (i.contact ? ` <span class="sub">(${esc(i.contact)})</span>` : "")).join("<br>")}</td><td>${ago(o.last)}</td></tr>`).join("")
     : `<tr><td colspan="4" class="sub">No open reports</td></tr>`;
   const log = m.log.length ? m.log.slice(0, 15).map((l) => `<tr><td>${ago(l.at)}</td><td>${esc(l.who)}</td><td>${esc(l.action)}</td><td>${esc(l.target)}</td></tr>`).join("") : `<tr><td colspan="4" class="sub">Nothing yet</td></tr>`;
+  const cnt = $("#modcnt"); if (cnt) { cnt.textContent = m.open.length; cnt.hidden = !m.open.length; }
   box.innerHTML = `<h2>Moderators and reports</h2>
     <p class="sub" style="margin:-6px 0 10px">Moderators sign in at <a href="/mod" target="_blank">echoclip.link/mod</a> with their Echo Cloud email. They can handle reports, remove share links and profiles and change @names - not delete clips or accounts, and they never see emails.</p>
     <div class="two"><div><div class="wrap"><table><tr><th>Moderator</th><th>Added</th><th>Last seen</th><th></th></tr>${mods}</table></div>

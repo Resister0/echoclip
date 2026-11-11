@@ -147,6 +147,13 @@ export component SavingCard inherits Rectangle {
                     border-radius: 13px;
                     border-width: 3px;
                     border-color: #ffffff22;
+                    // 18 steps of 20 deg from a 50 ms Timer (11 Nov, idle CPU: animation-tick() redrew the whole
+                    // window at the monitor's full rate while the card was up)
+                    property <int> step;
+                    Timer {
+                        interval: 50ms;
+                        triggered => { parent.step = mod(parent.step + 1, 18); }
+                    }
                     Path {
                         width: 26px;
                         height: 26px;
@@ -156,7 +163,7 @@ export component SavingCard inherits Rectangle {
                         stroke-width: 3px;
                         fill: transparent;
                         commands: "M 3.8 7.8 A 11.5 11.5 0 0 1 22.2 7.8";
-                        transform-rotation: mod(animation-tick() / 1ms, 900) / 900 * 360deg;
+                        transform-rotation: parent.step * 20deg;
                     }
                 }
             }
@@ -743,7 +750,7 @@ component Thumb inherits Rectangle {
     Rectangle {
         // Echo (chat 26): while selecting, the pictures of NOT selected cards fade to 55 %
         background: data.picked ? T.accent.with-alpha(0.16) : Lib.picking ? (hov ? #0a0a0c26 : #0a0a0c73) : transparent;
-        animate background { duration: T.fade; }
+        animate background { duration: T.fade; enabled: !T.rgb-live; }
     }
     if data.dur != "" && data.job == "": Badge {
         x: parent.width - self.width - 9px;
@@ -1001,7 +1008,7 @@ component CardButtons inherits HorizontalLayout {
         border-radius: 10px;
         border-width: 1px;
         border-color: cga.has-hover ? T.muted : T.line;
-        animate border-color { duration: T.fade; }
+        animate border-color { duration: T.fade; enabled: !T.rgb-live; }
         cga := TouchArea { }
         HorizontalLayout {
             padding: 1px;
@@ -1136,7 +1143,7 @@ export component CardView inherits Rectangle {
             border-radius: T.radius;
             border-width: 1px;
             border-color: data.picked ? T.accent.with-alpha(0.9) : hov ? T.accent.with-alpha(0.4) : T.line;
-            animate border-color { duration: T.lift; }
+            animate border-color { duration: T.lift; enabled: !T.rgb-live; }
             drop-shadow-blur: hov ? 34px : 0;
             drop-shadow-offset-y: hov ? 14px : 0;
             drop-shadow-color: #00000099;
@@ -1282,7 +1289,7 @@ export component ListCard inherits Rectangle {
             border-radius: T.radius;
             border-width: 1px;
             border-color: data.picked ? T.accent.with-alpha(0.9) : hov ? T.accent.with-alpha(0.4) : T.line;
-            animate border-color { duration: T.lift; }
+            animate border-color { duration: T.lift; enabled: !T.rgb-live; }
             clip: true;
             HorizontalLayout {
                 spacing: 0;
@@ -1368,7 +1375,7 @@ component FChip inherits Rectangle {
     border-width: 1px;
     border-color: o.on ? T.accent.with-alpha(0.7) : ta.has-hover ? T.line : transparent;
     background: o.on ? T.accent.with-alpha(0.2) : T.panel2;
-    animate background, border-color { duration: 120ms; }
+    animate background, border-color { duration: 120ms; enabled: !T.rgb-live; }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
