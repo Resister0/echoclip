@@ -37,7 +37,18 @@ fn start() -> Sender<(usize, PathBuf, PathBuf)> {
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PathBuf, PathBuf)>();
     std::thread::spawn(move || {
         let Some(ff) = crate::sheets::ffmpeg() else { return };
-        for (idx, clip, thumbs) in rx {
+        // QA 11 Nov 2026: newest request first. First-come order made the cards on screen wait behind every card a
+        // fast scroll passed (1000 clips: still blank after a minute); the skipped ones come next, nothing is dropped.
+        let mut stack: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
+        loop {
+            if stack.is_empty() {
+                match rx.recv() {
+                    Ok(j) => stack.push(j),
+                    Err(_) => break,
+                }
+            }
+            stack.extend(rx.try_iter());
+            let Some((idx, clip, thumbs)) = stack.pop() else { continue };
             let (ok, dur) = make(&ff, &clip, &thumbs);
             crate::lib_net::log_line(&format!("library: card picture for {} {}", clip.file_name().unwrap_or_default().to_string_lossy(), if ok { "made (it was missing)" } else { "couldn't be made" }));
             if !ok && dur.is_none() {

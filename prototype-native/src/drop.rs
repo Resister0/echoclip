@@ -37,7 +37,7 @@ fn mouse(win: &winit::window::Window) -> (f32, f32) {
         // SAFETY: plain Win32 call writing into a local POINT
         if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0 {
             if let Ok(o) = win.inner_position() {
-                let s = win.scale_factor() as f32;
+                let s = (win.scale_factor() * crate::uiscale::extra()) as f32; // winit's scale x Echo's size
                 return ((pt.x - o.x) as f32 / s, (pt.y - o.y) as f32 / s);
             }
         }

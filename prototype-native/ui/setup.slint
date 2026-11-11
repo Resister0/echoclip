@@ -21,8 +21,18 @@ export global Tour {
 
 export component SetupLayer inherits Rectangle {
     visible: Su.open;
-    background: #000000d0;
-    TouchArea { }   // clicks never reach the app behind
+    // 11 Nov 2026: the window's title bar (top-h tall) stays live while the setup is open - drag, minimise, maximise,
+    // close (like the player, player.slint dim-y). The dim, the click blocker and the key scope start below it.
+    in property <length> top-h: 52px;
+    Rectangle {
+        y: root.top-h;
+        height: root.height - root.top-h;
+        background: #000000d0;
+    }
+    TouchArea {   // clicks never reach the app behind
+        y: root.top-h;
+        height: root.height - root.top-h;
+    }
     property <bool> lis: S.listening && Su.open;
     changed lis => {
         if (self.lis) {
@@ -30,6 +40,8 @@ export component SetupLayer inherits Rectangle {
         }
     }
     keys := FocusScope {
+        y: root.top-h;
+        height: root.height - root.top-h;
         key-pressed(e) => {
             if (S.listening) {
                 if (e.text == Key.Escape) {
@@ -47,9 +59,9 @@ export component SetupLayer inherits Rectangle {
     }
     dlg := Rectangle {
         x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
+        y: root.top-h + (root.height - root.top-h - self.height) / 2;
         width: min(640px, root.width - 40px);
-        height: min(root.height * 0.9, col.preferred-height + 40px + 64px);
+        height: min((root.height - root.top-h) * 0.92, col.preferred-height + 40px + 64px);
         background: T.panel;
         border-radius: 14px;
         border-width: 1px;

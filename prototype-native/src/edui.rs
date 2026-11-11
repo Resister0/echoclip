@@ -41,6 +41,57 @@ thread_local! {
     static PENDING: RefCell<Option<(String, Instant)>> = const { RefCell::new(None) };
     /// the clips folder (projects + card pictures go to its .thumbs, like Echo's save_project)
     static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
+    /// build_tiles: the newest request (an older one finishing later is dropped)
+    static TILE_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// 11 Nov 2026 (choppy timeline scrolling): the filmstrip's 60 pictures as small ready-made images, cut once from the
+/// player's 10x6 picture sheet. The timeline used to draw cut-outs of the whole sheet (6400x2160): every scroll step
+/// showed new cut-outs, each one a new picture for the renderer - 56-76 ms per frame while scrolling a 10-minute clip
+/// (8 ms standing still, 7-9 ms with the filmstrip hidden). Measured with ECHO_TL_BENCH (ed_bench.rs).
+fn build_tiles(a: &AppWindow) {
+    let pl = a.global::<Play>();
+    if !pl.get_sheet_ok() || !a.global::<Ed>().get_open() {
+        return;
+    }
+    let (tw, th) = (pl.get_sheet_tw().max(1) as u32, pl.get_sheet_th().max(1) as u32);
+    let sheet = pl.get_sheet();
+    // the pixels go to a worker as they are (no copy here); RGBA sheets are turned into RGB there
+    let src: Option<Result<slint::SharedPixelBuffer<slint::Rgb8Pixel>, slint::SharedPixelBuffer<slint::Rgba8Pixel>>> =
+        sheet.to_rgb8().map(Ok).or_else(|| sheet.to_rgba8().map(Err));
+    let Some(src) = src else { return };
+    let gen = TILE_GEN.with(|g| {
+        g.set(g.get() + 1);
+        g.get()
+    });
+    let w = a.as_weak();
+    std::thread::spawn(move || {
+        let sheet = match src {
+            Ok(b) => image::RgbImage::from_raw(b.width(), b.height(), b.as_bytes().to_vec()),
+            Err(b) => image::RgbaImage::from_raw(b.width(), b.height(), b.as_bytes().to_vec()).map(|i| image::DynamicImage::ImageRgba8(i).to_rgb8()),
+        };
+        let Some(sheet) = sheet else { return };
+        // 144 px tall (the strip is 64 px: sharp up to 225 %), the sheet's own shape
+        let (oh, ow) = (144u32, ((144 * tw) as f32 / th as f32).round().max(1.0) as u32);
+        let mut tiles = Vec::with_capacity(60);
+        for f in 0..60u32 {
+            let (x, y) = ((f % 10) * tw, (f / 10) * th);
+            if x + tw > sheet.width() || y + th > sheet.height() {
+                break;
+            }
+            let t = image::imageops::crop_imm(&sheet, x, y, tw, th).to_image();
+            let t = image::imageops::resize(&t, ow, oh, image::imageops::FilterType::Triangle);
+            tiles.push(slint::SharedPixelBuffer::<slint::Rgb8Pixel>::clone_from_slice(t.as_raw(), ow, oh));
+        }
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(a) = w.upgrade() else { return };
+            if TILE_GEN.with(|g| g.get()) != gen || !a.global::<Ed>().get_open() {
+                return;
+            }
+            let imgs: Vec<slint::Image> = tiles.into_iter().map(slint::Image::from_rgb8).collect();
+            a.global::<Ed>().set_tiles(ModelRc::new(VecModel::from(imgs)));
+        });
+    });
 }
 
 fn elog(line: String) {
@@ -412,6 +463,22 @@ fn clamp_scroll(e: &mut Editor) {
     e.scroll = e.scroll.clamp(0.0, max);
 }
 
+/// test hook ECHO_TL_BENCH (ed_bench.rs): a zoom (pixels per second), scrolled to the start
+pub fn bench_zoom(a: &AppWindow, pps: f64) {
+    with_ed(|e| {
+        e.tl_w = view_w(a);
+        e.pps = pps.clamp(5.0, 400.0);
+        e.scroll = 0.0;
+        clamp_scroll(e);
+        push(a, e);
+    });
+}
+
+/// test hook ECHO_TL_BENCH: (scroll now, the most it can scroll)
+pub fn bench_scroll() -> (f64, f64) {
+    with_ed(|e| (e.scroll, (e.total() * e.pps + 200.0 - e.tl_w).max(0.0))).unwrap_or((0.0, 0.0))
+}
+
 /// the frame at the playhead (paused) / jump there (playing)
 fn seek(p: &Rc<RefCell<Player>>, e: &mut Editor, exact: bool) {
     if let Some(m) = p.borrow().mpv.as_ref() {
@@ -531,6 +598,11 @@ pub fn carry_in(a: &AppWindow, p: &Rc<RefCell<Player>>, clip: &Path, cv: crate::
                 t -= cv.pos.min(y) - x;
             }
         }
+        // QA B18 (11 Nov 2026): played to the end (or within 0.5 s of it) - start at 0 instead of past the last frame
+        // (the preview was black until the play head moved)
+        if t >= e.total() - 0.5 {
+            t = 0.0;
+        }
         e.t = t.clamp(0.0, e.total());
         e.pps = ((e.tl_w - 60.0) / e.total().max(1.0)).clamp(5.0, 400.0);
         e.scroll = 0.0;
@@ -557,7 +629,14 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
         }
         let row = lib.view_row_of(idx).map(|r| r as i32);
         match row {
-            Some(r) => play(r),
+            Some(r) => {
+                // 11 Nov 2026: Edit goes straight to the editor - the player stays hidden (and its video window
+                // parked) while the clip loads and ffprobe runs; open_rest / the worker's answer clears it
+                if !OPENING.with(|o| o.get()) {
+                    a.global::<Ed>().set_opening(true);
+                }
+                play(r)
+            }
             None => {
                 toast(a, "That clip isn't in the current view - open it from the library");
                 PENDING.with(|p| *p.borrow_mut() = None);
@@ -581,9 +660,13 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
         })
         .unwrap_or_default();
     let (aw, p2, clip) = (a.as_weak(), p.clone(), c.path.clone());
+    // QA B42 (11 Nov 2026): straight from Home / Library the player hasn't read the clip yet - a clip whose length isn't
+    // known (fresh library, saved seconds ago) opened as a 0.1 s timeline. Its length is read here then.
+    let need_dur = c.dur.is_none();
     crate::lib_net::bg(
         move || {
             let main = ff.as_ref().map(|f| crate::edrender::probe(f, &clip)).unwrap_or((1920, 1080, true, 1));
+            let len = if need_dur { ff.as_ref().and_then(|f| crate::pl_media::duration(f, &clip)) } else { None };
             let srcs: Vec<(String, (bool, f64))> = match ff.as_ref() {
                 Some(ff) => others
                     .into_iter()
@@ -595,19 +678,30 @@ fn open_with(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, play: &Rc<dyn F
                     .collect(),
                 None => vec![],
             };
-            (main, srcs)
+            (main, srcs, len)
         },
-        move |(main, srcs)| {
+        move |(main, srcs, len)| {
             OPENING.with(|o| o.set(false));
             if let Some(a) = aw.upgrade() {
-                open_rest(&a, &p2, idx, pj, from_player, main, srcs);
+                open_rest(&a, &p2, idx, pj, from_player, main, srcs, len);
+                // after Ed.open, and one drawn frame later: the D3D video window moves at once, the editor's UI only
+                // on the next frame - the video stood over Home for that frame (seen in a frame grab, 11 Nov 2026)
+                if a.global::<Ed>().get_opening() {
+                    let w = a.as_weak();
+                    slint::Timer::single_shot(Duration::from_millis(50), move || {
+                        if let Some(a) = w.upgrade() {
+                            a.global::<Ed>().set_opening(false);
+                            a.window().request_redraw();
+                        }
+                    });
+                }
             }
         },
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serde_json::Value>, from_player: bool, main: (u32, u32, bool, u32), srcs: Vec<(String, (bool, f64))>) {
+fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serde_json::Value>, from_player: bool, main: (u32, u32, bool, u32), srcs: Vec<(String, (bool, f64))>, len: Option<f64>) {
     let Some(lib) = LIB.with(|l| l.borrow().clone()) else { return };
     if idx >= lib.len() {
         return;
@@ -615,7 +709,7 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
     let c = lib.clip(idx);
     let ff = sheets::ffmpeg();
     let (w, h, _, tracks) = main;
-    let dur = c.dur.unwrap_or(p.borrow().duration).max(0.1);
+    let dur = c.dur.or(len).unwrap_or(p.borrow().duration).max(0.1);
     let mut e = Editor::new(c.path.clone(), c.shown.clone(), dur, w.max(16), h.max(16));
     e.from_player = from_player;
     e.tracks = tracks;
@@ -697,6 +791,8 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
             run_soon(a, cmd);
         }
     }
+    build_tiles(a); // the filmstrip pictures (when the sheet comes later: editor.slint asks again)
+    crate::ed_bench::arm(a); // test hook ECHO_TL_BENCH
 }
 
 pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
@@ -713,7 +809,8 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
     ED.with(|e| *e.borrow_mut() = None);
     LIVE.with(|l| *l.borrow_mut() = None);
     if let Some(m) = p.borrow().mpv.as_ref() {
-        m.set("speed", "1");
+        // the player's own speed (the bar's SPEED menu) again - the editor ran at each piece's speed
+        m.set("speed", &format!("{}", a.global::<Play>().get_speed()));
         m.set("pause", "yes");
         for k in ["brightness", "contrast", "saturation", "gamma", "video-zoom", "video-pan-x", "video-pan-y"] {
             m.set(k, "0");
@@ -752,6 +849,7 @@ pub fn close(a: &AppWindow, p: &Rc<RefCell<Player>>, force: bool) {
     crate::pl_layer::clear(None); // the layers' picture strips in %TEMP% go too
     a.global::<Ed>().set_sticker_menu(false);
     a.global::<Ed>().set_open(false);
+    a.global::<Ed>().set_tiles(ModelRc::default()); // the filmstrip pictures go with the editor
     a.global::<Play>().set_paused(true);
     // like Echo's closeEditor - leaving the editor goes back to the library / Home, never to the player
     // (it used to reopen the player when the editor was opened from it)
@@ -799,13 +897,16 @@ pub fn setup(app: &AppWindow, player: Rc<RefCell<Player>>, play: Rc<dyn Fn(i32)>
                         let notches = k[6..].parse::<f64>().unwrap_or(0.0) / 160.0;
                         e.scroll -= notches * 80.0;
                         clamp_scroll(e);
-                        (true, false)
+                        // 11 Nov 2026: scrolling only moves the view - no full push() of every row per glide step
+                        a.global::<Ed>().set_scroll(e.scroll as f32);
+                        (false, false)
                     }
                     // the scrollbar (editor.slint sbar): drag the thumb / click the track
                     k if k.starts_with("scrollto:") => {
                         e.scroll = k[9..].parse::<f64>().unwrap_or(e.scroll);
                         clamp_scroll(e);
-                        (true, false)
+                        a.global::<Ed>().set_scroll(e.scroll as f32);
+                        (false, false)
                     }
                     k if k.starts_with("ctrl-wheel:") => {
                         let notches = k[11..].parse::<f64>().unwrap_or(0.0) / 160.0;
@@ -1082,6 +1183,17 @@ fn zoom(e: &mut Editor, k: f64, mouse_x: f64) {
     clamp_scroll(e);
 }
 
+/// QA B37 (11 Nov 2026): where the zoom buttons / slider zoom around - the play head while it's in view (it used to be
+/// the middle of the view, so zooming in moved the play head out of sight), else the middle
+fn zoom_anchor(e: &Editor) -> f64 {
+    let x = LP + e.t * e.pps - e.scroll;
+    if x >= LP && x <= LP + e.tl_w {
+        x
+    } else {
+        e.tl_w / 2.0
+    }
+}
+
 fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc<dyn Fn(i32)>) {
     let _ = play;
     if cmd == "back" {
@@ -1095,6 +1207,11 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
         LIVE.with(|l| *l.borrow_mut() = None);
         CAP_BASE.with(|c| *c.borrow_mut() = None);
         a.invoke_focus_editor();
+        return;
+    }
+    // the player's picture sheet came in while the editor is open (editor.slint sheet-ready)
+    if cmd == "tiles" {
+        build_tiles(a);
         return;
     }
     a.global::<Ed>().set_menu_open(false);
@@ -1289,7 +1406,7 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 reseek = false;
             }
             "zoom-in" | "zoom-out" => {
-                let mid = e.tl_w / 2.0;
+                let mid = zoom_anchor(e);
                 zoom(e, if cmd == "zoom-in" { 1.5 } else { 1.0 / 1.5 }, mid);
                 reseek = false;
             }
@@ -1817,7 +1934,7 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
                 preview_volume(p, e);
             }
             "zoom" => {
-                let mid = e.tl_w / 2.0;
+                let mid = zoom_anchor(e);
                 let target = 2.0 * 400f64.powf(num.clamp(0.0, 1.0));
                 zoom(e, target / e.pps, mid);
             }

@@ -311,57 +311,98 @@ fn mic_test(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh) {
         let st = store.borrow();
         (st.s("mic_device"), st.mics.clone(), st.mic_default.clone())
     };
-    store.borrow_mut().mic_test = "Listening… say something".into();
+    if store.borrow().mic_test == LISTENING {
+        return; // already listening (a double click)
+    }
+    store.borrow_mut().mic_test = LISTENING.into();
     r();
-    let (store, r) = (store.clone(), r.clone());
-    crate::lib_net::bg(
-        move || {
-            #[cfg(windows)]
-            let input: Vec<String> = {
-                // DirectShow's names can be cut short (31 characters): the mic Echo uses, or the default one, matched
-                // to DirectShow's list by its start
-                let ds = list_mics_old();
-                let want = if dev.is_empty() { def } else { dev };
-                let d = ds
-                    .iter()
-                    .find(|m| m.0 == want)
-                    .or_else(|| ds.iter().find(|m| !want.is_empty() && want.starts_with(m.0.as_str())))
-                    .map(|m| m.0.clone())
-                    .or_else(|| ds.first().map(|m| m.0.clone()))
-                    .unwrap_or_else(|| mics.first().map(|m| m.0.clone()).unwrap_or_default());
-                if d.is_empty() {
-                    return Err("No microphone found".to_string());
-                }
-                vec!["-f".into(), "dshow".into(), "-i".into(), format!("audio={d}")]
-            };
-            #[cfg(not(windows))]
-            let input: Vec<String> = {
-                let _ = (&mics, &def);
-                vec!["-f".into(), "pulse".into(), "-i".into(), if dev.is_empty() { "default".into() } else { dev }]
-            };
-            let o = crate::edrender::hidden_cmd(&ff)
-                .args(["-hide_banner", "-nostats"])
-                .args(&input)
-                .args(["-t", "3", "-af", "volumedetect", "-f", "null", "-"])
-                .stdin(std::process::Stdio::null())
-                .output()
-                .map_err(|e| e.to_string())?;
-            let t = String::from_utf8_lossy(&o.stderr).to_string();
-            let max = t.lines().find_map(|l| l.split("max_volume:").nth(1)).and_then(|x| x.trim().trim_end_matches("dB").trim().parse::<f64>().ok());
-            match max {
-                Some(db) => Ok(db),
-                None => Err(t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("couldn't open the microphone").to_string()),
+    // 11 Nov 2026 (2.0.4 bug: "Listening…" never ended): the result goes to the UI thread with
+    // invoke_from_event_loop; mic_record itself gives up after 10 s
+    std::thread::spawn(move || {
+        let res = mic_record(&ff, dev, mics, def);
+        let _ = slint::invoke_from_event_loop(move || mic_done(res));
+    });
+}
+
+const LISTENING: &str = "Listening… say something";
+
+/// the mic test's answer on the UI thread
+fn mic_done(res: Result<f64, String>) {
+    let Some(store) = STORE.with(|s| s.borrow().clone()) else { return };
+    store.borrow_mut().mic_test = match res {
+        Ok(db) if db > -45.0 => format!("✓ Your mic works (loudest {db:.0} dB)."),
+        Ok(db) => format!("× Almost silent (loudest {db:.0} dB) - is the mic muted, or is it another device?"),
+        Err(e) => format!("× Couldn't record from the mic: {}", e.chars().take(140).collect::<String>()),
+    };
+    if let Some(r) = REFRESH.with(|x| x.borrow().clone()) {
+        r();
+    }
+}
+
+/// worker: 3 s from the mic -> loudest peak in dB
+fn mic_record(ff: &std::path::Path, dev: String, mics: Vec<(String, String)>, def: String) -> Result<f64, String> {
+    #[cfg(windows)]
+    let input: Vec<String> = {
+        // DirectShow's names can be cut short (31 characters): the mic Echo uses, or the default one, matched
+        // to DirectShow's list by its start
+        let ds = list_mics_old();
+        let want = if dev.is_empty() { def } else { dev };
+        let d = ds
+            .iter()
+            .find(|m| m.0 == want)
+            .or_else(|| ds.iter().find(|m| !want.is_empty() && want.starts_with(m.0.as_str())))
+            .map(|m| m.0.clone())
+            .or_else(|| ds.first().map(|m| m.0.clone()))
+            .unwrap_or_else(|| mics.first().map(|m| m.0.clone()).unwrap_or_default());
+        if d.is_empty() {
+            return Err("No microphone found".to_string());
+        }
+        vec!["-f".into(), "dshow".into(), "-i".into(), format!("audio={d}")]
+    };
+    #[cfg(not(windows))]
+    let input: Vec<String> = {
+        let _ = (&mics, &def);
+        vec!["-f".into(), "pulse".into(), "-i".into(), if dev.is_empty() { "default".into() } else { dev }]
+    };
+    // 11 Nov 2026: at most 10 s - a mic that opens but never sends sound kept ffmpeg (and "Listening…") going
+    // forever, since "-t 3" counts recorded sound, not time
+    let mut ch = crate::edrender::hidden_cmd(&ff)
+        .args(["-hide_banner", "-nostats", "-nostdin"])
+        .args(&input)
+        .args(["-t", "3", "-af", "volumedetect", "-f", "null", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let reader = ch.stderr.take().map(|mut e| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut e, &mut s);
+            s
+        })
+    });
+    let t0 = std::time::Instant::now();
+    let timed_out = loop {
+        match ch.try_wait() {
+            Ok(Some(_)) | Err(_) => break false,
+            Ok(None) if t0.elapsed() > Duration::from_secs(10) => {
+                let _ = ch.kill();
+                let _ = ch.wait();
+                break true;
             }
-        },
-        move |res: Result<f64, String>| {
-            store.borrow_mut().mic_test = match res {
-                Ok(db) if db > -45.0 => format!("✓ Your mic works (loudest {db:.0} dB)."),
-                Ok(db) => format!("✗ Almost silent (loudest {db:.0} dB) - is the mic muted, or is it another device?"),
-                Err(e) => format!("✗ Couldn't record from the mic: {}", e.chars().take(140).collect::<String>()),
-            };
-            r();
-        },
-    );
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
+    let t = reader.and_then(|r| r.join().ok()).unwrap_or_default();
+    if timed_out {
+        return Err("the mic sent no sound for 10 s - is it plugged in and switched on?".to_string());
+    }
+    let max = t.lines().find_map(|l| l.split("max_volume:").nth(1)).and_then(|x| x.trim().trim_end_matches("dB").trim().parse::<f64>().ok());
+    match max {
+        Some(db) => Ok(db),
+        None => Err(t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("couldn't open the microphone").to_string()),
+    }
 }
 
 // ---------- updates ----------

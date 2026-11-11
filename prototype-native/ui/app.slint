@@ -476,7 +476,8 @@ export component AppWindow inherits Window {
     background: root.player-open && Play.full && Play.video-window ? transparent : T.bg;
     preferred-width: 1500px;
     preferred-height: 900px;
-    min-width: 960px;
+    // QA B19 (11 Nov 2026): was 960 - Library's toolbar ("Open folder") and its 2nd card column need ~1060
+    min-width: 1060px;
     min-height: 600px;
     default-font-family: "Segoe UI Variable Text";
     default-font-weight: 400 + T.fw;
@@ -633,6 +634,15 @@ export component AppWindow inherits Window {
         tdl.take-focus();
     }
 
+    // Chat B (night): Echo's background effect (#bgfxc). William, 11 Nov 2026: it drew over the clip cards - now
+    // BEHIND the pages (only in the gaps / see-through parts); the Settings page has its own copy (settings.slint)
+    FxLayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+    }
+
     // Chat A: full-width title bar (sketch B) above the sidebar + page
     VerticalLayout {
         // see-through fullscreen (Windows): the library must not show through. (Not hidden otherwise: hiding it
@@ -692,7 +702,7 @@ export component AppWindow inherits Window {
                     height: 18px;
                     viewbox-width: 256;
                     viewbox-height: 256;
-                    stroke: white;
+                    stroke: T.on-accent;
                     stroke-width: 1.8px;
                     stroke-line-cap: round;
                     fill: transparent;
@@ -703,7 +713,7 @@ export component AppWindow inherits Window {
                     height: 18px;
                     viewbox-width: 256;
                     viewbox-height: 256;
-                    fill: white;
+                    fill: T.on-accent;
                     commands: "M 48 104 L 58 70 L 82 96 Z M 106 86 L 176 128 L 106 170 Z";
                 }
             }
@@ -716,7 +726,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 font-family: "Segoe UI Variable Display";
                 // a clip is open over the page: only the page name fades, the rest of the bar stays lit (10 Nov)
-                opacity: root.player-open && !Ed.open && !Play.full ? 0.4 : 1;
+                opacity: root.player-open && !Ed.open && !Ed.opening && !Play.full ? 0.4 : 1;
                 animate opacity { duration: 150ms; }
             }
             Rectangle {
@@ -786,7 +796,7 @@ export component AppWindow inherits Window {
             // .chips (gap 8): .chip = padding 0 10, gap 6: keys (.chk-k padding 2 3, gap 4), "Clip", length select
             // r2-layout (L8): Echo's .chips{overflow:hidden} - with little room the chips are cut, Record / Save clip
             // and the window buttons stay on screen (the length list is a popup: not cut)
-            Rectangle {
+            chipbox := Rectangle {
                 horizontal-stretch: 1;
                 min-width: 0px;
                 preferred-width: hkchips.preferred-width;
@@ -799,6 +809,8 @@ export component AppWindow inherits Window {
                 for h in root.hotkeys: hkc := Rectangle {
                     y: 12px;
                     height: 28px;
+                    // QA B19 (11 Nov 2026): a chip that doesn't fit whole is left out (was cut to "A" by the mic button)
+                    visible: self.x + self.width <= chipbox.width;
                     // the bar's pill + chips slightly see-through (cleaner)
                     opacity: 0.72;
                     width: chl.preferred-width;
@@ -941,9 +953,12 @@ export component AppWindow inherits Window {
                 tip: root.rec-mic-off ? "Mic muted - your voice isn't recorded (click to turn it on)" : "Mic on - click to mute it in your clips";
                 clicked => { root.rec-act("mic"); }
             }
-            Btn {
+            recbtn := Btn {
                 y: 10px;
                 height: 32px;
+                // William, 11 Nov 2026: Record and Save clip the same size - both take the wider one, at least the
+                // width of "Stop · 10:00" so the button doesn't grow while a recording runs
+                width: max(124px, self.natural-w, savebtn.natural-w);
                 // Echo's #longbtn: red dot (asked: "the nice fancy red icon"), red edge + blinking dot while recording
                 dot: #ff5c7a;
                 blink-dot: root.rec-long-on;
@@ -957,6 +972,12 @@ export component AppWindow inherits Window {
             savebtn := Btn {
                 y: 10px;
                 height: 32px;
+                width: max(124px, self.natural-w, recbtn.natural-w);
+                // William, 11 Nov 2026: its glow ran below the title bar into the page - here it's even on all sides
+                // (no offset) and ends inside the 10 px under the button (the bar is 52 px, the button 10..42)
+                drop-shadow-blur: 8px;
+                drop-shadow-offset-y: 0;
+                drop-shadow-color: T.accent.with-alpha(0.18);
                 primary: true;
                 text: "Save clip";
                 icon: Ic.scissors;
@@ -1164,6 +1185,48 @@ export component AppWindow inherits Window {
                             background: T.line;
                         }
                     }
+                    // QA B20 (11 Nov 2026): in a short window Cloud / Screenshots / the folders sat under the status card
+                    // with nothing showing that the list scrolls. More below: a fade at the bottom edge; and a thin bar
+                    // on the right (drag it, or use the wheel anywhere on the list)
+                    if navcol.preferred-height > navfl.height + 1px && navfl.content-y > navfl.height - navcol.preferred-height + 1px: Rectangle {
+                        y: parent.height - self.height;
+                        height: 22px;
+                        background: @linear-gradient(180deg, T.rail.with-alpha(0) 0%, T.rail 100%);
+                    }
+                    if navcol.preferred-height > navfl.height + 1px: Rectangle {
+                        property <length> room: navcol.preferred-height - navfl.height;
+                        property <length> bar-h: max(28px, parent.height * navfl.height / navcol.preferred-height);
+                        x: parent.width - 6px;
+                        width: 6px;
+                        y: 0;
+                        height: parent.height;
+                        Rectangle {
+                            x: 2px;
+                            width: 3px;
+                            y: (parent.height - parent.bar-h) * (-navfl.content-y / max(1px, parent.room));
+                            height: parent.bar-h;
+                            border-radius: 1.5px;
+                            background: sbta.has-hover || sbta.pressed ? T.muted : T.line;
+                        }
+                        sbta := TouchArea {
+                            x: -4px;
+                            width: 10px;
+                            mouse-cursor: default;
+                            property <length> y0;
+                            property <length> c0;
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down) {
+                                    self.y0 = self.mouse-y;
+                                    self.c0 = navfl.content-y;
+                                }
+                            }
+                            moved => {
+                                if (self.pressed) {
+                                    navfl.content-y = max(-parent.room, min(0px, self.c0 - (self.mouse-y - self.y0) * parent.room / max(1px, parent.height - parent.bar-h)));
+                                }
+                            }
+                        }
+                    }
                     }
                     // #updcard (Echo: above the statcard, margin-bottom 8)
                     if Upd.on: UpdCard {
@@ -1359,6 +1422,27 @@ export component AppWindow inherits Window {
                             return accept;
                         }
                     }
+                    // 11 Nov 2026: Home "Inbox" keys - act on the clip on show (home.slint): S Copy for Discord, L Share
+                    // link, E Trim / edit, K Keep, Delete, ← / → the pager. Only on Home, nothing open over it, no
+                    // Ctrl / Alt / Win; a held key doesn't repeat Keep / Delete / Copy.
+                    if (root.view == "home" && !root.player-open && !Dlg.open && !Ed.open && HomeState.cards.length > 0
+                        && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta) {
+                        if (e.text == Key.LeftArrow) {
+                            if (HomeState.can-prev) { HomeState.act("prev"); }
+                            return accept;
+                        }
+                        if (e.text == Key.RightArrow) {
+                            if (HomeState.can-next) { HomeState.act("next"); }
+                            return accept;
+                        }
+                        if (!e.repeat) {
+                            if (e.text == "s" || e.text == "S") { HomeState.act("copy"); return accept; }
+                            if (e.text == "l" || e.text == "L") { HomeState.act("link"); return accept; }
+                            if (e.text == "e" || e.text == "E") { HomeState.act("edit"); return accept; }
+                            if (e.text == "k" || e.text == "K") { HomeState.act("keep"); return accept; }
+                            if (e.text == Key.Delete) { HomeState.act("del"); return accept; }
+                        }
+                    }
                     if (root.view != "library" || root.player-open || Dlg.open) {
                         return reject;
                     }
@@ -1523,7 +1607,7 @@ export component AppWindow inherits Window {
                                             text: root.factive.length;
                                             font-size: 11px;
                                             font-weight: 700 + T.fw;
-                                            color: white;
+                                            color: T.on-accent;
                                         }
                                     }
                                 }
@@ -2151,22 +2235,13 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Chat B (night): Echo's background effect canvas (#bgfxc, z 2): over the pages, under the player / dialogs;
-    // plain shapes only, so clicks go straight through
-    FxLayer {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
-    }
-
     // ---------- player ----------
     pv := PlayerView {
         x: 0;
         y: 0;
         width: root.width;
         height: root.height;
-        visible: root.player-open && !Ed.open;
+        visible: root.player-open && !Ed.open && !Ed.opening; // Edit goes straight to the editor (11 Nov 2026)
         vx: root.video-x;
         vy: root.video-y;
         vw: root.video-w;

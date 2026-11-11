@@ -39,6 +39,11 @@ fn restore(a: &AppWindow, lib: &Rc<LibModel>, sync: Rc<dyn Fn(bool)>) {
     }
     if let Some(v) = crate::lib_fx::ui_get("lib_view").as_bool() {
         a.set_list_view(v);
+        // QA 11 Nov 2026: the list's 1-per-row never reached Rust (the grid's `cols` is 1 from its first layout, so
+        // no `changed cols` fires) - rows stayed built 4 cards to a row and the list showed every 4th clip
+        if v {
+            lib.set_cols(1);
+        }
     }
     if let Ok(f) = serde_json::from_value::<BTreeMap<String, Vec<String>>>(crate::lib_fx::ui_get("lib_filters")) {
         let f: BTreeMap<String, Vec<String>> = f.into_iter().filter(|(g, k)| matches!(g.as_str(), "game" | "type" | "tag" | "where") && !k.is_empty()).collect();

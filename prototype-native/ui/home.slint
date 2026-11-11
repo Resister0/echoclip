@@ -1,126 +1,351 @@
-// Echo's Home (#page-home, chat 30 "mockup v6"): the latest clip big + what to do with it, one "Get started" line,
-// quiet numbers (.hstrip), one row of recent clips. Rust fills HomeState; Home's cards are normal library cards
-// (Card.idx = HOME_BASE + position, so hover / favourite / buttons work through Lib like everywhere else).
-import { T, Ic, Icon, TipArea, Btn, CopyMenuBody } from "theme.slint";
+// Echo's Home, 11 Nov 2026 "Inbox" (the user's pick from the Home mockups): ONE clip big - the newest one not looked at
+// yet - with a side panel as tall as the picture (pager, buttons with keys, the clip's details), then "Your games".
+// The page is made to fit the window: the picture shrinks with the window's height, so there is nothing to scroll;
+// only a window too small for everything scrolls. Rust (src/home_inbox.rs + main.rs home_fill) fills HomeState.
+// The clip on show is Home card 0 (Card.idx = HOME_BASE), so hover / play / Copy / Share / Edit / Captions work
+// through the same paths as before (Edit opens the editor directly; the picture is the sharp still).
+import { T, Ic, Icon, TipArea, CopyMenuBody } from "theme.slint";
 import { Card, CardView, Lib } from "library.slint";
+import { PlayBadge } from "playbadge.slint";
 
 export global HomeState {
-    in-out property <[Card]> cards;        // [0] = the latest clip (big), then the recent ones
-    in-out property <image> hero;          // a sharp still of the latest clip (ffmpeg), else its card picture
-    in-out property <string> hero-meta;    // "1 hour ago · 58.8 MB · FiveM"
-    in-out property <int> extra;           // px for tag / note lines under the recent cards
-    // .hstrip
+    in-out property <[Card]> cards;        // [0] = the clip on show
+    in-out property <image> hero;          // a sharp still of the clip on show (ffmpeg), else its card picture
+    in-out property <string> hero-meta;    // "FiveM · 32 min ago"
+    in-out property <length> hero-w;       // the picture's width - its hover video is made this big (hover_vid.rs)
+    // Inbox (home_inbox.rs)
+    in-out property <bool> loading;        // the clips folder is still being read: show nothing yet
+    in-out property <string> label;        // "NEW SINCE YOU LAST LOOKED" / "YOUR LATEST CLIP" / "YOUR CLIPS"
+    in-out property <bool> new-mode;       // the pager goes through new clips (else through all clips)
+    in-out property <int> pos;             // the clip on show in that list (0 = first)
+    in-out property <int> count;
+    in-out property <bool> can-prev;
+    in-out property <bool> can-next;
+    in-out property <[int]> dots;          // short lists of new clips: 0 done, 1 on show, 2 still new ([] = no dots)
+    in-out property <[string]> det-l;      // CLIP DETAILS: Duration, Size, Resolution, Frame rate, Format, Folder
+    in-out property <[string]> det-v;
+    in-out property <[string]> det-sl;     // the short list for a small panel: Length, Picture, Format, Folder
+    in-out property <[string]> det-sv;
+    // Your games: one shelf per top folder (newest first); 3 pictures per shelf, flattened (sh-npics = how many real)
+    in-out property <[string]> sh-id;
+    in-out property <[string]> sh-name;
+    in-out property <[string]> sh-sub;
+    in-out property <[string]> sh-initial;
+    in-out property <[image]> sh-icon;
+    in-out property <[bool]> sh-has-icon;
+    in-out property <[int]> sh-npics;
+    in-out property <[image]> sh-pics;
+    in-out property <[bool]> sh-game;      // a game (else a plain folder: folder icon, "folder · N clips")
+    in-out property <[string]> sh-tail;    // names of shelves i.. ("Counter-Strike 2 · Mixed") for the "+N more" place
+    in-out property <string> empty-key;    // the first hotkey, for the first-run card ("Shift+F11")
+    in-out property <bool> test-hover;     // test hook ECHO_HOME_HOVER=1: the play button shows without a mouse (pictures)
+    // still set by Rust (older Home parts, not shown any more)
+    in-out property <int> extra;
     in-out property <string> week;
     in-out property <string> total;
     in-out property <string> size;
     in-out property <string> games;
-    in-out property <string> games-word;   // "game" / "games"
-    in-out property <[int]> bars;          // clips per week, last 6 weeks (oldest first)
+    in-out property <string> games-word;
+    in-out property <[int]> bars;
     in-out property <int> bars-max: 1;
-    in-out property <bool> spark;          // at least 3 weeks with clips
-    in-out property <[int]> days;          // 10 Nov: clips per day, last 7 days (today last)
-    in-out property <[string]> day-l;      // their day letters ("M", "T", …)
+    in-out property <bool> spark;
+    in-out property <[int]> days;
+    in-out property <[string]> day-l;
     in-out property <int> days-max: 1;
-    // Get started (.hgs)
     in-out property <bool> gs-on;
     in-out property <[bool]> gs-done;
-    in-out property <string> gs-title;     // "trim or edit a clip"
-    in-out property <string> gs-text;      // "cut it down to the good part"
-    in-out property <string> gs-go;        // button ("" = none)
-    in-out property <string> empty-key;    // first hotkey, for "No clips yet"
-    callback act(string);                  // "copy" / "copym" / "edit" / "link" / "cap" / "play" / "library" / "gs-go" / "gs-skip" / "gs-hide"
-    callback cols(int);                    // recent cards that fit in one row (2..7)
+    in-out property <string> gs-title;
+    in-out property <string> gs-text;
+    in-out property <string> gs-go;
+    // "copy" / "copy:<size>" / "edit" / "link" / "cap" / "play" / "library" / "prev" / "next" / "keep" / "del" /
+    // "shelf:<filter id>"
+    callback act(string);
+    callback cols(int);
 }
 
-// .hacts .hb: padding 10 14, radius 10, line border, panel
-component HB inherits Rectangle {
+// a key on a button ("S"): Echo's kbd look, small
+component KeyCap inherits Rectangle {
+    in property <string> k;
+    in property <bool> on-accent;
+    height: 20px;
+    width: max(20px, kt.preferred-width + 10px);
+    border-radius: 5px;
+    background: on-accent ? #ffffff33 : T.panel2;
+    border-width: 1px;
+    border-color: on-accent ? #ffffff4d : T.hover;
+    kt := Text {
+        text: root.k;
+        font-size: 11px;
+        font-weight: 600 + T.fw;
+        color: root.on-accent ? T.on-accent : T.muted;
+    }
+}
+
+// one button of the side panel: icon, label, its key on the right
+component PanelBtn inherits Rectangle {
     in property <string> text;
     in property <string> icon;
+    in property <string> k;
+    in property <bool> danger;
+    in property <length> h: 42px;
     callback clicked;
-    height: 42px;
+    height: h;
     border-radius: 10px;
     border-width: 1px;
-    border-color: ta.has-hover ? T.muted : T.line;
-    background: T.panel;
+    border-color: ta.has-hover ? (danger ? T.bad.with-alpha(0.6) : T.hover) : T.line;
+    background: ta.has-hover ? T.panel2 : T.panel2.with-alpha(0.6);
+    animate background, border-color { duration: T.fade; enabled: !T.rgb-live; }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    // 10 Nov: three of these side by side under Copy for Discord - icon + label centred
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: 14px;
         padding-right: 10px;
-        spacing: 8px;
-        alignment: center;
-        if root.icon != "": Icon {
+        spacing: 10px;
+        Icon {
             y: (parent.height - self.height) / 2;
-            width: 15px;
-            height: 15px;
+            width: 16px;
+            height: 16px;
             commands: root.icon;
-            stroke: T.muted;
+            stroke: root.danger ? T.bad : T.muted;
         }
         Text {
             text: root.text;
             font-size: 13.5px;
-            color: T.text;
+            font-weight: 600 + T.fw;
+            color: root.danger ? T.bad : T.text;
             vertical-alignment: center;
+            horizontal-stretch: 1;
             overflow: elide;
+        }
+        if root.k != "": KeyCap {
+            y: (parent.height - self.height) / 2;
+            k: root.k;
         }
     }
 }
 
-// 10 Nov: one of Home's four number boxes (was a bare strip between two lines)
-component StatBox inherits Rectangle {
-    in property <string> n;
-    in property <string> l;
-    height: 76px;
-    border-radius: 14px;
+// the pager's arrow
+component PagerBtn inherits Rectangle {
+    in property <string> icon;
+    in property <bool> enabled;
+    in property <string> tip;
+    callback clicked;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
     border-width: 1px;
     border-color: T.line;
-    background: T.panel;
-    HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 10px;
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.n;
-                font-size: 20px;
-                font-weight: 700 + T.fw;
-                color: T.text;
-            }
-            Text {
-                text: root.l;
-                font-size: 12px;
-                color: T.dim;
-                overflow: elide;
+    background: ta.has-hover && root.enabled ? T.hover : T.panel2;
+    opacity: root.enabled ? 1 : 0.4;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
             }
         }
-        @children
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+    Icon {
+        width: 15px;
+        height: 15px;
+        commands: root.icon;
+        stroke: T.muted;
+    }
+}
+
+// one "Your games" shelf: icon + name (wraps, never cut off mid-word; very long names get … with the full name as a
+// tooltip) + "21 clips · 2.1 GB" + Open on the left, its newest pictures stacked on the right
+component Shelf inherits Rectangle {
+    in property <string> name;
+    in property <string> sub;
+    in property <string> initial;
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <bool> game: true;
+    in property <int> npics;
+    in property <image> p0;
+    in property <image> p1;
+    in property <image> p2;
+    callback clicked;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: ta.has-hover ? T.accent.with-alpha(0.5) : T.line;
+    background: T.panel;
+    animate border-color { duration: T.fade; enabled: !T.rgb-live; }
+    clip: true;
+    // the name gets its room first (at least 42 % of the shelf, so game names wrap instead of being cut); the
+    // pictures take the rest: front one 16:9 at the right, up to 2 more peek out behind it when there is room
+    property <length> info-min: max(120px, root.width * 0.42);
+    property <length> avail: root.width - 16px - 16px - 14px - info-min;
+    property <int> shown: npics <= 0 ? 0 : min(npics, avail >= 230px ? 3 : avail >= 160px ? 2 : 1);
+    property <length> pw: max(0px, min((root.height - 32px) * 16 / 9, avail - max(0, shown - 1) * 22px));
+    property <length> ph: pw * 9 / 16;
+    property <length> stack-w: shown <= 0 ? 0px : pw + (shown - 1) * 22px;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: nm.preferred-height > nm.height + 1px ? root.name : "";
+        hover: ta.has-hover;
+    }
+    for k in [2, 1, 0]: Rectangle {
+        visible: k < root.shown && root.pw > 40px;
+        x: root.width - 16px - root.pw - k * 22px;
+        y: (root.height - root.ph) / 2 - k * 6px;
+        width: root.pw;
+        height: root.ph;
+        border-radius: 8px;
+        clip: true;
+        background: #000;
+        border-width: 1px;
+        border-color: #ffffff1f;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-x: -4px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #00000066;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: k == 0 ? root.p0 : k == 1 ? root.p1 : root.p2;
+            image-fit: cover;
+            opacity: k == 0 ? 1 : 0.85;
+        }
+    }
+    VerticalLayout {
+        x: 16px;
+        y: 16px;
+        width: max(60px, root.width - 16px - 16px - root.stack-w - 14px);
+        height: root.height - 32px;
+        spacing: 0;
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+            background: root.has-icon ? transparent : T.accent.with-alpha(0.18);
+            clip: true;
+            if root.has-icon: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.icon;
+                image-fit: contain;
+            }
+            if !root.has-icon && root.game: Text {
+                text: root.initial;
+                font-size: 13px;
+                font-weight: 700 + T.fw;
+                color: T.accent2;
+            }
+            if !root.has-icon && !root.game: Icon {
+                width: 16px;
+                height: 16px;
+                commands: Ic.folder;
+                stroke: T.accent2;
+            }
+        }
+        Rectangle { height: 8px; }
+        nm := Text {
+            text: root.name;
+            font-size: 15px;
+            font-weight: 700 + T.fw;
+            color: T.text;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 40px; // two lines
+        }
+        Text {
+            text: root.sub;
+            font-size: 12px;
+            color: T.muted;
+            overflow: elide;
+        }
+        Rectangle { vertical-stretch: 1; }
+        Text {
+            text: "Open →";
+            font-size: 12.5px;
+            font-weight: 600 + T.fw;
+            color: ta.has-hover ? T.accent2 : T.accent;
+        }
+    }
+}
+
+// QA B29: the last place of the shelf row when not all shelves fit - "+2 more", their names, opens the Library
+component MoreShelf inherits Rectangle {
+    in property <int> n;
+    in property <string> names;
+    callback clicked;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: ta.has-hover ? T.accent.with-alpha(0.5) : T.line;
+    background: ta.has-hover ? T.panel2 : T.panel;
+    animate border-color, background { duration: T.fade; enabled: !T.rgb-live; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.names;
+        hover: ta.has-hover;
+    }
+    VerticalLayout {
+        padding: 16px;
+        spacing: 0;
+        Text {
+            text: "+" + root.n + " more";
+            font-family: "Segoe UI Variable Display";
+            font-size: 22px;
+            font-weight: 700 + T.fw;
+            color: T.text;
+        }
+        Rectangle { height: 6px; }
+        Text {
+            text: root.names;
+            font-size: 12.5px;
+            color: T.muted;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 52px; // three lines
+        }
+        Rectangle { vertical-stretch: 1; }
+        Text {
+            text: "All in the Library →";
+            font-size: 12.5px;
+            font-weight: 600 + T.fw;
+            color: ta.has-hover ? T.accent2 : T.accent;
+        }
     }
 }
 
 export component HomePage inherits Rectangle {
     background: transparent;
-    // page padding 0 28 36; .hhero columns: min(62%, 48vh * 16/9) + minmax(280, 540), gap 24
-    in property <length> win-h;
-    property <length> cw: self.width - 56px - 8px;
-    property <length> shot-w: max(200px, min(cw * 0.62, win-h * 0.48 * 16 / 9, cw - 24px - 280px));
-    property <length> side-w: min(540px, cw - shot-w - 24px);
-    property <length> shot-h: shot-w * 9 / 16;
-    // one row of recent clips, as many as fit (2 to 7): ~250 px cards
-    property <int> rcols: max(2, min(7, floor((cw + 14px) / 264px)));
-    changed rcols => { HomeState.cols(self.rcols); }
-    init => {
-        HomeState.cols(self.rcols);
-        self.sync-hero();
-    }
-    property <length> rcard-w: (cw - (rcols - 1) * 14px) / rcols;
-    property <length> rcard-h: rcard-w * 9 / 16 + 2px + 68px + HomeState.extra * 1px;
+    in property <length> win-h; // (unused now: the page uses its own height)
+    // ---- sizes: everything fits the page; the picture takes what is left ----
+    property <length> pad-l: 28px;
+    property <length> pad-r: 36px;
+    property <length> pad-t: 24px;
+    property <length> pad-b: 24px;
+    property <length> cw: self.width - pad-l - pad-r;
+    property <length> aw: self.width >= 1500px ? 360px : self.width >= 1300px ? 320px : 260px;
+    property <length> head-h: 80px;   // label + title + "FiveM · 32 min ago"
+    property <length> shelf-h: 150px;
+    property <length> games-h: 28px + 32px + shelf-h; // gap + "Your games" row + one row of shelves
+    property <length> fixed-h: pad-t + head-h + 16px + games-h + pad-b;
+    property <length> vw: max(320px, min(cw - 24px - aw, (self.height - fixed-h) * 16 / 9));
+    property <length> vh: vw * 9 / 16;
+    // the panel's size step: full (6 details rows + hint) / compact (4 rows, smaller buttons) / no details
+    property <int> tier: aw >= 320px && vh >= 610px ? 0 : vh >= 430px ? 1 : 2;
+    property <length> btn-h: tier == 0 ? 42px : 36px;
+    property <length> page-w: vw + 24px + aw;
+    property <int> shelf-cols: page-w >= 1400px ? 4 : page-w >= 1000px ? 3 : 2;
+    property <length> shelf-w: (page-w - (shelf-cols - 1) * 16px) / shelf-cols;
     property <bool> has: HomeState.cards.length > 0;
-    // gaps (10 Nov): the hero card = the latest clip's card with the sharp still as its picture
+    // the picture = the clip's card with the sharp still in it
     property <Card> c0: HomeState.cards[0];
     property <image> hero-img: HomeState.hero;
     property <Card> hero-card;
@@ -131,380 +356,509 @@ export component HomePage inherits Rectangle {
     }
     changed c0 => { self.sync-hero(); }
     changed hero-img => { self.sync-hero(); }
+    init => { self.sync-hero(); }
 
-    Flickable {
+    fl := Flickable {
         width: parent.width;
         height: parent.height;
-        content-height: body.preferred-height;
+        // = the page's own height when everything fits (nothing to scroll); taller only in a very small window
+        content-height: max(self.height, body.preferred-height);
         body := VerticalLayout {
-            height: self.preferred-height;
-            padding-left: 28px;
-            padding-right: 36px;
-            padding-bottom: 36px;
-            // 24 (was 4): "Your latest clip" sat right under the top bar (10 Nov 2026)
-            padding-top: 24px;
+            width: fl.width;
+            height: max(fl.height, self.preferred-height);
+            padding-left: root.pad-l;
+            padding-right: root.pad-r;
+            padding-top: root.pad-t;
+            padding-bottom: root.pad-b;
             spacing: 0;
-            // .hempty
-            if !root.has: Text {
-                height: 120px;
-                text: "No clips yet. Play a game and press " + HomeState.empty-key + " - your clip shows up here.";
-                font-size: 14px;
-                color: T.muted;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                wrap: word-wrap;
-            }
-            // .hhero
-            if root.has: HorizontalLayout {
-                spacing: 24px;
-                alignment: start;
-                height: max(root.shot-h, side.preferred-height);
-                // .hshot: the latest clip big, radius 14; hover = play circle; click plays
-                // gaps (10 Nov): Echo's hero is a full card (makeCard: badges, job progress, game icon) with its name
-                // part hidden - the card's picture fills the hero
-                shot := Rectangle {
-                    width: root.shot-w;
-                    height: root.shot-h;
-                    y: 0;
+            alignment: start;
+            if HomeState.loading: Rectangle { }
+            // ---------- first run: no clips yet ----------
+            if !HomeState.loading && !root.has: VerticalLayout {
+                spacing: 0;
+                Text {
+                    text: "NEW CLIPS";
+                    font-size: 11px;
+                    font-weight: 700 + T.fw;
+                    letter-spacing: 1px;
+                    color: T.dim;
+                }
+                Rectangle { height: 6px; }
+                Text {
+                    text: "Nothing here yet";
+                    font-family: "Segoe UI Variable Display";
+                    font-size: 26px;
+                    font-weight: 700 + T.fw;
+                    color: T.text;
+                }
+                Rectangle { height: 16px; }
+                Rectangle {
+                    height: min(360px, max(220px, root.height - 300px));
                     border-radius: 14px;
-                    background: #0a0a0c;
-                    clip: true;
-                    property <bool> hov: Lib.hover-idx == HomeState.cards[0].idx;
-                    CardView {
-                        x: -1px;
-                        // the card lifts 3 px on hover: move it down as much, so the hero itself stays still
-                        y: parent.hov ? 2px : -1px;
-                        animate y { duration: T.lift; easing: ease-out; }
-                        width: parent.width + 2px;
-                        // only the picture: the card's name part is cut off by its own clip (no hidden mouse area
-                        // below the hero)
-                        height: parent.height + 2px;
-                        data: root.hero-card;
-                    }
-                    Rectangle {
-                        width: 64px;
-                        height: 64px;
-                        border-radius: 32px;
-                        background: #ffffff2e;
-                        opacity: parent.hov ? 1 : 0;
-                        animate opacity { duration: 180ms; }
-                        Path {
-                            width: 26px;
-                            height: 26px;
-                            x: 21px;
-                            viewbox-width: 24;
-                            viewbox-height: 24;
-                            fill: white;
-                            commands: "M8 5l12 7-12 7z";
+                    border-width: 1px;
+                    border-color: T.line;
+                    background: T.panel;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                height: 48px;
+                                width: ek.preferred-width + 36px;
+                                border-radius: 10px;
+                                background: T.panel2;
+                                border-width: 1px;
+                                border-color: T.hover;
+                                Rectangle {
+                                    y: parent.height - 5px;
+                                    height: 5px;
+                                    background: T.hover;
+                                    border-bottom-left-radius: 10px;
+                                    border-bottom-right-radius: 10px;
+                                }
+                                ek := Text {
+                                    y: 8px;
+                                    text: HomeState.empty-key;
+                                    font-size: 20px;
+                                    font-weight: 600 + T.fw;
+                                    color: T.text;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Play a game, press the key when something happens";
+                            font-size: 17px;
+                            font-weight: 700 + T.fw;
+                            color: T.text;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "Echo already keeps the last minutes. Your clip shows up here with big buttons to send it, trim it or throw it away.";
+                            font-size: 13.5px;
+                            color: T.muted;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
                         }
                     }
                 }
-                // .hside
-                side := VerticalLayout {
-                    width: root.side-w;
-                    alignment: start;
+                Rectangle { height: 28px; }
+                Text {
+                    text: "Your games";
+                    font-family: "Segoe UI Variable Display";
+                    font-size: 15px;
+                    font-weight: 700 + T.fw;
+                    color: T.text;
+                }
+                Rectangle { height: 8px; }
+                Text {
+                    text: "Each game you clip gets a shelf here, with pictures from its clips.";
+                    font-size: 13px;
+                    color: T.muted;
+                    wrap: word-wrap;
+                }
+            }
+            // ---------- the clip on show ----------
+            if !HomeState.loading && root.has: VerticalLayout {
+                spacing: 0;
+                width: root.page-w;
+                // label + title + game · when
+                VerticalLayout {
+                    height: root.head-h;
                     spacing: 0;
-                    Text {
-                        text: "YOUR LATEST CLIP";
-                        font-size: 11px;
-                        font-weight: 600 + T.fw;
-                        letter-spacing: 0.88px;
-                        color: T.dim;
+                    alignment: start;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Text {
+                            text: HomeState.label;
+                            font-size: 11px;
+                            font-weight: 700 + T.fw;
+                            letter-spacing: 1px;
+                            color: T.dim;
+                            vertical-alignment: center;
+                        }
                     }
                     Rectangle { height: 6px; }
                     Text {
                         text: HomeState.cards[0].title;
                         font-family: "Segoe UI Variable Display";
-                        font-size: 22px;
+                        font-size: 26px;
                         font-weight: 700 + T.fw;
                         color: T.text;
-                        wrap: word-wrap;
                         overflow: elide;
-                        max-height: 54px;   // 2 lines (line-clamp 2)
                     }
-                    Rectangle { height: 4px; }
-                    Text {
-                        text: HomeState.hero-meta;
-                        font-size: 13px;
-                        color: T.muted;
+                    Rectangle { height: 2px; }
+                    HorizontalLayout {
+                        spacing: 7px;
+                        alignment: start;
+                        if HomeState.cards[0].has-gicon: Image {
+                            y: (parent.height - self.height) / 2;
+                            width: 18px;
+                            height: 18px;
+                            source: HomeState.cards[0].gicon;
+                            image-fit: contain;
+                        }
+                        Text {
+                            text: HomeState.hero-meta;
+                            font-size: 13px;
+                            color: T.muted;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
                     }
-                    Rectangle { height: 18px; }
-                    // .hacts: grid gap 8
-                    VerticalLayout {
-                        spacing: 8px;
-                        // .hsplit: accent "Copy for Discord" + ▾ (size menu)
-                        HorizontalLayout {
-                            height: 42px;
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                border-top-left-radius: 10px;
-                                border-bottom-left-radius: 10px;
-                                background: cta.has-hover ? T.accent.brighter(0.12) : T.accent;
-                                cta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { HomeState.act("copy"); }
+                }
+                Rectangle { height: 16px; }
+                HorizontalLayout {
+                    spacing: 24px;
+                    alignment: start;
+                    height: max(root.vh, panel.need-h);
+                    // the picture: the clip's card (badges, hover video, click plays) with the sharp still
+                    shot := Rectangle {
+                        width: root.vw;
+                        height: root.vh;
+                        y: 0;
+                        border-radius: 14px;
+                        background: #0a0a0c;
+                        clip: true;
+                        init => { HomeState.hero-w = self.width; }
+                        changed width => { HomeState.hero-w = self.width; }
+                        property <bool> hov: Lib.hover-idx == HomeState.cards[0].idx;
+                        CardView {
+                            x: -1px;
+                            // the card lifts 3 px on hover: move it down as much, so the picture itself stays still
+                            y: parent.hov ? 2px : -1px;
+                            animate y { duration: T.lift; easing: ease-out; }
+                            width: parent.width + 2px;
+                            height: parent.height + 2px;
+                            data: root.hero-card;
+                        }
+                        // Echo's shared play button (playbadge.slint): shows while the mouse is on the picture
+                        PlayBadge {
+                            size: clamp(root.vh * 0.14, 56px, 84px);
+                            hover: parent.hov;
+                            opacity: parent.hov || HomeState.test-hover ? 1 : 0;
+                            animate opacity { duration: 180ms; }
+                        }
+                    }
+                    // ---------- the side panel: pager, buttons, details - as tall as the picture ----------
+                    panel := Rectangle {
+                        out property <length> need-h: pl.preferred-height;
+                        width: root.aw;
+                        height: max(root.vh, pl.preferred-height);
+                        y: 0;
+                        border-radius: 14px;
+                        border-width: 1px;
+                        border-color: T.line;
+                        background: T.panel;
+                        pl := VerticalLayout {
+                            padding-left: root.tier == 0 ? 16px : 14px;
+                            padding-right: root.tier == 0 ? 16px : 14px;
+                            padding-top: root.tier == 0 ? 14px : 12px;
+                            padding-bottom: root.tier == 0 ? 12px : 10px;
+                            spacing: 0;
+                            alignment: space-between;
+                            // pager
+                            HorizontalLayout {
+                                spacing: 8px;
+                                PagerBtn {
+                                    y: (parent.height - self.height) / 2;
+                                    icon: Ic.prev;
+                                    enabled: HomeState.can-prev;
+                                    tip: "Back (←)";
+                                    clicked => { HomeState.act("prev"); }
                                 }
-                                HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
-                                    spacing: 10px;
-                                    Text {
-                                        text: "Copy for Discord";
-                                        font-size: 14px;
-                                        color: white;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 5px;
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 4px;
+                                        Text {
+                                            text: (HomeState.pos + 1) + " of " + HomeState.count;
+                                            font-size: 14px;
+                                            font-weight: 700 + T.fw;
+                                            color: T.text;
+                                        }
+                                        if HomeState.new-mode: Text {
+                                            text: "new";
+                                            font-size: 13px;
+                                            color: T.muted;
+                                        }
                                     }
-                                }
-                            }
-                            Rectangle {
-                                width: 40px;
-                                border-top-right-radius: 10px;
-                                border-bottom-right-radius: 10px;
-                                background: ata.has-hover ? T.accent.brighter(0.12) : T.accent;
-                                Rectangle {
-                                    x: 0;
-                                    width: 1px;
-                                    background: #ffffff40;
-                                }
-                                // gaps (10 Nov): Echo's copyMenu - the sizes (theme.slint CopyMenuBody, like the cards)
-                                ata := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { cm.show(); }
-                                }
-                                cm := PopupWindow {
-                                    x: parent.width - self.width;
-                                    y: parent.height + 6px;
-                                    // own size: Slint tests clicks against it (see library.slint's copy menu)
-                                    width: cmb.preferred-width;
-                                    height: cmb.preferred-height;
-                                    close-policy: close-on-click-outside;
-                                    cmb := CopyMenuBody {
-                                        size-text: HomeState.cards[0].size;
-                                        picked(k) => {
-                                            cm.close();
-                                            HomeState.act("copy:" + k);
+                                    if HomeState.dots.length > 0: HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 5px;
+                                        for d in HomeState.dots: Rectangle {
+                                            width: d == 1 ? 18px : 7px;
+                                            height: 7px;
+                                            border-radius: 4px;
+                                            background: d == 1 ? T.accent : d == 0 ? T.accent.with-alpha(0.45) : T.line;
                                         }
                                     }
                                 }
-                                TipArea {
-                                    text: "Choose the size";
-                                    hover: ata.has-hover;
-                                }
-                                Icon {
-                                    width: 13px;
-                                    height: 13px;
-                                    stroke-width: 2.4px;
-                                    commands: Ic.down;
-                                    stroke: white;
+                                PagerBtn {
+                                    y: (parent.height - self.height) / 2;
+                                    icon: Ic.next;
+                                    enabled: HomeState.can-next;
+                                    tip: "Next (→)";
+                                    clicked => { HomeState.act("next"); }
                                 }
                             }
-                        }
-                        // 10 Nov: the three actions side by side, equal width (were three stacked rows)
-                        HorizontalLayout {
-                            spacing: 8px;
-                            HB {
-                                horizontal-stretch: 1;
-                                text: "Trim / edit";
-                                icon: Ic.trim;
-                                clicked => { HomeState.act("edit"); }
+                            // buttons
+                            VerticalLayout {
+                                spacing: 0;
+                                Rectangle { height: root.tier == 0 ? 14px : 10px; }
+                                Rectangle { height: 1px; background: T.line; }
+                                Rectangle { height: root.tier == 0 ? 14px : 10px; }
+                                VerticalLayout {
+                                    spacing: root.tier == 0 ? 8px : 6px;
+                                    // Copy for Discord + ▾ (sizes)
+                                    HorizontalLayout {
+                                        height: root.btn-h + 8px;
+                                        Rectangle {
+                                            horizontal-stretch: 1;
+                                            border-top-left-radius: 10px;
+                                            border-bottom-left-radius: 10px;
+                                            background: cta.has-hover ? T.accent.brighter(0.12) : T.accent;
+                                            cta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { HomeState.act("copy"); }
+                                            }
+                                            HorizontalLayout {
+                                                padding-left: 14px;
+                                                padding-right: 10px;
+                                                spacing: 10px;
+                                                Icon {
+                                                    y: (parent.height - self.height) / 2;
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    commands: "M8 9h.01M16 9h.01 M5 5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5l-4 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z";
+                                                    stroke: T.on-accent;
+                                                }
+                                                Text {
+                                                    text: "Copy for Discord";
+                                                    font-size: 14.5px;
+                                                    font-weight: 600 + T.fw;
+                                                    color: T.on-accent;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 1;
+                                                    overflow: elide;
+                                                }
+                                                KeyCap {
+                                                    y: (parent.height - self.height) / 2;
+                                                    k: "S";
+                                                    on-accent: true;
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 38px;
+                                            border-top-right-radius: 10px;
+                                            border-bottom-right-radius: 10px;
+                                            background: ata.has-hover ? T.accent.brighter(0.12) : T.accent;
+                                            Rectangle {
+                                                x: 0;
+                                                width: 1px;
+                                                background: #ffffff40;
+                                            }
+                                            ata := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { cm.show(); }
+                                            }
+                                            cm := PopupWindow {
+                                                x: parent.width - self.width;
+                                                y: parent.height + 6px;
+                                                width: cmb.preferred-width;
+                                                height: cmb.preferred-height;
+                                                close-policy: close-on-click-outside;
+                                                cmb := CopyMenuBody {
+                                                    size-text: HomeState.cards[0].size;
+                                                    picked(k) => {
+                                                        cm.close();
+                                                        HomeState.act("copy:" + k);
+                                                    }
+                                                    cancel => { cm.close(); }
+                                                }
+                                            }
+                                            TipArea {
+                                                text: "Choose the size";
+                                                hover: ata.has-hover;
+                                            }
+                                            Icon {
+                                                width: 13px;
+                                                height: 13px;
+                                                stroke-width: 2.4px;
+                                                commands: Ic.down;
+                                                stroke: T.on-accent;
+                                            }
+                                        }
+                                    }
+                                    PanelBtn {
+                                        h: root.btn-h;
+                                        text: "Share link";
+                                        icon: Ic.link;
+                                        k: "L";
+                                        clicked => { HomeState.act("link"); }
+                                    }
+                                    PanelBtn {
+                                        h: root.btn-h;
+                                        text: "Trim / edit";
+                                        icon: Ic.trim;
+                                        k: "E";
+                                        clicked => { HomeState.act("edit"); }
+                                    }
+                                    PanelBtn {
+                                        h: root.btn-h;
+                                        text: "Captions";
+                                        icon: Ic.cc;
+                                        clicked => { HomeState.act("cap"); }
+                                    }
+                                    Rectangle { height: root.tier == 0 ? 4px : 2px; }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        PanelBtn {
+                                            horizontal-stretch: 1;
+                                            h: root.btn-h;
+                                            text: "Keep";
+                                            icon: Ic.star;
+                                            k: root.aw >= 320px ? "K" : "";
+                                            clicked => { HomeState.act("keep"); }
+                                        }
+                                        PanelBtn {
+                                            horizontal-stretch: 1;
+                                            h: root.btn-h;
+                                            text: "Delete";
+                                            icon: Ic.del;
+                                            k: root.aw >= 320px ? "Del" : "";
+                                            danger: true;
+                                            clicked => { HomeState.act("del"); }
+                                        }
+                                    }
+                                    if root.tier == 0: Text {
+                                        text: HomeState.new-mode ? "Keep = star it, then the next new clip. → skips it." : "Keep = star it, then the next clip.";
+                                        font-size: 12px;
+                                        color: T.muted;
+                                        wrap: word-wrap;
+                                    }
+                                }
                             }
-                            HB {
-                                horizontal-stretch: 1;
-                                text: "Share link";
-                                icon: Ic.link;
-                                clicked => { HomeState.act("link"); }
-                            }
-                            HB {
-                                horizontal-stretch: 1;
-                                text: "Captions";
-                                icon: Ic.cc;
-                                clicked => { HomeState.act("cap"); }
+                            // CLIP DETAILS
+                            if root.tier < 2: VerticalLayout {
+                                spacing: 0;
+                                Rectangle { height: root.tier == 0 ? 14px : 10px; }
+                                Rectangle { height: 1px; background: T.line; }
+                                Rectangle { height: root.tier == 0 ? 14px : 10px; }
+                                Text {
+                                    text: "CLIP DETAILS";
+                                    font-size: 11px;
+                                    font-weight: 700 + T.fw;
+                                    letter-spacing: 1px;
+                                    color: T.dim;
+                                }
+                                Rectangle { height: 4px; }
+                                for l[i] in (root.tier == 0 ? HomeState.det-l : HomeState.det-sl): HorizontalLayout {
+                                    height: root.tier == 0 ? 30px : 24px;
+                                    spacing: 9px;
+                                    Icon {
+                                        y: (parent.height - self.height) / 2;
+                                        width: 15px;
+                                        height: 15px;
+                                        stroke: T.dim;
+                                        commands: root.tier == 0
+                                            ? (i == 0 ? "M4 4h16v16H4z M8 4v16 M16 4v16 M4 9h4 M4 15h4 M16 9h4 M16 15h4"
+                                               : i == 1 ? "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"
+                                               : i == 2 ? "M3 5h18v11H3z M8 20h8 M12 16v4"
+                                               : i == 3 ? "M12 14l4-4 M3 15a9 9 0 0 1 18 0"
+                                               : i == 4 ? "M14 3H6v18h12V7z M14 3v4h4" : Ic.folder)
+                                            : (i == 0 ? "M4 4h16v16H4z M8 4v16 M16 4v16 M4 9h4 M4 15h4 M16 9h4 M16 15h4"
+                                               : i == 1 ? "M3 5h18v11H3z M8 20h8 M12 16v4"
+                                               : i == 2 ? "M14 3H6v18h12V7z M14 3v4h4" : Ic.folder);
+                                    }
+                                    Text {
+                                        text: l;
+                                        font-size: 12.5px;
+                                        color: T.muted;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.tier == 0 ? HomeState.det-v[i] : HomeState.det-sv[i];
+                                        font-size: 12.5px;
+                                        font-weight: 600 + T.fw;
+                                        color: T.text;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-            // .hgs: one "Get started" line (margin-top 18)
-            // gaps (10 Nov): with no clips yet Echo still shows Get started, the numbers and the Recent row
-            if HomeState.gs-on: VerticalLayout {
-                padding-top: 18px;
-                Rectangle {
-                    height: 46px;
-                    border-radius: 12px;
-                    background: T.accent.with-alpha(0.07);
-                    border-width: 1px;
-                    border-color: T.accent.with-alpha(0.22);
-                    HorizontalLayout {
-                        padding-left: 14px;
-                        padding-right: 14px;
-                        spacing: 14px;
-                        HorizontalLayout {
-                            spacing: 6px;
-                            for d in HomeState.gs-done: Rectangle {
-                                y: (parent.height - 5px) / 2;
-                                width: 22px;
-                                height: 5px;
-                                border-radius: 3px;
-                                background: d ? T.accent : T.line;
-                            }
-                        }
-                        Text {
-                            text: "Next step:";
-                            font-size: 14px;
-                            font-weight: 700 + T.fw;
-                            color: T.text;
-                            vertical-alignment: center;
-                        }
-                        HorizontalLayout {
-                            horizontal-stretch: 1;
-                            spacing: 4px;
-                            Text {
-                                text: HomeState.gs-title;
-                                font-size: 13px;
-                                color: T.muted;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: "· " + HomeState.gs-text;
-                                font-size: 13px;
-                                color: T.dim;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                        if HomeState.gs-go != "": Rectangle {
-                            y: (parent.height - self.height) / 2;
-                            height: 28px;
-                            width: gt.preferred-width + 24px;
-                            border-radius: 8px;
-                            background: gta.has-hover ? T.accent.brighter(0.12) : T.accent;
-                            gt := Text {
-                                text: HomeState.gs-go;
-                                font-size: 12px;
-                                color: white;
-                            }
-                            gta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { HomeState.act("gs-go"); }
-                            }
-                        }
-                        Text {
-                            text: "Skip";
-                            font-size: 12px;
-                            color: ska.has-hover ? T.text : T.dim;
-                            vertical-alignment: center;
-                            ska := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { HomeState.act("gs-skip"); }
-                            }
-                        }
-                        Text {
-                            text: "Hide";
-                            font-size: 12px;
-                            color: hda.has-hover ? T.text : T.dim;
-                            vertical-alignment: center;
-                            hda := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { HomeState.act("gs-hide"); }
-                            }
+                // ---------- Your games ----------
+                Rectangle { height: 28px; }
+                HorizontalLayout {
+                    height: 20px;
+                    Text {
+                        text: "Your games";
+                        font-family: "Segoe UI Variable Display";
+                        font-size: 15px;
+                        font-weight: 700 + T.fw;
+                        color: T.text;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Library →";
+                        font-size: 12.5px;
+                        color: lba.has-hover ? T.accent2 : T.accent;
+                        vertical-alignment: center;
+                        lba := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { HomeState.act("library"); }
                         }
                     }
                 }
-            }
-            // .hstrip: margin 22 0 6, padding 14 0, lines above + below, gap 28
-            // 10 Nov: four equal boxes; the first holds clips per day for the last 7 days (today last,
-            // brighter), with the day letters under it - same colours as the old 6-week spark
-            HorizontalLayout {
-                padding-top: 22px;
-                padding-bottom: 6px;
-                spacing: 12px;
-                StatBox {
-                    horizontal-stretch: 1;
-                    n: HomeState.week;
-                    l: "clips this week";
-                    HorizontalLayout {
-                        spacing: 4px;
-                        alignment: end;
-                        for d[i] in HomeState.days: VerticalLayout {
-                            alignment: center;
-                            spacing: 3px;
-                            Rectangle {
-                                width: 8px;
-                                height: 28px;
-                                Rectangle {
-                                    y: parent.height - self.height;
-                                    height: d == 0 ? 2px : max(3px, 28px * d / HomeState.days-max);
-                                    border-radius: 3px;
-                                    background: d == 0 ? T.line : T.accent;
-                                    opacity: d == 0 || i == HomeState.days.length - 1 ? 1 : 0.5;
-                                }
-                            }
-                            Text {
-                                text: HomeState.day-l[i];
-                                font-size: 9.5px;
-                                color: T.dim;
-                                horizontal-alignment: center;
-                            }
-                        }
+                Rectangle { height: 12px; }
+                if HomeState.sh-id.length == 0: Text {
+                    height: root.shelf-h;
+                    text: "Each game you clip gets a shelf here, with pictures from its clips.";
+                    font-size: 13px;
+                    color: T.muted;
+                    vertical-alignment: top;
+                    wrap: word-wrap;
+                }
+                if HomeState.sh-id.length > 0: Rectangle {
+                    height: root.shelf-h;
+                    property <bool> over: HomeState.sh-id.length > root.shelf-cols;
+                    property <int> shown: self.over ? root.shelf-cols - 1 : root.shelf-cols;
+                    for s[i] in HomeState.sh-id: Shelf {
+                        visible: i < parent.shown;
+                        x: i * (root.shelf-w + 16px);
+                        width: root.shelf-w;
+                        height: root.shelf-h;
+                        name: HomeState.sh-name[i];
+                        sub: HomeState.sh-sub[i];
+                        initial: HomeState.sh-initial[i];
+                        icon: HomeState.sh-icon[i];
+                        has-icon: HomeState.sh-has-icon[i];
+                        game: HomeState.sh-game[i];
+                        npics: HomeState.sh-npics[i];
+                        p0: HomeState.sh-pics[i * 3];
+                        p1: HomeState.sh-pics[i * 3 + 1];
+                        p2: HomeState.sh-pics[i * 3 + 2];
+                        clicked => { HomeState.act("shelf:" + s); }
                     }
-                }
-                StatBox {
-                    horizontal-stretch: 1;
-                    n: HomeState.total;
-                    l: "clips in total";
-                }
-                StatBox {
-                    horizontal-stretch: 1;
-                    n: HomeState.size;
-                    l: "on this PC";
-                }
-                StatBox {
-                    horizontal-stretch: 1;
-                    n: HomeState.games;
-                    l: HomeState.games-word;
-                }
-            }
-            // .hrow: "Recent" + "Open library →" (margin 26 0 12)
-            HorizontalLayout {
-                padding-top: 26px;
-                padding-bottom: 12px;
-                Text {
-                    text: "Recent";
-                    font-family: "Segoe UI Variable Display";
-                    font-size: 15px;
-                    font-weight: 700 + T.fw;
-                    color: T.text;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    text: "Open library →";
-                    font-size: 12px;
-                    color: ola.has-hover ? T.accent2 : T.accent;
-                    vertical-alignment: bottom;
-                    ola := TouchArea {
-                        mouse-cursor: pointer;
+                    if self.over: MoreShelf {
+                        x: parent.shown * (root.shelf-w + 16px);
+                        width: root.shelf-w;
+                        height: root.shelf-h;
+                        n: HomeState.sh-id.length - parent.shown;
+                        names: HomeState.sh-tail[parent.shown];
                         clicked => { HomeState.act("library"); }
-                    }
-                }
-            }
-            // #hrecent: one row, gap 14
-            if root.has && HomeState.cards.length > 1: HorizontalLayout {
-                height: root.rcard-h + 4px;
-                spacing: 0;
-                alignment: start;
-                padding-top: 4px;   // room for the hover lift
-                for c[i] in HomeState.cards: Rectangle {
-                    // [0] is the big one above; gap 14 in front of every card but the first
-                    width: i == 0 ? 0px : i == 1 ? root.rcard-w : root.rcard-w + 14px;
-                    visible: i > 0;
-                    if i > 0: CardView {
-                        x: i == 1 ? 0px : 14px;
-                        tag-wrap: false; // r2-layout (L9): one line of tags here (HomeState.extra)
-                        width: root.rcard-w;
-                        height: root.rcard-h;
-                        data: c;
                     }
                 }
             }

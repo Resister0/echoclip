@@ -75,6 +75,10 @@ fn apply_live(a: &AppWindow, st: &Store, over: &[(String, String)]) {
     t.set_g0(p.grad[0]);
     t.set_g1(p.grad[1]);
     t.set_g2(p.grad[2]);
+    // RGB mode turns the accent: the text on it follows (dark on yellow / cyan, white on blue / red)
+    t.set_on_accent(p.on_accent);
+    t.set_on_hi(p.on_hi);
+    t.set_hi_text(p.hi_text);
 }
 
 thread_local! {
@@ -179,7 +183,8 @@ pub fn wire(app: &AppWindow, store: Rc<RefCell<Store>>, r: Rc<dyn Fn()>) {
         let win = a.window();
         let front = win.is_visible() && !win.is_minimized() && {
             use slint::winit_030::WinitWindowAccessor;
-            win.with_winit_window(|w| w.has_focus()).unwrap_or(true)
+            // test hook: ECHO_FX_ANYWAY=1 also turns it without focus (lib_fx.rs - a test copy can't take the focus)
+            win.with_winit_window(|w| w.has_focus()).unwrap_or(true) || std::env::var_os("ECHO_FX_ANYWAY").is_some()
         };
         let live = !keys.is_empty() && front;
         let tg = a.global::<T>();

@@ -34,6 +34,7 @@ pub struct State {
     pub trim_len: String,  // "· 6.8s"
     pub volume: f32,
     pub muted: bool,
+    pub speed: f32, // "SPEED 1.00×"
     pub preview: Option<(f32, f32, f32, String)>, // x, y (window coordinates), fraction, time label
     pub hover_strip: bool,
     // 9 Nov: same look as the normal player - theme accent (progress, volume) + highlight (trim ends),
@@ -88,6 +89,7 @@ pub(crate) fn load_font(names: &[&str]) -> Option<FontVec> {
 pub struct Osd {
     font: Option<FontVec>,
     bold: Option<FontVec>,
+    mono: Option<FontVec>, // the editor's mono font for the time / speed
     sheet: Option<(Pixmap, f32, f32)>, // BGRA sheet, one picture's size
     sheet_id: usize,
     base: Option<Pixmap>,
@@ -112,6 +114,7 @@ impl Osd {
         Osd {
             font: load_font(&["segoeui.ttf"]),
             bold: load_font(&["segoeuib.ttf", "seguisb.ttf", "segoeui.ttf"]),
+            mono: load_font(&["CascadiaMono.ttf", "consola.ttf", "segoeui.ttf"]),
             sheet: None,
             sheet_id: usize::MAX,
             base: None,
@@ -342,67 +345,128 @@ impl Osd {
             let stroke = Stroke { width: s(1.0), ..Default::default() };
             m.stroke_path(&rrect(sx, sy, sw, sh, s(10.0), s(10.0), s(10.0), s(10.0))?, &solid(c(255, 255, 255, 0x2e)), &stroke, Transform::identity(), None);
 
-            // ---- controls row (.ctl: padding 10 16, spacing 12) ----
+            // ---- controls row (11 Nov 2026): the same places as player.slint's bar (padding 12, spacing 4):
+            // play 36 | 6 | time ... SPEED 1.00× | 10 | VOL + 10 ticks (71) | 8 | fullscreen 34
             let cy = s(top + STRIP + CTL / 2.0);
-            let ib = s(20.0); // icon size inside a 36 px button
-            let icon_y = cy - ib / 2.0;
-            // play / pause
-            let play = if st.paused {
-                Self::poly(&[&[(7.0, 4.0), (7.0, 20.0), (20.0, 12.0), (7.0, 4.0)]])
+            let white = c(255, 255, 255, 255);
+            // play: Home's optically centred triangle (22 px in the 36 px button); pause: two 3 px bars, 4 px apart
+            if st.paused {
+                let mut pb = PathBuilder::new();
+                pb.move_to(8.7, 5.5);
+                pb.line_to(8.7, 18.5);
+                pb.line_to(19.7, 12.0);
+                pb.close();
+                if let Some(p) = pb.finish() {
+                    let k = s(22.0) / 24.0;
+                    let t = Transform::from_scale(k, k).post_translate(s(12.0 + 7.0), cy - s(11.0));
+                    m.fill_path(&p, &solid(white), FillRule::Winding, t, None);
+                    let stroke = Stroke { width: 1.5, line_join: LineJoin::Round, ..Default::default() };
+                    m.stroke_path(&p, &solid(white), &stroke, t, None);
+                }
             } else {
-                Self::poly(&[&[(7.0, 4.0), (11.0, 4.0), (11.0, 20.0), (7.0, 20.0), (7.0, 4.0)], &[(14.0, 4.0), (18.0, 4.0), (18.0, 20.0), (14.0, 20.0), (14.0, 4.0)]])
+                for bx in [12.0 + 13.0, 12.0 + 20.0] {
+                    m.fill_path(&rrect(s(bx), cy - s(7.0), s(3.0), s(14.0), s(1.0), s(1.0), s(1.0), s(1.0))?, &solid(white), FillRule::Winding, Transform::identity(), None);
+                }
+            }
+            let mono = self.mono.as_ref().or(self.font.as_ref());
+            // time: current white, " / total" muted
+            if let Some(f) = mono {
+                let (cur, rest) = match st.time.split_once(" / ") {
+                    Some((c0, d0)) => (c0.to_string(), format!(" / {d0}")),
+                    None => (st.time.clone(), String::new()),
+                };
+                let x0 = s(12.0 + 36.0 + 4.0 + 6.0 + 4.0);
+                Self::text(&mut m, f, s(14.0), x0, cy, &cur, (0xff, 0xff, 0xff), 1.0);
+                let cw = Self::text_width(f, s(14.0), &cur);
+                Self::text(&mut m, f, s(14.0), x0 + cw, cy, &rest, (0xbb, 0xbb, 0xbb), 1.0);
+            }
+            // small spaced capitals ("SPEED", "VOL"): 10 px semibold, letter spacing 1.4 px
+            let caps_w = |t: &str| -> f32 {
+                match self.bold.as_ref() {
+                    Some(b) => t.chars().map(|ch| Self::text_width(b, s(10.0), &ch.to_string()) + s(1.4)).sum(),
+                    None => 0.0,
+                }
             };
-            if let Some(p) = play {
-                Self::icon(&mut m, &p, s(16.0 + 8.0), icon_y, ib, true, sf);
+            let caps = |m: &mut PixmapMut, x: f32, t: &str, rgb: (u8, u8, u8)| {
+                if let Some(b) = self.bold.as_ref() {
+                    let mut xx = x;
+                    for ch in t.chars() {
+                        let cs = ch.to_string();
+                        Self::text(m, b, s(10.0), xx, cy, &cs, rgb, 1.0);
+                        xx += Self::text_width(b, s(10.0), &cs) + s(1.4);
+                    }
+                }
+            };
+            // right side, from the right edge (logical px)
+            let fs_x = w - 12.0 - 34.0;
+            let vol_x = fs_x - 4.0 - 8.0 - 4.0 - 71.0;
+            let lbl = if st.muted { "MUTED" } else { "VOL" };
+            let lbl_w = caps_w(lbl) / sf + 8.0;
+            let lbl_x = vol_x - 4.0 - lbl_w;
+            // exit fullscreen: rounded corners (Ic2.unfs), 20 px in the 34 px button
+            {
+                let mut pb = PathBuilder::new();
+                pb.move_to(9.0, 4.0);
+                pb.line_to(9.0, 6.5);
+                pb.quad_to(9.0, 9.0, 6.5, 9.0);
+                pb.line_to(4.0, 9.0);
+                pb.move_to(15.0, 4.0);
+                pb.line_to(15.0, 6.5);
+                pb.quad_to(15.0, 9.0, 17.5, 9.0);
+                pb.line_to(20.0, 9.0);
+                pb.move_to(20.0, 15.0);
+                pb.line_to(17.5, 15.0);
+                pb.quad_to(15.0, 15.0, 15.0, 17.5);
+                pb.line_to(15.0, 20.0);
+                pb.move_to(4.0, 15.0);
+                pb.line_to(6.5, 15.0);
+                pb.quad_to(9.0, 15.0, 9.0, 17.5);
+                pb.line_to(9.0, 20.0);
+                if let Some(p) = pb.finish() {
+                    Self::icon(&mut m, &p, s(fs_x + 7.0), cy - s(10.0), s(20.0), false, sf);
+                }
             }
-            if let Some(font) = self.font.as_ref() {
-                Self::text(&mut m, font, s(12.5), s(16.0 + 36.0 + 12.0), cy, &st.time, (0xdd, 0xdd, 0xdd), 1.0);
-            }
-            // right side: [mute 36] 12 [volume 90] 12 [fullscreen 36] 16
-            let fs_x = w - 16.0 - 36.0;
-            let vol_x = fs_x - 12.0 - 90.0;
-            let mute_x = vol_x - 12.0 - 36.0;
-            // exit fullscreen icon
-            if let Some(p) = Self::poly(&[&[(9.0, 4.0), (9.0, 9.0), (4.0, 9.0)], &[(15.0, 4.0), (15.0, 9.0), (20.0, 9.0)], &[(9.0, 20.0), (9.0, 15.0), (4.0, 15.0)], &[(15.0, 20.0), (15.0, 15.0), (20.0, 15.0)]]) {
-                Self::icon(&mut m, &p, s(fs_x + 8.0), icon_y, ib, false, sf);
-            }
-            // speaker (+ waves or a cross)
-            let mut pb = PathBuilder::new();
-            pb.move_to(4.0, 9.0);
-            pb.line_to(8.0, 9.0);
-            pb.line_to(13.0, 5.0);
-            pb.line_to(13.0, 19.0);
-            pb.line_to(8.0, 15.0);
-            pb.line_to(4.0, 15.0);
-            pb.close();
-            if st.muted || st.volume <= 0.0 {
-                pb.move_to(17.0, 9.5);
-                pb.line_to(22.0, 14.5);
-                pb.move_to(22.0, 9.5);
-                pb.line_to(17.0, 14.5);
-            } else {
-                pb.move_to(16.5, 9.0);
-                pb.quad_to(18.5, 12.0, 16.5, 15.0);
-                pb.move_to(19.0, 6.5);
-                pb.quad_to(23.0, 12.0, 19.0, 17.5);
-            }
-            if let Some(p) = pb.finish() {
-                Self::icon(&mut m, &p, s(mute_x + 8.0), icon_y, ib, false, sf);
-            }
-            // volume slider
-            let v = if st.muted { 0.0 } else { st.volume.clamp(0.0, 1.0) };
-            m.fill_path(&rrect(s(vol_x), cy - s(2.0), s(90.0), s(4.0), s(2.0), s(2.0), s(2.0), s(2.0))?, &solid(c(255, 255, 255, 0x26)), FillRule::Winding, Transform::identity(), None);
+            // VOL / MUTED (accent while muted)
             let (ar, ag, ab) = st.accent;
+            caps(&mut m, s(lbl_x + 4.0), lbl, if st.muted { (ar, ag, ab) } else { (0xbb, 0xbb, 0xbb) });
+            // 10 slanted ticks (4 x 12, skewed): dim, then the lit part cut at the volume (faint while muted)
+            let tick = |i: usize| -> Option<Path> {
+                let x = vol_x + i as f32 * 7.0;
+                Self::poly(&[&[(s(x + 3.9), cy - s(6.0)), (s(x + 7.9), cy - s(6.0)), (s(x + 4.0), cy + s(6.0)), (s(x), cy + s(6.0)), (s(x + 3.9), cy - s(6.0))]])
+            };
+            for i in 0..10 {
+                if let Some(p) = tick(i) {
+                    m.fill_path(&p, &solid(c(255, 255, 255, 46)), FillRule::Winding, Transform::identity(), None);
+                }
+            }
+            let v = st.volume.clamp(0.0, 1.0);
             if v > 0.0 {
-                m.fill_path(&rrect(s(vol_x), cy - s(2.0), s(90.0 * v), s(4.0), s(2.0), s(2.0), s(2.0), s(2.0))?, &solid(c(ar, ag, ab, 255)), FillRule::Winding, Transform::identity(), None);
+                let mut vm = Mask::new(pw, ph)?;
+                if let Some(r) = Rect::from_xywh(s(vol_x), 0.0, s(71.0 * v), ph as f32) {
+                    vm.fill_path(&PathBuilder::from_rect(r), FillRule::Winding, false, Transform::identity());
+                }
+                let lit = if st.muted { c(255, 255, 255, 82) } else { c(255, 255, 255, 235) };
+                for i in 0..10 {
+                    if let Some(p) = tick(i) {
+                        m.fill_path(&p, &solid(lit), FillRule::Winding, Transform::identity(), Some(&vm));
+                    }
+                }
             }
-            let kx = s(vol_x + (90.0 - 14.0) * v + 7.0);
-            if let Some(k) = PathBuilder::from_circle(kx, cy, s(7.0)) {
-                m.fill_path(&k, &solid(c(255, 255, 255, 0xdd)), FillRule::Winding, Transform::identity(), None);
+            // SPEED 1.00× (not while trimming - the trim times sit there)
+            if !st.trimming {
+                if let Some(f) = mono {
+                    let val = format!("{:.2}×", st.speed);
+                    let vw_ = Self::text_width(f, s(13.0), &val);
+                    let sp_w = caps_w("SPEED") + s(6.0) + vw_; // content width (physical)
+                    let box_w = (sp_w / sf + 16.0).max(34.0);
+                    let box_x = lbl_x - 4.0 - 10.0 - 4.0 - box_w;
+                    let x0 = s(box_x) + (s(box_w) - sp_w) / 2.0;
+                    caps(&mut m, x0, "SPEED", (0xbb, 0xbb, 0xbb));
+                    let col = if (st.speed - 1.0).abs() > 0.001 { (ar, ag, ab) } else { (0xff, 0xff, 0xff) };
+                    Self::text(&mut m, f, s(13.0), x0 + caps_w("SPEED") + s(6.0), cy, &val, col, 1.0);
+                }
             }
-            if let Some(k) = PathBuilder::from_circle(kx, cy, s(5.0)) {
-                m.fill_path(&k, &solid(c(ar, ag, ab, 255)), FillRule::Winding, Transform::identity(), None);
-            }
+            let mute_x = lbl_x; // the trim times end before the volume
             // trim selection times, right-aligned before the speaker
             if st.trimming {
                 if let (Some(b), Some(f)) = (self.bold.as_ref(), self.font.as_ref()) {
@@ -445,9 +509,9 @@ impl Osd {
         let ph = (BAND * sf).round().max(1.0) as u32;
         // static part
         let base_key = format!(
-            "{pw}x{ph} {} {} {} {:.4} {:.4} {} {} {:.3} {} {} {} {} {:?} {:?} {:?} {:?}",
+            "{pw}x{ph} {} {} {} {:.4} {:.4} {} {} {:.3} {} {} {} {} {:?} {:?} {:?} {:?} {:.2}",
             self.sheet_id, st.trimming, st.paused, st.t0, st.t1, st.time, st.trim_text, st.volume, st.muted, st.hover_strip, st.trim_len, sf,
-            st.accent, st.hi, st.cuts, st.hl
+            st.accent, st.hi, st.cuts, st.hl, st.speed
         );
         if base_key != self.base_key || self.base.is_none() {
             self.base = self.draw_base(st, pw, ph);

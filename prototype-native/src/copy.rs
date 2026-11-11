@@ -6,10 +6,8 @@
 use crate::{prog_box, prog_done, prog_set, toast, AppWindow};
 use slint::ComponentHandle;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Stdio;
-
-const TV_YUV: &str = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
-const TV_TAGS: [&str; 8] = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
 
 /// MB for a Copy size key ("full" / unknown = 0 = the original file); `key` "" = the Copy button's own size
 /// (settings copy_default). r2-threads (L4): one read of settings.json for both.
@@ -172,93 +170,32 @@ fn copy_shrunk(a: &AppWindow, path: PathBuf, thumbs: PathBuf, mb: f64) {
     });
 }
 
-fn skip_enc(venc: &[&str]) -> bool {
-    if cfg!(windows) {
-        return false;
-    }
-    let cuda = ["/usr/lib64/libcuda.so.1", "/usr/lib/x86_64-linux-gnu/libcuda.so.1", "/usr/lib/libcuda.so.1"].iter().any(|p| Path::new(p).exists());
-    venc.iter().any(|a| a.ends_with("_amf") || a.ends_with("_qsv") || (a.ends_with("_nvenc") && !cuda))
-}
-
-/// Echo's shrink_clip: bitrate from the size, smaller picture / 30 fps when the bitrate is low, 3 tries
+/// Echo's shrink_clip without the recorder: the same size fitting (echo-core's fit_to_size: aim at 95 %, measure,
+/// redo when over or far under), no watermark
 pub fn shrink(ff: &Path, src: &Path, thumbs: &Path, target_mb: f64, progress: &dyn Fn(f64)) -> Result<PathBuf, String> {
+    use echo_core::recorder::{fit_to_size, probe_len, FIT_ENCS, FIT_REUSE};
     let limit = (target_mb * 1_000_000.0) as u64;
     let src_meta = std::fs::metadata(src).map_err(|e| e.to_string())?;
     let name = src.file_name().ok_or("bad clip path")?.to_owned();
     let dir = thumbs.join("discord").join(format!("{}", target_mb.round() as u64));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join(&name);
-    // made earlier (and newer than the clip, BT.709-tagged): reuse
+    // made earlier (newer than the clip, BT.709-tagged, not far under the size): reuse
     if let (Ok(m), Ok(sm)) = (std::fs::metadata(&out), src_meta.modified()) {
         let colours_ok = crate::edrender::hidden_cmd(&crate::edrender::ffprobe(ff)).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
             .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
-        if m.len() > 0 && m.len() <= limit && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+        if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok {
             return Ok(out);
         }
     }
-    let dur = crate::pl_media::duration(ff, src).ok_or("could not read the clip length")?;
+    let dur = probe_len(src).or_else(|| crate::pl_media::duration(ff, src)).ok_or("could not read the clip length")?;
     let (_, h, audio, _) = crate::edrender::probe(ff, src);
-    let h = h.max(2);
-    let tmp = dir.join("shrinking.tmp");
-    let mut factor = 0.92;
-    for attempt in 0..3 {
-        let total = limit as f64 * 8.0 / 1000.0 / dur * factor;
-        let a_kbps = if !audio { 0.0 } else if total > 3000.0 { 160.0 } else if total > 800.0 { 96.0 } else { 64.0 };
-        let v_kbps = total - a_kbps;
-        if v_kbps < 120.0 {
-            return Err(format!("This clip is too long to fit in {target_mb} MB - trim it first"));
-        }
-        let th = if v_kbps >= 8000.0 { h } else if v_kbps >= 4000.0 { 1080 } else if v_kbps >= 1800.0 { 720 } else if v_kbps >= 800.0 { 540 } else { 360 }.min(h);
-        let mut vf: Vec<String> = vec![];
-        if th < h {
-            vf.push(format!("scale=-2:{th}"));
-        }
-        if v_kbps < 1800.0 {
-            vf.push("fps=30".into());
-        }
-        vf.push(TV_YUV.into());
-        let (b, buf, ab) = (format!("{}k", v_kbps as u64), format!("{}k", (v_kbps * 2.0) as u64), format!("{}k", a_kbps as u64));
-        let run = |venc: &[&str]| -> bool {
-            if skip_enc(venc) {
-                return false;
-            }
-            let mut c = crate::edrender::hidden_cmd(ff);
-            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", &vf.join(",")]);
-            c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
-            if audio {
-                c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]);
-            }
-            let Ok(mut ch) = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp)
-                .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return false };
-            if let Some(o) = ch.stdout.take() {
-                use std::io::BufRead;
-                for line in std::io::BufReader::new(o).lines().map_while(Result::ok) {
-                    if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
-                        progress(((attempt as f64 + (v / 1e6 / dur).clamp(0.0, 1.0)) / (attempt as f64 + 1.0)).min(0.99));
-                    }
-                }
-            }
-            ch.wait().is_ok_and(|s| s.success()) && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0)
-        };
-        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-rc", "cbr"])
-            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "cbr"])
-            || run(&["-c:v", "h264_qsv"])
-            || run(&["-c:v", "libx264", "-preset", "veryfast"]);
-        if !ok {
-            let _ = std::fs::remove_file(&tmp);
-            return Err("ffmpeg couldn't make this clip smaller".into());
-        }
-        let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
-        if got <= limit {
-            let _ = std::fs::remove_file(&out);
-            std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
-            progress(1.0);
-            return Ok(out);
-        }
-        factor *= limit as f64 / got as f64 * 0.95;
-    }
-    let _ = std::fs::remove_file(&tmp);
-    Err(format!("Couldn't get this clip under {target_mb} MB - trim it first"))
+    let mk = || crate::edrender::hidden_cmd(ff);
+    fit_to_size(&mk, src, &dir.join("shrinking.tmp"), &out, limit, dur, h.max(2), audio, &FIT_ENCS, &|_| None, progress).map_err(|e| {
+        let mut c = e.chars();
+        c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+    })?;
+    Ok(out)
 }
 
 /// the file itself on the clipboard (paste into Discord / Explorer)

@@ -45,6 +45,8 @@ thread_local! {
     /// FPS test: (running, line under the row)
     static FPS: RefCell<(bool, String)> = const { RefCell::new((false, String::new())) };
     static FPS_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    /// the Settings page refresh for the FPS test's result
+    static FPS_REFRESH: RefCell<Option<Refresh>> = const { RefCell::new(None) };
     /// controller "Set…" waiting for the combo
     static PAD_BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -232,7 +234,7 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
             FPS.with(|f| *f.borrow_mut() = (true, "Starting…".into()));
             r();
             let line = std::sync::Arc::new(std::sync::Mutex::new(String::from("Starting…")));
-            let (l2, w, r2) = (line.clone(), a.as_weak(), r.clone());
+            let (l2, r2) = (line.clone(), r.clone());
             // the page shows the newest line twice a second
             let t = slint::Timer::default();
             t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(500), move || {
@@ -243,23 +245,24 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
                 }
             });
             FPS_TIMER.with(|x| *x.borrow_mut() = Some(t));
-            let r3 = r.clone();
-            crate::lib_net::bg(
-                move || {
-                    let l = line.clone();
-                    crate::rec_core::fps_test(move |s| {
-                        if let Ok(mut g) = l.lock() {
-                            *g = s;
-                        }
-                    })
-                },
-                move |res| {
+            // 11 Nov 2026: the result goes to the UI thread with invoke_from_event_loop (like the self-test - the bg
+            // poll could leave a finished test showing "Running…" for a long while)
+            FPS_REFRESH.with(|x| *x.borrow_mut() = Some(r.clone()));
+            std::thread::spawn(move || {
+                let l = line.clone();
+                let res = crate::rec_core::fps_test(move |s| {
+                    if let Ok(mut g) = l.lock() {
+                        *g = s;
+                    }
+                });
+                let _ = slint::invoke_from_event_loop(move || {
                     FPS_TIMER.with(|x| *x.borrow_mut() = None);
-                    FPS.with(|f| *f.borrow_mut() = (false, match res { Ok(s) => format!("✓ {s}"), Err(e) => format!("✗ {e}") }));
-                    let _ = w.upgrade();
-                    r3();
-                },
-            );
+                    FPS.with(|f| *f.borrow_mut() = (false, match res { Ok(s) => format!("✓ {s}"), Err(e) => format!("× {e}") }));
+                    if let Some(r) = FPS_REFRESH.with(|x| x.borrow().clone()) {
+                        r();
+                    }
+                });
+            });
         }
         // Echo's #sndfiles: "Choose .wav" / "Change" pick a file at once, "Reset" = built-in again (no dialog)
         _ if act.starts_with("soundreset:") => {
@@ -506,6 +509,12 @@ thread_local! {
     static SAVE_QUIET: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     /// self-test: running, last result (rows of (name, ok, detail) / error)
     static SELFTEST: RefCell<(bool, Option<Result<Vec<(String, bool, String)>, String>>)> = const { RefCell::new((false, None)) };
+    /// which self-test run is the newest (the watchdog of an older run does nothing) + the Settings page refresh
+    static SELFTEST_RUN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SELFTEST_REFRESH: RefCell<Option<Refresh>> = const { RefCell::new(None) };
+    /// when the running self-test started + its once-a-second refresh (the countdown)
+    static SELFTEST_AT: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    static SELFTEST_TICK: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
 }
 
 /// gaps-settings (Echo's changed()): a setting was written - the recorder takes it at once (new hotkeys work right
@@ -553,6 +562,11 @@ pub fn import_reminder_set() -> bool {
 /// for settings.rs: (running, last result) of the self-test
 pub fn self_test_state() -> (bool, Option<Result<Vec<(String, bool, String)>, String>>) {
     SELFTEST.with(|s| s.borrow().clone())
+}
+
+/// for settings.rs: seconds since the running self-test started (0 when none runs)
+pub fn self_test_secs() -> u64 {
+    SELFTEST_AT.with(|t| t.get()).map_or(0, |t| t.elapsed().as_secs())
 }
 
 // ---------- feedback + log ----------
@@ -685,7 +699,9 @@ pub fn smaller(a: &AppWindow, idx: usize, factor: f64) {
 /// (settings.rs self_test_row), no dialog.
 pub fn self_test(a: &AppWindow, refresh: &Refresh) {
     let Some(rc) = crate::rec_core::rec() else { return };
-    if !crate::rec_core::can_record() {
+    // test hook: ECHO_FAKE_SELFTEST=1 = a pretend run (9 s, two rows) - tests the window side in a copy that can't record
+    let fake = std::env::var("ECHO_FAKE_SELFTEST").is_ok();
+    if !fake && !crate::rec_core::can_record() {
         crate::toast(a, "Another Echo is recording - close it, then run the self-test here");
         return;
     }
@@ -693,14 +709,56 @@ pub fn self_test(a: &AppWindow, refresh: &Refresh) {
         return;
     }
     SELFTEST.with(|s| *s.borrow_mut() = (true, None));
+    let run = SELFTEST_RUN.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    SELFTEST_REFRESH.with(|x| *x.borrow_mut() = Some(refresh.clone()));
+    // William, 11 Nov 2026: the label stayed on "(6 s)" - now it counts down once a second (settings.rs
+    // self_test_row), then says "Checking…" while the clip is checked
+    SELFTEST_AT.with(|t| t.set(Some(std::time::Instant::now())));
+    SELFTEST_TICK.with(|t| {
+        t.borrow_mut().get_or_insert_with(slint::Timer::default).start(slint::TimerMode::Repeated, Duration::from_secs(1), || {
+            if let Some(r) = SELFTEST_REFRESH.with(|x| x.borrow().clone()) {
+                r();
+            }
+        })
+    });
     refresh();
-    let refresh = refresh.clone();
-    crate::lib_net::bg(
-        move || rc.self_test(),
-        move |rows| {
-            let res = if rows.is_empty() { Err("The self-test couldn't run - see the log".to_string()) } else { Ok(rows) };
-            SELFTEST.with(|s| *s.borrow_mut() = (false, Some(res)));
-            refresh();
-        },
-    );
+    crate::lib_net::log_line("selftest: started");
+    // 11 Nov 2026 (2.0.4 bug: stayed on "Testing… (6 s)" although the recorder finished): the result goes to the UI
+    // thread with invoke_from_event_loop, and a watchdog ends a run that never reports
+    std::thread::spawn(move || {
+        let rows = if fake {
+            std::thread::sleep(Duration::from_secs(9));
+            vec![("Recorder running".into(), true, "pretend run".into()), ("Audio: Microphone".into(), false, "Silent - say something while testing".into())]
+        } else {
+            rc.self_test()
+        };
+        let res = if rows.is_empty() { Err("The self-test couldn't run - see the log".to_string()) } else { Ok(rows) };
+        if let Err(e) = slint::invoke_from_event_loop(move || self_test_done(run, res)) {
+            crate::lib_net::log_line(&format!("selftest: couldn't hand the result to the window: {e}"));
+        }
+    });
+    slint::Timer::single_shot(Duration::from_secs(90), move || {
+        self_test_done(run, Err("The self-test didn't finish within 90 seconds - press Send log so we can see why".into()));
+    });
+}
+
+/// the self-test's result (or the watchdog) reaches the UI thread; only the newest run counts, only once
+fn self_test_done(run: u64, res: Result<Vec<(String, bool, String)>, String>) {
+    if SELFTEST_RUN.with(|n| n.get()) != run || !SELFTEST.with(|s| s.borrow().0) {
+        return;
+    }
+    let secs = SELFTEST_AT.with(|t| t.take()).map_or(0.0, |t| t.elapsed().as_secs_f32());
+    crate::lib_net::log_line(&format!("selftest: result shown after {secs:.1} s ({})", if res.is_ok() { "checks done" } else { "error" }));
+    SELFTEST_TICK.with(|t| {
+        if let Some(t) = t.borrow().as_ref() {
+            t.stop();
+        }
+    });
+    SELFTEST.with(|s| *s.borrow_mut() = (false, Some(res)));
+    if let Some(r) = SELFTEST_REFRESH.with(|x| x.borrow().clone()) {
+        r();
+    }
 }

@@ -1,8 +1,8 @@
 <!-- title: Echo Cloud plans - clip backup and Discord share links | desc: Back up your game clips and get share links that play right inside Discord. 10 GB free, 250 GB from €4.95 a month. The Echo app itself is always free. -->
 <section class="center">
   <div class="wrap">
-    <h2 style="margin-top:24px">Echo Cloud plans</h2>
-    <p class="sub">Back up your clips, get them on every PC and share links that play right in Discord. Start free, upgrade from inside Echo whenever you need more space.</p>
+    <h1>Echo Cloud</h1>
+    <p class="sub">Optional storage for Echo: back up your clips, get them on every PC and share links that play right in Discord. It starts with 10 GB free; if you ever need more space, you can add it from inside Echo.</p>
 
     <div class="toggle" role="group" aria-label="Billing period">
       <button type="button" class="on" data-int="month">Monthly</button>
@@ -36,26 +36,30 @@
   </div>
 </section>
 
-<script>
-(() => {
-  let interval = "month";
-  const money = (n, cur) => new Intl.NumberFormat("en-IE", { style: "currency", currency: (cur || "eur").toUpperCase(),
-    minimumFractionDigits: n % 1 ? 2 : 0 }).format(n);
-  const show = () => {
-    document.querySelectorAll(".toggle button").forEach((b) => b.classList.toggle("on", b.dataset.int === interval));
-    document.querySelectorAll(".plan .price[data-month]").forEach((p) => {
-      p.innerHTML = `${p.dataset[interval]} <small>/ ${interval}</small>`;
-    });
-  };
-  document.querySelectorAll(".toggle button").forEach((b) => b.onclick = () => { interval = b.dataset.int; show(); });
-  // live prices from Polar (same list Echo shows)
-  fetch("/plans").then((r) => r.ok ? r.json() : null).then((j) => {
-    if (!j || !j.plans) return;
-    for (const p of j.plans) {
-      const card = document.querySelector(`.plan[data-gb="${p.gb >= 1000 ? 1000 : p.gb}"] .price`);
-      if (card && (p.interval === "month" || p.interval === "year")) card.dataset[p.interval] = money(p.price, p.currency);
-    }
-    show();
-  }).catch(() => {});
-})();
-</script>
+<section id="compare">
+  <div class="wrap">
+    <h2>Echo Cloud or your own cloud</h2>
+    <p class="sub">Use either, or both at once. Your clips always stay on your PC too.</p>
+    <div class="ec-cmp" role="table" aria-label="Echo Cloud compared with your own cloud">
+        <div class="ec-cmp__row ec-cmp__head" role="row">
+          <span role="columnheader"><span class="sr-only">What you get</span></span>
+          <div role="columnheader" class="ec-cmp__col">
+            <b>Echo Cloud</b>
+            <small>Sign in with your email</small>
+          </div>
+          <div role="columnheader" class="ec-cmp__col ec-cmp__col--own">
+            <b>Your own cloud <em>Free</em></b>
+            <small class="ec-cmp__logos"><img src="/icons/google-drive.svg" alt="Google Drive" title="Google Drive" width="20" height="20" loading="lazy"><img src="/icons/mega.svg" alt="MEGA" title="MEGA" width="20" height="20" loading="lazy"><img src="/icons/filen.svg" alt="Filen" title="Filen" width="20" height="20" loading="lazy"><span>pCloud, WebDAV, SFTP, S3 or a NAS</span></small>
+          </div>
+        </div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Backs up your clips</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Syncs clips between your PCs</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Frees up space on your PC</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Space</span><span role="cell">10 GB free, more from €4.95 a month</span><span role="cell">Whatever your plan has, free plans included</span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Setup</span><span role="cell">Nothing to set up</span><span role="cell">Connect it in a few clicks</span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Share links that play right inside Discord</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-no" aria-label="No">–</span><small>needs Echo Cloud</small></span></div>
+      </div>
+    <h3 class="ec-q">Do I need Echo Cloud?</h3>
+    <p class="sub">No. Clips are always saved on your PC. For backups you can connect Google Drive, MEGA, pCloud, Filen, your own WebDAV/SFTP/S3 server or a NAS instead, all with free options. When you've connected your own cloud, backups go there - Echo Cloud is only used for the share links that play inside Discord.</p>
+  </div>
+</section>

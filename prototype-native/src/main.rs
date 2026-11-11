@@ -9,6 +9,7 @@ mod icons;
 mod import;
 mod edrender;
 mod editor;
+mod ed_bench; // 11 Nov 2026: test hook ECHO_TL_BENCH - timeline scrolling, measured
 mod edui;
 mod library;
 mod lib_cards;
@@ -46,7 +47,9 @@ mod specs; // r2-perf (10 Nov): the PC's hardware model names + recording settin
 mod hover_vid; // 9 Nov: card hover preview = the real clip (was a flipbook)
 mod discord; // 9 Nov: Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
 mod idle; // 9 Nov: efficiency mode for the UI side while hidden in the tray
+mod memtrim; // 11 Nov 2026: trim memory again when it grows while hidden (recorder restarts touch driver set-up memory)
 mod focus; // port leftovers L2: keys go back after a rename / overlay / dialog closes
+mod home_inbox; // 11 Nov 2026: Home "Inbox" - the clip on show (new ones first), pager, details, Your games
 mod hdr_home; // gaps (10 Nov): header chips (KDE keys), "On this day" + milestones, Record button, error toasts -> log
 
 thread_local! {
@@ -62,6 +65,7 @@ mod showkey; // 2.0.2: Show / hide Echo hotkey (tray <-> in front, over a game)
 mod titlebar;
 mod pl_zoom;
 mod popup;
+mod uiscale; // 11 Nov 2026: 1080p / 1440p look the same (Echo's own size on top of the system's scale)
 mod tray;
 #[cfg(target_os = "linux")]
 mod linux; // gaps-linux: ffmpeg lookup, Trash fallback, DnD tip, Flatpak first start, menu entry, pickers
@@ -464,6 +468,9 @@ fn apply_theme(a: &AppWindow, st: &settings::Store) {
     t.set_g0(p.grad[0]);
     t.set_g1(p.grad[1]);
     t.set_g2(p.grad[2]);
+    t.set_on_accent(p.on_accent);
+    t.set_on_hi(p.on_hi);
+    t.set_hi_text(p.hi_text);
 }
 
 fn open_url(u: &str) {
@@ -526,8 +533,18 @@ fn gs_next(lib: &library::LibModel) -> (Vec<bool>, Option<usize>) {
 
 /// fill Home from the library (cheap; the big still is made once per latest clip in the background)
 fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
-    lib.refresh_home(1 + HOME_COLS.with(|c| c.get()));
     let h = a.global::<HomeState>();
+    h.set_loading(lib.len() == 0 && lib.loading());
+    // 11 Nov 2026: Home card 0 = the clip on show (home_inbox.rs), so the code below (hero still, meta) follows it
+    let refill: Rc<dyn Fn()> = {
+        let (w, l) = (a.as_weak(), lib.clone());
+        Rc::new(move || {
+            if let Some(a) = w.upgrade() {
+                home_fill(&a, &l);
+            }
+        })
+    };
+    home_inbox::fill(a, lib, refill);
     h.set_extra(lib.home_extra());
     let (week, total, bytes, games, bars) = lib.home_stats();
     h.set_total(total.to_string().into());
@@ -575,8 +592,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
     // the latest clip: "1 hour ago · 58.8 MB · FiveM" + its picture
     let Some(idx) = lib.index_at(library::HOME_BASE) else { return };
     let c = lib.clip(idx);
-    let game = c.game.split('/').next().unwrap_or("").to_string();
-    h.set_hero_meta([library::ago(c.mtime), library::fmt_size(c.size), game].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ").into());
+    // (the line under the title, "FiveM · 32 min ago", is set by home_inbox::fill)
     let have = HERO.with(|x| {
         let x = x.borrow();
         (x.0 == c.path).then(|| x.1.clone()).flatten()
@@ -596,7 +612,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
             std::thread::spawn(move || {
                 let dir = std::env::temp_dir().join("echo-proto-hero");
                 let _ = std::fs::create_dir_all(&dir);
-                let out = dir.join(format!("{}-{stamp}.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
+                let out = dir.join(format!("{}-{stamp}-full.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
                 if !out.exists() {
                     let mut cmd = std::process::Command::new(&ff);
                     #[cfg(windows)]
@@ -608,7 +624,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
                     let _ = cmd
                         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{at:.2}"), "-i"])
                         .arg(&path)
-                        .args(["-frames:v", "1", "-vf", "scale=1600:-2", "-q:v", "3"])
+                        .args(["-frames:v", "1", "-vf", "scale=w='min(iw,1920)':h=-2:flags=lanczos", "-q:v", "2"]) // 11 Nov 2026: full clip width (was 1600 px)
                         .arg(&out)
                         .stdin(std::process::Stdio::null())
                         .output();
@@ -723,6 +739,19 @@ fn fmt1(s: f32) -> String {
 }
 
 /// Echo's #sinfo: folder, size, date (+ resolution / codec once playing)
+/// the side panel's detail chips: size, then 1080p60 + codec once playing, then the date ("11 Nov · 17:43")
+fn info_chips(c: &library::Clip, video: Option<(String, String, f64)>) -> ModelRc<slint::SharedString> {
+    let when: chrono::DateTime<chrono::Local> = c.mtime.into();
+    let mut v: Vec<slint::SharedString> = vec![library::fmt_size(c.size).into()];
+    if let Some((h, codec, fps)) = video {
+        v.push(format!("{h}p{fps:.0}").into());
+        if !codec.is_empty() {
+            v.push(codec.to_uppercase().into());
+        }
+    }
+    v.push(when.format("%-d %b · %H:%M").to_string().into());
+    ModelRc::new(VecModel::from(v))
+}
 fn info_text(c: &library::Clip, video: Option<String>) -> String {
     let when: chrono::DateTime<chrono::Local> = c.mtime.into();
     let mut s = format!(
@@ -747,7 +776,11 @@ fn unhandled(what: &str) {
 fn main() {
     rec_core::early_env(); // Chat A
     popup::select_backend(); // Chat A: popup window never takes focus
+    if popup::test_hook() {
+        return; // ECHO_POPUP_TEST=1: only the in-game popup, nothing else (popup.rs)
+    }
     let app = AppWindow::new().expect("window");
+    uiscale::install(&app); // 1080p vs 1440p: same size on every screen (before the window is shown)
     notes_init(&app);
     // test hook: ECHO_NOTES_TEST=1 shows two progress boxes + messages at start (the stack must never overlap)
     if std::env::var("ECHO_NOTES_TEST").is_ok() {
@@ -1345,7 +1378,7 @@ fn main() {
         app.global::<S>().on_set(move |k, v| {
             // Chat B (night): the background effect lives in native_ui.json, not settings.json
             // (r2-perf: "Send anonymous performance numbers" too - perf.rs)
-            if lib_fx::set(&k, &v) || perf::set(&k, &v) {
+            if lib_fx::set(&k, &v) || perf::set(&k, &v) || uiscale::set(&k, &v) {
                 r();
                 return;
             }
@@ -1616,6 +1649,9 @@ fn main() {
         let (w, lib) = (app.as_weak(), lib.clone());
         app.global::<Lib>().on_act(move |row, what| {
             let (Some(a), Some(c)) = (w.upgrade(), lib.clip_at(row as usize)) else { return };
+            if row as usize >= library::HOME_BASE && what.as_str() != "fav" {
+                home_inbox::touched(&lib); // 11 Nov 2026: the buttons on Home's picture count as looking at it
+            }
             if cloud::card_needs_local(&a, row, what.as_str()) {
                 return; // gaps-cloud (row 4): a cloud-only clip is downloaded first, then this runs again
             }
@@ -1721,7 +1757,24 @@ fn main() {
                 s.items.iter().find(|x| x.0 == idx).map(|x| Some((x.1.clone(), x.2, x.3)))
             });
             match hit {
-                Some(r) => r,
+                Some(r) => {
+                    // 11 Nov 2026: fullscreen on Windows (osd.rs) draws the filmstrip from the player's PIXELS
+                    // (player_px), which are only kept when a sheet arrives for the open player. A sheet already in
+                    // memory as a picture (e.g. from hovering the card first) left them empty -> an empty grey
+                    // filmstrip in fullscreen. Read it again for the player (the .scrub.jpg on disk, ~0.1 s).
+                    let need_px = r.is_some()
+                        && SHEETS.with(|s| {
+                            let s = s.borrow();
+                            s.player == Some(idx) && !s.player_px.as_ref().is_some_and(|x| x.0 == idx)
+                        });
+                    if need_px {
+                        let c = lib.clip(idx);
+                        if cloud::play_ready(&c.path, || {}) {
+                            let _ = tx.send(sheets::Job { key: idx, clip: cloud::play_path(&c.path), echo_sheet: c.scrub(), dur: c.dur.unwrap_or(0.0) });
+                        }
+                    }
+                    r
+                }
                 None => {
                     let c = lib.clip(idx);
                     // gaps-cloud (row 5): a cloud-only clip's seek pictures come from its stream - for the player only
@@ -1771,7 +1824,7 @@ fn main() {
                 // 9 Nov: the real clip, like Echo on Windows (was the 60-picture flipbook)
                 let c = lib2.clip(idx);
                 if c.cloud.is_none() {
-                    hover_vid::start(&a, row, c.path.clone());
+                    hover_vid::start(&a, row, c.path.clone(), hover_vid::size_for(&a, row));
                 }
                 let w3 = w2.clone();
                 fs2.start(slint::TimerMode::SingleShot, Duration::from_secs(20), move || {
@@ -1889,6 +1942,7 @@ fn main() {
             pl.set_zoomed(false);
             pl_zoom::reset(p.mpv.as_ref());
             pl.set_info(info_text(&c, None).into());
+            pl.set_info_chips(info_chips(&c, None));
             pl.set_size_text(library::fmt_size(c.size).into());
             // a new clip: no trim selection, no cuts / highlight
             pl.set_trimming(false);
@@ -1968,15 +2022,26 @@ fn main() {
             let _ = &p;
             // the player takes over: no second decoder on the same clip
             UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())).inspect(hover_vid::stop);
+            // 11 Nov 2026: a clip played anywhere (Home, Library) is not new on Home any more (QA B36)
+            if let Some(i) = lib.index_at(row as usize) {
+                home_inbox::seen_idx(&lib, i);
+                if let Some(a) = UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())) {
+                    home_fill(&a, &lib);
+                }
+            }
             play(row);
         });
     }
 
     // ---------- Home's buttons ----------
     {
-        let (w, lib, play) = (app.as_weak(), lib.clone(), play.clone());
+        let (w, lib, play, tf) = (app.as_weak(), lib.clone(), play.clone(), toggle_fav.clone());
         app.global::<HomeState>().on_act(move |what| {
             let Some(a) = w.upgrade() else { return };
+            // 11 Nov 2026 (Home Inbox): sending / editing / playing the clip on show = it isn't new any more
+            if matches!(what.as_str(), "play" | "copy" | "copym" | "link" | "edit" | "cap") || what.starts_with("copy:") {
+                home_inbox::touched(&lib);
+            }
             match what.as_str() {
                 "play" => play(library::HOME_BASE as i32),
                 "library" => a.invoke_pick_filter("all".into()),
@@ -2053,7 +2118,23 @@ fn main() {
                     home_fill(&a, &lib);
                     toast(&a, "Hidden - bring it back under Settings → App Settings");
                 }
-                _ => {}
+                // 11 Nov 2026 (Home Inbox): Keep = star it (if it isn't yet) + the next clip; the pager; Delete; a shelf
+                "keep" => {
+                    if let Some(i) = home_inbox::current(&lib) {
+                        if !lib.favs.borrow().contains(&lib.clip(i).name) {
+                            tf(i);
+                        }
+                    }
+                    if home_inbox::act(&a, &lib, "keep") {
+                        home_fill(&a, &lib);
+                    }
+                }
+                w if w.starts_with("shelf:") => home_inbox::open_shelf(&a, &w["shelf:".len()..]),
+                w => {
+                    if home_inbox::act(&a, &lib, w) {
+                        home_fill(&a, &lib);
+                    }
+                }
             }
         });
     }
@@ -2371,6 +2452,13 @@ fn main() {
                 if pl_actions::act(&a, &p, &c.path, &c.thumbs, what.as_str()) {
                     return;
                 }
+            }
+            // the bar's SPEED menu (11 Nov 2026)
+            if let Some(sp) = what.as_str().strip_prefix("speed:") {
+                if let Some(m) = p.borrow().mpv.as_ref() {
+                    m.set("speed", sp);
+                }
+                return;
             }
             match what.as_str() {
                 "folder" => show_in_folder(&lib.clip(idx).path),
@@ -2860,6 +2948,8 @@ fn main() {
                                 let dlg = a.global::<Dlg>().get_open();
                                 // gaps-cloud (row 5): also parked while the cloud overlay ("Loading from the cloud…") shows
                                 let dlg = dlg || a.global::<Play>().get_cl_on();
+                                // 11 Nov 2026: Edit from Home / Library loads the clip in the hidden player - no video over the page
+                                let dlg = dlg || a.global::<Ed>().get_opening();
                                 // r2-layout (L1): a menu reaching over the video - parked too, a still of its picture shows (over.rs)
                                 let dlg = over::park_for_menu(&a, m, vw.is_shown()) || dlg;
                                 vw.show(!dlg && (pl.first_frame || (poster_up && !full) || (flip && !full && pl.swap)));
@@ -2991,6 +3081,7 @@ fn main() {
                                 trim_len: format!("· {:.1}s", (ps.get_t1() - ps.get_t0() - ps.get_cut_sum()).max(0.0) * d),
                                 volume: ps.get_volume(),
                                 muted: ps.get_muted(),
+                                speed: ps.get_speed(),
                                 accent: {
                                     let k = a.global::<T>().get_accent();
                                     (k.red(), k.green(), k.blue())
@@ -3120,14 +3211,14 @@ fn main() {
                     a.global::<Flip>().set_sheet(slint::Image::default());
                     hover_vid::stop(&a);
                     a.global::<Flip>().set_row(-1);
-                    #[cfg(windows)]
-                    unsafe {
-                        windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet(windows_sys::Win32::System::Threading::GetCurrentProcess());
-                    }
-                    log(&mut p, "memory: minimized 20 s - thumbnails let go, memory trimmed".into());
+                    let t = memtrim::trim();
+                    log(&mut p, format!("memory: minimized 20 s - thumbnails let go, memory trimmed{t}"));
+                } else if let Some(m) = memtrim::hidden_tick() {
+                    log(&mut p, m); // grew again while hidden (recorder restart, popup, save): trim again
                 }
             } else {
                 hidden_since = None;
+                memtrim::shown();
                 if lib.is_suspended() {
                     lib.resume();
                     log(&mut p, "memory: window back - thumbnails reload".into());
@@ -3201,6 +3292,7 @@ fn main() {
                 if let Some(idx) = p.clip {
                     let c = lib.clip(idx);
                     pl.set_info(info_text(&c, Some(format!("{vw}×{vh} · {codec} · {vfps:.0} fps"))).into());
+                    pl.set_info_chips(info_chips(&c, Some((vh.clone(), codec.clone(), vfps))));
                 }
             }
             let drops = m.get("frame-drop-count").unwrap_or_else(|| "0".into());
@@ -3246,6 +3338,8 @@ fn main() {
             }
             app.set_view("settings".into());
             srefresh();
+        } else if pg == "library" {
+            app.set_view("library".into()); // ECHO_PAGE=library (uiscale screenshots)
         }
     }
     // test hooks: ECHO_AUTOPLAY=<card number> opens that clip 1.5 s after start,
@@ -3329,6 +3423,9 @@ fn main() {
         let wk = app.as_weak();
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
+            if let Some(r) = uiscale::main_event(win, ev) {
+                return r; // Echo's own size on top of the system's scale (uiscale.rs)
+            }
             #[cfg(target_os = "linux")]
             wl_dnd::start(&wk, win); // first event only: Wayland drag and drop listener (wl_dnd.rs)
             // fullscreen controls: wake on any movement inside the window

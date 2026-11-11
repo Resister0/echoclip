@@ -20,13 +20,14 @@ import datetime, html, json, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parent          # cloud/site-src
 SITE = ROOT.parent / "site"
 ORIGIN = "https://echoclip.link"
-OG_IMAGE = f"{ORIGIN}/og.png?v=2"   # Discord caches images per URL: bump v when og.png changes
-OG_ALT = "Echo - lightweight game clipping for any PC. One key saves the last moments. Free, no ads, no account."
+OG_IMAGE = f"{ORIGIN}/og.png?v=3"   # Discord caches images per URL: bump v when og.png changes
+OG_ALT = "Echo - game clip recorder for Windows and Linux. One key saves the last minutes; about 150 MB of memory while it records. Free, no ads, no account."
 
 # page file -> public path (the Worker serves download.html at /download etc.). Order = sitemap order.
 PAGES = {
     "index.html": "/",
     "download.html": "/download",
+    "vs-medal.html": "/vs-medal",
     "pricing.html": "/pricing",
     "changelog.html": "/changelog",
     "code-signing.html": "/code-signing",
@@ -34,7 +35,7 @@ PAGES = {
     "terms.html": "/terms",
 }
 NOINDEX = ["404.html"]
-PRIORITY = {"/": "1.0", "/download": "0.9", "/pricing": "0.7", "/changelog": "0.6"}
+PRIORITY = {"/": "1.0", "/download": "0.9", "/vs-medal": "0.7", "/pricing": "0.7", "/changelog": "0.6"}
 
 BEGIN, END = "<!-- seo: managed by cloud/site-src/seo.py, edit there -->", "<!-- /seo -->"
 # loose tags from before seo.py existed (and anything it manages): removed from the head before the block goes in
@@ -54,7 +55,8 @@ def head_info(page):
 
 
 def faq(page):
-    qa = re.findall(r"<details><summary>(.*?)</summary>(.*?)</details>", page, re.S)
+    # 11 Nov 2026: the new homepage opens its FAQ answers (<details open>)
+    qa = re.findall(r"<details[^>]*><summary>(.*?)</summary>(.*?)</details>", page, re.S)
     return [{"@type": "Question", "name": text(q), "acceptedAnswer": {"@type": "Answer", "text": text(a)}} for q, a in qa]
 
 
@@ -87,6 +89,12 @@ def jsonld(name, page, desc):
             graph.append({"@type": "FAQPage", "@id": f"{ORIGIN}/#faq", "mainEntity": q})
     elif name == "download.html":
         graph = [org, app(text(home))]
+    elif name == "vs-medal.html":
+        title = head_info(page)[0]
+        graph = [{"@type": "WebPage", "@id": f"{ORIGIN}/vs-medal#page", "url": f"{ORIGIN}/vs-medal", "name": text(title), "description": text(desc),
+                  "isPartOf": {"@id": f"{ORIGIN}/#site"}, "about": {"@id": f"{ORIGIN}/#app"}},
+                 {"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Echo", "item": f"{ORIGIN}/"},
+                                                                {"@type": "ListItem", "position": 2, "name": "Echo vs Medal", "item": f"{ORIGIN}/vs-medal"}]}]
     else:
         return ""
     data = json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False, separators=(",", ":"))

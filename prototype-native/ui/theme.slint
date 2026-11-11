@@ -24,6 +24,13 @@ export global T {
     in-out property <color> g1: #6a4cf5;
     in-out property <color> g2: #4f7bff;
     out property <brush> grad: @linear-gradient(135deg, g0 0%, g1 55%, g2 100%);
+    // 11 Nov 2026: text / icons ON the accent or grad (on-accent) and ON the highlight (on-hi): near-black on light
+    // colours, white on dark ones - picked by contrast in Rust (settings.rs on_colour), follows the RGB theme too
+    in-out property <color> on-accent: #ffffff;
+    in-out property <color> on-hi: #0d0d10;
+    // the highlight as TEXT / icon on the panels: hi itself, or a lighter (darker on light themes) version when hi
+    // would be hard to read there (settings.rs readable); fills keep T.hi
+    in-out property <color> hi-text: #ffd23f;
     out property <length> radius: 14px;
     // Echo uses .15 s for buttons and .18 s for cards; the glow/shadow is NOT animated (it smeared into a trail)
     out property <duration> fade: 150ms;
@@ -55,8 +62,8 @@ export global Ic {
     out property <string> search: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14z M20 20l-4-4";
     out property <string> edit: "M4 20h4L19 9l-4-4L4 16z M14 6l4 4";
     out property <string> copy: "M11 9h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1";
-    out property <string> cloud: "M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z";
-    out property <string> share: "M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9 M12 12v9 M9 15l3-3 3 3";
+    out property <string> cloud: "M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z";
+    out property <string> share: "M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10 M12 13v8 M9 16l3-3 3 3";
     out property <string> trim: "M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M6 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M20 4L8.1 15.9 M14.5 14.5L20 20 M8.1 8.1L12 12";
     out property <string> frame: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6z";
     out property <string> image: "M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M3 15l5-5 4 4 3-3 6 6";
@@ -240,7 +247,7 @@ component Spinner inherits Rectangle {
         height: 11px;
         viewbox-width: 11;
         viewbox-height: 11;
-        stroke: T.hi;
+        stroke: T.hi-text;
         stroke-width: 2px;
         fill: transparent;
         commands: "M 1.6 3.3 A 4.5 4.5 0 0 1 9.4 3.3";
@@ -509,8 +516,8 @@ export component IconBtn inherits Rectangle {
         width: root.icon-size;
         height: root.icon-size;
         commands: root.icon;
-        stroke: root.on ? T.hi : root.danger && root.hov ? T.bad : root.hov ? T.text : root.icon-color;
-        fill: root.on ? T.hi : transparent;
+        stroke: root.on ? T.hi-text : root.danger && root.hov ? T.bad : root.hov ? T.text : root.icon-color;
+        fill: root.on ? T.hi-text : transparent;
         transform-scale: ta.pressed && root.enabled ? 0.88 : 1;
         animate transform-scale { duration: 90ms; }
     }
@@ -549,18 +556,20 @@ export component Btn inherits Rectangle {
     animate opacity { duration: T.fade; }
     height: small ? 30px : 36px;
     width: text == "" ? (right-half ? 30px : self.height) : hl.preferred-width;
+    // the width the content wants (11 Nov 2026: Record + Save clip take the wider of the two, app.slint)
+    out property <length> natural-w: hl.preferred-width;
     border-top-left-radius: right-half ? 0 : 10px;
     border-bottom-left-radius: right-half ? 0 : 10px;
     border-top-right-radius: left-half ? 0 : 10px;
     border-bottom-right-radius: left-half ? 0 : 10px;
     border-width: primary ? 0 : 1px;
-    border-color: edge != transparent ? edge : delb ? (hov ? #ff7590 : T.bad) : active ? T.hi : danger && hov ? T.bad : hov ? T.hover : T.line;
+    border-color: edge != transparent ? edge : delb ? (hov ? #ff7590 : T.bad) : active ? T.hi-text : danger && hov ? T.bad : hov ? T.hover : T.line;
     background: primary ? T.grad : delb ? (hov ? #ff7590 : T.bad) : hov ? T.panel2 : T.panel;
     drop-shadow-blur: primary ? 20px : 0;
     drop-shadow-offset-y: primary ? 6px : 0;
     drop-shadow-color: T.accent.with-alpha(0.25);
     animate background, border-color { duration: T.fade; enabled: !T.rgb-live; }
-    property <color> fg: text-color != transparent ? text-color : active ? T.hi : danger && hov ? T.bad : T.text;
+    property <color> fg: text-color != transparent ? text-color : primary ? T.on-accent : active ? T.hi-text : danger && hov ? T.bad : T.text;
     // L49: Tab reaches the button (never a click: the page keeps the keys), Enter / Space press it, Echo's
     // :focus-visible ring (2 px accent2, 2 px out)
     fs := FocusScope {
@@ -640,7 +649,7 @@ export component Btn inherits Rectangle {
             vertical-alignment: center;
             font-size: root.text-size > 0 ? root.text-size : root.small ? 13px : 14px;
             font-weight: (root.primary || root.delb ? 600 : 500) + T.fw;
-            color: root.primary || root.delb ? white : root.fg;
+            color: root.primary ? T.on-accent : root.delb ? white : root.fg;
         }
         if root.text != "" && root.badge != "": Text {
             text: root.badge;
@@ -721,6 +730,7 @@ export component Kbd inherits Rectangle {
 export component Badge inherits Rectangle {
     in property <string> text;
     in property <brush> bg: #000000dd;
+    in property <color> fg: white; // T.on-accent when bg is the accent (11 Nov 2026)
     height: 20px;
     width: bt.preferred-width + 14px;
     border-radius: 6px;
@@ -729,7 +739,7 @@ export component Badge inherits Rectangle {
         text: root.text;
         font-size: 11.5px;
         font-weight: 600 + T.fw;
-        color: white;
+        color: root.fg;
     }
 }
 
@@ -802,7 +812,7 @@ export component MenuRow inherits Rectangle {
             bdt := Text {
                 text: root.badge;
                 font-size: 10.5px;
-                color: T.hi;
+                color: T.hi-text;
             }
         }
         Rectangle { horizontal-stretch: 1; }
@@ -910,7 +920,7 @@ export component CopyMenuBody inherits Rectangle {
                     cbd := Text {
                         text: "default";
                         font-size: 10.5px;
-                        color: T.hi;
+                        color: T.hi-text;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }

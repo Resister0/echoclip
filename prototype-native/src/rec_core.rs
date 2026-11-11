@@ -1033,6 +1033,8 @@ fn background_loops() {
             std::thread::sleep(Duration::from_secs(10));
             let Some(rec) = rec() else { return };
             rec.stop_idle_serve(600);
+            // faster-share-links: the smaller copies of share-first uploads (Echo Cloud), on a thread of their own
+            if rec.swaps_waiting() { std::thread::spawn(move || rec.run_swaps()); }
             let soon = SYNC_SOON.swap(false, Ordering::Relaxed);
             if !soon && last.elapsed().as_secs() < 300 {
                 continue;
@@ -1063,6 +1065,10 @@ fn background_loops() {
         let calm = || idle() >= 300 && recorder::detect_game().is_none() && rec.session_secs().is_none();
         if c.shrink_old && calm() {
             rec.shrink_old_clips(c.shrink_days, calm);
+        }
+        // faster-share-links: once a day while idle - Echo Cloud files that are still the clip itself get its smaller copy
+        if calm() && rec.heal_due() {
+            rec.heal_originals(&calm);
         }
     });
 }

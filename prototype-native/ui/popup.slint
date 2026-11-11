@@ -8,27 +8,34 @@ export component PopupWin inherits Window {
     in property <bool> has-icon;
     in property <color> grad-a: #8b6cff;
     in property <color> grad-b: #4f7bff;
-    // slide in from the right + fade (.t / .t.on in toast.html)
+    // fade in + the content slides in from the right (.t / .t.on in toast.html). The card itself stays put: popup.rs
+    // clips the window to the card's rounded shape (SetWindowRgn), so nothing may be drawn outside it.
     in-out property <bool> on;
+    // the card's width (logical px): popup.rs reads it to cut the window to the card
+    out property <length> card-w: card.width;
     title: "Echo popup";
     no-frame: true;
     always-on-top: true;
     background: transparent;
-    width: 360px;
-    height: 84px;
+    // 11 Nov 2026: was 360x84 with a 10 px see-through margin. On a friend's PC (AMD) see-through didn't work and the
+    // whole window drew BLACK around and left of the card. Now the window is the widest card (340 x 58) and popup.rs
+    // clips it to the card, so even without see-through only the card shows.
+    width: 340px;
+    height: 58px;
     card := Rectangle {
-        x: parent.width - self.width - 10px + (root.on ? 0px : 30px);
-        y: 10px;
+        x: parent.width - self.width;
+        y: 0px;
         width: min(max(hl.preferred-width, 220px), 340px);
         height: 58px;
         opacity: root.on ? 1 : 0;
-        animate x { duration: 250ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1.2); }
         animate opacity { duration: 200ms; }
         border-radius: 14px;
         background: #141418f2;
         border-width: 1px;
         border-color: #ffffff1c;
         hl := HorizontalLayout {
+            x: root.on ? 0px : 14px;
+            animate x { duration: 250ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1.2); }
             padding-left: 12px;
             padding-right: 16px;
             spacing: 12px;

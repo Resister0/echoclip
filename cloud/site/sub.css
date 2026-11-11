@@ -1,0 +1,139 @@
+/* echoclip.link subpages (download, pricing, changelog, privacy, terms, code signing, 404) in the new look
+   (11 Nov 2026): the homepage's tokens, header and footer (echo.css + the kit), with the subpages' own content
+   classes. Subpages are ordinary scrolling pages: no one-section-per-screen heights. */
+main.sub > :is(section, .section) { height: auto; min-height: 0; padding: var(--s-9) 0 var(--s-8); display: block; }
+main.sub > :is(section, .section) > .wrap { height: auto; }
+main.sub > section:first-child { padding-top: calc(var(--nav) + var(--s-8)); }
+main.sub > section + section { padding-top: 0; }
+main.sub h1 { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: var(--display-tracking-xl); font-size: clamp(40px, 3.2vw + 20px, 64px); line-height: 1.04; margin: 0 0 var(--s-5); max-width: 18ch; }
+main.sub h2 { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: var(--display-tracking); font-size: var(--t-h2); line-height: 1.1; margin: 0 0 var(--s-4); }
+main.sub h3 { font-family: var(--font-display); font-weight: 500; font-size: var(--t-card); margin: 0 0 var(--s-2); }
+main.sub p { margin: 0 0 var(--s-4); }
+main.sub a:not(.btn) { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+main.sub a:not(.btn):hover { text-decoration-color: currentColor; }
+main.sub code { font-family: var(--font-mono); font-size: .9em; background: var(--p-surface); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+main.sub .lead { font-size: var(--t-lead); line-height: 1.5; color: #d6d6d6; max-width: 46ch; }
+main.sub p.sub { color: #c4c4c4; max-width: 62ch; }
+main.sub .fine { color: #c4c4c4; font-size: var(--t-small); max-width: 70ch; line-height: 1.6; }
+
+/* the first block of a page (download, 404) */
+.sub-hero { position: relative; }
+.sub-hero > #sky { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; opacity: .7; }
+.sub-hero > .wrap { position: relative; z-index: 1; }
+main.sub .dl { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; margin: var(--s-6) 0 var(--s-4); }
+main.sub .dl-note { color: #c4c4c4; font-size: var(--t-small); }
+main.sub .btn svg { width: 18px; height: 18px; }
+html[data-buttons="arrow"] main.sub .btn:has(svg)::after { display: none; }
+
+/* cards: downloads, install steps */
+main.sub .card { background: var(--p-surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s-6); display: flex; flex-direction: column; gap: var(--s-2); }
+main.sub .card p { color: #c4c4c4; margin: 0; }
+main.sub .card .btn { margin-top: auto; align-self: flex-start; }
+main.sub .card p + .btn { margin-top: var(--s-5); }
+main.sub .dlgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--gutter); margin: var(--s-6) 0; }
+main.sub .dlgrid .rec { color: var(--ec-link); font-weight: 500; }
+main.sub .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gutter); margin-top: var(--s-6); }
+@media (max-width: 1023px) { main.sub .dlgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } main.sub .steps { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 639px) { main.sub .dlgrid { grid-template-columns: minmax(0, 1fr); } main.sub .dl .btn { width: 100%; justify-content: center; } }
+
+/* pricing */
+.sub--pricing .center > .wrap { text-align: left; }
+main.sub .toggle { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; margin: var(--s-6) 0; }
+main.sub .toggle button { font: inherit; font-size: var(--t-small); font-weight: 500; color: #c4c4c4; background: none; border: 0; border-radius: 999px; padding: 8px 16px; min-height: 40px; cursor: pointer; }
+main.sub .toggle button.on { background: var(--p-surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-strong); }
+main.sub .toggle em { font-style: normal; color: var(--ec-link); margin-left: 6px; }
+main.sub .plans { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--gutter); margin-bottom: var(--s-7); }
+main.sub .plan { background: var(--p-surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s-6); display: flex; flex-direction: column; gap: var(--s-3); }
+main.sub .plan.best { border-color: var(--p-accent); box-shadow: 0 0 0 1px var(--p-accent); }
+main.sub .plan .tag { min-height: 20px; font-size: var(--t-label); font-weight: 500; color: var(--ec-link); }
+main.sub .plan h3 { font-size: 28px; margin: 0; }
+main.sub .plan .price { font-family: var(--font-display); font-size: 32px; font-weight: 500; letter-spacing: -.02em; }
+main.sub .plan .price small { font-size: var(--t-small); color: #c4c4c4; font-weight: 400; letter-spacing: 0; }
+main.sub .plan ul { list-style: none; margin: var(--s-2) 0 0; padding: 0; display: grid; gap: var(--s-2); color: #c4c4c4; }
+main.sub .plan li { padding-left: 22px; position: relative; }
+main.sub .plan li::before { content: ""; position: absolute; left: 2px; top: .5em; width: 10px; height: 6px; border-left: 2px solid var(--ec-link); border-bottom: 2px solid var(--ec-link); transform: rotate(-45deg); }
+@media (max-width: 1023px) { main.sub .plans { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) { main.sub .plans { grid-template-columns: minmax(0, 1fr); } }
+
+/* changelog (site.js fills #changes) */
+main.sub .changes { max-width: 860px; margin-top: var(--s-6); }
+main.sub .cfilter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--s-6); }
+main.sub .cfilter button { font: inherit; font-size: var(--t-small); font-weight: 500; color: #c4c4c4; background: none; border: 1px solid var(--line-strong); border-radius: 999px; padding: 8px 16px; min-height: 40px; cursor: pointer; }
+main.sub .cfilter button.on { color: var(--ink); background: var(--p-surface); border-color: var(--p-accent); }
+main.sub .changes article { background: var(--p-surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s-5) var(--s-6); margin-bottom: var(--s-3); }
+main.sub .changes article[hidden], main.sub .changes li[hidden], main.sub .cday[hidden] { display: none; }
+main.sub .clatest { border-color: var(--p-accent); padding: var(--s-6); margin-bottom: var(--s-7); }
+main.sub .chead { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-3); }
+main.sub .chead b { font-family: var(--font-display); font-weight: 500; font-size: var(--t-card); }
+main.sub .clatest .chead b { font-size: 26px; }
+main.sub .chead time { margin-left: auto; color: #c4c4c4; font-size: var(--t-small); }
+main.sub .chead .new { font-size: var(--t-label); font-weight: 500; color: var(--ec-link); border: 1px solid var(--p-accent); border-radius: 999px; padding: 1px 10px; }
+main.sub .changes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-2); }
+main.sub .changes li { display: flex; align-items: baseline; gap: var(--s-3); color: #d6d6d6; line-height: 1.55; }
+main.sub .tg { flex: none; font-size: 13px; font-weight: 500; border-radius: 6px; padding: 1px 7px; position: relative; top: -1px; }
+main.sub .tg.new { color: #d6ccff; background: rgba(var(--accent-rgb), .24); }
+main.sub .tg.fix { color: #ffc48a; background: rgba(240, 163, 90, .16); }
+main.sub .tg.linux { color: #f0d873; background: rgba(232, 197, 71, .14); }
+main.sub .tg.windows { color: #8fcaf7; background: rgba(90, 176, 240, .16); }
+main.sub .cday { font-family: var(--font-text); font-size: var(--t-small); font-weight: 500; color: #c4c4c4; margin: var(--s-6) 0 var(--s-3); }
+main.sub .cnote { margin-top: var(--s-5); font-size: var(--t-small); }
+@media (max-width: 639px) { main.sub .changes article { padding: var(--s-4); } main.sub .changes li { flex-wrap: wrap; gap: var(--s-2); } }
+
+/* legal pages and the code signing policy */
+main.sub > article.doc { width: min(100% - 2 * var(--gut), 760px); margin: 0 auto; padding: calc(var(--nav) + var(--s-8)) 0 var(--s-9); }
+.doc .updated { color: #c4c4c4; font-size: var(--t-small); margin-bottom: var(--s-6); }
+main.sub .doc h2 { margin-top: var(--s-8); font-size: clamp(24px, 1vw + 18px, 32px); }
+.doc p, .doc li { color: #dcdcdc; line-height: 1.7; }
+.doc ul { padding-left: 1.2em; margin: 0 0 var(--s-4); display: grid; gap: var(--s-2); }
+.doc .tablewrap { overflow-x: auto; margin: var(--s-4) 0 var(--s-5); border: 1px solid var(--line); border-radius: var(--r-md); }
+.doc table { width: 100%; border-collapse: collapse; font-size: var(--t-small); }
+.doc th { text-align: left; font-weight: 500; color: #c4c4c4; background: var(--p-surface); padding: var(--s-3) var(--s-4); }
+.doc td { padding: var(--s-3) var(--s-4); border-top: 1px solid var(--line); vertical-align: top; color: #dcdcdc; }
+@media (max-width: 639px) { .doc table { min-width: 520px; } }
+
+/* footer on subpages: the homepage's link rows, no closing call */
+.ec-subfoot { background: color-mix(in oklab, var(--p-bg) 72%, #000); border-top: 1px solid var(--line); padding: var(--s-8) 0 var(--s-6); }
+.ec-subfoot .closing__links { display: grid; gap: var(--s-7); }
+
+/* fixes after the first look (11 Nov 2026) */
+html main.sub > :is(section, .section) { height: auto; min-height: 0; }
+main.sub .dlgrid > *, main.sub .steps > *, main.sub .plans > * { grid-column: auto; }
+main.sub .toggle { width: max-content; max-width: 100%; }
+html footer.closing.ec-subfoot { height: auto; min-height: 0; padding: var(--s-8) 0 var(--s-6); }
+html footer.closing.ec-subfoot > .wrap { height: auto; }
+main.sub .grid:not(.dlgrid) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gutter); margin-top: var(--s-6); }
+main.sub .grid:not(.dlgrid) > * { grid-column: auto; }
+@media (max-width: 1023px) { main.sub .grid:not(.dlgrid) { grid-template-columns: minmax(0, 1fr); } }
+
+/* /vs-medal (11 Nov 2026): the comparison table from the homepage's storage section, Echo's column tinted */
+main.sub .ec-cmp--vs { margin-top: var(--s-6); }
+main.sub .ec-cmp--vs .ec-cmp__row > :nth-child(3) { background: none; }
+main.sub .ec-cmp--vs .ec-cmp__row > :nth-child(2) { background: rgba(var(--accent-rgb), .08); color: var(--ink); }
+main.sub .ec-cmp--vs .ec-cmp__row > span > small { margin-left: 8px; color: #a3a3a3; font-size: var(--t-small); }
+main.sub .ec-cmp--vs + .fine { margin-top: var(--s-4); }
+main.sub .ec-vs-measure { max-width: 760px; margin-top: var(--s-5); }
+main.sub #why .grid { margin-top: var(--s-5); }
+main.sub #switch p.sub { max-width: 62ch; }
+@media (max-width: 639px) { main.sub .ec-cmp--vs .ec-cmp__row > span > small { margin-left: 0; flex-basis: 100%; } }
+main.sub--vs h1 { max-width: 24ch; }
+
+/* 11 Nov 2026 (the user: the Features menu on a subpage showed one photo across the whole menu): subpages don't load
+   the kit's cards.css, so the menu-card panels had no box of their own and each photo (position: absolute) filled
+   the whole menu. The homepage's computed panel style, copied: */
+.menu-card .panel { position: relative; isolation: isolate; overflow: clip; display: block; padding: 0; height: var(--p-h, 160px); min-height: var(--p-h, 160px); border-radius: 16px; background: #6b56c2; }
+.menu-card .panel::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 1px #ffffff12, inset 0 1px 0 #ffffff0a; z-index: 2; }
+
+/* Echo Cloud page: the comparison table + "Do I need Echo Cloud?" (11 Nov 2026) */
+main.sub #compare .ec-cmp { margin-top: var(--s-6); }
+main.sub #compare .ec-q { margin-top: var(--s-7); }
+/* download page: the real app next to the buttons from 1024 px */
+.ec-dlshot { display: none; margin: 0; }
+@media (min-width: 1024px) {
+  main.sub .ec-dlhero > .wrap { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); column-gap: var(--s-8); align-items: center; }
+  main.sub .ec-dlhero > .wrap > :not(.ec-dlshot) { grid-column: 1; }
+  .ec-dlshot { display: block; grid-column: 2; grid-row: 1 / span 4; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--line-strong); box-shadow: 0 30px 80px #00000080, 0 0 0 1px rgba(var(--accent-rgb), .15); }
+  .ec-dlshot img { display: block; width: 100%; height: auto; }
+}
+/* 404: next steps */
+.ec-404links { list-style: none; padding: 0; margin: var(--s-6) 0 0; display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); }
+.ec-404links a::after { content: " →"; }

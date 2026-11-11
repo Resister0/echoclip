@@ -3,6 +3,17 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.5 - 11 Nov
+- New Home: your clips one at a time, newest first, with a side panel for keys and clip details, and shelves per game. A clip you watched in the Library no longer shows as new
+- New player: a cleaner control bar, a compact side panel with every action, a light look in the Light theme, and the same look in fullscreen (its empty filmstrip is fixed too)
+- Edit goes straight to the editor, and scrolling the editor's timeline sideways is smooth now
+- Echo looks the same size on 1080p and 1440p screens (Settings > Appearance > Size to change it), and Settings uses the width of the window
+- Echo Cloud: sharing is much faster - long clips (2 min+) get their link first and shrink afterwards, copies are made on the GPU (AV1 too), and a shrink that was cut off by a restart carries on
+- Copy for Discord lands close to its size limit (it was coming out at about a quarter of it)
+- Less memory while Echo sits in the tray: it trims itself again whenever it grows
+- The self-test and mic test no longer hang, and the FPS test shows its result at once
+- Fixes: the in-game popup can't show a black box any more, text stays readable on light accent colours, the welcome dialog no longer covers the title bar, Record and Save clip are the same size, the Save clip glow stays in the top bar, settings files saved with a byte-order mark are read correctly, Combine adds no second watermark, and Tidy keeps the longest clip
+
 ## 2.0.4 - 11 Nov
 - Echo uses much less CPU while its window is open: nothing redraws when nothing changes (the RGB theme was redrawing the whole window non-stop - it keeps its speed but now pauses when Echo isn't in front)
 - Linux: the AppImage starts on even more systems (its keyboard libraries now find each other inside the AppImage)

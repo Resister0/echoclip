@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software" data-radius="round" data-ground="sage" data-buttons="arrow" data-motion>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Echo - free, lightweight game clip recorder for Windows &amp; Linux</title>
 <meta name="description" content="A free, open-source game clip recorder that won't slow your games down. One key saves the last moments. Lighter than Medal, no ads, no account. Windows &amp; Linux.">
-<meta name="theme-color" content="#7c5cff">
+<meta name="theme-color" content="#0a0a0a">
 <!-- seo: managed by cloud/site-src/seo.py, edit there -->
 <link rel="canonical" href="https://echoclip.link/">
 <meta property="og:url" content="https://echoclip.link/">
@@ -14,299 +14,509 @@
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="en_US">
-<meta property="og:image" content="https://echoclip.link/og.png?v=2">
+<meta property="og:image" content="https://echoclip.link/og.png?v=3">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Echo - lightweight game clipping for any PC. One key saves the last moments. Free, no ads, no account.">
+<meta property="og:image:alt" content="Echo - game clip recorder for Windows and Linux. One key saves the last minutes; about 150 MB of memory while it records. Free, no ads, no account.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
-<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://echoclip.link/#site","name":"Echo","url":"https://echoclip.link/","publisher":{"@id":"https://echoclip.link/#org"}},{"@type":"Organization","@id":"https://echoclip.link/#org","name":"Echo","url":"https://echoclip.link/","logo":"https://echoclip.link/icon-512.png","email":"support@echoclip.link","sameAs":["https://github.com/Resister0/echoclip","https://discord.gg/JPVewEfUQs"]},{"@type":"SoftwareApplication","@id":"https://echoclip.link/#app","name":"Echo","alternateName":"EchoClip","applicationCategory":"MultimediaApplication","applicationSubCategory":"Game clip recorder","operatingSystem":"Windows 10, Windows 11, Linux","description":"A free, open-source game clip recorder that won't slow your games down. One key saves the last moments. Lighter than Medal, no ads, no account. Windows & Linux.","url":"https://echoclip.link/","downloadUrl":"https://echoclip.link/download","image":"https://echoclip.link/og.png?v=2","screenshot":"https://echoclip.link/screenshots/library.png","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"publisher":{"@id":"https://echoclip.link/#org"}},{"@type":"FAQPage","@id":"https://echoclip.link/#faq","mainEntity":[{"@type":"Question","name":"Is Echo free?","acceptedAnswer":{"@type":"Answer","text":"Yes. The app is free, and so is an Echo Cloud account with 10 GB. You only pay if you want more cloud space."}},{"@type":"Question","name":"Does it slow my games down?","acceptedAnswer":{"@type":"Answer","text":"Echo records with your graphics card's video encoder (NVIDIA, AMD or Intel; on Linux through gpu-screen-recorder), which is built for this, so the effect on your frame rate is very small."}},{"@type":"Question","name":"Can I bring my clips from Medal or another app?","acceptedAnswer":{"@type":"Answer","text":"Yes. In Echo, open Settings → Clips & Storage → Bring in clips from other apps. Echo finds Medal, SteelSeries Moments and Outplayed folders by itself; for anything else, like NVIDIA or OBS recordings, you pick the folder. It copies the clips over with their original dates and game folders. Your old app's files stay where they are."}},{"@type":"Question","name":"Do I need Echo Cloud?","acceptedAnswer":{"@type":"Answer","text":"No. Clips are always saved on your PC. For backups you can connect Google Drive, MEGA, pCloud, Filen, your own WebDAV/SFTP/S3 server or a NAS instead, all with free options. When you've connected your own cloud, backups go there - Echo Cloud is only used for the share links that play inside Discord."}},{"@type":"Question","name":"Why does Windows warn about Echo?","acceptedAnswer":{"@type":"Answer","text":"Usually it doesn't anymore: since Echo 2.0, the installer and EchoClip.exe are signed with a Certum open-source code-signing certificate. The certificate is new, so on some PCs Windows SmartScreen may still say it protected your PC until the certificate has built up trust - click \"More info\", then \"Run anyway\". Echo is open source, so anyone can check what it does - if your antivirus ever flags it, that's a false alarm; let us know in the Discord."}},{"@type":"Question","name":"What do I need to run Echo?","acceptedAnswer":{"@type":"Answer","text":"Windows: Windows 10 (version 1903 or newer) or Windows 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years. Linux: a current 64-bit distribution. The Flatpak brings everything it needs; the AppImage uses gpu-screen-recorder and ffmpeg from your system. The replay buffer needs a little disk space: about 1.5 GB for 10 minutes at the standard quality."}},{"@type":"Question","name":"Where do I get help or suggest something?","acceptedAnswer":{"@type":"Answer","text":"In the Echo Discord: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → Send log gives you a link to paste there, so problems are found quickly."}},{"@type":"Question","name":"Is Echo open source?","acceptedAnswer":{"@type":"Answer","text":"Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on GitHub, so you can check what it does, build it yourself or suggest changes."}},{"@type":"Question","name":"Why is Echo so small?","acceptedAnswer":{"@type":"Answer","text":"Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays clips with mpv, with no browser engine at all. (On Linux it still borrows the web view your system already has, for now.)"}},{"@type":"Question","name":"Which Linux distributions work?","acceptedAnswer":{"@type":"Answer","text":"Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the Flatpak brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The AppImage is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the download page."}}]}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://echoclip.link/#site","name":"Echo","url":"https://echoclip.link/","publisher":{"@id":"https://echoclip.link/#org"}},{"@type":"Organization","@id":"https://echoclip.link/#org","name":"Echo","url":"https://echoclip.link/","logo":"https://echoclip.link/icon-512.png","email":"support@echoclip.link","sameAs":["https://github.com/Resister0/echoclip","https://discord.gg/JPVewEfUQs"]},{"@type":"SoftwareApplication","@id":"https://echoclip.link/#app","name":"Echo","alternateName":"EchoClip","applicationCategory":"MultimediaApplication","applicationSubCategory":"Game clip recorder","operatingSystem":"Windows 10, Windows 11, Linux","description":"A free, open-source game clip recorder that won't slow your games down. One key saves the last moments. Lighter than Medal, no ads, no account. Windows & Linux.","url":"https://echoclip.link/","downloadUrl":"https://echoclip.link/download","image":"https://echoclip.link/og.png?v=3","screenshot":"https://echoclip.link/screenshots/library.png","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"publisher":{"@id":"https://echoclip.link/#org"}},{"@type":"FAQPage","@id":"https://echoclip.link/#faq","mainEntity":[{"@type":"Question","name":"Is Echo free?","acceptedAnswer":{"@type":"Answer","text":"Yes. The app is free, and so is an Echo Cloud account with 10 GB. You only pay if you want more cloud space."}},{"@type":"Question","name":"Does it slow my games down?","acceptedAnswer":{"@type":"Answer","text":"Echo records with your graphics card's video encoder (NVIDIA, AMD or Intel; on Linux through gpu-screen-recorder), which is built for this, so the effect on your frame rate is very small."}},{"@type":"Question","name":"Can I bring my clips from Medal or another app?","acceptedAnswer":{"@type":"Answer","text":"Yes. In Echo, open Settings → Clips & Storage → Bring in clips from other apps. Echo finds Medal, SteelSeries Moments and Outplayed folders by itself; for anything else, like NVIDIA or OBS recordings, you pick the folder. It copies the clips over with their original dates and game folders. Your old app's files stay where they are."}},{"@type":"Question","name":"Do I need Echo Cloud?","acceptedAnswer":{"@type":"Answer","text":"No. Clips are always saved on your PC. For backups you can connect Google Drive, MEGA, pCloud, Filen, your own WebDAV/SFTP/S3 server or a NAS instead, all with free options. When you've connected your own cloud, backups go there - Echo Cloud is only used for the share links that play inside Discord."}},{"@type":"Question","name":"Why does Windows warn about Echo?","acceptedAnswer":{"@type":"Answer","text":"Usually it doesn't anymore: since Echo 2.0, the installer and EchoClip.exe are signed with a Certum open-source code-signing certificate. The certificate is new, so on some PCs Windows SmartScreen may still say it protected your PC until the certificate has built up trust - click \"More info\", then \"Run anyway\". Echo is open source, so anyone can check what it does - if your antivirus ever flags it, that's a false alarm; let us know in the Discord."}},{"@type":"Question","name":"What do I need to run Echo?","acceptedAnswer":{"@type":"Answer","text":"Windows: Windows 10 (version 1903 or newer) or Windows 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years. Linux: a current 64-bit distribution; for full compatibility, one newer than Ubuntu 22.04. The Flatpak brings everything it needs; the AppImage uses gpu-screen-recorder and ffmpeg from your system. The replay buffer needs a little disk space: about 1.5 GB for 10 minutes at the standard quality."}},{"@type":"Question","name":"Where do I get help or suggest something?","acceptedAnswer":{"@type":"Answer","text":"In the Echo Discord: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → Send log gives you a link to paste there, so problems are found quickly."}},{"@type":"Question","name":"Is Echo open source?","acceptedAnswer":{"@type":"Answer","text":"Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on GitHub, so you can check what it does, build it yourself or suggest changes."}},{"@type":"Question","name":"Why is Echo so small?","acceptedAnswer":{"@type":"Answer","text":"Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays clips with mpv, with no browser engine at all. (On Linux it still borrows the web view your system already has, for now.)"}},{"@type":"Question","name":"Which Linux distributions work?","acceptedAnswer":{"@type":"Answer","text":"Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the Flatpak brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The AppImage is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the download page."}}]}]}</script>
 <!-- /seo -->
-<link rel="stylesheet" href="/style.css">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/system.css">
+<link rel="stylesheet" href="/assets/ui/cards.css">
+<link rel="stylesheet" href="/assets/motion/motion.css">
+<link rel="stylesheet" href="/assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="/assets/layout/layout.css">
+<link rel="stylesheet" href="/assets/icons/icon.css">
+<link rel="stylesheet" href="/assets/ui/base.css">
+<link rel="stylesheet" href="/assets/moments/pinned-chapters/moment.css">
+<link rel="stylesheet" href="/assets/moments/liquid-type/moment.css">
+<link rel="stylesheet" href="/assets/diagrams/diagram.css">
+<link rel="stylesheet" href="/echo.css">
 <script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/echo-head.js"></script>
+<script src="/assets/backgrounds/backgrounds.js"></script>
+<link rel="modulepreload" href="/assets/moments/moments.js">
+<link rel="modulepreload" href="/assets/moments/lib.js">
+<link rel="modulepreload" href="/assets/moments/pinned-chapters/moment.js">
+<link rel="modulepreload" href="/assets/moments/liquid-type/moment.js">
 </head>
 <body>
-<header><div class="wrap">
-  <a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
-  <nav>
-    <a href="/#features" class="hide-s">Features</a>
-    <a href="/#storage">Storage</a>
-    <a href="https://discord.gg/JPVewEfUQs" class="hide-s">Discord</a>
-    <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
-    <a href="/download" class="btn primary small">Download</a>
-  </nav>
-  <div class="themes" id="themes" hidden><p>Theme</p></div>
-</div></header>
-<main>
-<section class="hero" id="download">
-  <canvas id="sky" aria-hidden="true"></canvas>
-  <div class="wrap">
-    <p class="eyebrow">Incredibly light game clipping for Windows &amp; Linux</p>
-    <h1>Save the moment<br><span>you just played.</span></h1>
-    <p class="lead">Echo records your game in the background without slowing it down, even on low-end PCs. Hit one key and the last moments become a clip, ready to trim, caption and share on Discord.</p>
-    <div class="dl">
-      <a class="btn primary" href="/download/windows" data-os="windows">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3zm8.5-1.2L21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zm8.5 0H21V21l-9.5-1.3z"/></svg>
-        Download for Windows
-      </a>
-      <a class="btn" href="/download/linux" data-os="linux">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>
-        Download for Linux
-      </a>
+<!-- type: software (site-kind software)
+     deal: hero product (the real library screenshot on the stage), nav nav-cards, close close-type,
+     footer footer-dark, rhythm space, buttons arrow, mark: Echo's own logo, ground sage, palette black-crimson
+     with Echo's violet as the accent (the user, 11 Nov 2026: violet, not the dealt crimson), type instrument, radius round
+     effect: the hero's own particles (site.js, canvas#sky)
+     moments: pinned-chapters (#moments), liquid-type (#light) -->
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="/#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <a class="menu-card span-4" href="/#library">
+              <div class="panel"><img class="frame__img" src="/img/clip-ow1.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="An Overwatch 2 victory screen saved as a clip" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Clip library</span>
+              <span class="t-small muted">Every clip sorted by game, ready to share</span>
+            </a>
+            <a class="menu-card span-4" href="/#moments">
+              <div class="panel"><img class="frame__img" src="/img/clip-sw2.webp" srcset="/img/clip-sw2-128.webp 128w, /img/clip-sw2-300.webp 300w, /img/clip-sw2.webp 405w, /img/clip-sw2-810.webp 810w, /img/clip-sw2-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="A Star Wars Battlefront II clip of a burning desert" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Never miss the moment</span>
+              <span class="t-small muted">Save, mark and keep every track</span>
+            </a>
+            <a class="menu-card span-4" href="/#switch">
+              <div class="panel ec-imp" role="img" aria-label="Clips brought in from Medal sort into March 2025, the day they were recorded, not today"><div class="ec-imp__row"><p>This week</p><img src="/img/clip-mc2-128.webp" srcset="/img/clip-mc2-128.webp 128w, /img/clip-mc2-300.webp 300w, /img/clip-mc2.webp 405w, /img/clip-mc2-810.webp 810w, /img/clip-mc2-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-cs1-128.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-ow1-128.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div><div class="ec-imp__row ec-imp__in"><p>March 2025</p><img src="/img/clip-gi1-128.webp" srcset="/img/clip-gi1-128.webp 128w, /img/clip-gi1-300.webp 300w, /img/clip-gi1.webp 405w, /img/clip-gi1-810.webp 810w, /img/clip-gi1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-sw1-128.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-eve-128.webp" srcset="/img/clip-eve-128.webp 128w, /img/clip-eve-300.webp 300w, /img/clip-eve.webp 405w, /img/clip-eve-810.webp 810w, /img/clip-eve-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div></div>
+              <span class="t-card">Bring your old clips</span>
+              <span class="t-small muted">They land on the day they were recorded</span>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="/#storage">Storage</a></div>
+      <div class="nav__item"><a class="nav__link" href="/pricing">Echo Cloud</a></div>
+      <div class="nav__item"><a class="nav__link" href="/changelog">Changelog</a></div>
+      <div class="nav__item"><a class="nav__link" href="https://discord.gg/JPVewEfUQs">Discord</a></div>
+    </nav>
+    <div class="nav__actions">
+      <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
+      <div class="themes" id="themes" hidden><p>Theme</p></div>
+      <a class="btn btn--primary" href="/download">Download Echo</a>
     </div>
-    <p class="dl-note"><b class="noads">Free · no ads · no account</b> · Windows 10/11 and Linux (AppImage or Flatpak) ·
-      also <a href="/download/windows-portable">a zip without installing</a> or the <a href="/download/linux-tar">plain Linux build</a></p>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
 
-    <div class="stats">
-      <div><b>153 MB</b><small>Memory while recording in the background, encoder included</small></div>
-      <div><b>Rust + Slint</b><small>Native UI on Windows: opens and scrolls instantly</small></div>
-      <div><b>0</b><small>Electron or bundled Chromium</small></div>
-      <div><b>2</b><small>Systems: Windows &amp; Linux</small></div>
-    </div>
-    <a class="vsmedal" href="#vs-medal"><b>50% less CPU than Medal</b> while recording, and 70% less memory <span aria-hidden="true">&rarr;</span></a>
+<main id="top">
+  <section class="hero hero--product" id="download" data-enter aria-labelledby="hero-h">
+    <canvas id="sky" aria-hidden="true"></canvas>
+    <div class="wrap"><div class="hero-text hero__in">
+      <div class="hero__head">
+        <div>
+          <h1 id="hero-h">Game clip recorder for Windows and Linux</h1>
+          <p class="hero__lead">Echo keeps the last minutes of your game ready and uses about 150 MB of memory while it records. Press one key and they become a clip to trim and share on Discord.</p>
+        </div>
+        <div class="btn-row dl">
+          <a class="btn btn--primary primary" href="/download/windows" data-os="windows">Download for Windows</a>
+          <a class="btn btn--secondary" href="/download/linux" data-os="linux">Download for Linux</a>
+          <p class="hero__note">Free, no ads, no account. Windows 10/11, Linux AppImage or Flatpak. Also <a href="/download/windows-portable">a zip without installing</a> or the <a href="/download/linux-tar">plain Linux build</a>.</p>
+        </div>
+      </div>
+      <div class="hero__stage">
+        <picture><source media="(max-width: 639px)" srcset="/img/library-phone.webp" width="800" height="600"><img src="/screenshots/library.webp?v=2" width="1920" height="1043" alt="The real Echo app: the clip library with game folders, filters and the recording status" style="--ly-pos: 0% 0%" fetchpriority="high" data-source="client" data-subject="Echo's clip library"></picture>
+      </div>
+    </div></div>
+  </section>
 
-    <div class="viewsw" role="tablist" aria-label="How to show the app">
-      <button type="button" role="tab" aria-selected="true" data-view="demo">Try it here</button>
-      <button type="button" role="tab" aria-selected="false" data-view="shot">Real screenshot</button>
-    </div>
-    <img class="realshot" src="/screenshots/library.webp?v=2" width="1920" height="1043" loading="lazy" hidden
-      alt="The real Echo app on Linux: the clip library with game folders, filters and the recording status">
-    <div class="app" aria-label="Preview of the Echo app - try the buttons">
-      <div class="atop"><h4><span class="logo sm"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Library</h4><span class="apill"><i></i>Recording · last 3 min</span><span class="apill"><kbd>Shift</kbd><kbd>F11</kbd>Clip 3m<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span><span class="apill"><kbd>Shift</kbd><kbd>F12</kbd>Clip 3m<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span><span class="agrow"></span><span class="aplain" title="Microphone"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span class="abtn"><i class="rec"></i>Record</span><span class="abtn pri"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="M8.5 8.5L20 19M8.5 15.5L20 5"/></svg>Save clip</span><span class="awin" aria-hidden="true"><i><svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg></i><i><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg></i></span></div>
-      <aside class="arail">
-        <span class="anav"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Home</span>
-        <span class="anav on"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9l5 3-5 3z"/></svg>Library</span>
-        <span class="anav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</span>
-        <p class="alab">Clips</p>
-        <span class="aflt on"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>All clips<em>6</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>Today<em>2</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>This week<em>5</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>Favourites<em>2</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>Edited<em>1</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg>Cloud<em>3</em></span>
-        <span class="aflt"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/><path d="M8 6l1.5-2h5L16 6"/></svg>Screenshots<em>1</em></span>
-        <p class="alab">Folders <span>+</span></p>
-        <span class="aflt"><u>F</u>FiveM<em>2</em></span>
-        <span class="aflt"><u>V</u>Valorant<em>2</em></span>
-        <span class="aflt"><u>R</u>Rocket League<em>1</em></span>
-        <div class="astat"><b><i></i>Ready to clip</b><small>Your last 3 min is always ready · GPU</small><small class="ok">✓ Healthy · 254 GB free</small><span class="abar"><i></i></span><small>Echo Cloud · 0.6 GB of 10 GB</small><span class="aacct"><i><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></i><span><b>Echo Profile</b><small>Signed in ✓</small></span></span></div>
-      </aside>
-      <div class="amain">
-        <div class="atool"><span class="aname">All clips<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span><span>6 clips · 596 MB</span><span class="agrow"></span><span class="asearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>Search clips…</span><span class="abtn">Newest<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></span><span class="abtn aico" title="List view"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></span><span class="abtn"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/></svg>Tidy up</span><span class="abtn"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open folder</span></div>
-        <p class="agroup">Today <em>2</em></p>
-        <div class="agrid"><div class="mclip"><div class="mthumb t1"><span class="mcld"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span><b>0:30</b></div><div class="mmeta"><div><strong>FiveM 2026-11-02 21-14-03</strong><small>1 hour ago · 80 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar on"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div><div class="mclip"><div class="mthumb t2"><b>1:12</b></div><div class="mmeta"><div><strong>Valorant 2026-11-02 20-41-55</strong><small>2 hours ago · 100 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div><div class="mclip"><div class="mthumb t3"><span class="mcld"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span><b>0:45</b></div><div class="mmeta"><div><strong>Rocket League 2026-11-01 23-02-10</strong><small>Yesterday · 64 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div></div>
-        <p class="agroup">This week <em>3</em></p>
-        <div class="agrid"><div class="mclip"><div class="mthumb t4"><span class="mcld only">Cloud only</span><b>1:00</b></div><div class="mmeta"><div><strong>Drift #23</strong><small>Sunday · 120 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar on"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div><div class="mclip"><div class="mthumb t5"><b>0:20</b></div><div class="mmeta"><div><strong>Clip 2026-10-30 19-22-08</strong><small>Friday · 92 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div><div class="mclip"><div class="mthumb t6"><span class="mtag">Edited</span><b>0:33</b></div><div class="mmeta"><div><strong>Clutch 1v3 (edit)</strong><small>Thursday · 140 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div></div>
+  <section class="section" id="library" aria-labelledby="library-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <h2 class="span-5" id="library-h">Echo's clip library, ready to try</h2>
+        <p class="span-6 start-7 ec-soft">Hover a clip to see its buttons. Copy opens the same menu as in Echo, with share links and sizes that fit Discord. <a class="ec-link-ink" href="/screenshots/library.webp?v=2">Open the full screenshot</a>.</p>
+      </div>
+      <div class="ui app fill" role="img" aria-label="Preview of the Echo app - try the buttons">
+        <div class="atop"><p class="atitle"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Library</p><span class="apill"><i></i>Recording · last 3 min</span><span class="apill"><kbd>Shift</kbd><kbd>F11</kbd>Clip 3m</span><span class="apill"><kbd>Shift</kbd><kbd>F12</kbd>Clip 3m</span><span class="agrow"></span><span class="aplain" title="Microphone"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span class="abtn"><i class="rec"></i>Record</span><span class="abtn pri"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="M8.5 8.5L20 19M8.5 15.5L20 5"/></svg>Save clip</span><span class="awin" aria-hidden="true"><i><svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg></i><i><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg></i></span></div>
+        <div class="arail">
+          <span class="anav"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Home</span>
+          <span class="anav on"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9l5 3-5 3z"/></svg>Library</span>
+          <span class="anav"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/></svg>Settings</span>
+          <p class="alab">Clips</p>
+          <span class="aflt on"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>All clips<em>12</em></span>
+          <span class="aflt"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>Today<em>3</em></span>
+          <span class="aflt"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>Favourites<em>2</em></span>
+          <span class="aflt"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>Edited<em>2</em></span>
+          <span class="aflt"><svg viewBox="0 0 24 24"><path d="M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"/></svg>Cloud<em>4</em></span>
+          <p class="alab">Folders</p>
+          <span class="aflt"><u>M</u>Minecraft<em>2</em></span>
+          <span class="aflt"><u>C</u>Counter-Strike 2<em>3</em></span>
+          <span class="aflt"><u>O</u>Overwatch 2<em>2</em></span>
+          <div class="astat"><b><i></i>Ready to clip</b><small>Your last 3 min is always ready · GPU</small><small class="ok">✓ Healthy · 254 GB free</small><small>Echo Cloud · 0.6 GB of 10 GB</small></div>
+        </div>
+        <div class="amain">
+          <div class="atool"><span class="aname">All clips</span><span>12 clips · 3.6 GB</span><span class="agrow"></span><span class="asearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>Search clips…</span><span class="abtn ahide">Newest</span><span class="abtn ahide"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Open folder</span></div>
+          <p class="agroup">Today <em>3</em></p>
+          <div class="agrid">
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-mc1.webp" srcset="/img/clip-mc1-128.webp 128w, /img/clip-mc1-300.webp 300w, /img/clip-mc1.webp 405w, /img/clip-mc1-810.webp 810w, /img/clip-mc1-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><span class="mcld"><svg viewBox="0 0 24 24"><path d="M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"/></svg></span><b>3:02</b></div><div class="mmeta"><div><strong>Minecraft 2026-11-05 23-14-03</strong><small>1 hour ago · 471 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar on"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-cs1.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><span class="mtag">Edited</span><b>0:08</b></div><div class="mmeta"><div><strong>Counter-Strike 2 2026-11-05 22-41-55</strong><small>2 hours ago · 20 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-gi1.webp" srcset="/img/clip-gi1-128.webp 128w, /img/clip-gi1-300.webp 300w, /img/clip-gi1.webp 405w, /img/clip-gi1-810.webp 810w, /img/clip-gi1-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><b>3:02</b></div><div class="mmeta"><div><strong>Genshin Impact 2026-11-05 21-02-10</strong><small>3 hours ago · 464 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+          </div>
+          <p class="agroup">This week <em>9</em></p>
+          <div class="agrid">
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-eve.webp" srcset="/img/clip-eve-128.webp 128w, /img/clip-eve-300.webp 300w, /img/clip-eve.webp 405w, /img/clip-eve-810.webp 810w, /img/clip-eve-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><span class="mcld"><svg viewBox="0 0 24 24"><path d="M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"/></svg></span><b>3:02</b></div><div class="mmeta"><div><strong>Overwatch 2 2026-11-03 20-11-40</strong><small>Tuesday · 460 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar on"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-sw1.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><span class="mtag">Edited</span><b>0:12</b></div><div class="mmeta"><div><strong>Star Wars Battlefront II 2026-11-02</strong><small>Monday · 31 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+            <div class="mclip"><div class="mthumb"><img src="/img/clip-cs3.webp" srcset="/img/clip-cs3-128.webp 128w, /img/clip-cs3-300.webp 300w, /img/clip-cs3.webp 405w, /img/clip-cs3-810.webp 810w, /img/clip-cs3-1216.webp 1216w" sizes="(max-width: 639px) 44vw, 30vw" alt="" loading="lazy" width="405" height="228"><b>2:44</b></div><div class="mmeta"><div><strong>Counter-Strike 2 2026-11-02 19-22-08</strong><small>Monday · 416 MB</small></div><span class="mact"><span class="mcopy"><i><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></i><i class="mch"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></i></span><i class="mstar"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></i></span></div></div>
+          </div>
+        </div>
       </div>
     </div>
-    </div>
-  </div>
-</section>
+  </section>
 
-<section id="features">
-  <div class="wrap">
-    <p class="eyebrow">Features</p>
-    <h2>Everything after the moment, handled</h2>
-    <p class="sub">No recording button to remember. Echo keeps the last few minutes ready, so you only save the parts worth keeping.</p>
-    <div class="grid">
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>Instant replay</h3>
-        <p>Press your save key (or a controller button) and the last minutes are saved. Uses your graphics card, so games keep running smoothly.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span>Trim, caption, done</h3>
-        <p>Cut the clip, add text and captions, mix several clips into one and export. Echo can even write captions from what was said.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></span>Clean audio</h3>
-        <p>Game sound and your mic on separate tracks, push-to-talk, and background noise removed from your microphone.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>Links that play in Discord</h3>
-        <p>Share a link and it plays right in the chat. Or copy the clip itself, automatically shrunk to fit Discord's upload limit.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-9A6 6 0 0 1 18 9.5a4 4 0 0 1-1 8.5z"/></svg></span>Your clips, everywhere</h3>
-        <p>Back up to Echo Cloud, Google Drive or your own storage, and get clips from your other PCs. Free up disk space without losing anything.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>Knows your games</h3>
-        <p>Clips are named and sorted by game automatically. Record only while a game is running, and pause when you're away.</p></div>
+  <section class="section g2" id="features" aria-labelledby="features-h">
+    <div class="wrap">
+      <div class="group">
+        <div class="section-head">
+          <h2 id="features-h">What Echo does after the moment. <span class="muted">Save, trim and share without another app.</span></h2>
+        </div>
+        <div class="grid">
+          <article class="card card--row span-6">
+            <h3>Saves the last minutes with one key</h3>
+            <p>Press your save key or a controller combo. Echo saves up to the last 10 minutes on your graphics card.</p>
+            <div class="panel panel--flush">
+              <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:425px;--ax:max(24px, 50% - 212px);--ay:max(24px, 50% - 122px);--ay-sm:53px">
+                <div class="ec-real ec-toasts" role="img" aria-label="Echo's in-game popups: Clip saved, Bookmarked and Screenshot saved">
+                  <div class="ec-toast"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Clip saved</b><small>Overwatch 2 · 3:00</small></span></div>
+                  <div class="ec-toast"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Bookmarked</b><small>1 in the buffer · shows on the next saved clip</small></span></div>
+                  <div class="ec-toast"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Screenshot saved</b><small>Clips folder › Screenshots</small></span></div>
+                </div>
+              </div></div>
+            </div>
+          </article>
+          <article class="card card--row span-6">
+            <h3>Trim, caption, done</h3>
+            <p>Cut the clip, add text and captions, mix several clips into one and export. Echo can even write captions from what was said.</p>
+            <div class="panel panel--flush">
+              <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:440px;--ax:max(24px, 50% - 220px);--ay:max(24px, 50% - 223px);--ay-sm:24px">
+                <div class="ec-real ec-ed" role="img" aria-label="Echo's editor: a Counter-Strike 2 clip with a caption, the tools and the timeline with three pieces">
+                  <div class="ec-ed__top"><span class="ec-ed__btn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>Back</span><b>Counter-Strike 2 2026-11-05 22-41</b><span class="ec-ed__btn ec-ed__btn--p"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12 M7 10l5 5 5-5 M5 21h14"/></svg>Export</span></div>
+                  <div class="ec-ed__vid"><img src="/img/clip-cs1-300.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 639px) 330px, 430px" alt="" width="300" height="169" loading="lazy"><span class="ec-ed__cap">one tap, two down</span></div>
+                  <div class="ec-ed__tools"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM6 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM8 7l12 10M8 17L20 7"/></svg>Split</span><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z M7 13h4M13 13h4M7 10h10"/></svg>Captions</span><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14"/></svg>Text</span><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20 M4 7l16 10 M20 7L4 17"/></svg>Freeze</span></div>
+                  <div class="ec-ed__tl">
+                    <div class="ec-ed__track"><i style="--w:28%"></i><i class="sel" style="--w:40%"></i><i style="--w:24%"></i></div>
+                    <div class="ec-ed__caps"><em style="--l:31%;--w:18%">one tap</em><em style="--l:51%;--w:16%">two down</em></div>
+                    <u class="ec-ed__ph" aria-hidden="true"></u>
+                  </div>
+                </div>
+              </div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+      <div class="grid">
+        <article class="card card--row span-6">
+            <h3>Copies clips straight into Discord</h3>
+            <p>Paste a clip in any chat. Too big for Discord's upload limit? Echo shrinks a copy to fit.</p>
+            <div class="panel panel--flush">
+              <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:330px;--ax:max(24px, 50% - 165px);--ay:max(24px, 50% - 138px);--ay-sm:40px">
+                <div class="ec-real ec-copy" role="img" aria-label="Echo's Copy menu for a 46 MB clip: Full size, Discord Free 20 MB, Nitro Basic 50 MB fits, Nitro 1 GB fits, Custom">
+                  <p>Copy · this clip is 46.3 MB</p>
+                  <div class="hov"><span>Full size</span><em>default</em><small>original</small></div>
+                  <div><span>Discord Free</span><small>20 MB</small></div>
+                  <div><span>Nitro Basic</span><small>50 MB · fits</small></div>
+                  <div><span>Nitro</span><small>1 GB · fits</small></div>
+                  <div><span>Custom</span><input value="100" tabindex="-1" aria-hidden="true" readonly><small>MB</small></div>
+                </div>
+              </div></div>
+            </div>
+          </article>
+        <article class="card card--row span-6">
+          <h3>Share links that play right in Discord</h3>
+          <p>Copy a share link and the clip plays inside the chat, with no upload limit. Friends need no app and no account.</p>
+          <div class="panel panel--flush">
+            <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:420px;--ax:max(24px, 50% - 210px);--ay:max(24px, 50% - 173px);--ay-sm:24px">
+              <div class="ec-chat" role="img" aria-label="A chat message with an echoclip.link share link: the clip plays right in the chat">
+                <span class="ec-chat__av" aria-hidden="true"></span>
+                <div class="ec-chat__msg">
+                  <p class="ec-chat__who"><b>alex</b><time>21:14</time></p>
+                  <p class="ec-chat__link">https://echoclip.link/s/k3f9xq2m7a</p>
+                  <div class="ec-chat__embed">
+                    <small>alex (@alex) on Echo · lightweight, ad-free clipping</small>
+                    <b>Overwatch 2 2026-11-03 20-11-42</b>
+                    <span class="ec-chat__vid"><img src="/img/clip-ow2-300.webp" srcset="/img/clip-ow2-128.webp 128w, /img/clip-ow2-300.webp 300w, /img/clip-ow2.webp 405w, /img/clip-ow2-810.webp 810w, /img/clip-ow2-1216.webp 1216w" sizes="(max-width: 639px) 260px, 380px" alt="" width="300" height="169" loading="lazy"><i aria-hidden="true"></i><span class="ec-chat__wm"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</span>
+                  </div>
+                </div>
+              </div>
+            </div></div>
+          </div>
+        </article>
+      </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<section id="conveniences">
-  <div class="wrap">
-    <p class="eyebrow">The little things</p>
-    <h2>Conveniences that add up</h2>
-    <p class="sub">Small touches that save you a trip to another app.</p>
-    <div class="conv">
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></span><div><b>Copy straight into Discord</b><small>Paste a clip into any chat. Too big? Echo shrinks a copy to fit Free, Nitro Basic or Nitro.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="M8.5 8.5L20 19M8.5 15.5L20 5"/></svg></span><div><b>Editor built in</b><small>Trim, add text and captions, mix clips into a montage, or turn a moment into a GIF, without leaving Echo.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></span><div><b>Bookmark key</b><small>Tap a key during the round and the moment shows up as a marker on the clip you save next.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><div><b>Search what was said</b><small>Optional auto captions run on your PC, so you can find a clip by the words in it.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><div><b>Bring your old clips</b><small>Import from Medal, SteelSeries Moments, Outplayed or any folder, with the original dates kept.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg></span><div><b>Tidies up after itself</b><small>Auto-delete old clips, or shrink them to about half size while your PC is idle. Favourites stay.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9l5 3-5 3z"/></svg></span><div><b>Screenshots too</b><small>A separate key saves a full-resolution screenshot of the game.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><div><b>Tags and notes</b><small>Tag clips, add a note, star favourites and filter by game or folder.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><path d="M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"/></svg></span><div><b>Pick up on any PC</b><small>Clips you save on one PC show up on your others, through Echo Cloud or your own storage.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg></span><div><b>Controller friendly</b><small>Save a clip with a button combo on an Xbox-style controller.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span><div><b>Mic done right</b><small>Push-to-talk, a mute key and background noise removal, all inside the recording.</small></div></div>
-      <div class="ci"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><div><b>Quiet when you're away</b><small>Pause the buffer while you're idle, or only record while a game is running.</small></div></div>
+  <section class="section" id="features-more" style="--hm: 2" aria-labelledby="features-more-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="features-more-h">Clean audio and a tidy clips folder</h2>
+      </div>
+      <div class="grid fill">
+        <article class="card card--row span-6">
+          <h3>Records game, voice and mic apart</h3>
+          <p>Game, Discord, browsers and music apps each get their own track and volume. Your mic gets push-to-talk and background noise removal.</p>
+          <div class="panel panel--flush">
+            <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:400px;--ax:max(24px, 50% - 200px);--ay:48px;--ay-sm:24px">
+              <div class="ec-real ec-au" role="img" aria-label="Echo's audio settings: microphone at 100% with noise removal, and the mix with Game 100%, Discord 80%, Browsers off and Music apps 40%">
+                <p>Sources</p>
+                <div class="ec-au__row"><span>Microphone</span><i class="ec-sl" style="--v:0.5"><b></b></i><em>100%</em><u class="ec-sw on"></u></div>
+                <div class="ec-au__row"><span>Remove mic background noise</span><u class="ec-sw on"></u></div>
+                <p>Mix (what players hear)</p>
+                <div class="ec-au__row"><span>Game</span><i class="ec-sl" style="--v:0.5"><b></b></i><em>100%</em><u class="ec-sw on"></u></div>
+                <div class="ec-au__row ec-au__live"><span>Discord</span><i class="ec-sl" style="--v:0.4"><b></b></i><em>80%</em><u class="ec-sw on"></u></div>
+                <div class="ec-au__row off"><span>Browsers</span><i class="ec-sl" style="--v:0.25"><b></b></i><em>50%</em><u class="ec-sw"></u></div>
+                <div class="ec-au__row"><span>Music apps</span><i class="ec-sl" style="--v:0.2"><b></b></i><em>40%</em><u class="ec-sw on"></u></div>
+              </div>
+            </div></div>
+          </div>
+        </article>
+        <article class="card card--row span-6">
+          <h3>Keeps your clips folder tidy</h3>
+          <p>Tidy up finds clips saved twice, very short ones and the biggest. Old clips can shrink to about half their size while your PC is idle. Favourites stay.</p>
+          <div class="panel panel--flush">
+            <div class="stage stage--fade-b"><div class="at-rise fit ec-mid" style="--fit-max:420px;--ax:max(24px, 50% - 210px);--ay:48px;--ay-sm:24px">
+              <div class="ec-real ec-td" role="img" aria-label="Echo's Tidy up: a clip saved twice and a very short clip are ticked, the latest copy is kept">
+                <div class="ec-td__top"><b>Tidy up</b><small>2 clips · 31 MB</small></div>
+                <p><b>SAVED TWICE</b> 1 group · frees 20 MB</p>
+                <div class="ec-td__row"><u class="ec-td__ck"></u><img src="/img/clip-cs2-128.webp" srcset="/img/clip-cs2-128.webp 128w, /img/clip-cs2-300.webp 300w" sizes="72px" alt="" width="128" height="72" loading="lazy"><span><span class="ec-td__t"><b>Counter-Strike 2 2026-11-05 22-41</b><em>KEEP (latest)</em></span><small>20.3 MB · 0:08 · 2 hours ago</small></span></div>
+                <div class="ec-td__row on"><u class="ec-td__ck"></u><img src="/img/clip-cs3-128.webp" srcset="/img/clip-cs3-128.webp 128w, /img/clip-cs3-300.webp 300w" sizes="72px" alt="" width="128" height="72" loading="lazy"><span><b>Counter-Strike 2 2026-11-05 22-40</b><small>20.1 MB · 0:08 · 2 hours ago</small></span></div>
+                <p><b>VERY SHORT</b> Under 5 seconds · frees 11 MB</p>
+                <div class="ec-td__row on"><u class="ec-td__ck"></u><img src="/img/clip-mc1-128.webp" srcset="/img/clip-mc1-128.webp 128w, /img/clip-mc1-300.webp 300w" sizes="72px" alt="" width="128" height="72" loading="lazy"><span><b>Minecraft 2026-11-05 23-14</b><small>10.8 MB · 0:03 · Thursday</small></span></div>
+                <div class="ec-td__foot"><span class="ec-td__btn">Delete selected</span></div>
+              </div>
+            </div></div>
+          </div>
+        </article>
+      </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<section id="moments">
-  <div class="wrap">
-    <p class="eyebrow">Whatever you play</p>
-    <h2>Never miss the moment</h2>
-    <p class="sub">The best moments don't come with a warning - a clutch round, a chase that goes sideways in FiveM, something stupid with friends. Echo already has it.</p>
-    <div class="grid">
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>The whole moment, not just the end</h3>
-        <p>Keep the last 10 minutes ready and save 30 seconds or the whole thing - each with its own key.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg></span>Sorted for you</h3>
-        <p>Every game gets its own folder, named with date and time, so the clip you want - or need for a report - is quick to find.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>Straight into Discord</h3>
-        <p>Copy a share link and it plays right in the channel - no upload limit. Or paste the video itself, shrunk to fit.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>Game, voice and mic on their own tracks</h3>
-        <p>Game sound, Discord and your mic are recorded separately, so you can keep your friends in the clip or cut them out.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg></span>Mark it while it happens</h3>
-        <p>Tap the bookmark key mid-game and jump straight to that moment in the clip later.</p></div>
-      <div class="card"><h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 18 10 12l4 4 6-8"/></svg></span>Light next to a heavy game</h3>
-        <p>Big games and modded servers are demanding enough. Echo records on your graphics card's encoder and stays out of the way.</p></div>
-    </div>
-  </div>
-</section>
-
-<section id="light">
-  <div class="wrap">
-    <p class="eyebrow">Light by design</p>
-    <h2>Built to stay out of your game's way</h2>
-    <p class="sub">A clipping app runs the whole time you play, so it should be small. Echo 2.0 is a native Rust app: on Windows its interface is built with Slint, a light native UI toolkit, so it opens instantly and stays snappy, and your clips play with mpv - no web view and no bundled browser at all.</p>
-    <div class="compare">
-      <div class="card us"><h3>Echo</h3>
-        <ul>
-          <li>Native Rust + Slint app on Windows - snappy, no web view, no bundled browser</li>
-          <li>Clips play hardware-decoded with mpv; FFmpeg comes alongside for video</li>
-          <li>Records with your graphics card's encoder (NVIDIA or AMD)</li>
-          <li>No account, ads or overlay needed to save a clip</li>
-        </ul></div>
-      <div class="card them"><h3>Typical Electron-based clipper</h3>
-        <ul>
-          <li>Ships its own copy of Chromium, often 100 MB or more</li>
-          <li>Several extra browser processes running in the background</li>
-          <li>Often wants an account before you can clip</li>
-          <li>Usually Windows only</li>
-        </ul></div>
-    </div>
-    <div class="card measure" id="vs-medal">
-      <h3>Measured: Echo vs Medal, both recording</h3>
-      <table>
-        <tr><th></th><th>Memory</th><th>CPU</th></tr>
-        <tr class="us"><td>Echo 2.0</td><td><b>153 MB</b></td><td><b>0.6 %</b></td></tr>
-        <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
-      </table>
-      <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
-    </div>
-    <div class="chips"><span class="chip">Open source · GPL-3.0</span><span class="chip">Rust</span><span class="chip">Slint</span><span class="chip">mpv</span><span class="chip">FFmpeg</span><span class="chip">Wayland (KDE)</span><span class="chip">PipeWire / PulseAudio</span><span class="chip">gpu-screen-recorder</span></div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <p class="eyebrow">Setup</p>
-    <h2>Up and running in a minute</h2>
-    <p class="sub">The setup asks four quick questions. After that Echo just runs in the tray.</p>
-    <div class="steps">
-      <div class="card"><h3>Install Echo</h3><p>Download it above and start it. Echo is signed with a Certum open-source code-signing certificate. Its certificate is still new, so if Windows says it protected your PC, click <b>More info → Run anyway</b>.</p></div>
-      <div class="card"><h3>Pick a save key</h3><p>Choose the key or controller button that saves a clip, your microphone and the quality.</p></div>
-      <div class="card"><h3>Play</h3><p>Something great happens? Press the key. A small popup confirms the clip is saved.</p></div>
-      <div class="card"><h3>Share it</h3><p>Open Echo, trim the clip and copy a link or the video straight into Discord.</p></div>
-    </div>
-  </div>
-</section>
-
-<section id="switch">
-  <div class="wrap switch">
-    <div>
-      <p class="eyebrow">Switching is easy</p>
-      <h2>Bring your clips with you</h2>
-      <p class="sub">Coming from Medal, SteelSeries Moments, Outplayed, NVIDIA or OBS? Echo copies your old clips over in one click.</p>
-      <ul class="ticks">
-        <li><b>Found automatically</b> - Medal, SteelSeries Moments and Outplayed folders; for anything else (NVIDIA, OBS…) just pick the folder</li>
-        <li><b>Nothing lost</b> - original dates, so old clips sort in where they belong, and one folder per game</li>
-        <li><b>Safe</b> - your old app's files aren't touched, and clips already imported are skipped</li>
+  <section class="section" id="extras" style="--hm: 2" aria-labelledby="extras-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <h2 class="span-5" id="extras-h">The small things Echo takes care of</h2>
+        <p class="span-6 start-7 ec-soft">Small touches that save you a trip to another app.</p>
+      </div>
+      <ul class="ec-extras">
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></span><span><b>Copy straight into Discord</b><span>Paste a clip into any chat. Too big? Echo shrinks a copy to fit Free, Nitro Basic or Nitro.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="M8.5 8.5L20 19M8.5 15.5L20 5"/></svg></span><span><b>Editor built in</b><span>Trim, add text and captions, mix clips into a montage, or turn a moment into a GIF, without leaving Echo.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></span><span><b>Bookmark key</b><span>Tap a key during the round and the moment shows up as a marker on the clip you save next.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><span><b>Auto captions</b><span>The editor's Captions tool listens to your mic and Discord and writes the captions for you, on your PC.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span><b>Bring your old clips</b><span>Import from Medal, SteelSeries Moments, Outplayed or any folder, with the original dates kept.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg></span><span><b>Tidies up after itself</b><span>Auto-delete old clips, or shrink them to about half size while your PC is idle. Favourites stay.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9l5 3-5 3z"/></svg></span><span><b>Screenshots too</b><span>A separate key saves a full-resolution screenshot of the game.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><span><b>Tags and notes</b><span>Tag clips, add a note, star favourites and filter by game or folder.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"/></svg></span><span><b>Pick up on any PC</b><span>Clips you save on one PC show up on your others, through Echo Cloud or your own storage.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg></span><span><b>Controller friendly</b><span>Save a clip with a button combo on an Xbox-style controller.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span><span><b>Mic done right</b><span>Push-to-talk, a mute key and background noise removal, all inside the recording.</span></span></li>
+        <li><span class="ec-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span><span><b>Quiet when you're away</b><span>Pause the buffer while you're idle, or only record while a game is running.</span></span></li>
       </ul>
-      <p class="hint">In Echo: <b>Settings → Clips &amp; Storage → Bring in clips from other apps</b></p>
     </div>
-    <div class="impmock" aria-hidden="true">
-      <p class="imt">Bring in clips from other apps</p>
-      <div class="imr"><div><b>Medal: 214 clips (38.2 GB)</b><small>C:\Medal\Clips</small></div><span>Import</span></div>
-      <div class="imr"><div><b>SteelSeries Moments: 57 clips (9.1 GB)</b><small>Videos\SteelSeries Moments</small></div><span>Import</span></div>
-      <div class="imr"><div><b>Outplayed: 12 clips (1.4 GB)</b><small>Videos\Overwolf\Outplayed</small></div><span>Import</span></div>
-      <div class="imr run"><div><b>Importing from Medal…</b><small>132 of 214 · Valorant, FiveM, Rocket League</small><i><u></u></i></div></div>
-    </div>
-  </div>
-</section>
+  </section>
 
-<section id="storage">
-  <div class="wrap">
-    <p class="eyebrow">Your clips, your storage</p>
-    <h2>Back up anywhere, even your own server</h2>
-    <p class="sub">Use whichever suits you. Connect a cloud you already use, a free plan from any of them, or your own server, in a few clicks. You can even use several at once.</p>
-    <div class="compare">
-      <div class="card us"><h3>Echo Cloud</h3>
-        <ul>
-          <li>Sign in with your email, nothing to set up</li>
-          <li>10 GB free, more from €4.95 a month</li>
-          <li>Share links that play right inside Discord</li>
-        </ul>
-        <a class="btn small ecbtn" href="/pricing" style="margin-top:18px">See plans</a></div>
-      <div class="card byo"><h3>Bring your own <span class="free">Free</span></h3>
-        <ul class="plain">
-          <li>Google Drive, MEGA, pCloud or Filen, including their free plans</li>
-          <li>Your own server: WebDAV, SFTP or any S3 storage</li>
-          <li>A folder or NAS on your network</li>
-        </ul>
-        <p class="note">Backups and syncing between your PCs work the same. The one thing you miss: Discord-playable share links, which need Echo Cloud.</p>
-        <a class="btn small byobtn" href="#download" style="margin-top:16px">Download Echo</a></div>
+  <section class="section" id="moments" style="--h: 2; --hm: 2" data-moment="pinned-chapters" aria-labelledby="moments-h">
+    <div class="wrap mo-pc__grid">
+      <div class="mo-pc__text">
+        <h2 id="moments-h">Never miss the moment</h2>
+        <ol class="mo-pc__steps">
+          <li class="mo-pc__step">
+            <h3>The whole moment, not just the end</h3>
+            <p>A clutch round, a chase in FiveM that goes sideways, something stupid with friends. Echo keeps the last 10 minutes ready; save 30 seconds or the whole thing, each with its own key.</p>
+            <figure class="mo-pc__visual ec-frame"><img src="/img/clip-cs1.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 1023px) 92vw, 46vw" alt="A Counter-Strike 2 round with Echo's popup: clip saved" width="405" height="228" loading="lazy"><div class="ec-toast ec-toast--on"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Clip saved</b><small>Counter-Strike 2 · 3:00</small></span></div></figure>
+          </li>
+          <li class="mo-pc__step">
+            <h3>Mark it while it happens</h3>
+            <p>Tap the bookmark key mid-game and jump straight to that moment in the clip later.</p>
+            <figure class="mo-pc__visual ec-frame"><img src="/img/clip-ow1.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 92vw, 46vw" alt="An Overwatch 2 match with Echo's popup: bookmarked" width="405" height="228" loading="lazy"><div class="ec-toast ec-toast--on"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Bookmarked</b><small>1 in the buffer · shows on the next saved clip</small></span></div></figure>
+          </li>
+          <li class="mo-pc__step">
+            <h3>Game, voice and mic on their own tracks</h3>
+            <p>Game sound, Discord and your mic are recorded separately, so you can keep your friends in the clip or cut them out.</p>
+            <figure class="mo-pc__visual ec-frame"><img src="/img/clip-sw1.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 1023px) 92vw, 46vw" alt="A Star Wars Battlefront II match with Echo's popup: saving clip" width="405" height="228" loading="lazy"><div class="ec-toast ec-toast--on"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Saving clip…</b><small>Last 3 min</small></span></div></figure>
+          </li>
+          <li class="mo-pc__step">
+            <h3>Light next to a heavy game</h3>
+            <p>Big games and modded servers are demanding enough. Echo records on your graphics card's encoder and stays out of the way.</p>
+            <figure class="mo-pc__visual ec-frame"><img src="/img/clip-mc1.webp" srcset="/img/clip-mc1-128.webp 128w, /img/clip-mc1-300.webp 300w, /img/clip-mc1.webp 405w, /img/clip-mc1-810.webp 810w, /img/clip-mc1-1216.webp 1216w" sizes="(max-width: 1023px) 92vw, 46vw" alt="A Minecraft server with Echo's popup: screenshot saved" width="405" height="228" loading="lazy"><div class="ec-toast ec-toast--on"><span class="ec-toast__ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="ec-toast__txt"><b>Screenshot saved</b><small>Clips folder › Screenshots</small></span></div></figure>
+          </li>
+        </ol>
+      </div>
+      <div class="mo-pc__visuals frame"></div>
     </div>
-    <div class="card measure">
-      <h3>Measured: Echo vs Medal, both recording</h3>
-      <table>
-        <tr><th></th><th>Memory</th><th>CPU</th></tr>
-        <tr class="us"><td>Echo 2.0</td><td><b>153 MB</b></td><td><b>0.6 %</b></td></tr>
-        <tr><td>Medal</td><td>470 MB</td><td>1.2 %</td></tr>
-      </table>
-      <p class="how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory = Task Manager's "Memory" (private working set) of all of each app's processes added up, video encoder included; CPU = share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), which is why Medal's row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
-    </div>
-    <div class="chips"><span class="chip">Echo Cloud</span><span class="chip">Google Drive</span><span class="chip">MEGA</span><span class="chip">pCloud</span><span class="chip">Filen</span><span class="chip">WebDAV</span><span class="chip">SFTP</span><span class="chip">S3</span><span class="chip">NAS / folder</span></div>
-  </div>
-</section>
+  </section>
 
-<section>
-  <div class="wrap" style="max-width:760px">
-    <h2>Questions</h2>
-    <p class="sub">Can't find your answer? Ask in the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a> or email <a href="mailto:support@echoclip.link">support@echoclip.link</a>.</p>
-    <details><summary>Is Echo free?</summary><p>Yes. The app is free, and so is an Echo Cloud account with 10 GB. You only pay if you want more cloud space.</p></details>
-    <details><summary>Does it slow my games down?</summary><p>Echo records with your graphics card's video encoder (NVIDIA, AMD or Intel; on Linux through gpu-screen-recorder), which is built for this, so the effect on your frame rate is very small.</p></details>
-    <details><summary>Can I bring my clips from Medal or another app?</summary><p>Yes. In Echo, open Settings → Clips &amp; Storage → <b>Bring in clips from other apps</b>. Echo finds Medal, SteelSeries Moments and Outplayed folders by itself; for anything else, like NVIDIA or OBS recordings, you pick the folder. It copies the clips over with their original dates and game folders. Your old app's files stay where they are.</p></details>
-    <details><summary>Do I need Echo Cloud?</summary><p>No. Clips are always saved on your PC. For backups you can connect Google Drive, MEGA, pCloud, Filen, your own WebDAV/SFTP/S3 server or a NAS instead, all with free options. When you've connected your own cloud, backups go there - Echo Cloud is only used for the share links that play inside Discord.</p></details>
-    <details><summary>Why does Windows warn about Echo?</summary><p>Usually it doesn't anymore: since Echo 2.0, the installer and EchoClip.exe are signed with a Certum open-source code-signing certificate. The certificate is new, so on some PCs Windows SmartScreen may still say it protected your PC until the certificate has built up trust - click "More info", then "Run anyway". Echo is open source, so anyone can check what it does - if your antivirus ever flags it, that's a false alarm; let us know in the Discord.</p></details>
-    <details><summary>What do I need to run Echo?</summary><p><b>Windows:</b> Windows 10 (version 1903 or newer) or Windows 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years. <b>Linux:</b> a current 64-bit distribution. The Flatpak brings everything it needs; the AppImage uses gpu-screen-recorder and ffmpeg from your system. The replay buffer needs a little disk space: about 1.5 GB for 10 minutes at the standard quality.</p></details>
-    <details><summary>Where do I get help or suggest something?</summary><p>In the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a>: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → <b>Send log</b> gives you a link to paste there, so problems are found quickly.</p></details>
-    <details><summary>Is Echo open source?</summary><p>Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on <a href="https://github.com/Resister0/echoclip">GitHub</a>, so you can check what it does, build it yourself or suggest changes.</p></details>
-    <details><summary>Why is Echo so small?</summary><p>Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays clips with mpv, with no browser engine at all. (On Linux it still borrows the web view your system already has, for now.)</p></details>
-    <details><summary>Which Linux distributions work?</summary><p>Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the <b>Flatpak</b> brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The <b>AppImage</b> is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the <a href="/download">download page</a>.</p></details>
-  </div>
-</section>
+  <section class="section" id="light" aria-labelledby="light-h">
+    <div class="wrap">
+      <div data-moment="liquid-type" class="section-head" style="max-width:none">
+        <h2 class="mo-lt__type" id="light-h">About 150 MB while recording</h2>
+      </div>
+      <div class="grid grid--top">
+        <div class="span-5 stack-4">
+          <p class="t-lead">Echo 2.0 is a native Rust app with no bundled browser. It records with your graphics card's encoder, so your games keep their frames, even on low-end PCs.</p>
+        </div>
+        <div class="span-6 start-7" id="vs-medal">
+          <table class="ec-measure">
+            <caption class="t-label muted" style="text-align:left;caption-side:top;padding-bottom:12px">Measured: Echo and Medal, both recording</caption>
+            <tr><th>App</th><th>Memory</th><th>CPU</th></tr>
+            <tr class="us"><td>Echo 2.0</td><td>~150 MB</td><td>~0.6 %</td></tr>
+            <tr><td>Medal</td><td>~470 MB</td><td>~1.2 %</td></tr>
+          </table>
+          <p class="ec-claim">Echo uses 50% less CPU than Medal while recording, and 70% less memory.</p>
+          <p class="ec-vslink"><a href="/vs-medal">Full comparison: Echo vs Medal</a></p>
+          <p class="ec-how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory is Task Manager's private working set of all the app's processes, encoder included. Your numbers will differ.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="built" style="--hm: 2" aria-labelledby="built-h">
+    <div class="wrap">
+      <div class="grid grid--top ec-built">
+        <div class="span-6">
+          <h2 id="built-h">What Echo is built with</h2>
+          <dl class="ec-spec">
+            <div><dt>App</dt><dd>A native Rust app; on Windows its interface is built with Slint, a light native UI toolkit. No web view, no bundled browser.</dd></div>
+            <div><dt>Playback</dt><dd>Clips play hardware-decoded with mpv; FFmpeg comes alongside for video.</dd></div>
+            <div><dt>Recording</dt><dd>Your graphics card's encoder (NVIDIA, AMD or Intel); on Linux through gpu-screen-recorder.</dd></div>
+            <div><dt>Linux</dt><dd>Wayland (KDE), PipeWire or PulseAudio; as a Flatpak or an AppImage.</dd></div>
+            <div><dt>Licence</dt><dd>Open source under GPL-3.0, <a class="ec-link-ink" href="https://github.com/Resister0/echoclip">on GitHub</a>.</dd></div>
+            <div><dt>Electron clippers</dt><dd>Ship their own Chromium (often 100 MB or more) and run several extra browser processes; many want an account and are Windows only.</dd></div>
+          </dl>
+        </div>
+        <div class="panel ec-hub span-6 start-7"><div class="dg" data-diagram><script type="application/json">{"layout":"hub","alt":"Echo is built with Rust and Slint, plays clips with mpv and FFmpeg, records with NVIDIA, AMD or Intel encoders, and runs on Windows and Linux.","center":{"label":"Echo","icon":"echo"},"spokes":[{"label":"Rust","icon":"rust"},{"label":"mpv","icon":"si:mpv"},{"label":"FFmpeg","icon":"logos:ffmpeg-icon"},{"label":"NVIDIA","icon":"nvidia"},{"label":"AMD","icon":"amd"},{"label":"Intel","icon":"intel"},{"label":"Linux","icon":"linux-tux"},{"label":"Windows","icon":"windows"}]}</script></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="switch" aria-labelledby="switch-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <div class="span-5 stack-4">
+          <h2 id="switch-h">Bring your old clips with you</h2>
+          <p class="t-lead">Echo finds your Medal, SteelSeries Moments and Outplayed folders and copies the clips over in one click.</p>
+          <p>Original dates are kept and every game keeps its folder. For NVIDIA or OBS recordings, pick the folder yourself. Your old app's files stay where they are, and clips you already brought in are skipped.</p>
+          <p class="ec-soft">In Echo: Settings → Clips &amp; Storage → Bring in clips from other apps</p>
+        </div>
+        <div class="frame frame--split span-6 start-7">
+          <div class="stage"><div class="at-rise fit ec-mid" style="--fit-max:500px;--ax:max(24px, 50% - 250px);--ay:max(24px, 50% - 170px);--ay-sm:24px">
+            <div class="impmock" role="img" aria-label="Echo's import window: Medal 214 clips, SteelSeries Moments 57 clips, Outplayed 12 clips, importing from Medal">
+              <p class="imt">Bring in clips from other apps</p>
+              <div class="imr"><div><b>Medal: 214 clips (38.2 GB)</b><small>C:\Medal\Clips</small></div><span>Import</span></div>
+              <div class="imr"><div><b>SteelSeries Moments: 57 clips (9.1 GB)</b><small>Videos\SteelSeries Moments</small></div><span>Import</span></div>
+              <div class="imr"><div><b>Outplayed: 12 clips (1.4 GB)</b><small>Videos\Overwolf\Outplayed</small></div><span>Import</span></div>
+              <div class="imr run"><div><b>Importing from Medal…</b><small>132 of 214 · Valorant, FiveM, Rocket League</small><i><u></u></i></div></div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="storage" aria-labelledby="storage-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <h2 class="span-5" id="storage-h">Back up to your own cloud for free</h2>
+        <p class="span-6 start-7 t-lead">Use Echo Cloud, a cloud you already have, or your own server. You can even use several at once. Your clips always stay on your PC too.</p>
+      </div>
+      <div class="ec-cmp" role="table" aria-label="Echo Cloud compared with your own cloud">
+        <div class="ec-cmp__row ec-cmp__head" role="row">
+          <span role="columnheader" class="ec-cmp__what">What you get</span>
+          <div role="columnheader" class="ec-cmp__col">
+            <b>Echo Cloud</b>
+            <small>Sign in with your email</small>
+          </div>
+          <div role="columnheader" class="ec-cmp__col ec-cmp__col--own">
+            <b>Your own cloud <em>Free</em></b>
+            <small class="ec-cmp__logos"><img src="/icons/google-drive.svg" alt="Google Drive" title="Google Drive" width="20" height="20" loading="lazy"><img src="/icons/mega.svg" alt="MEGA" title="MEGA" width="20" height="20" loading="lazy"><img src="/icons/filen.svg" alt="Filen" title="Filen" width="20" height="20" loading="lazy"><span>pCloud, WebDAV, SFTP, S3 or a NAS</span></small>
+          </div>
+        </div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Backs up your clips</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Syncs clips between your PCs</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Frees up space on your PC</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Space</span><span role="cell">10 GB free, more from €4.95 a month</span><span role="cell">Whatever your plan has, free plans included</span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Setup</span><span role="cell">Nothing to set up</span><span role="cell">Connect it in a few clicks</span></div>
+        <div class="ec-cmp__row" role="row"><span role="rowheader">Share links that play right inside Discord</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-no" aria-label="No">–</span><small>needs Echo Cloud</small></span></div>
+        </div>
+      <p class="ec-vslink"><a href="/pricing">More about Echo Cloud</a></p>
+    </div>
+  </section>
+
+  <section class="section" id="faq" style="--hm: 2" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <h2 class="span-5" id="faq-h">Questions about Echo</h2>
+        <p class="span-6 start-7 ec-soft">Can't find your answer? Ask in the <a class="ec-link-ink" href="https://discord.gg/JPVewEfUQs">Echo Discord</a> or email <a class="ec-link-ink" href="mailto:support@echoclip.link">support@echoclip.link</a>.</p>
+      </div>
+      <div class="grid grid--top ec-faq">
+          <div class="faq span-6">
+            <details open><summary>Is Echo free?</summary><p>Yes. The app is free, and so is an Echo Cloud account with 10 GB. You only pay if you want more cloud space.</p></details>
+            <details open><summary>Does it slow my games down?</summary><p>Echo records with your graphics card's video encoder (NVIDIA, AMD or Intel; on Linux through gpu-screen-recorder), which is built for this, so the effect on your frame rate is very small.</p></details>
+            <details open><summary>Can I bring my clips from Medal or another app?</summary><p>Yes. In Echo, open Settings → Clips &amp; Storage → <b>Bring in clips from other apps</b>. Echo finds Medal, SteelSeries Moments and Outplayed folders by itself; for anything else, like NVIDIA or OBS recordings, you pick the folder. It copies the clips over with their original dates and game folders. Your old app's files stay where they are.</p></details>
+          </div>
+          <div class="faq span-6">
+            <details open><summary>Do I need Echo Cloud?</summary><p>No. Clips are always saved on your PC. For backups you can connect Google Drive, MEGA, pCloud, Filen, your own WebDAV/SFTP/S3 server or a NAS instead, all with free options. When you've connected your own cloud, backups go there - Echo Cloud is only used for the share links that play inside Discord.</p></details>
+            <details open><summary>Is Echo open source?</summary><p>Yes. Echo is free software under the GPL-3.0 licence. The app, the Echo Cloud server and this website are all on <a href="https://github.com/Resister0/echoclip">GitHub</a>, so you can check what it does, build it yourself or suggest changes.</p></details>
+            <details open><summary>Why is Echo so small?</summary><p>Most clipping apps are built with Electron, which bundles a whole Chromium browser. Echo 2.0 is a native Rust app: on Windows it draws its own interface and plays clips with mpv, with no browser engine at all. (On Linux it still borrows the web view your system already has, for now.)</p></details>
+          </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq-setup" style="--hm: 2" aria-labelledby="faq-setup-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <h2 class="span-5" id="faq-setup-h">Echo on Windows, Linux and Steam Deck</h2>
+        <div class="span-6 start-7 stack-4"><p class="ec-soft">What Windows and Linux need, and where to get help when something doesn't work.</p>
+          <ul class="ec-icons" aria-label="Systems Echo runs on">
+            <li><img class="ic" src="/icons/windows.svg" alt="" width="24" height="24" loading="lazy">Windows 10 and 11</li>
+            <li><img class="ic" src="/icons/linux-tux.svg" alt="" width="21" height="24" loading="lazy">Linux</li>
+            <li><img class="ic" src="/icons/flatpak.svg" alt="" width="22" height="24" loading="lazy">Flatpak</li>
+            <li><img class="ic ic-ink" src="/icons/steam.svg" alt="" width="24" height="24" loading="lazy">Steam Deck</li>
+          </ul></div>
+      </div>
+      <div class="grid grid--top ec-faq">
+          <div class="faq span-6">
+            <details open><summary>Why does Windows warn about Echo?</summary><p>Usually it doesn't anymore: since Echo 2.0, the installer and EchoClip.exe are signed with a Certum open-source code-signing certificate. The certificate is new, so on some PCs Windows SmartScreen may still say it protected your PC until the certificate has built up trust - click "More info", then "Run anyway". Echo is open source, so anyone can check what it does - if your antivirus ever flags it, that's a false alarm; let us know in the Discord.</p></details>
+            <details open><summary>What do I need to run Echo?</summary><p><b>Windows:</b> Windows 10 (version 1903 or newer) or Windows 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years. <b>Linux:</b> a current 64-bit distribution; for full compatibility, one newer than Ubuntu 22.04. The Flatpak brings everything it needs; the AppImage uses gpu-screen-recorder and ffmpeg from your system. The replay buffer needs a little disk space: about 1.5 GB for 10 minutes at the standard quality.</p></details>
+          </div>
+          <div class="faq span-6">
+            <details open><summary>Which Linux distributions work?</summary><p>Most current 64-bit ones; Echo is tested most on Fedora / Nobara with KDE Plasma. There are two ways to get it: the <b>Flatpak</b> brings gpu-screen-recorder and ffmpeg along, so it's the one for Steam Deck, Bazzite and other systems where you can't easily install extra programs - it updates through Discover, GNOME Software or Bazaar. The <b>AppImage</b> is one file that runs almost anywhere and updates itself, but needs gpu-screen-recorder and ffmpeg from your distribution. Both are on the <a href="/download">download page</a>.</p></details>
+            <details open><summary>Where do I get help or suggest something?</summary><p>In the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a>: there's a help forum, a place for ideas and a channel for new versions. In Echo, Settings → App → <b>Send log</b> gives you a link to paste there, so problems are found quickly.</p></details>
+          </div>
+      </div>
+    </div>
+  </section>
 </main>
-<footer><div class="wrap">
-  <span>© 2026 Echo · Made in Denmark · <a href="https://github.com/Resister0/echoclip">Open source (GPL-3.0)</a></span>
-  <nav>
-    <a href="/pricing">Pricing</a>
-    <a href="/changelog">Changelog</a>
-    <a href="https://discord.gg/JPVewEfUQs">Discord</a>
-    <a href="/terms">Terms</a>
-    <a href="/privacy">Privacy</a>
-    <a href="/code-signing">Code signing policy</a>
-    <a href="mailto:support@echoclip.link">support@echoclip.link</a>
-  </nav>
-</div></footer>
+
+<footer class="footer closing footer--dark g2m" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--type">
+      <div class="section-head">
+        <h2 id="close-h">Download Echo for your PC</h2>
+        <p class="t-small muted">Free on Windows 10/11 and Linux, without ads or an account.</p>
+      </div>
+      <a class="btn btn--primary btn--xl" href="/download">Download Echo</a>
+      <p class="ec-cloudline">Want backups and share links that play in Discord? <a href="/pricing">Echo Cloud starts with 10 GB free</a></p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+          <p class="footer__lede">A free, open-source game clip recorder for Windows and Linux.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Echo</h3><ul><li><a href="/#features">Features</a></li><li><a href="/#extras">Small extras</a></li><li><a href="/pricing">Echo Cloud</a></li><li><a href="/changelog">Changelog</a></li><li><a href="/vs-medal">Echo vs Medal</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="https://discord.gg/JPVewEfUQs">Discord</a></li><li><a href="mailto:support@echoclip.link">Email support</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Source</h3><ul><li><a href="https://github.com/Resister0/echoclip">GitHub</a></li><li><a href="/code-signing">Code signing policy</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Echo · Open source (GPL-3.0)</span>
+        <span>Product names and logos are trademarks of their owners.</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
 <script src="/site.js"></script>
+<script type="module" src="/assets/system.js"></script>
+<script type="module" src="/assets/motion/motion.js"></script>
+<script type="module" src="/assets/layout/layout.js"></script>
+<script type="module" src="/assets/diagrams/mount.js"></script>
 </body>
 </html>

@@ -30,6 +30,9 @@ const CLOUD_MAX: usize = 20;
 /// the lists (clip ids). A clip shows in one section only, the first that takes it.
 struct Sorted {
     groups: Vec<Vec<usize>>,
+    /// per group: the clip to keep + its tag (QA B25, 11 Nov 2026: "KEEP (latest)" / "KEEP (longest)") + the clips
+    /// pre-ticked for deletion (only those the kept clip really covers)
+    keep: Vec<(usize, &'static str, Vec<usize>)>,
     short: Vec<usize>,
     /// cleanup: an original + its edits (original first)
     pairs: Vec<Vec<usize>>,
@@ -53,7 +56,42 @@ fn sort_out(items: &[Item], cloud_sizes: &HashMap<String, u64>) -> Sorted {
         .filter(|i| i.rel.as_ref().and_then(|r| cloud_sizes.get(r)).is_some_and(|&s| s == i.size))
         .collect();
     cloud.sort_by(|a, b| b.size.cmp(&a.size));
-    Sorted { groups, short, pairs, big, cloud: cloud.into_iter().map(|i| i.idx).collect() }
+    let by: HashMap<usize, &Item> = items.iter().map(|i| (i.idx, i)).collect();
+    let keep = groups.iter().map(|g| keep_of(&g.iter().filter_map(|i| by.get(i).copied()).collect::<Vec<_>>())).collect();
+    Sorted { groups, keep, short, pairs, big, cloud: cloud.into_iter().map(|i| i.idx).collect() }
+}
+
+/// QA B25 (11 Nov 2026, approved by the coordinator; William's 10 Nov rule was "the latest is kept"): two clips of
+/// about the same length (within 25 %) = the hotkey pressed twice -> keep the LATEST (it holds the last seconds that may
+/// matter). Different lengths (30 s + 3 min hotkeys) -> the short one lies inside the long one: keep the LONGEST -
+/// keeping the latest short clip threw minutes of footage away.
+fn similar(a: f64, b: f64) -> bool {
+    a.min(b) >= 0.75 * a.max(b)
+}
+
+fn keep_of(g: &[&Item]) -> (usize, &'static str, Vec<usize>) {
+    let Some(first) = g.first() else { return (usize::MAX, "", vec![]) };
+    let latest = g.iter().fold(*first, |a, b| if b.end >= a.end { *b } else { a });
+    let longest = g.iter().fold(*first, |a, b| if b.dur > a.dur { *b } else { a });
+    let (k, tag) = if similar(latest.dur, longest.dur) { (latest, "KEEP (latest)") } else { (longest, "KEEP (longest)") };
+    // groups chain (each clip is compared with the one before): tick only what the KEPT clip covers - a 30-s clip that
+    // reaches 8 s past the kept 3-min one stays unticked
+    let ticks = g.iter().filter(|m| m.idx != k.idx && covers(k, m)).map(|m| m.idx).collect();
+    (k.idx, tag, ticks)
+}
+
+/// `a` holds `b`'s footage: about the same length and more than half overlaps, or `b` is shorter and 90 %+ inside `a`
+fn covers(a: &Item, b: &Item) -> bool {
+    let ov = a.end.min(b.end) - (a.end - a.dur).max(b.end - b.dur);
+    let need = if similar(a.dur, b.dur) { 0.5 } else { 0.9 };
+    ov > need * a.dur.min(b.dur)
+}
+
+/// a group whose clips' lengths differ a lot (its cloud copies are never pre-ticked for deletion)
+fn mixed(g: &[usize], durs: &HashMap<usize, f64>) -> bool {
+    let d: Vec<f64> = g.iter().map(|i| durs.get(i).copied().unwrap_or(0.0)).collect();
+    let (lo, hi) = d.iter().fold((f64::MAX, 0.0f64), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+    !d.is_empty() && !similar(lo, hi)
 }
 
 /// the groups / short / big lists (clip ids) - Echo's openTidy maths
@@ -75,7 +113,10 @@ fn sort_dups(items: &[Item]) -> (Vec<Vec<usize>>, Vec<usize>, Vec<usize>) {
                 // a clip covers [saved - length, saved]
                 let (s1, s2) = (prev.end - prev.dur, a.end - a.dur);
                 let ov = prev.end.min(a.end) - s1.max(s2);
-                if ov > 0.5 * prev.dur.min(a.dur) {
+                // QA B25: same-ish lengths = more than half overlaps (pressed twice); different lengths only when the
+                // short clip lies (90 %+) inside the long one
+                let need = if similar(prev.dur, a.dur) { 0.5 } else { 0.9 };
+                if ov > need * prev.dur.min(a.dur) {
                     cur.push(a);
                     continue;
                 }
@@ -188,7 +229,9 @@ fn sz(lib: &LibModel, ids: &[usize]) -> String {
 }
 
 fn fill(a: &AppWindow, lib: &LibModel, s: Sorted, durs: HashMap<usize, f64>) {
-    let Sorted { groups, short, pairs, big, cloud } = s;
+    let Sorted { groups, keep, short, pairs, big, cloud } = s;
+    // the cloud box starts ticked each time (QA B25: mixed-length groups untick it below)
+    a.global::<Tidy>().set_cloud_too(true);
     let mut gid = 0i32;
     let mut rows: Vec<TRow> = vec![];
     let head = |title: &str, note: String| TRow { kind: "head".into(), title: title.into(), note: note.into(), idx: -1, ..Default::default() };
@@ -224,19 +267,23 @@ fn fill(a: &AppWindow, lib: &LibModel, s: Sorted, durs: HashMap<usize, f64>) {
     if !groups.is_empty() {
         let n = groups.len();
         // 10 Nov 2026: the LATEST save is kept (it holds the last seconds that may matter), not the longest
-        // (Echo's was g.reduce((a, b) => dur(b) > dur(a) ? b : a)). Same save time: the later one in the group.
-        let latest = |g: &Vec<usize>| g.iter().copied().fold(g[0], |a, b| if lib.clip(b).mtime >= lib.clip(a).mtime { b } else { a });
-        let frees: u64 = groups.iter().map(|g| { let k = latest(g); g.iter().filter(|&&i| i != k).map(|&i| lib.clip(i).size).sum::<u64>() }).sum();
-        rows.push(head("SAVED TWICE", format!("{n} group{} - hotkey pressed twice, or overlapping clips. The latest one is kept · frees {}", if n == 1 { "" } else { "s" }, library::fmt_size(frees))));
+        // (Echo's was g.reduce((a, b) => dur(b) > dur(a) ? b : a)). QA B25 (11 Nov 2026): only for about the same
+        // length - otherwise the longest (sort_out / keep_of). Mixed lengths: their cloud copies aren't pre-ticked.
+        let frees: u64 = keep.iter().map(|k| k.2.iter().map(|&i| lib.clip(i).size).sum::<u64>()).sum();
+        rows.push(head("SAVED TWICE", format!("{n} group{} - hotkey pressed twice, or a short clip inside a longer one. The latest is kept, or the longest when the lengths differ · frees {}", if n == 1 { "" } else { "s" }, library::fmt_size(frees))));
+        if groups.iter().any(|g| mixed(g, &durs)) {
+            a.global::<Tidy>().set_cloud_too(false);
+        }
         for (gi, g) in groups.iter().enumerate() {
             if gi > 0 {
                 rows.push(TRow { kind: "gap".into(), idx: -1, ..Default::default() });
             }
-            let keep = latest(g);
+            let (keep, tag, ticks) = &keep[gi];
+            let (keep, tag) = (*keep, *tag);
             for (k, &i) in g.iter().enumerate() {
-                let mut r = clip_row(i, i != keep, i == keep, k == 0, k + 1 == g.len());
+                let mut r = clip_row(i, ticks.contains(&i), i == keep, k == 0, k + 1 == g.len());
                 if i == keep {
-                    r.tag = "KEEP (latest)".into();
+                    r.tag = tag.into();
                 }
                 r.group = gi as i32;
                 rows.push(r);
@@ -400,5 +447,72 @@ pub fn wire(app: &AppWindow, lib: Rc<LibModel>) {
                 );
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn it(idx: usize, end: f64, dur: f64) -> Item {
+        Item { idx, end, dur, size: 1_000_000, game: "GameX".into(), name: format!("c{idx}"), rel: None }
+    }
+
+    /// QA B25: the 3-min hotkey, then the 30-s one 2 s later (93 % of it inside) - keep the 3-min clip, tick the 30-s one
+    #[test]
+    fn long_then_short_keeps_the_long_one() {
+        let items = vec![it(0, 1000.0, 180.0), it(1, 1002.0, 30.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert_eq!(groups, vec![vec![0, 1]]);
+        let g: Vec<&Item> = items.iter().collect();
+        assert_eq!(keep_of(&g), (0, "KEEP (longest)", vec![1]));
+        let durs: HashMap<usize, f64> = items.iter().map(|i| (i.idx, i.dur)).collect();
+        assert!(mixed(&groups[0], &durs));
+    }
+
+    /// the hotkey pressed twice (same length): the latest is kept, as before
+    #[test]
+    fn pressed_twice_keeps_the_latest() {
+        let items = vec![it(0, 1000.0, 30.0), it(1, 1012.0, 30.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert_eq!(groups, vec![vec![0, 1]]);
+        let g: Vec<&Item> = items.iter().collect();
+        assert_eq!(keep_of(&g), (1, "KEEP (latest)", vec![0]));
+        let durs: HashMap<usize, f64> = items.iter().map(|i| (i.idx, i.dur)).collect();
+        assert!(!mixed(&groups[0], &durs));
+    }
+
+    /// a short clip only partly inside a long one (< 90 %) isn't a duplicate: both stay
+    #[test]
+    fn short_sticking_out_is_not_grouped() {
+        // long covers [820, 1000]; short covers [980, 1010]: 20 of its 30 s inside = 67 %
+        let items = vec![it(0, 1000.0, 180.0), it(1, 1010.0, 30.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert!(groups.is_empty());
+    }
+
+    /// a 10-min clip and an 11-s clip that only touch at the end (5 s of it inside) aren't a pair
+    #[test]
+    fn ten_minutes_and_eleven_seconds_touching_are_not_grouped() {
+        let items = vec![it(0, 1000.0, 600.0), it(1, 1006.0, 11.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert!(groups.is_empty());
+        // fully inside (saved earlier): grouped, the 10-min clip kept
+        let items = vec![it(0, 1000.0, 600.0), it(1, 900.0, 11.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert_eq!(groups, vec![vec![1, 0]]);
+        let g: Vec<&Item> = groups[0].iter().map(|&i| &items[i]).collect();
+        assert_eq!(keep_of(&g), (0, "KEEP (latest)", vec![1])); // the 10-min clip is also the latest
+    }
+
+    /// a chain: 3 min, a 30 s inside it, another 30 s 8 s later (joined through the first 30 s) - only the one the
+    /// kept 3-min clip covers is ticked; the last one holds footage the 3-min clip doesn't have
+    #[test]
+    fn chain_ticks_only_what_the_kept_clip_covers() {
+        let items = vec![it(0, 1000.0, 180.0), it(1, 1002.0, 30.0), it(2, 1010.0, 30.0)];
+        let (groups, _, _) = sort_dups(&items);
+        assert_eq!(groups, vec![vec![0, 1, 2]]);
+        let g: Vec<&Item> = items.iter().collect();
+        assert_eq!(keep_of(&g), (0, "KEEP (longest)", vec![1]));
     }
 }

@@ -74,6 +74,7 @@ export struct TipPart {
 
 export global Ed {
     in-out property <bool> open;
+    in-out property <bool> opening;         // 11 Nov 2026: Edit from Home / Library - the clip loads in the hidden player first (edui.rs)
     in-out property <string> name;
     in-out property <float> dur;            // the source clip (seconds) - filmstrip pictures
     in-out property <float> total;
@@ -83,6 +84,9 @@ export global Ed {
     in-out property <string> t-text: "0:00.0";
     in-out property <float> pps: 40;        // timeline pixels per second
     in-out property <float> scroll;         // timeline scroll (px)
+    // 11 Nov 2026: the filmstrip's 60 pictures, cut from the player's sheet once (edui.rs build_tiles) - drawing
+    // cut-outs of the whole 6400x2160 sheet made scrolling the timeline choppy
+    in-out property <[image]> tiles;
     in-out property <[EdSeg]> segs;
     in-out property <[EdTxt]> texts;
     in-out property <[EdTick]> ticks;
@@ -337,7 +341,7 @@ component Toggle inherits Rectangle {
         width: 18px;
         height: 18px;
         border-radius: 9px;
-        background: white;
+        background: root.on ? T.on-accent : white;
         animate x { duration: 120ms; easing: ease-out; }
     }
     TouchArea {
@@ -396,7 +400,7 @@ component Tool inherits Rectangle {
     background: on ? T.hi.with-alpha(0.08) : ta.has-hover && enabled ? #ffffff12 : transparent;
     opacity: enabled ? 1 : 0.35;
     animate background { duration: T.fade; enabled: !T.rgb-live; }
-    property <color> fg: on ? T.hi : ta.has-hover && enabled ? T.text : T.muted;
+    property <color> fg: on ? T.hi-text : ta.has-hover && enabled ? T.text : T.muted;
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
@@ -846,6 +850,13 @@ component TrackLabel inherits Rectangle {
 
 export component EditorView inherits Rectangle {
     background: T.bg;
+    // 11 Nov 2026: the player's picture sheet came in (or changed) while the editor is open: cut the filmstrip tiles
+    property <bool> sheet-ready: Ed.open && Play.sheet-ok;
+    changed sheet-ready => {
+        if (self.sheet-ready) {
+            Ed.act("tiles");
+        }
+    }
     property <length> insp-w: 324px;
     property <length> tl-h: clamp(Ed.tl-content * 1px, 170px, root.height * 0.45);
     property <length> tools-h: 52px;
@@ -935,7 +946,7 @@ export component EditorView inherits Rectangle {
                 text: Ed.rng-text;
                 vertical-alignment: center;
                 font-size: 12px;
-                color: T.hi;
+                color: T.hi-text;
             }
             if Ed.rng-on: Btn {
                 text: "Cut range";
@@ -1147,7 +1158,7 @@ export component EditorView inherits Rectangle {
                     TipLine { parts: [{ t: "Right-click the timeline for more", k: false }]; }
                     TipLine { parts: [{ t: "(close gaps, speed…).", k: false }]; }
                     TipLine { parts: [{ t: "Drag piece edges to trim them.", k: false }]; }
-                    TipLine { parts: [{ t: "Drag a piece anywhere — gaps play as black.", k: false }]; }
+                    TipLine { parts: [{ t: "Drag a piece anywhere - gaps play as black.", k: false }]; }
                     TipLine { parts: [{ t: "Drag a piece up to put it on a layer (PiP).", k: false }]; }
                     TipLine { parts: [{ t: "Drag on empty timeline space to highlight a part", k: false }]; }
                     TipLine { parts: [{ t: "(yellow).", k: false }]; }
@@ -1253,26 +1264,55 @@ export component EditorView inherits Rectangle {
                 ESlider { value: Ed.sel-con; lo: 0.5; hi: 1.8; step: 0.02; moved(v) => { Ed.set("con-live", v); } commit(v) => { Ed.set("con", v); } reset => { Ed.set("con", 1); } }
                 Label { text: "Saturation " + round(Ed.sel-sat * 100) + "%"; }
                 ESlider { value: Ed.sel-sat; lo: 0; hi: 2; step: 0.02; moved(v) => { Ed.set("sat-live", v); } commit(v) => { Ed.set("sat", v); } reset => { Ed.set("sat", 1); } }
+                // 11 Nov 2026 (William: untidy): one grid - two rows of two, every button 30 px and half the width
+                // (Btn has a fixed width, so horizontal-stretch alone didn't fill the row)
                 HorizontalLayout {
                     spacing: 6px;
-                    Btn { text: "Colour on all pieces"; small: true; horizontal-stretch: 1; clicked => { Ed.act("color-all"); } }
-                    Btn { text: "Reset colour"; small: true; horizontal-stretch: 1; clicked => { Ed.act("color-reset"); } }
+                    Btn { text: "Colour on all pieces"; small: true; width: (parent.width - 6px) / 2; clicked => { Ed.act("color-all"); } }
+                    Btn { text: "Reset colour"; small: true; width: (parent.width - 6px) / 2; clicked => { Ed.act("color-reset"); } }
                 }
-                // Echo: the piece's own Separate audio / Delete buttons
-                if !Ed.sel-freeze: Rectangle {
-                    height: sab.preferred-height;
-                    opacity: Ed.sel-amute ? 0.45 : 1;
-                    sab := Btn {
-                        width: parent.width;
-                        text: Ed.sel-amute ? "Audio is separated" : "Separate audio (U)";
-                        clicked => {
-                            if (!Ed.sel-amute) {
-                                Ed.act("audio-sep");
+                HorizontalLayout {
+                    spacing: 6px;
+                    // Echo: the piece's own Separate audio / Delete buttons
+                    if !Ed.sel-freeze && !Ed.sel-amute: Btn {
+                        text: "Separate audio (U)";
+                        small: true;
+                        width: (parent.width - 6px) / 2;
+                        clicked => { Ed.act("audio-sep"); }
+                    }
+                    // done state, not a dimmed button: a check + "Audio separated" (the audio is its own piece below)
+                    if !Ed.sel-freeze && Ed.sel-amute: Rectangle {
+                        width: (parent.width - 6px) / 2;
+                        height: 30px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: T.line;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Icon {
+                                y: (parent.height - self.height) / 2;
+                                width: 14px;
+                                height: 14px;
+                                stroke-width: 2.4px;
+                                commands: Ic.check;
+                                stroke: T.ok;
+                            }
+                            Text {
+                                text: "Audio separated";
+                                font-size: 13px;
+                                color: T.muted;
+                                vertical-alignment: center;
                             }
                         }
                     }
+                    Btn {
+                        text: "Delete piece";
+                        small: true;
+                        width: Ed.sel-freeze ? parent.width : (parent.width - 6px) / 2;
+                        clicked => { Ed.act("del"); }
+                    }
                 }
-                Btn { text: "Delete piece"; clicked => { Ed.act("del"); } }
             }
             // ----- separated audio -----
             if Ed.sel-kind == "aud": VerticalLayout {
@@ -1622,7 +1662,7 @@ export component EditorView inherits Rectangle {
             property <length> tw: 64px * 16 / 9;
             // 9 Nov: only the tiles in view (was the first 200 - past ~22000 px, zoomed in, the strip went grey)
             property <int> k0: max(0, floor((root.lp - self.x) / self.tw));
-            property <int> n: Play.sheet-ok && !s.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
+            property <int> n: Ed.tiles.length > 0 && !s.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
             Rectangle {
                 border-radius: 8px;
                 clip: true;
@@ -1631,12 +1671,9 @@ export component EditorView inherits Rectangle {
                     width: pc.tw;
                     height: 64px;
                     property <float> ts: s.speed == 0 ? s.start : s.start + (pc.k0 + k + 0.5) * pc.tw / 1px / tl.pps * s.speed;
-                    property <int> f: max(0, min(59, floor(ts / max(0.1, Ed.dur) * 60)));
-                    source: Play.sheet;
-                    source-clip-x: mod(f, 10) * Play.sheet-tw;
-                    source-clip-y: floor(f / 10) * Play.sheet-th;
-                    source-clip-width: Play.sheet-tw;
-                    source-clip-height: Play.sheet-th;
+                    property <int> f: max(0, min(Ed.tiles.length - 1, floor(ts / max(0.1, Ed.dur) * 60)));
+                    // 11 Nov 2026: one ready-made small picture per tile (was a cut-out of the whole sheet)
+                    source: Ed.tiles[f];
                     image-fit: cover;
                 }
                 // fades: dark ramps
@@ -1675,7 +1712,7 @@ export component EditorView inherits Rectangle {
                     height: 18px;
                     border-radius: 9px;
                     background: T.accent;
-                    Text { text: "⇄"; font-size: 11px; font-weight: 700; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "⇄"; font-size: 11px; font-weight: 700; color: T.on-accent; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
             Rectangle {
@@ -1699,7 +1736,7 @@ export component EditorView inherits Rectangle {
             drop-shadow-color: #000000b0;
             property <length> tw: 64px * 16 / 9;
             property <int> k0: max(0, floor((root.lp - self.x) / self.tw));
-            property <int> n: Play.sheet-ok && !o.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
+            property <int> n: Ed.tiles.length > 0 && !o.other ? max(0, min(ceil((tl.width - root.lp) / self.tw) + 2, ceil(self.width / self.tw) - self.k0)) : 0;
             Rectangle {
                 border-radius: 7px;
                 clip: true;
@@ -1708,12 +1745,8 @@ export component EditorView inherits Rectangle {
                     width: lc.tw;
                     height: 64px;
                     property <float> ts: o.start + (lc.k0 + k + 0.5) * lc.tw / 1px / tl.pps * o.speed;
-                    property <int> f: max(0, min(59, floor(ts / max(0.1, Ed.dur) * 60)));
-                    source: Play.sheet;
-                    source-clip-x: mod(f, 10) * Play.sheet-tw;
-                    source-clip-y: floor(f / 10) * Play.sheet-th;
-                    source-clip-width: Play.sheet-tw;
-                    source-clip-height: Play.sheet-th;
+                    property <int> f: max(0, min(Ed.tiles.length - 1, floor(ts / max(0.1, Ed.dur) * 60)));
+                    source: Ed.tiles[f];
                     image-fit: cover;
                 }
                 Rectangle {

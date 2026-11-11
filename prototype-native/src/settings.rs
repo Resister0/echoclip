@@ -55,7 +55,7 @@ pub fn path() -> PathBuf {
 }
 
 fn read_file(p: &PathBuf) -> Option<Map<String, Value>> {
-    let s = std::fs::read_to_string(p).ok()?;
+    let s = crate::library::read_text(p)?; // QA 11 Nov 2026: without a UTF-8 byte-order mark
     match serde_json::from_str::<Value>(&s).ok()? {
         Value::Object(m) => Some(m),
         _ => None,
@@ -220,6 +220,12 @@ impl Store {
                 let p = val.trim().trim_matches('"').trim_end_matches(['\\', '/']).to_string();
                 if let Some(e) = bad_clips_dir(&p) {
                     return Some(e);
+                }
+                // QA 11 Nov 2026: a typed folder that doesn't exist yet is made now - the library only opens a clips
+                // folder that exists (library.rs find_clips_dir), so after the restart it showed Videos\EchoClips
+                // while new clips went to the typed folder
+                if std::fs::create_dir_all(&p).is_err() {
+                    return Some("Couldn't make that folder - check the drive and the name".into());
                 }
                 self.write(&[("clips_dir", json!(p))])
             }
@@ -406,7 +412,7 @@ pub const NAV: [(&str, &str, &str, &str); 9] = [
     ("audio", "Audio", "", "M4 9v6h4l5 4V5L8 9z M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"),
     ("games", "Games", "", "M7 7h10a5 5 0 0 1 5 5v1a5 5 0 0 1 -5 5h-10a5 5 0 0 1 -5 -5v-1a5 5 0 0 1 5 -5z M7 11v3M5.5 12.5h3 M15.2 11.5a0.8 0.8 0 1 0 1.6 0a0.8 0.8 0 1 0 -1.6 0z M17.2 13.5a0.8 0.8 0 1 0 1.6 0a0.8 0.8 0 1 0 -1.6 0z"),
     ("storage", "Clips & Storage", "STORAGE", "M5 4h14a2 2 0 0 1 2 2v3a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-3a2 2 0 0 1 2 -2z M5 13h14a2 2 0 0 1 2 2v3a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-3a2 2 0 0 1 2 -2z M7 7.5h.01M7 16.5h.01"),
-    ("cloud", "Cloud", "", "M7 18a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 7a4.5 4.5 0 0 1 .5 9z"),
+    ("cloud", "Cloud", "", "M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"),
     ("profile", "Echo Profile", "APP", "M8 8a4 4 0 1 0 8 0a4 4 0 1 0 -8 0z M4 21a8 8 0 0 1 16 0"),
     ("appearance", "Appearance", "", "M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z M6.5 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z M9 7a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z M13.5 7a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z"),
     ("app", "App Settings", "", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0z M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"),
@@ -502,17 +508,23 @@ pub fn bad_clips_dir(p: &str) -> Option<String> {
 fn self_test_row(r: &mut R, setup: bool) {
     let (running, res) = crate::lib_set::self_test_state();
     if running {
-        r.btn = "Testing… (6 s)".into();
-        if !setup {
-            r.opts = vec![opth("wait", "", "Recording a short test clip - play some sound and say something now")];
-        }
+        // 11 Nov 2026: counts down the 6 s of recording (lib_set ticks once a second), then the checks
+        let s = crate::lib_set::self_test_secs();
+        let recording = s < 6;
+        r.btn = if recording { format!("Testing… ({} s)", 6 - s) } else { "Checking…".into() };
+        let line = if recording {
+            "Recording a short test clip - play some sound and say something now"
+        } else {
+            "Checking the test clip - video, picture and every audio track…"
+        };
+        r.opts = vec![opth("wait", "", line)];
         return;
     }
     r.opts = match res {
         None => vec![],
         Some(Err(e)) => vec![opth(if setup { "badline" } else { "bad" }, "", &e)],
         Some(Ok(rows)) if setup => {
-            let bad: Vec<_> = rows.iter().filter(|x| !x.1).map(|(n, _, d)| opth("badline", "", &format!("✗ {n}: {d}"))).collect();
+            let bad: Vec<_> = rows.iter().filter(|x| !x.1).map(|(n, _, d)| opth("badline", "", &format!("× {n}: {d}"))).collect();
             if bad.is_empty() {
                 vec![opth("okline", "", "✓ Everything works - you're ready to clip.")]
             } else {
@@ -1302,10 +1314,21 @@ impl Store {
                     opts: vec![opt("", "Off"), opt("snow", "Snow"), opt("stars", "Stars"), opt("fireflies", "Fireflies"), opt("embers", "Embers"), opt("leaves", "Leaves"), opt("rain", "Rain")],
                     ..Default::default()
                 });
+                // 11 Nov 2026 (1080p vs 1440p): Echo's size on top of the system's scale - uiscale.rs, native_ui.json
+                let size = R {
+                    kind: "seg",
+                    key: "ui_scale".into(),
+                    label: "How big Echo looks".into(),
+                    sub: crate::uiscale::hint(),
+                    value: crate::uiscale::pick(),
+                    opts: crate::uiscale::PICKS.iter().map(|(v, l)| opt(v, l)).collect(),
+                    col: true,
+                    ..Default::default()
+                };
                 (
                     "Appearance".into(),
                     "Pick a look for Echo - the cards show a tiny preview of the app in each theme. Seasonal themes are at the end.".into(),
-                    vec![bx("Theme", rows)],
+                    vec![bx("Theme", rows), bx("Size", vec![size])],
                     String::new(),
                 )
             }
@@ -1571,8 +1594,58 @@ pub struct Palette {
     pub accent2: Color,
     pub hi: Color,
     pub grad: [Color; 3],
+    /// 11 Nov 2026: text / icons drawn ON the accent or its gradient (Save clip, Done, switches, chips): near-black
+    /// on a light accent, white on a dark one (William: white text on a #ffffff accent was invisible)
+    pub on_accent: Color,
+    /// the same for things filled with the highlight colour
+    pub on_hi: Color,
+    /// the highlight used AS text / icon on the panels (selected chips, active buttons): the highlight itself when it
+    /// reads well there, else moved toward the text colour until it has 3:1 (William's #613849 on #1a1a1e: 1.8:1)
+    pub hi_text: Color,
     pub accent_hex: String,
     pub bg_hex: String,
+}
+
+/// WCAG relative luminance of a #rrggbb colour (0 = black, 1 = white)
+fn rel_lum(h: &str) -> f32 {
+    let (r, g, b) = parse_hex(h).unwrap_or((0.0, 0.0, 0.0));
+    let lin = |c: f32| {
+        let c = c / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// the text colour for something filled with `fill`: white, unless white on it is below 2.3:1 (WCAG contrast) - then
+/// near-black. Plain WCAG ("whichever is higher") would turn Ocean / Ember / Rose... dark too, which read fine in
+/// white; this only switches the really light colours (Lime, Winter, Gold, Frost, a white or yellow custom accent).
+/// `c` made readable as text on `on`: mixed toward `toward` in 10 % steps until the WCAG contrast is at least 3:1
+fn readable(c: &str, on: &str, toward: &str) -> String {
+    let contrast = |a: &str, b: &str| {
+        let (x, y) = (rel_lum(a), rel_lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    };
+    let mut out = c.to_string();
+    for i in 1..=10 {
+        if contrast(&out, on) >= 3.0 {
+            break;
+        }
+        out = mix(c, toward, i as f32 * 0.1);
+    }
+    out
+}
+
+pub fn on_colour(fill: &str) -> &'static str {
+    let white_contrast = 1.05 / (rel_lum(fill) + 0.05);
+    if white_contrast < 2.3 {
+        "#0d0d10"
+    } else {
+        "#ffffff"
+    }
 }
 
 const THEMES: [(&str, &str, &str, &str, [&str; 3], &str); 19] = [
@@ -1737,6 +1810,9 @@ pub fn theme_vars(id: &str, accent: &str, bg: &str, hi_c: &str) -> Palette {
         accent2: col(&a2),
         hi: col(&hi),
         grad: [col(&g[0]), col(&g[1]), col(&g[2])],
+        on_accent: col(on_colour(&a)),
+        on_hi: col(on_colour(&hi)),
+        hi_text: col(&readable(&hi, &panel, text)),
         accent_hex: a,
         bg_hex: b,
     }

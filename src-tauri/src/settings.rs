@@ -330,9 +330,11 @@ impl Settings {
     }
 
     pub fn load() -> Self {
+        // QA 11 Nov 2026: a UTF-8 byte-order mark (Windows PowerShell 5 `Set-Content -Encoding utf8`, some editors)
+        // made serde refuse the file = defaults: Videos\EchoClips, signed out, and the next save overwrote it all
         let mut s: Self = fs::read_to_string(Self::path())
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
             .unwrap_or_default();
         // sign-in token and keys are saved encrypted (see `secret`); older files have them in plain text
         let plain = [&s.ec_token, &s.r2_key, &s.r2_secret, &s.rclone_pass].iter()

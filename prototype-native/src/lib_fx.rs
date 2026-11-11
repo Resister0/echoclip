@@ -47,7 +47,7 @@ pub fn ui_get(key: &str) -> serde_json::Value {
 }
 pub fn ui_set(key: &str, val: serde_json::Value) {
     let p = file();
-    let mut v: serde_json::Value = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut v: serde_json::Value = crate::library::read_text(&p).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
     if val.is_null() {
         if let Some(m) = v.as_object_mut() {
             m.remove(key);
@@ -59,13 +59,13 @@ pub fn ui_set(key: &str, val: serde_json::Value) {
 }
 
 fn load() -> (String, bool) {
-    let v: serde_json::Value = std::fs::read_to_string(file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let v: serde_json::Value = crate::library::read_text(&file()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     (v["bgfx"].as_str().unwrap_or("").to_string(), v["bgfx_still"].as_bool().unwrap_or(false))
 }
 
 fn save(kind: &str, still: bool) {
     let p = file();
-    let mut v: serde_json::Value = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut v: serde_json::Value = crate::library::read_text(&p).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
     v["bgfx"] = serde_json::json!(kind);
     v["bgfx_still"] = serde_json::json!(still);
     let _ = std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -246,7 +246,8 @@ fn tick(a: &AppWindow) {
     let (kind, still) = state();
     let win = a.window();
     // Echo's busy(): not in front (= while you play), or the player / editor is open
-    let focused = win.with_winit_window(|w| w.has_focus()).unwrap_or(true);
+    // test hook: ECHO_FX_ANYWAY=1 draws it without focus (a test copy must not take the focus from a running game)
+    let focused = win.with_winit_window(|w| w.has_focus()).unwrap_or(true) || std::env::var_os("ECHO_FX_ANYWAY").is_some();
     let busy = kind.is_empty() || !focused || win.is_minimized() || !win.is_visible() || a.get_player_open() || a.global::<crate::Ed>().get_open();
     if busy {
         if fx.get_on() {

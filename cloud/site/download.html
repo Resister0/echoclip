@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software" data-radius="round" data-ground="sage" data-buttons="arrow" data-motion>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Download Echo - free game clip recorder for Windows &amp; Linux</title>
 <meta name="description" content="Download Echo free: a signed Windows 10/11 installer or portable zip, or Linux as AppImage, Flatpak (Steam Deck, Bazzite) or tar.gz. No ads, no account.">
-<meta name="theme-color" content="#7c5cff">
+<meta name="theme-color" content="#0a0a0a">
 <!-- seo: managed by cloud/site-src/seo.py, edit there -->
 <link rel="canonical" href="https://echoclip.link/download">
 <meta property="og:url" content="https://echoclip.link/download">
@@ -14,50 +14,89 @@
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="en_US">
-<meta property="og:image" content="https://echoclip.link/og.png?v=2">
+<meta property="og:image" content="https://echoclip.link/og.png?v=3">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Echo - lightweight game clipping for any PC. One key saves the last moments. Free, no ads, no account.">
+<meta property="og:image:alt" content="Echo - game clip recorder for Windows and Linux. One key saves the last minutes; about 150 MB of memory while it records. Free, no ads, no account.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
-<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://echoclip.link/#org","name":"Echo","url":"https://echoclip.link/","logo":"https://echoclip.link/icon-512.png","email":"support@echoclip.link","sameAs":["https://github.com/Resister0/echoclip","https://discord.gg/JPVewEfUQs"]},{"@type":"SoftwareApplication","@id":"https://echoclip.link/#app","name":"Echo","alternateName":"EchoClip","applicationCategory":"MultimediaApplication","applicationSubCategory":"Game clip recorder","operatingSystem":"Windows 10, Windows 11, Linux","description":"A free, open-source game clip recorder that won't slow your games down. One key saves the last moments. Lighter than Medal, no ads, no account. Windows & Linux.","url":"https://echoclip.link/","downloadUrl":"https://echoclip.link/download","image":"https://echoclip.link/og.png?v=2","screenshot":"https://echoclip.link/screenshots/library.png","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"publisher":{"@id":"https://echoclip.link/#org"}}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://echoclip.link/#org","name":"Echo","url":"https://echoclip.link/","logo":"https://echoclip.link/icon-512.png","email":"support@echoclip.link","sameAs":["https://github.com/Resister0/echoclip","https://discord.gg/JPVewEfUQs"]},{"@type":"SoftwareApplication","@id":"https://echoclip.link/#app","name":"Echo","alternateName":"EchoClip","applicationCategory":"MultimediaApplication","applicationSubCategory":"Game clip recorder","operatingSystem":"Windows 10, Windows 11, Linux","description":"A free, open-source game clip recorder that won't slow your games down. One key saves the last moments. Lighter than Medal, no ads, no account. Windows & Linux.","url":"https://echoclip.link/","downloadUrl":"https://echoclip.link/download","image":"https://echoclip.link/og.png?v=3","screenshot":"https://echoclip.link/screenshots/library.png","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"},"publisher":{"@id":"https://echoclip.link/#org"}}]}</script>
 <!-- /seo -->
-<link rel="stylesheet" href="/style.css">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/system.css">
+<link rel="stylesheet" href="/assets/motion/motion.css">
+<link rel="stylesheet" href="/assets/layout/layout.css">
+<link rel="stylesheet" href="/echo.css">
+<link rel="stylesheet" href="/sub.css">
 <script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/echo-head.js"></script>
 </head>
 <body>
-<header><div class="wrap">
-  <a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
-  <nav>
-    <a href="/#features" class="hide-s">Features</a>
-    <a href="/#storage">Storage</a>
-    <a href="https://discord.gg/JPVewEfUQs" class="hide-s">Discord</a>
-    <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
-    <a href="/download" class="btn primary small">Download</a>
-  </nav>
-  <div class="themes" id="themes" hidden><p>Theme</p></div>
-</div></header>
-<main>
-<section class="hero dlpage">
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="/#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <a class="menu-card span-4" href="/#library">
+              <div class="panel"><img class="frame__img" src="/img/clip-ow1.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="An Overwatch 2 victory screen saved as a clip" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Clip library</span>
+              <span class="t-small muted">Every clip sorted by game, ready to share</span>
+            </a>
+            <a class="menu-card span-4" href="/#moments">
+              <div class="panel"><img class="frame__img" src="/img/clip-sw2.webp" srcset="/img/clip-sw2-128.webp 128w, /img/clip-sw2-300.webp 300w, /img/clip-sw2.webp 405w, /img/clip-sw2-810.webp 810w, /img/clip-sw2-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="A Star Wars Battlefront II clip of a burning desert" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Never miss the moment</span>
+              <span class="t-small muted">Save, mark and keep every track</span>
+            </a>
+            <a class="menu-card span-4" href="/#switch">
+              <div class="panel ec-imp" role="img" aria-label="Clips brought in from Medal sort into March 2025, the day they were recorded, not today"><div class="ec-imp__row"><p>This week</p><img src="/img/clip-mc2-128.webp" srcset="/img/clip-mc2-128.webp 128w, /img/clip-mc2-300.webp 300w, /img/clip-mc2.webp 405w, /img/clip-mc2-810.webp 810w, /img/clip-mc2-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-cs1-128.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-ow1-128.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div><div class="ec-imp__row ec-imp__in"><p>March 2025</p><img src="/img/clip-gi1-128.webp" srcset="/img/clip-gi1-128.webp 128w, /img/clip-gi1-300.webp 300w, /img/clip-gi1.webp 405w, /img/clip-gi1-810.webp 810w, /img/clip-gi1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-sw1-128.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-eve-128.webp" srcset="/img/clip-eve-128.webp 128w, /img/clip-eve-300.webp 300w, /img/clip-eve.webp 405w, /img/clip-eve-810.webp 810w, /img/clip-eve-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div></div>
+              <span class="t-card">Bring your old clips</span>
+              <span class="t-small muted">They land on the day they were recorded</span>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="/#storage">Storage</a></div>
+      <div class="nav__item"><a class="nav__link" href="/pricing">Echo Cloud</a></div>
+      <div class="nav__item"><a class="nav__link" href="/changelog">Changelog</a></div>
+      <div class="nav__item"><a class="nav__link" href="https://discord.gg/JPVewEfUQs">Discord</a></div>
+    </nav>
+    <div class="nav__actions">
+      <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
+      <div class="themes" id="themes" hidden><p>Theme</p></div>
+      <a class="btn btn--primary" href="/download">Download Echo</a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+<main id="top" class="sub sub--download">
+<section class="sub-hero ec-dlhero">
   <canvas id="sky" aria-hidden="true"></canvas>
   <div class="wrap">
-    <p class="eyebrow">Download</p>
     <h1>Get Echo</h1>
     <p class="lead">Free, no ads, no account needed. Install it once - Echo keeps itself up to date.</p>
     <div class="dl">
-      <a class="btn primary" href="/download/windows" data-os="windows">
+      <a class="btn btn--primary primary" href="/download/windows" data-os="windows">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3zm8.5-1.2L21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zm8.5 0H21V21l-9.5-1.3z"/></svg>
         Download for Windows
       </a>
-      <a class="btn" href="/download/linux" data-os="linux">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>
+      <a class="btn btn--secondary" href="/download/linux" data-os="linux">
+        <svg viewBox="1.68 -0.551 20.817 24.95" fill="currentColor" aria-hidden="true"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg>
         Download for Linux
       </a>
     </div>
     <p class="dl-note" id="dlver">Windows 10/11 and Linux · <a href="/changelog">What's new</a></p>
+    <figure class="ec-dlshot"><img src="/screenshots/library.webp?v=2" width="1920" height="1043" alt="The real Echo app: the clip library with game folders, filters and the recording status" fetchpriority="high"></figure>
   </div>
 </section>
 
@@ -67,13 +106,13 @@
     <p class="sub" id="dlsub">The installer is the easy choice. The others are for when you can't or don't want to install.</p>
     <div class="grid dlgrid">
       <div class="card" data-os="windows"><h3>Windows installer</h3><p>Echo-Setup.exe. Adds Echo to the Start menu and updates itself. <b class="rec">Recommended.</b></p>
-        <a class="btn small primary" href="/download/windows">Download</a></div>
+        <a class="btn btn--primary primary" href="/download/windows">Download</a></div>
       <div class="card" data-os="windows"><h3>Windows, no install</h3><p>A zip: unpack it anywhere and run EchoClip.exe inside. Handy on a PC where you can't install apps.</p>
-        <a class="btn small" href="/download/windows-portable">Download</a></div>
+        <a class="btn btn--secondary" href="/download/windows-portable">Download</a></div>
       <div class="card" data-os="linux" data-main><h3>Linux AppImage</h3><p>One file that runs on most distributions. Updates itself like on Windows.</p>
-        <a class="btn small" href="/download/linux">Download</a></div>
+        <a class="btn btn--secondary" href="/download/linux">Download</a></div>
       <div class="card" data-os="linux"><h3>Linux Flatpak</h3><p>Opens in Discover, GNOME Software or Bazaar and updates from there. Brings everything it needs - <b>best for Steam Deck and Bazzite</b>.</p>
-        <a class="btn small" href="/download/flatpak">Install with Flatpak</a></div>
+        <a class="btn btn--secondary" href="/download/flatpak">Install with Flatpak</a></div>
     </div>
     <p class="sub" style="margin-top:18px">Packaging Echo or no AppImages on your system? There's also a <a href="/download/linux-tar">plain .tar.gz build</a>.</p>
     <p class="sub" style="margin-top:8px">Code signing: Echo's Windows files are built from the public source by GitHub Actions and signed with a
@@ -97,25 +136,35 @@
     <h2>What you need</h2>
     <div class="grid">
       <div class="card"><h3>Windows</h3><p>Windows 10 (1903 or newer) or 11, 64-bit, and a graphics card with a video encoder - practically every NVIDIA, AMD or Intel GPU from the last eight years.</p></div>
-      <div class="card"><h3>Linux</h3><p>A current 64-bit distribution. The AppImage also needs gpu-screen-recorder and ffmpeg installed; the Flatpak brings its own.</p></div>
+      <div class="card"><h3>Linux</h3><p>A current 64-bit distribution; for full compatibility, one newer than Ubuntu 22.04. The AppImage also needs gpu-screen-recorder and ffmpeg installed; the Flatpak brings its own.</p></div>
       <div class="card"><h3>Disk space</h3><p>About 170 MB for Echo and its video player, plus roughly 1.5 GB for a 10-minute replay buffer at the standard quality.</p></div>
     </div>
     <p class="sub" style="margin-top:28px">Stuck? Ask in the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a> or email <a href="mailto:support@echoclip.link">support@echoclip.link</a>.</p>
   </div>
 </section>
 </main>
-<footer><div class="wrap">
-  <span>© 2026 Echo · Made in Denmark · <a href="https://github.com/Resister0/echoclip">Open source (GPL-3.0)</a></span>
-  <nav>
-    <a href="/pricing">Pricing</a>
-    <a href="/changelog">Changelog</a>
-    <a href="https://discord.gg/JPVewEfUQs">Discord</a>
-    <a href="/terms">Terms</a>
-    <a href="/privacy">Privacy</a>
-    <a href="/code-signing">Code signing policy</a>
-    <a href="mailto:support@echoclip.link">support@echoclip.link</a>
-  </nav>
-</div></footer>
+<footer class="footer closing footer--dark ec-subfoot">
+  <div class="wrap">
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+          <p class="footer__lede">A free, open-source game clip recorder for Windows and Linux.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Echo</h3><ul><li><a href="/#features">Features</a></li><li><a href="/#extras">Small extras</a></li><li><a href="/pricing">Echo Cloud</a></li><li><a href="/changelog">Changelog</a></li><li><a href="/vs-medal">Echo vs Medal</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="https://discord.gg/JPVewEfUQs">Discord</a></li><li><a href="mailto:support@echoclip.link">Email support</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Source</h3><ul><li><a href="https://github.com/Resister0/echoclip">GitHub</a></li><li><a href="/code-signing">Code signing policy</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Echo · Open source (GPL-3.0)</span>
+        <span>Product names and logos are trademarks of their owners.</span>
+      </div>
+    </div>
+  </div>
+</footer>
 <script src="/site.js"></script>
+<script type="module" src="/assets/system.js"></script>
+<script type="module" src="/assets/motion/motion.js"></script>
 </body>
 </html>

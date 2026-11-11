@@ -1,0 +1,67 @@
+<!-- title: Echo vs Medal - a lighter, free game clip recorder | desc: Echo and Medal both save the last minutes of your game with one key. Echo uses about a third of the memory, shows no ads and runs on Windows and Linux. -->
+<section class="sub-hero">
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <h1>A comparison with Medal</h1>
+    <p class="lead">Both keep the last minutes of your game ready and save them with one key. Echo is the light one: about a third of Medal's memory while recording, no ads, and it runs on Linux too.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="/download">Download Echo</a>
+      <a class="btn btn--secondary" href="#measured">How we measured</a>
+    </div>
+  </div>
+</section>
+
+<section id="side-by-side">
+  <div class="wrap">
+    <h2>Side by side</h2>
+    <div class="ec-cmp ec-cmp--vs" role="table" aria-label="Echo compared with Medal">
+      <div class="ec-cmp__row ec-cmp__head" role="row"><span role="columnheader"><span class="sr-only">What you get</span></span><div role="columnheader" class="ec-cmp__col ec-cmp__col--own"><b>Echo</b><small>Free, open source</small></div><div role="columnheader" class="ec-cmp__col"><b>Medal</b><small>Free plan</small></div></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Memory while recording</span><span role="cell">~150 MB</span><span role="cell">~470 MB</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">CPU while recording</span><span role="cell">~0.6 %</span><span role="cell">~1.2 %</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Ads</span><span role="cell">None</span><span role="cell">Shown on the free plan, removed with Premium</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Watermark on your clips</span><span role="cell">A small logo you can switch off, free</span><span role="cell">Watermark and outro on downloads, removed with Premium</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Windows 10 and 11</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Linux and Steam Deck</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><small>AppImage or Flatpak</small></span><span role="cell">Not supported</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Open source</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><small>GPL-3.0</small></span><span role="cell"><span class="ec-no" aria-label="No">–</span></span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">Share links that play in Discord</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><small>Echo Cloud, 10 GB free</small></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
+    </div>
+    <p class="fine">Medal facts from Medal's own support and Premium pages, checked 11 November 2026. Medal is a trademark of its owner; Echo isn't connected to it.</p>
+  </div>
+</section>
+
+<section id="measured">
+  <div class="wrap">
+    <h2>Measured on the same PC</h2>
+    <div class="ec-vs-measure">
+      <table class="ec-measure">
+        <caption class="t-label muted" style="text-align:left;caption-side:top;padding-bottom:12px">Echo and Medal, both recording</caption>
+        <tr><th>App</th><th>Memory</th><th>CPU</th></tr>
+        <tr class="us"><td>Echo 2.0</td><td>~150 MB</td><td>~0.6 %</td></tr>
+        <tr><td>Medal</td><td>~470 MB</td><td>~1.2 %</td></tr>
+      </table>
+      <p class="fine">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory is Task Manager's private working set of all the app's processes, encoder included; CPU is the share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), so Medal's own row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <h2>Why Echo is lighter</h2>
+    <div class="grid">
+      <div class="card"><h3>A native app</h3><p>Echo 2.0 is written in Rust and draws its own window. There is no browser engine inside it, so it opens fast and stays small.</p></div>
+      <div class="card"><h3>Your graphics card does the work</h3><p>Recording runs on the video encoder of your NVIDIA, AMD or Intel card, so your games keep their frames.</p></div>
+      <div class="card"><h3>Only what you need</h3><p>No feed, no ads and no account to save a clip. Echo sits in the tray until you press the key.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="switch">
+  <div class="wrap">
+    <h2>Bring your Medal clips along</h2>
+    <p class="sub">Echo finds your Medal folder and copies the clips over in one click. They keep their original dates and game folders, and your Medal files stay where they are. In Echo: Settings → Clips &amp; Storage → Bring in clips from other apps.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="/download">Download Echo</a>
+      <a class="btn btn--secondary" href="/#features">See what Echo does</a>
+    </div>
+  </div>
+</section>

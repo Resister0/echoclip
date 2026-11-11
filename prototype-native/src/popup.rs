@@ -68,6 +68,29 @@ pub fn show(title: &str, sub: &str, ok: bool, icon: &str) {
         echo_core::linuxutil::notify(title, sub, ok);
         return;
     }
+    show_window(title, sub, ok, icon);
+}
+
+/// test hook: ECHO_POPUP_TEST=1 runs ONLY the popup (no main window, recorder, hotkeys or tray - safe next to a
+/// running Echo): three popups 3.5 s apart (short, "Saving clip…", long text), then quits. Set TEMP to a scratch
+/// folder: the log lines go to %TEMP%\clipper_ffmpeg.log. true = it ran (main() returns).
+pub fn test_hook() -> bool {
+    if std::env::var("ECHO_POPUP_TEST").is_err() {
+        return false;
+    }
+    let shows: [(&str, &str, bool); 3] =
+        [("Clip saved", "Last 30 s", true), ("Saving clip…", "Last 30 s", true), ("Couldn't save the clip", "The recorder isn't running - a much longer line here", false)];
+    for (i, (t, s, ok)) in shows.into_iter().enumerate() {
+        slint::Timer::single_shot(Duration::from_millis(800 + 3500 * i as u64), move || show_window(t, s, ok, ""));
+    }
+    slint::Timer::single_shot(Duration::from_millis(800 + 3500 * 3), || {
+        let _ = slint::quit_event_loop();
+    });
+    let _ = slint::run_event_loop_until_quit();
+    true
+}
+
+fn show_window(title: &str, sub: &str, ok: bool, icon: &str) {
     let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let (title, sub, icon) = (title.to_string(), sub.to_string(), icon.to_string());
     let png = icon.strip_prefix("data:image/png;base64,").and_then(echo_core::recorder::unb64);
@@ -121,6 +144,8 @@ fn visible(w: &crate::PopupWin, hwnd: isize, on: bool) {
     // skipped the overlay styles AND the position (reported: "notifs appear in wrong spots" = Windows' default
     // spot, top left). Fetch it now; the first time, make it Echo's no-focus overlay and remember it.
     #[cfg(windows)]
+    SHOWING.with(|s| s.set(on));
+    #[cfg(windows)]
     let hwnd = if hwnd != 0 {
         hwnd
     } else {
@@ -143,16 +168,20 @@ fn visible(w: &crate::PopupWin, hwnd: isize, on: bool) {
     if hwnd != 0 {
         if on {
             // reported: "notifs appear in wrong spots" - Slint's set_position at creation didn't stick (Windows put the
-            // popup at its default spot, top left). Echo's spot, set right before every show: primary monitor's
-            // right edge - 380, top + 24 (scaled).
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetWindowPos, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
-            let sf = w.window().scale_factor();
-            unsafe {
-                let x = GetSystemMetrics(SM_CXSCREEN) - (380.0 * sf) as i32;
-                SetWindowPos(hwnd as _, std::ptr::null_mut(), x, (24.0 * sf) as i32, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            }
+            // popup at its default spot, top left). Place it right before every show, cut to this text's card width.
+            place(w, hwnd);
         }
         echo_core::winutil::overlay_visible(hwnd, on);
+        if on {
+            // once more after the first frames: moving to the main monitor can change the DPI (other scale), and
+            // Slint only picks up the new scale factor on a later event-loop turn
+            let ww = w.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(150), move || {
+                if let Some(w) = ww.upgrade() {
+                    place(&w, hwnd);
+                }
+            });
+        }
         return;
     }
     // Windows, very first popup: the native window isn't made yet - try again on the next event-loop turn (once)
@@ -177,6 +206,100 @@ fn visible(w: &crate::PopupWin, hwnd: isize, on: bool) {
 #[cfg(windows)]
 thread_local! {
     static RETRIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// a popup is meant to be on screen right now (visible(on)); ensure()'s handle timer must not hide it
+    static SHOWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(windows)]
+static GL_LOGGED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static PLACE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Windows: put the popup top right of the main monitor and cut the window to the card's rounded rectangle.
+/// 11 Nov 2026: on a friend's PC (AMD, Echo 2.0.4) the see-through part of the popup drew BLACK - a box around and
+/// left of the card (the window was 360x84 for a 220-340 x 58 card). See-through on Windows = winit's DWM blur-behind
+/// + an OpenGL surface with alpha; whether DWM honours the alpha depends on the GPU driver's OpenGL present path.
+/// With the window region (SetWindowRgn, physical pixels) nothing outside the card is drawn at all, see-through or not.
+#[cfg(windows)]
+fn place(w: &crate::PopupWin, hwnd: isize) {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, CreateRoundRectRgn, SetWindowRgn};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetSystemMetrics, GetWindowRect, SetWindowPos, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+    let h = hwnd as windows_sys::Win32::Foundation::HWND;
+    // 1080p vs 1440p: the popup's scale = system x Echo's size (uiscale.rs), before the window is cut to the card
+    crate::uiscale::fit_popup(w);
+    let sf = w.window().scale_factor();
+    let px = |v: f32| (v * sf).round() as i32;
+    // window rect, client size, and where the client area starts inside the window (0,0 for Echo's frameless popup)
+    let rects = || unsafe {
+        let (mut r, mut c, mut p): (RECT, RECT, POINT) = (std::mem::zeroed(), std::mem::zeroed(), POINT { x: 0, y: 0 });
+        GetWindowRect(h, &mut r);
+        GetClientRect(h, &mut c);
+        ClientToScreen(h, &mut p);
+        (r, c.right - c.left, c.bottom - c.top, p.x - r.left, p.y - r.top)
+    };
+    let (_, cw, _, ox, oy) = rects();
+    // the card's right edge 30 px from the main monitor's right edge, its top 34 px down (where it was before:
+    // window at right - 380 / top 24 with the old 10 px margin)
+    unsafe {
+        SetWindowPos(h, std::ptr::null_mut(), GetSystemMetrics(SM_CXSCREEN) - px(30.0) - (ox + cw), px(34.0) - oy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    // moving can change the DPI and with it the size: read again
+    let (r, cw, ch, ox, oy) = rects();
+    let card = px(w.get_card_w()).clamp(1, cw.max(1));
+    let d = px(28.0) + 2; // 2 x the card's 14 px corner radius
+    // 1 px extra all round so the card's anti-aliased border isn't cut (CreateRoundRectRgn leaves out right / bottom)
+    let ok = unsafe {
+        let rgn = CreateRoundRectRgn(ox + cw - card - 1, oy - 1, ox + cw + 2, oy + ch + 2, d, d);
+        !rgn.is_null() && SetWindowRgn(h, rgn, 1) != 0 // the system owns the region from here
+    };
+    if !PLACE_LOGGED.swap(true, Ordering::Relaxed) {
+        let (os, gpu) = crate::specs::os_gpu();
+        echo_core::recorder::log_line(&format!(
+            "popup: {os}, GPU '{gpu}', scale {sf}, window {}x{} px (client {cw}x{ch} at +{ox}+{oy}), card {card}x{ch} px, cut to the card: {}, {}",
+            r.right - r.left,
+            r.bottom - r.top,
+            if ok { "yes" } else { "FAILED" },
+            see_through_info(h)
+        ));
+    }
+}
+
+/// what decides whether the popup's see-through part works: the window's pixel format (alpha bits, DWM composition),
+/// DWM blur-behind (what winit uses for transparent windows) and the "Transparency effects" setting
+#[cfg(windows)]
+fn see_through_info(h: windows_sys::Win32::Foundation::HWND) -> String {
+    use windows_sys::Win32::Graphics::Dwm::{DwmEnableBlurBehindWindow, DwmIsCompositionEnabled, DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND};
+    use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, GetDC, ReleaseDC};
+    use windows_sys::Win32::Graphics::OpenGL::{DescribePixelFormat, GetPixelFormat, PFD_SUPPORT_COMPOSITION, PIXELFORMATDESCRIPTOR};
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    unsafe {
+        let dc = GetDC(h);
+        let n = GetPixelFormat(dc);
+        let mut pfd: PIXELFORMATDESCRIPTOR = std::mem::zeroed();
+        let pf = if n > 0 && DescribePixelFormat(dc, n, std::mem::size_of::<PIXELFORMATDESCRIPTOR>() as u32, &mut pfd) != 0 {
+            format!("pixel format {n}: {} alpha bits, composition {}", pfd.cAlphaBits, if pfd.dwFlags & PFD_SUPPORT_COMPOSITION != 0 { "yes" } else { "no" })
+        } else {
+            format!("pixel format {n} (unknown)")
+        };
+        ReleaseDC(h, dc);
+        let mut comp = 0;
+        DwmIsCompositionEnabled(&mut comp);
+        // the same call winit makes for a transparent window (empty blur region = see-through where alpha < 1);
+        // made again here only to learn its result, which winit doesn't show
+        let rgn = CreateRectRgn(0, 0, -1, -1);
+        let bb = DWM_BLURBEHIND { dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION, fEnable: 1, hRgnBlur: rgn, fTransitionOnMaximized: 0 };
+        let hr = DwmEnableBlurBehindWindow(h, &bb);
+        DeleteObject(rgn);
+        let w = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let (k, v) = (w(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"), w("EnableTransparency"));
+        let (mut val, mut size) = (0u32, 4u32);
+        let te = match RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut val as *mut u32 as *mut _, &mut size) {
+            0 if val == 0 => "off",
+            0 => "on",
+            _ => "unknown",
+        };
+        format!("{pf}, DWM composition {}, blur-behind hr {hr:#x}, Transparency effects {te}", if comp != 0 { "on" } else { "off" })
+    }
 }
 
 /// UI thread: the popup window, made on first use (hidden right after making on Windows).
@@ -185,8 +308,21 @@ fn ensure() -> Option<(crate::PopupWin, isize)> {
         return Some(x);
     }
     let w = crate::PopupWin::new().ok()?;
+    crate::uiscale::hook_popup(&w);
     #[cfg(windows)]
     RETRIED.with(|r| r.set(false));
+    // log which OpenGL driver draws the popup (once per run): see-through depends on it
+    #[cfg(windows)]
+    let _ = w.window().set_rendering_notifier(|state, api| {
+        if let (slint::RenderingState::RenderingSetup, slint::GraphicsAPI::NativeOpenGL { get_proc_address }) = (state, api) {
+            if !GL_LOGGED.swap(true, Ordering::Relaxed) {
+                use glow::HasContext;
+                let gl = unsafe { glow::Context::from_loader_function_cstr(|s| get_proc_address(s)) };
+                let (r, v) = unsafe { (gl.get_parameter_string(glow::RENDERER), gl.get_parameter_string(glow::VERSION)) };
+                echo_core::recorder::log_line(&format!("popup: drawn with OpenGL '{r}' ({v})"));
+            }
+        }
+    });
     POPUP_NEXT.store(true, Ordering::SeqCst);
     let _ = w.show();
     POPUP_NEXT.store(false, Ordering::SeqCst);
@@ -202,12 +338,8 @@ fn ensure() -> Option<(crate::PopupWin, isize)> {
         }
         if hwnd != 0 {
             echo_core::winutil::make_overlay(hwnd);
-            // top right of the main monitor (24 px from the top, like Echo)
-            let (sw, sf) = unsafe {
-                (windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSCREEN), w.window().scale_factor())
-            };
-            // Echo (make_toast): x = right edge - 380, y = 24 (was 14 here)
-            w.window().set_position(slint::PhysicalPosition::new(sw - (380.0 * sf) as i32, (24.0 * sf) as i32));
+            // top right of the main monitor, cut to the card (see place)
+            place(&w, hwnd);
             echo_core::winutil::overlay_visible(hwnd, false);
         } else {
             // the handle often isn't there yet right after show(): the empty, see-through popup then stayed shown -
@@ -226,15 +358,20 @@ fn ensure() -> Option<(crate::PopupWin, isize)> {
                     _ => 0,
                 };
                 if h != 0 {
-                    echo_core::winutil::make_overlay(h);
-                    echo_core::winutil::overlay_visible(h, false);
-                    WIN.with(|x| {
-                        if let Some((_, slot)) = x.borrow_mut().as_mut() {
-                            if *slot == 0 {
+                    // 11 Nov 2026: this hid the window even while the very first popup was showing (made on first use,
+                    // e.g. the first save outside a game: that popup never appeared). visible() may have set it up
+                    // already; else set it up here and keep it shown if a popup is up right now.
+                    let known = WIN.with(|x| x.borrow().as_ref().is_some_and(|(_, slot)| *slot != 0));
+                    if !known {
+                        echo_core::winutil::make_overlay(h);
+                        place(&w, h);
+                        echo_core::winutil::overlay_visible(h, SHOWING.with(|s| s.get()));
+                        WIN.with(|x| {
+                            if let Some((_, slot)) = x.borrow_mut().as_mut() {
                                 *slot = h;
                             }
-                        }
-                    });
+                        });
+                    }
                     t2.stop();
                 } else if tries.get() >= 100 {
                     let _ = w.hide();

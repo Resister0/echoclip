@@ -101,8 +101,7 @@ pub fn wire(a: &AppWindow) {
 
 /// Echo's settings.json says the Welcome screen is done (read straight from the file: cheap, no keyring).
 fn setup_done() -> bool {
-    std::fs::read_to_string(crate::settings::path())
-        .ok()
+    crate::library::read_text(&crate::settings::path())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("setup_done").and_then(|b| b.as_bool()))
         .unwrap_or(false)

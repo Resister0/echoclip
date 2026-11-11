@@ -1294,6 +1294,148 @@ fn skip_enc(venc: &[&str]) -> bool {
     venc.iter().any(|a| a.ends_with("_amf") || a.ends_with("_qsv") || (a.ends_with("_nvenc") && !cuda))
 }
 
+// ---- fit-size (11 Nov 2026): Copy for Discord lands just under the limit. A friend's 20 MB copy of a 30 MB clip came
+// out at 5 MB (one pass, no check below the limit). Now: aim at 95 %, measure, redo when it's over or far under.
+/// aim at this share of the limit
+const FIT_AIM: f64 = 0.95;
+/// a copy under this share of the limit (of a clip that was bigger) is redone with more bitrate
+const FIT_LOW: f64 = 0.85;
+/// a cached copy under this share of the limit is made again (old copies could be 25 %)
+pub const FIT_REUSE: f64 = 0.80;
+/// at most this many encodes per copy
+const FIT_PASSES: usize = 3;
+/// H.264 encoders for the size-fitting copies, tried in this order (CBR: the size follows the bitrate)
+pub const FIT_ENCS: [&[&str]; 4] = [
+    &["-c:v", "h264_amf", "-quality", "quality", "-rc", "cbr"],
+    &["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "cbr"],
+    &["-c:v", "h264_qsv"],
+    &["-c:v", "libx264", "-preset", "veryfast"],
+];
+
+/// a clip's length in seconds, from the file itself
+pub fn probe_len(clip: &Path) -> Option<f64> {
+    let o = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(clip).output().ok()?;
+    String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok().filter(|d| *d > 0.0)
+}
+
+/// Re-encode `src` (`dur` s, `h` px high) into `out` so it lands between FIT_LOW and 100 % of `limit` bytes:
+/// up to FIT_PASSES encodes, each one's video bitrate scaled by how far the one before missed, the same encoder
+/// every pass (the first of `encs` that works); when a pass's own length shows `dur` was wrong, the next pass starts
+/// again from the right length. Keeps the biggest copy that fits. `wm(th)` = Echo's watermark graph
+/// ("[v0]..[out]") for an output `th` px high. Returns (size, passes).
+#[allow(clippy::too_many_arguments)]
+pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path, limit: u64, dur: f64, h: u32, audio: bool,
+                   encs: &[&[&str]], wm: &dyn Fn(u32) -> Option<String>, progress: &dyn Fn(f64)) -> Result<(u64, usize), String> {
+    let mb = limit as f64 / 1e6;
+    let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let aim = limit as f64 * FIT_AIM;
+    let mut dur = dur;
+    let (mut scale, mut enc, mut best, mut passes, mut prev) = (1.0f64, None::<usize>, 0u64, 0usize, None::<(f64, u64)>);
+    let t0 = Instant::now();
+    let done = |r: Result<(u64, usize), String>| {
+        let _ = fs::remove_file(tmp);
+        progress(1.0);
+        r
+    };
+    for attempt in 0..FIT_PASSES {
+        let total = aim * 8.0 / 1000.0 / dur;   // kbit/s for everything at the aim
+        let a_kbps = if !audio { 0.0 } else if total > 3000.0 { 160.0 } else if total > 800.0 { 96.0 } else { 64.0 };
+        let v_kbps = (total - a_kbps) * scale;
+        if v_kbps < 120.0 {
+            if best > 0 { break; }
+            return done(Err(format!("this clip is too long to fit in {mb} MB - trim it first")));
+        }
+        // lower resolution / fps when the bitrate is low, so it stays sharp instead of blocky
+        let th = if v_kbps >= 8000.0 { h } else if v_kbps >= 4000.0 { 1080 } else if v_kbps >= 1800.0 { 720 } else if v_kbps >= 800.0 { 540 } else { 360 }.min(h);
+        let mut vf: Vec<String> = Vec::new();
+        if th < h { vf.push(format!("scale=-2:{th}")); }
+        if v_kbps < 1800.0 { vf.push("fps=30".into()); }
+        vf.push(TV_YUV.into());
+        let ek = v_kbps * fit_under();
+        let (b, buf, ab) = (format!("{}k", ek as u64), format!("{}k", (ek * 2.0) as u64), format!("{}k", a_kbps as u64));
+        let run = |venc: &[&str]| -> Result<bool, String> {
+            if skip_enc(venc) { return Ok(false); }
+            let mut c = ff();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
+            match wm(th) {
+                Some(w) => { c.args(["-vf", &format!("[in]{}[v0];{w}", vf.join(","))]); }
+                None => { c.args(["-vf", &vf.join(",")]); }
+            }
+            c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
+            if audio { c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]); }
+            let mut child = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(tmp)
+                .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(err)?;
+            // ffmpeg reports "out_time_us=<microseconds>" while encoding
+            if let Some(o) = child.stdout.take() {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(o).lines().map_while(Result::ok) {
+                    if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                        let f = (v / 1e6 / dur).clamp(0.0, 1.0);
+                        progress(((attempt as f64 + f) / (attempt as f64 + 1.0)).min(0.99));
+                    }
+                }
+            }
+            let st = child.wait().map_err(err)?;
+            Ok(st.success() && fs::metadata(tmp).map_or(false, |m| m.len() > 0))
+        };
+        // the encoder that worked first comes first again (same encoder = the miss is a good correction)
+        let order: Vec<usize> = enc.into_iter().chain((0..encs.len()).filter(|i| Some(*i) != enc)).collect();
+        let mut ok = false;
+        for i in order {
+            if run(encs[i])? {
+                enc = Some(i);
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            if best > 0 { break; }
+            return done(Err("ffmpeg could not shrink this clip".into()));
+        }
+        passes += 1;
+        let got = fs::metadata(tmp).map(|m| m.len()).unwrap_or(u64::MAX);
+        // the copy's own length: when the clip's length was read wrong, every bitrate above was off by as much
+        let real = probe_len(tmp).filter(|r| (r / dur - 1.0).abs() > 0.05);
+        log_line(&format!("shrink: {name} -> {:.1} MB ({:.0} % of {mb} MB, {v_kbps:.0} kbps, {th}p, {}, pass {passes}{}) in {:.1}s",
+            got as f64 / 1e6, got as f64 * 100.0 / limit as f64, enc.map_or("?", |i| encs[i][1]),
+            real.map_or(String::new(), |r| format!(", length {dur:.1}s was wrong: {r:.1}s")), t0.elapsed().as_secs_f32()));
+        if got <= limit && got > best {
+            let _ = fs::remove_file(out);
+            if let Err(e) = fs::rename(tmp, out) { return done(Err(err(e))); }
+            best = got;
+        }
+        if got <= limit && got as f64 >= limit as f64 * FIT_LOW {
+            break;   // close enough
+        }
+        if let Some(r) = real {
+            dur = r;   // start again from the right length
+            scale = 1.0;
+            prev = None;
+            continue;
+        }
+        // more bitrate didn't make it bigger: the encoder can't fill it (simple picture) - keep the best one
+        if got <= limit && prev.is_some_and(|(pv, pg)| v_kbps > pv * 1.1 && (got as f64) < pg as f64 * 1.05) {
+            break;
+        }
+        prev = Some((v_kbps, got));
+        // next pass: scale the video bitrate by this pass's miss (video only - the audio lands where it's told)
+        let a_bytes = a_kbps * 1000.0 / 8.0 * dur;
+        let miss = ((aim - a_bytes) / (got as f64 - a_bytes).max(1.0)).clamp(0.25, 6.0);
+        scale *= if got > limit { miss * 0.98 } else { miss };
+    }
+    if best > 0 { done(Ok((best, passes))) } else { done(Err(format!("could not get this clip under {mb} MB"))) }
+}
+
+/// test hook: ECHO_FIT_UNDER=0.25 gives the encoder a quarter of the bitrate (= an encoder that undershoots 4x)
+#[cfg(test)]
+fn fit_under() -> f64 {
+    std::env::var("ECHO_FIT_UNDER").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0)
+}
+#[cfg(not(test))]
+fn fit_under() -> f64 {
+    1.0
+}
+
 /// Run ffmpeg `c` (with "-progress pipe:1 -nostats" in its options) until it ends: `progress` gets 0..1 of `dur`
 /// seconds from its out_time_us lines, `cancel` stops it. true = it finished OK. (av1-upload-fix, 10 Nov 2026)
 fn ffmpeg_watch(c: &mut Command, dur: f64, progress: &dyn Fn(f64), cancel: &dyn Fn() -> bool) -> bool {
@@ -4231,80 +4373,21 @@ impl Recorder {
             // older copies could have broken (too dark) colours: only reuse ones tagged BT.709
             let colours_ok = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
                 .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
-            if m.len() > 0 && m.len() <= limit && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+            // fit-size: a copy far under the limit (made before 11 Nov 2026) is made again
+            if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok {
                 return Ok(out.to_string_lossy().into());   // made earlier
             }
         }
-        let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
+        // fit-size (11 Nov 2026): the length from the file itself, not the cached .dur - a stale, too long .dur
+        // made the bitrate (and the copy) far too small
+        let dur = probe_len(&src).or_else(|| self.thumb(path).ok().map(|t| t.duration)).unwrap_or(0.0);
         if dur <= 0.0 {
             return Err("could not read the clip length".into());
         }
         let (_w, h, audio) = self.probe(&src);
-        let tmp = dir.join("shrinking.tmp");
-        let t0 = Instant::now();
-        let mut factor = 0.92;
-        for attempt in 0..3 {
-            let total = limit as f64 * 8.0 / 1000.0 / dur * factor;   // kbit/s for everything
-            let a_kbps = if !audio { 0.0 } else if total > 3000.0 { 160.0 } else if total > 800.0 { 96.0 } else { 64.0 };
-            let v_kbps = total - a_kbps;
-            if v_kbps < 120.0 {
-                return Err(format!("this clip is too long to fit in {} MB - trim it first", target_mb));
-            }
-            // lower resolution / fps when the bitrate is low, so it stays sharp instead of blocky
-            let th = if v_kbps >= 8000.0 { h } else if v_kbps >= 4000.0 { 1080 } else if v_kbps >= 1800.0 { 720 } else if v_kbps >= 800.0 { 540 } else { 360 }.min(h);
-            let mut vf: Vec<String> = Vec::new();
-            if th < h { vf.push(format!("scale=-2:{th}")); }
-            if v_kbps < 1800.0 { vf.push("fps=30".into()); }
-            vf.push(TV_YUV.into());
-            let b = format!("{}k", v_kbps as u64);
-            let buf = format!("{}k", (v_kbps * 2.0) as u64);
-            let ab = format!("{}k", a_kbps as u64);
-            let run = |venc: &[&str]| -> Result<bool, String> {
-                if skip_enc(venc) { return Ok(false); }
-                let mut c = ffmpeg();
-                c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
-                match self.watermark_graph("v0", "out", th) {
-                    Some(w) => { c.args(["-vf", &format!("[in]{}[v0];{w}", if vf.is_empty() { "null".to_string() } else { vf.join(",") })]); }
-                    None => if !vf.is_empty() { c.args(["-vf", &vf.join(",")]); },
-                }
-                c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
-                if audio { c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]); }
-                let mut child = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp)
-                    .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(err)?;
-                // ffmpeg reports "out_time_us=<microseconds>" while encoding
-                if let Some(out) = child.stdout.take() {
-                    use std::io::BufRead;
-                    for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                        if let Some(v) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
-                            let f = (v / 1e6 / dur).clamp(0.0, 1.0);
-                            progress((attempt as f64 + f) / (attempt as f64 + 1.0));
-                        }
-                    }
-                }
-                let st = child.wait().map_err(err)?;
-                Ok(st.success() && fs::metadata(&tmp).map_or(false, |m| m.len() > 0))
-            };
-            progress(0.0);
-            let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-rc", "cbr"])?
-                || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "cbr"])?
-                || run(&["-c:v", "h264_qsv"])?
-                || run(&["-c:v", "libx264", "-preset", "veryfast"])?;
-            if !ok {
-                let _ = fs::remove_file(&tmp);
-                return Err("ffmpeg could not shrink this clip".into());
-            }
-            let got = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(u64::MAX);
-            log_line(&format!("shrink: {} -> {:.1} MB (target {target_mb} MB, {v_kbps:.0} kbps, {th}p, try {attempt}) in {:.1}s",
-                name.to_string_lossy(), got as f64 / 1e6, t0.elapsed().as_secs_f32()));
-            if got <= limit {
-                let _ = fs::remove_file(&out);
-                fs::rename(&tmp, &out).map_err(err)?;
-                return Ok(out.to_string_lossy().into());
-            }
-            factor *= limit as f64 / got as f64 * 0.95;   // overshot: aim lower
-        }
-        let _ = fs::remove_file(&tmp);
-        Err(format!("could not get this clip under {target_mb} MB"))
+        let wm = |th: u32| self.watermark_graph("v0", "out", th);
+        fit_to_size(&ffmpeg, &src, &dir.join("shrinking.tmp"), &out, limit, dur, h, audio, &FIT_ENCS, &wm, progress)?;
+        Ok(out.to_string_lossy().into())
     }
 
     /// Import videos dropped onto the window: copy (or convert) them into the clips folder as .mp4.
@@ -4669,7 +4752,13 @@ impl Recorder {
             fc += &format!("[v{i}][a{i}]");
         }
         fc += &format!("concat=n={}:v=1:a=1[v0][a]", paths.len());
-        match self.watermark_graph("v0", "v", h) {
+        // QA 11 Nov 2026 (B35): an editor export ("... (edit)") or a montage already carries the watermark - a 2nd one
+        // was drawn on top of it
+        let marked = paths.iter().any(|p| {
+            let n = Path::new(p).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+            n.contains("(edit") || n.starts_with("montage ")
+        });
+        match (!marked).then(|| self.watermark_graph("v0", "v", h)).flatten() {
             Some(w) => fc += &format!(";{w}"),
             None => fc += ";[v0]null[v]",
         }
@@ -4895,7 +4984,9 @@ impl Recorder {
         let tmp = PathBuf::from(format!("{}.tmp", out.to_string_lossy()));
         let t0 = Instant::now();
         progress(0.0);
-        let run = |venc: &[&str], vaapi: bool| -> bool {
+        // hw: the AV1 clip is decoded on the GPU too (faster-share-links, 11 Nov 2026: this ffmpeg decodes AV1 on the CPU
+        // with libaom - 60 s for a 3 min clip, 33 s on the GPU, same file); the CPU is the fallback
+        let run = |venc: &[&str], vaapi: bool, hw: bool| -> bool {
             if skip_enc(venc) || cancel() { return false; }
             let mut c = ffmpeg();
             c.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-y"]);
@@ -4903,18 +4994,21 @@ impl Recorder {
                 let Some(d) = vaapi_device() else { return false };
                 c.args(["-vaapi_device", &d]);
             }
+            if hw { c.args(cloudsave::AMF_DEC); }
             c.arg("-i").arg(src).args(["-map", "0", "-c:a", "copy"]);
             if vaapi { c.args(["-vf", "format=nv12,hwupload"]); }
             c.args(venc).args(["-movflags", "+faststart", "-f", "mp4"]).arg(&tmp).stderr(Stdio::null());
             ffmpeg_watch(&mut c, dur, progress, cancel) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+                && (!hw || cloudsave::video_secs(&tmp) >= cloudsave::video_secs(src) * 0.97)
         };
         // Linux: VA-API (AMD / Intel GPU) like Echo Cloud's copy (cloudsave.rs, constant QP 23 there too) - libx264 on
         // the CPU took 51 s for a 3 min 1080p clip, VA-API 31 s and 40 % smaller (av1-upload-fix, 10 Nov 2026)
-        let ok = run(&["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b], false)
-            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b], false)
-            || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b], false)
-            || (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "23"], true))
-            || run(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b, "-pix_fmt", "yuv420p"], false);
+        let amf = ["-c:v", "h264_amf", "-quality", "quality", "-b:v", &b, "-maxrate", &b];
+        let ok = (cfg!(windows) && run(&amf, false, true)) || run(&amf, false, false)
+            || run(&["-c:v", "h264_nvenc", "-preset", "p5", "-b:v", &b, "-maxrate", &b], false, false)
+            || run(&["-c:v", "h264_qsv", "-b:v", &b, "-maxrate", &b], false, false)
+            || (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "23"], true, false))
+            || run(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &b, "-maxrate", &b, "-bufsize", &b, "-pix_fmt", "yuv420p"], false, false);
         if cancel() {
             let _ = fs::remove_file(&tmp);
             log_line(&format!("av1: H.264 copy of {name} stopped (cancelled)"));
@@ -7648,6 +7742,12 @@ impl Recorder {
                 return Ok(other);
             }
         }
+        // faster-share-links (11 Nov 2026): its upload is already under way (shared first, smaller copy to come);
+        // a long clip's link: the clip as it is first, its smaller copy replaces it in the background (cloudsave.rs)
+        if to_ec && self.swap_pending(&rel) { up_done(); return Ok(None); }
+        if to_ec && for_link {
+            if let Some(r) = self.share_first(path, &rel, &cp, &ec_key, hash.as_deref(), share_only, made) { up_done(); return r; }
+        }
         // Echo Cloud gets a smaller copy (cloudsave.rs); the user's own clouds always get the clip itself, AV1 too
         // (10 Nov 2026 - they used to get an AV1 clip's H.264 copy; its share link now plays an H.264 share
         // copy next to it instead, cloudsave.rs link_via_own_copy)
@@ -7691,12 +7791,15 @@ impl Recorder {
             // allow_dup: /upload/check above already said there's no other copy (or it couldn't be moved)
             if let Some(h) = &hash { req["hash"] = serde_json::json!(h); req["allow_dup"] = serde_json::json!(true); }
             if share_only { req["share_only"] = serde_json::json!(true); }
+            // faster-share-links: what this file is, for the server (the daily sweep looks for originals)
+            req["fmt"] = serde_json::json!(if temp { "small" } else if is_copy { "keep" } else { self.orig_fmt(&orig, &rel) });
             match ec_call(&ec_api(&cfg), "POST", "/upload", &cfg.ec_token, Some(req)) {
                 Ok(j) => {
                     via_server = true;
                     kept_share_only = j["share_only"].as_bool().unwrap_or(false);
                     let url = j["url"].as_str().unwrap_or("").to_string();
                     let rel2 = rel.clone();
+                    let tp = Instant::now();
                     r = crate::net::put_file(&url, Path::new(path), move |b, t| {
                         let mut p = UP_PROGRESS.lock().unwrap();
                         if p.rel == rel2 { p.got = b; p.total = t; }
@@ -7704,6 +7807,8 @@ impl Recorder {
                         if UP_CANCEL.load(Ordering::Relaxed) { return "Upload cancelled".to_string(); }
                         log_line(&format!("echo cloud: upload of {rel} failed: {e}")); format!("Upload to Echo Cloud failed: {e}")
                     });
+                    // faster-share-links: this PC's upload speed (share first only where it's quicker)
+                    if r.is_ok() { self.note_speed(Some((fsize, tp.elapsed().as_secs_f64())), None); }
                 }
                 // older server without /upload: the keys still work
                 Err(e) if e.contains("not found") => log_line("echo cloud: server has no /upload yet - uploading with keys"),
@@ -8356,12 +8461,18 @@ impl Recorder {
             None => TV_YUV.to_string(),
         };
         let t0 = Instant::now();
-        let run = |venc: &[&str]| -> bool {
+        // faster-share-links (11 Nov 2026): an AV1 clip that's already TV-range BT.709 (Echo's own) is decoded on the
+        // GPU and needs no colour filter - 60 s -> 33 s for a 3 min clip, the same file; the CPU is the fallback
+        let gpu = cfg!(windows) && av1 && style == "off" && cloudsave::tv_bt709(src);
+        let run = |venc: &[&str], hw: bool| -> bool {
             if skip_enc(venc) { return false; }
             let mut c = ffmpeg();
-            c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0"]);
+            c.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            if hw { c.args(cloudsave::AMF_DEC); }
+            c.arg("-i").arg(src).args(["-map", "0:v:0"]);
             if audio { c.args(["-map", "0:a:0", "-c:a", "copy"]); }
-            c.args(["-vf", &graph]).args(venc).args(["-b:v", &b, "-maxrate", &b]).args(TV_TAGS)
+            if !hw { c.args(["-vf", &graph]); }
+            c.args(venc).args(["-b:v", &b, "-maxrate", &b]).args(TV_TAGS)
                 .args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp)
                 .stdout(Stdio::piped()).stderr(Stdio::null());
             let Ok(mut child) = c.spawn() else { return false };
@@ -8374,11 +8485,13 @@ impl Recorder {
                 }
             }
             child.wait().map_or(false, |s| s.success()) && fs::metadata(&tmp).map_or(false, |m| m.len() > 0)
+                && (!hw || cloudsave::video_secs(&tmp) >= cloudsave::video_secs(src) * 0.97)
         };
-        let ok = run(&["-c:v", "h264_amf", "-quality", "speed"])
-            || run(&["-c:v", "h264_nvenc", "-preset", "p3"])
-            || run(&["-c:v", "h264_qsv", "-preset", "veryfast"])
-            || run(&["-c:v", "libx264", "-preset", "superfast", "-pix_fmt", "yuv420p"]);
+        let ok = (gpu && run(&["-c:v", "h264_amf", "-quality", "speed"], true))
+            || run(&["-c:v", "h264_amf", "-quality", "speed"], false)
+            || run(&["-c:v", "h264_nvenc", "-preset", "p3"], false)
+            || run(&["-c:v", "h264_qsv", "-preset", "veryfast"], false)
+            || run(&["-c:v", "libx264", "-preset", "superfast", "-pix_fmt", "yuv420p"], false);
         if !ok {
             let _ = fs::remove_file(&tmp);
             return Err("Couldn't make the share copy - see the log".into());
@@ -8912,6 +9025,9 @@ pub fn presentmon_exe() -> Result<PathBuf, String> {
 /// Returns (app, average FPS, 1% low FPS, frames).
 pub fn fps_stats(csv: &Path, from: f64, to: f64) -> Option<(String, f64, f64, usize)> {
     let text = fs::read_to_string(csv).ok()?;
+    // 11 Nov 2026: PresentMon 2.4.1 starts the file with a byte-order mark - "\u{feff}Application" never matched
+    // "application", so every FPS test ended in "Not enough frames measured" (trim() keeps the mark)
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut lines = text.lines();
     let head: Vec<String> = lines.next()?.split(',').map(|h| h.trim().to_lowercase()).collect();
     let col = |names: &[&str]| head.iter().position(|h| names.contains(&h.as_str()));
@@ -9221,6 +9337,29 @@ fn merge_sample(b: &mut Vec<u8>) -> (u32, u32) {
 }
 
 #[cfg(test)]
+mod fps_stats_tests {
+    use super::*;
+
+    #[test]
+    fn reads_presentmon_csv_with_a_byte_order_mark() {
+        // PresentMon 2.4.1 --v1_metrics: BOM + header, then one line per frame (60 fps game, dwm skipped)
+        let mut csv = String::from("\u{feff}Application,ProcessID,TimeInSeconds,msBetweenPresents\n");
+        for i in 0..1200 {
+            csv.push_str(&format!("Game.exe,1,{:.4},16.667\n", i as f64 / 60.0));
+            csv.push_str(&format!("dwm.exe,2,{:.4},8.333\n", i as f64 / 60.0));
+        }
+        let p = std::env::temp_dir().join(format!("echo_fps_test_{}.csv", std::process::id()));
+        fs::write(&p, csv).unwrap();
+        let r = fps_stats(&p, 2.0, 12.0);
+        let _ = fs::remove_file(&p);
+        let (app, avg, low, n) = r.expect("the BOM must not hide the Application column");
+        assert_eq!(app, "Game.exe");
+        assert!((avg - 60.0).abs() < 0.5 && (low - 60.0).abs() < 0.5, "avg {avg} low {low}");
+        assert_eq!(n, 600);
+    }
+}
+
+#[cfg(test)]
 mod import_probe_tests {
     use super::*;
 
@@ -9282,5 +9421,66 @@ mod av1_upload_tests {
         assert!(t0.elapsed() < Duration::from_secs(10));
         let _ = fs::remove_dir_all(&dir);
         eprintln!("progress seen: {:.2}", last.get());
+    }
+}
+
+#[cfg(test)]
+mod fit_size_tests {
+    use super::*;
+
+    /// fit-size (11 Nov 2026): real Discord copies of every .mp4 in ECHO_FIT_DIR (scratch copies, never the real clips)
+    /// for every size in ECHO_FIT_MB (default 20,50,100) with AMF and x264; prints a table, checks 85-100 %.
+    /// cargo test -p echo-core --release --lib fit_real_clips -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fit_real_clips() {
+        let Ok(dir) = std::env::var("ECHO_FIT_DIR") else { return };
+        let mbs: Vec<f64> = std::env::var("ECHO_FIT_MB").unwrap_or("20,50,100".into()).split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let encs: Vec<(&str, usize)> = std::env::var("ECHO_FIT_ENC").unwrap_or("amf,x264".into()).split(',')
+            .filter_map(|e| match e.trim() { "amf" => Some(("amf", 0)), "nvenc" => Some(("nvenc", 1)), "qsv" => Some(("qsv", 2)), "x264" => Some(("x264", 3)), _ => None }).collect();
+        let out_dir = Path::new(&dir).join("out");
+        let _ = fs::create_dir_all(&out_dir);
+        let mut clips: Vec<PathBuf> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "mp4")).collect();
+        clips.sort();
+        println!("| clip | source | length | target | encoder | result | % of target | passes | time |");
+        println!("|---|---|---|---|---|---|---|---|---|");
+        let mut bad = vec![];
+        for src in &clips {
+            let len = fs::metadata(src).unwrap().len();
+            let dur = probe_len(src).unwrap();
+            // ECHO_FIT_DURX=4: pretend the clip is 4x as long (a stale length / an encoder that undershoots 4x)
+            let dur_x: f64 = std::env::var("ECHO_FIT_DURX").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let o = hidden("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type,height", "-of", "csv=p=0"]).arg(src).output().unwrap();
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let h = s.lines().find_map(|l| l.strip_prefix("video,").and_then(|v| v.trim().parse().ok())).unwrap_or(1080);
+            let audio = s.lines().any(|l| l.starts_with("audio"));
+            let name = src.file_name().unwrap().to_string_lossy().to_string();
+            for &mb in &mbs {
+                let limit = (mb * 1e6) as u64;
+                if len <= limit {
+                    println!("| {name} | {:.1} MB | {dur:.0} s | {mb} MB | - | fits, copied as is | - | 0 | - |", len as f64 / 1e6);
+                    continue;
+                }
+                for &(en, i) in &encs {
+                    let out = out_dir.join(format!("{en}-{mb}-{name}"));
+                    let t = Instant::now();
+                    let r = fit_to_size(&ffmpeg, src, &out_dir.join("t.tmp"), &out, limit, dur * dur_x, h, audio, &FIT_ENCS[i..=i], &|_| None, &|_| {});
+                    let secs = t.elapsed().as_secs_f32();
+                    match r {
+                        Ok((got, passes)) => {
+                            let pct = got as f64 * 100.0 / limit as f64;
+                            println!("| {name} | {:.1} MB | {dur:.0} s | {mb} MB | {en} | {:.2} MB | {pct:.1} % | {passes} | {secs:.0} s |", len as f64 / 1e6, got as f64 / 1e6);
+                            if !(85.0..=100.0).contains(&pct) { bad.push(format!("{name} {mb} {en}: {pct:.1} %")); }
+                        }
+                        Err(e) => {
+                            println!("| {name} | {:.1} MB | {dur:.0} s | {mb} MB | {en} | ERROR {e} | - | - | {secs:.0} s |", len as f64 / 1e6);
+                            bad.push(format!("{name} {mb} {en}: {e}"));
+                        }
+                    }
+                    let _ = fs::remove_file(&out);
+                }
+            }
+        }
+        assert!(bad.is_empty(), "outside 85-100 %: {bad:?}");
     }
 }

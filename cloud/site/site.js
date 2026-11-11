@@ -21,7 +21,11 @@
   // Linux visitors see the Linux download first (and highlighted)
   const ua = navigator.userAgent || "", linux = /Linux|X11/.test(ua) && !/Android/.test(ua);
   const dl = document.querySelector(".dl"), win = dl && dl.querySelector('[data-os="windows"]'), lin = dl && dl.querySelector('[data-os="linux"]');
-  if (linux && win && lin) { dl.insertBefore(lin, win); lin.classList.add("primary"); win.classList.remove("primary"); }
+  if (linux && win && lin) {
+    dl.insertBefore(lin, win); lin.classList.add("primary"); win.classList.remove("primary");
+    // the new homepage (11 Nov 2026) uses the kit's button classes too: swap them along
+    if (win.classList.contains("btn--primary")) { win.classList.replace("btn--primary", "btn--secondary"); lin.classList.replace("btn--secondary", "btn--primary"); const arrow = win.querySelector(".m-arrow"); if (arrow) lin.append(arrow); }
+  }
   // /download "All downloads": on Linux the Linux cards come first and the AppImage (= the big Linux button) is the
   // purple, recommended one (chat 28)
   const grid = document.querySelector(".dlgrid");
@@ -29,8 +33,9 @@
     const cards = [...grid.querySelectorAll(".card[data-os]")];
     cards.filter((c) => c.dataset.os === "linux").reverse().forEach((c) => grid.prepend(c));
     const main = grid.querySelector('.card[data-os="linux"][data-main]'), rec = grid.querySelector(".rec");
-    grid.querySelectorAll(".btn.primary").forEach((b) => b.classList.remove("primary"));
-    if (main) { main.querySelector(".btn").classList.add("primary"); if (rec) main.querySelector("p").append(" ", rec); }
+    // (the new pages also carry the kit classes btn--primary / btn--secondary: swapped along)
+    grid.querySelectorAll(".btn.primary").forEach((b) => { b.classList.remove("primary"); b.classList.replace("btn--primary", "btn--secondary"); });
+    if (main) { const mb = main.querySelector(".btn"); mb.classList.add("primary"); mb.classList.replace("btn--secondary", "btn--primary"); if (rec) main.querySelector("p").append(" ", rec); }
     const sub = document.getElementById("dlsub");
     if (sub) sub.textContent = "The AppImage is the easy choice. The Flatpak brings everything it needs - best for Steam Deck and Bazzite.";
   }
@@ -196,10 +201,13 @@
   app.querySelectorAll(".mclip").forEach((c) => {
     const act = c.querySelector(".mact"); if (!act) return;
     const copy = act.querySelector(".mcopy");   // like the app: the extra buttons slide in left of Copy
+    // in one box that opens from no width (library.slint .more), so the name is squeezed smoothly instead of jumping
+    const more = document.createElement("span"); more.className = "mmore";
     for (const k of ["edit", "link", "folder", "del"]) {
       const i = document.createElement("i"); i.className = "mx" + (k === "del" ? " del" : ""); i.dataset.k = k; i.title = k === "link" ? "Share link" : k[0].toUpperCase() + k.slice(1);
-      i.innerHTML = ICON[k]; act.insertBefore(i, copy);
+      i.innerHTML = ICON[k]; more.appendChild(i);
     }
+    act.insertBefore(more, copy);
   });
   app.addEventListener("click", (e) => {
     const t = e.target;
@@ -209,8 +217,10 @@
       closeMenu(); owner = c; c.classList.add("menu");
       const r = ch.getBoundingClientRect(), a = app.getBoundingClientRect();
       menu.hidden = false;
-      const left = Math.min(r.left - a.left, a.width - menu.offsetWidth - 8);
-      let top = r.bottom - a.top + 4; if (top + menu.offsetHeight > a.height - 6) top = r.top - a.top - menu.offsetHeight - 4;
+      // the page may be zoomed (big screens: echo-head.js): screen positions are scaled, style.left/top are not
+      const z = a.width / app.offsetWidth || 1, W = app.offsetWidth, H = app.offsetHeight;
+      const left = Math.min((r.left - a.left) / z, W - menu.offsetWidth - 8);
+      let top = (r.bottom - a.top) / z + 4; if (top + menu.offsetHeight > H - 6) top = (r.top - a.top) / z - menu.offsetHeight - 4;
       menu.style.left = Math.max(8, left) + "px"; menu.style.top = top + "px";
       return;
     }
@@ -231,11 +241,11 @@
   let seen = false; try { seen = !!localStorage.getItem("echo_tour"); } catch { return; }
   if (seen || innerWidth < 900 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const STEPS = [
-    [".stats", "Tiny and light", "About 12 MB, a native Rust core and no bundled browser. Echo records in the background without costing you frames, even on low-end PCs."],
-    [".hero .app", "Try it right here", "This is the real app layout - click around. One key saves the last moments; Copy ▾ shrinks a clip to fit Discord and copies it."],
+    ["#library .app", "Try it right here", "This is the real app layout - click around. One key saves the last moments; Copy ▾ shrinks a clip to fit Discord and copies it."],
     ["#features", "Everything after the moment", "Trim, edit, caption and share without another program. Share links play right inside Discord."],
+    ["#light", "Tiny and light", "About 150 MB of memory while recording: a native Rust app with no bundled browser. Echo records in the background without costing you frames, even on low-end PCs."],
     ["#switch", "Bring your old clips", "Coming from Medal or another app? Echo finds your clips and copies them in, dates and game folders kept."],
-    ["#storage", "Your clips, your storage", "Free Echo Cloud, or your own Google Drive, NAS or server. No ads, no account needed to clip."],
+    ["#storage", "Your clips, your storage", "Echo Cloud, or your own Google Drive, NAS or server for free. No ads, no account needed to clip."],
   ];
   const start = () => {
     try { localStorage.setItem("echo_tour", "1"); } catch {}
@@ -246,7 +256,9 @@
     const hole = ov.querySelector(".wthole"), bub = ov.querySelector(".wtbub");
     const place = () => {
       if (!el) return;
-      const r = el.getBoundingClientRect(), pad = 10;
+      // big screens: echo-head.js zooms the page, so screen numbers are divided by the zoom for the fixed overlay
+      const z = parseFloat(document.documentElement.style.zoom) || 1, innerWidth = window.innerWidth / z, innerHeight = window.innerHeight / z;
+      const b = el.getBoundingClientRect(), r = { left: b.left / z, top: b.top / z, width: b.width / z, height: b.height / z, bottom: b.bottom / z }, pad = 10;
       Object.assign(hole.style, { left: r.left - pad + "px", top: Math.max(8, r.top - pad) + "px", width: r.width + pad * 2 + "px", height: Math.min(r.height + pad * 2, innerHeight - 16) + "px" });
       const bh = bub.offsetHeight, below = r.bottom + 18 + bh < innerHeight;
       // a big section: the bubble waits in the bottom-right corner instead of covering its heading

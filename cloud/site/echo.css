@@ -1,0 +1,693 @@
+/* echoclip.link homepage (redesign 11 Nov 2026): page CSS on top of the taste-skill kit (assets/system.css ...).
+   Only what the kit lacks: the dealt palette + Echo's accent themes, the logo tile, the theme picker, the in-page
+   app preview (site.js drives it), the small Echo UI pieces inside cards, and one --p-h per card group. */
+
+/* ---------------------------------------------------------------- palette (start.mjs: black-crimson, host; instrument failed hero-lines at 390) */
+:root {
+  --p-bg: #0a0a0a; --p-surface: #151515; --p-ink: #efefef; --p-muted: #8c8c8c;
+  --p-accent: #b11226; --p-accent-ink: #ffffff; --p-action: #b11226; --p-action-ink: #ffffff;
+  --p-inv-bg: #efefef; --p-inv-surface: #dcdcdc; --p-inv-ink: #0a0a0a; --p-inv-muted: #565656;
+  --p-inv-accent: #b11226; --p-inv-accent-ink: #ffffff; --p-inv-action: #b11226; --p-inv-action-ink: #ffffff;
+  --font-display: "Host Grotesk", system-ui, sans-serif;
+  --font-text: "Host Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.035em;
+  --display-tracking-xl: -0.04em;
+}
+/* Direction A (the default): Echo's own violet, the colour of the app and its icon. The theme picker (site.js)
+   swaps the accent; --accent-rgb feeds the hero's particles. Direction B is <html data-look="b">: the dealt crimson. */
+:root { --p-accent: #7c5cff; --p-action: #6a4cf5; --p-inv-accent: #7c5cff; --p-inv-action: #6a4cf5; --ec-link: #a996ff; --accent-rgb: 124,92,255; }
+:root[data-look="b"] { --p-accent: #b11226; --p-action: #b11226; --p-inv-accent: #b11226; --p-inv-action: #b11226; --ec-link: #f0717f; --accent-rgb: 177,18,38; }
+:root[data-theme="ocean"]   { --p-accent: #2fa8e0; --p-action: #2fa8e0; --p-action-ink: #0a0a0a; --p-accent-ink: #0a0a0a; --ec-link: #7cc9f0; --accent-rgb: 47,168,224; }
+:root[data-theme="ember"]   { --p-accent: #f07a1a; --p-action: #f07a1a; --p-action-ink: #0a0a0a; --p-accent-ink: #0a0a0a; --ec-link: #ffa154; --accent-rgb: 240,122,26; }
+:root[data-theme="emerald"] { --p-accent: #2fbf86; --p-action: #2fbf86; --p-action-ink: #0a0a0a; --p-accent-ink: #0a0a0a; --ec-link: #6fd9ab; --accent-rgb: 47,191,134; }
+:root[data-theme="crimson"] { --p-accent: #d0505a; --p-action: #d0505a; --ec-link: #e8838a; --accent-rgb: 208,80,90; }
+:root[data-theme="rose"]    { --p-accent: #e0609e; --p-action: #e0609e; --p-action-ink: #0a0a0a; --p-accent-ink: #0a0a0a; --ec-link: #f29ac4; --accent-rgb: 224,96,158; }
+:root[data-theme="slate"]   { --p-accent: #8a96a8; --p-action: #8a96a8; --p-action-ink: #0a0a0a; --p-accent-ink: #0a0a0a; --ec-link: #c3ccd8; --accent-rgb: 138,150,168; }
+:root[data-theme] { --p-inv-accent: var(--p-accent); --p-inv-action: var(--p-action); }
+
+/* ---------------------------------------------------------------- Echo's logo (the client's own mark) */
+.ec-logo { width: 30px; height: 30px; border-radius: 9px; background: var(--p-accent); display: inline-grid; place-items: center; flex: none; }
+.ec-logo svg { width: 20px; height: 20px; }
+:root[data-theme]:is([data-theme="ocean"], [data-theme="ember"], [data-theme="emerald"], [data-theme="rose"], [data-theme="slate"]) .ec-logo svg * { stroke: #0a0a0a; fill: #0a0a0a; }
+:root[data-theme]:is([data-theme="ocean"], [data-theme="ember"], [data-theme="emerald"], [data-theme="rose"], [data-theme="slate"]) .ec-logo svg circle { fill: none; }
+
+/* ---------------------------------------------------------------- theme picker (site.js fills #themes) */
+.nav__actions { position: relative; }
+.themebtn { width: 44px; height: 44px; border-radius: var(--r-btn); border: 1px solid var(--line-strong); background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.themebtn:hover { color: var(--ink); }
+.themebtn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.themes { position: absolute; right: 0; top: calc(100% + 12px); background: var(--p-surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s-4); display: grid; grid-template-columns: repeat(4, 72px); gap: var(--s-2); z-index: 20; }
+.themes[hidden] { display: none; }
+.themes p { grid-column: 1 / -1; margin: 0 0 var(--s-1); font-size: var(--t-label); font-weight: 500; color: var(--muted); }
+.themes button { border: 1px solid var(--line); background: var(--p-bg); border-radius: var(--r-sm); padding: 8px 4px 6px; min-height: 56px; cursor: pointer; color: var(--muted); font: inherit; font-size: var(--t-label); display: grid; gap: 6px; justify-items: center; }
+.themes button.on { border-color: var(--ink); color: var(--ink); }
+.themes i { width: 34px; height: 18px; border-radius: 5px; display: block; }
+
+/* ---------------------------------------------------------------- hero: particles behind the head row (site.js) */
+.hero { position: relative; }
+.hero > #sky { position: absolute; inset: var(--nav) 0 auto 0; width: 100%; height: 46%; pointer-events: none; z-index: 0; opacity: .8; }
+.hero__note { margin: var(--s-3) 0 0; font-size: var(--t-small); color: #c4c4c4; }
+.hero__note a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+@media (min-width: 1024px) { .hero--product .hero__head > .btn-row { flex-wrap: wrap; } .hero--product .hero__head > .btn-row .hero__note { flex-basis: 100%; } }
+
+/* ---------------------------------------------------------------- the app preview (site.js: hover buttons, Copy menu, notes) */
+#library .app { margin-top: var(--s-7); display: grid; grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); background: #0d0d10; border: 1px solid var(--line-strong); border-radius: var(--r-lg); overflow: hidden; position: relative; font-size: 13px; color: #f5f5f7; text-align: left; }
+#library .app.fill { min-height: 0; }
+.app { --a-panel: #16161a; --a-panel2: #1e1e23; --a-line: #26262c; --a-muted: #a0a0ab; --a-dim: #85858f; --a-ok: #34d399; }
+.app svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.app .ec-logo { width: 24px; height: 24px; border-radius: 7px; } .app .ec-logo svg { width: 16px; height: 16px; }
+.arail { background: #0a0a0c; border-right: 1px solid var(--a-line); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: hidden; }
+.anav, .aflt { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px; color: var(--a-muted); border: 1px solid transparent; position: relative; }
+.anav.on { background: rgba(var(--accent-rgb), .12); border-color: rgba(var(--accent-rgb), .26); color: #f5f5f7; }
+.aflt.on { background: var(--a-panel); color: #f5f5f7; }
+.aflt em { margin-left: auto; font-style: normal; color: var(--a-dim); font-size: 11px; }
+.aflt u { text-decoration: none; width: 18px; height: 18px; border-radius: 5px; background: var(--a-panel2); color: var(--ec-link); font-size: 10px; font-weight: 600; display: grid; place-items: center; }
+.alab { font-size: 11px; font-weight: 500; color: var(--a-dim); padding: 12px 9px 4px; margin: 0; }
+.astat { margin-top: auto; background: var(--a-panel); border: 1px solid var(--a-line); border-radius: 10px; padding: 10px; display: grid; gap: 3px; }
+.astat b { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; }
+.astat b i { width: 7px; height: 7px; border-radius: 50%; background: var(--a-ok); }
+.astat small { color: var(--a-muted); font-size: 11px; } .astat .ok { color: var(--a-ok); }
+.amain { padding: 14px 16px 16px; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
+.atop, .atool { display: flex; align-items: center; gap: 8px; }
+.atop { grid-column: 1 / -1; padding: 8px 10px 8px 12px; border-bottom: 1px solid var(--a-line); background: #0b0b0e; }
+.atop .atitle { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; margin: 0 2px 0 0; padding-right: 10px; border-right: 1px solid var(--a-line); }
+.aplain { display: grid; place-items: center; width: 26px; height: 26px; color: var(--a-muted); }
+.awin { display: flex; gap: 2px; margin-left: 2px; padding-left: 8px; border-left: 1px solid var(--a-line); color: var(--a-muted); }
+.awin i { display: grid; place-items: center; width: 26px; height: 24px; } .awin svg { width: 12px; height: 12px; }
+.apill { display: flex; align-items: center; gap: 5px; border: 1px solid var(--a-line); border-radius: 99px; padding: 3px 9px; color: var(--a-muted); font-size: 11px; white-space: nowrap; }
+.apill i { width: 6px; height: 6px; border-radius: 50%; background: var(--a-ok); }
+.app kbd { font: 500 10px/1 var(--font-text); background: var(--a-panel2); border: 1px solid var(--a-line); border-radius: 4px; padding: 2px 4px; color: #f5f5f7; }
+.agrow { flex: 1; }
+.abtn { display: flex; align-items: center; gap: 6px; border: 1px solid var(--a-line); background: var(--a-panel); border-radius: 8px; padding: 5px 10px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.abtn .rec { width: 7px; height: 7px; border-radius: 50%; background: #fb5c7c; }
+.abtn.pri { background: var(--p-accent); color: var(--p-accent-ink); border-color: transparent; }
+.atool { margin: 0 0 4px; color: var(--a-muted); font-size: 12px; } .atool > span { white-space: nowrap; }
+.aname { display: flex; align-items: center; gap: 4px; color: #f5f5f7; font-weight: 500; font-size: 14px; }
+.aname svg, .apill svg, .abtn svg { width: 12px; height: 12px; }
+.asearch { display: flex; align-items: center; gap: 6px; border: 1px solid var(--a-line); background: var(--a-panel); border-radius: 8px; padding: 5px 10px; width: 170px; color: var(--a-dim); } .asearch svg { width: 12px; height: 12px; }
+.agroup { font-weight: 500; font-size: 13px; margin: 12px 0 8px; } .agroup em { font-style: normal; color: var(--a-dim); font-weight: 400; margin-left: 4px; }
+.agrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.mclip { border: 1px solid var(--a-line); background: var(--a-panel); border-radius: 10px; overflow: hidden; transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+.mclip:hover { transform: translateY(-2px); border-color: rgba(var(--accent-rgb), .55); }
+.mthumb { aspect-ratio: 16 / 9; position: relative; overflow: hidden; background: #000; }
+.mthumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.mthumb b { position: absolute; right: 6px; bottom: 6px; font-size: 11px; font-weight: 500; background: #000c; padding: 1px 5px; border-radius: 5px; }
+.mmeta { display: flex; align-items: center; gap: 6px; padding: 8px 9px; }
+.mmeta > div { min-width: 0; flex: 1; }
+.mmeta strong { display: block; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mmeta small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--a-dim); font-size: 11px; }
+.mact { display: flex; align-items: center; gap: 4px; color: var(--a-muted); flex: none; }
+.mact i { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; cursor: pointer; }
+.mact i:hover { background: var(--a-panel2); color: #f5f5f7; }
+.mact svg { width: 12px; height: 12px; }
+.mact .mx { display: none; } .mclip:hover .mact .mx, .mclip.menu .mact .mx { display: grid; }
+.mclip:hover .mmeta > div, .mclip.menu .mmeta > div { visibility: hidden; }
+.mcopy { display: flex; align-items: center; border: 1px solid var(--a-line); border-radius: 7px; }
+.mcopy .mch { width: 14px; } .mcopy .mch svg { width: 9px; height: 9px; stroke-width: 2.6; }
+.mstar.on { color: #ffd23f; } .mstar.on svg { fill: #ffd23f; stroke: #ffd23f; }
+.mcld { position: absolute; right: 6px; top: 6px; font-size: 10px; background: #000c; padding: 1px 5px; border-radius: 5px; display: flex; }
+.mcld svg { width: 12px; height: 12px; }
+.mtag { position: absolute; left: 6px; bottom: 6px; font-size: 10px; font-weight: 500; background: var(--p-accent); color: var(--p-accent-ink); padding: 1px 5px; border-radius: 5px; }
+.mmenu { position: absolute; z-index: 5; width: 260px; background: var(--a-panel); border: 1px solid var(--a-line); border-radius: 10px; padding: 5px; font-size: 12px; }
+.mmenu[hidden] { display: none; }
+.mmenu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; background: none; color: #f5f5f7; font: inherit; border-radius: 7px; text-align: left; cursor: pointer; }
+.mmenu button:hover { background: var(--a-panel2); }
+.mmenu button small { margin-left: auto; color: var(--a-dim); font-size: 11px; }
+.mmenu button.main { font-weight: 500; }
+.mmenu .chips { display: flex; gap: 4px; padding: 0 8px 6px; }
+.mmenu .chips button { width: auto; padding: 2px 8px; border: 1px solid var(--a-line); border-radius: 99px; font-size: 11px; color: var(--a-muted); }
+.mmenu .chips button.on { border-color: rgba(var(--accent-rgb), .7); color: var(--ec-link); }
+.mmenu hr { border: 0; border-top: 1px solid var(--a-line); margin: 5px 2px; }
+.mmenu p { color: var(--a-dim); font-size: 11px; margin: 4px 8px 2px; }
+.atoasts { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; z-index: 6; pointer-events: none; width: max-content; max-width: 92%; }
+.atoast { pointer-events: auto; background: var(--a-panel2); border: 1px solid var(--a-line); border-radius: 10px; padding: 9px 12px; font-size: 13px; color: var(--a-muted); display: flex; gap: 10px; align-items: center; opacity: 0; transform: translateY(10px); transition: opacity .2s, transform .2s; }
+.atoast.on { opacity: 1; transform: none; }
+.atoast b { color: #f5f5f7; font-weight: 500; }
+.atoast a { white-space: nowrap; font-weight: 500; color: var(--ec-link); }
+.amain::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, #0d0d10); pointer-events: none; }
+@media (max-width: 1023px) {
+  #library .app { grid-template-columns: minmax(0, 1fr); }
+  .arail, .apill, .asearch, .awin, .aplain, .atool .aico, .atool .ahide { display: none; }
+}
+@media (max-width: 639px) {
+  .agrid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .agrid .mclip:nth-child(3) { display: none; }
+  .mact, .atop .abtn:not(.pri) { display: none; }
+}
+
+/* ---------------------------------------------------------------- small Echo UI pieces inside the feature cards */
+#features .panel { --p-h: 300px; }
+.ec-ui { background: #0d0d10; border: 1px solid #26262c; border-radius: 12px; color: #f5f5f7; font-size: 13px; }
+.ec-menu { width: 280px; padding: 6px; }
+.ec-menu > div { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; }
+.ec-menu > div.on { background: #1e1e23; }
+.ec-menu small { margin-left: auto; color: #85858f; font-size: 12px; }
+.ec-menu p { margin: 6px 10px 2px; color: #85858f; font-size: 12px; }
+.ec-menu hr { border: 0; border-top: 1px solid #26262c; margin: 6px 4px; }
+.ec-menu svg, .ec-step svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ec-chips { display: flex; gap: 6px; padding: 0 10px 8px; }
+.ec-chips span { white-space: nowrap; border: 1px solid #26262c; border-radius: 99px; padding: 2px 9px; font-size: 12px; color: #a0a0ab; }
+.ec-chips span.on { border-color: rgba(var(--accent-rgb), .8); color: var(--ec-link); }
+.ec-games { width: 300px; padding: 8px; display: grid; gap: 2px; }
+.ec-games > div { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 6px; border-radius: 8px; }
+.ec-games > div.on { background: #1e1e23; }
+.ec-games img { width: 64px; height: 36px; object-fit: cover; border-radius: 5px; display: block; }
+.ec-games b { font-weight: 500; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-games small { color: #85858f; font-size: 12px; }
+.ec-games em { font-style: normal; color: #85858f; font-size: 12px; }
+
+/* ---------------------------------------------------------------- setup steps (pinned-chapters): drawn Echo windows */
+.ec-step { width: 100%; height: 100%; display: grid; place-items: center; background: #101014; border-radius: var(--r-lg); overflow: hidden; position: relative; }
+.ec-step > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ec-step .ec-ui { padding: 18px 20px; width: min(84%, 420px); }
+.ec-step .ec-ui h4 { margin: 0 0 12px; font-size: 15px; font-weight: 500; }
+.ec-keyrow { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid #26262c; color: #a0a0ab; }
+.ec-keyrow b { color: #f5f5f7; font-weight: 500; margin-right: auto; }
+.ec-keyrow kbd { font: 500 12px/1 var(--font-text); background: #1e1e23; border: 1px solid #26262c; border-radius: 5px; padding: 4px 6px; color: #f5f5f7; }
+.ec-install { display: grid; justify-items: center; gap: 14px; text-align: center; }
+.ec-install img { width: 112px; height: 112px; border-radius: 26px; }
+.ec-install b { font-size: 17px; font-weight: 500; }
+.ec-install small { color: #a0a0ab; font-size: 13px; }
+.ec-trim { padding: 16px; width: min(88%, 460px); }
+.ec-trim .ec-film { display: grid; grid-template-columns: repeat(5, 1fr); height: 48px; border-radius: 6px; overflow: hidden; position: relative; }
+.ec-trim .ec-film img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ec-trim .ec-film::before, .ec-trim .ec-film::after { content: ""; position: absolute; top: 0; bottom: 0; background: #000a; }
+.ec-trim .ec-film::before { left: 0; width: 18%; border-right: 3px solid var(--p-accent); }
+.ec-trim .ec-film::after { right: 0; width: 26%; border-left: 3px solid var(--p-accent); }
+.ec-trim .ec-row { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; color: #a0a0ab; }
+.ec-trim .ec-row span:last-child { background: var(--p-accent); color: var(--p-accent-ink); border-radius: 8px; padding: 6px 12px; font-weight: 500; }
+
+/* ---------------------------------------------------------------- the measured table (statement section) */
+.ec-measure { width: 100%; border-collapse: collapse; font-size: var(--t-body); }
+.ec-measure th { text-align: left; color: var(--muted); font-weight: 500; font-size: var(--t-small); padding: 0 0 var(--s-2); }
+.ec-measure td { padding: var(--s-3) 0; border-top: 1px solid var(--line); color: var(--muted); }
+.ec-measure tr.us td { color: var(--ink); }
+.ec-how { color: #c4c4c4; font-size: var(--t-small); line-height: 1.6; margin: var(--s-4) 0 0; }
+
+/* ---------------------------------------------------------------- import window (switch section) */
+.impmock { background: #0d0d10; border: 1px solid #26262c; border-radius: 12px; padding: 8px 20px 12px; color: #f5f5f7; font-size: 14px; width: 500px; }
+.impmock .imt { font-size: 13px; color: #85858f; font-weight: 500; padding: 12px 0 4px; margin: 0; }
+.imr { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #ffffff10; }
+.imr:last-child { border-bottom: 0; }
+.imr > div { flex: 1; min-width: 0; } .imr b { display: block; font-weight: 500; } .imr small { color: #85858f; font-size: 12px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.imr > span { border: 1px solid #26262c; background: #1e1e23; border-radius: 8px; padding: 6px 14px; font-weight: 500; font-size: 13px; }
+.imr.run b { color: var(--ec-link); }
+.imr i { display: block; height: 5px; border-radius: 99px; background: #1e1e23; margin-top: 8px; overflow: hidden; }
+.imr i u { display: block; height: 100%; width: 62%; background: var(--p-accent); border-radius: 99px; }
+
+/* ---------------------------------------------------------------- storage: real service icons */
+.ec-icons { display: flex; flex-wrap: wrap; gap: var(--s-3); margin: 0; padding: 0; list-style: none; }
+.ec-icons li { display: flex; align-items: center; gap: var(--s-2); padding: 8px 12px 8px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); font-size: var(--t-small); }
+.ec-icons img { width: 24px; height: 24px; display: block; }
+
+/* ---------------------------------------------------------------- FAQ: <details open> (seo.py reads the <details>) */
+.faq details { border-bottom: 1px solid var(--line); padding: var(--s-4) 0; }
+.faq details:first-child { padding-top: 0; }
+.faq summary { list-style: none; cursor: pointer; font-family: var(--font-display); font-weight: var(--display-weight); font-size: var(--t-card); line-height: 1.35; color: var(--ink); }
+.faq summary::-webkit-details-marker { display: none; }
+.faq details p { margin: var(--s-2) 0 0; color: var(--ink); opacity: .82; }
+.faq a, .ec-link-ink { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+
+/* ---------------------------------------------------------------- the first-visit tour (site.js), in the new look */
+.wtinv { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 20px); opacity: 0; z-index: 80; display: flex; align-items: center; gap: 10px; background: var(--p-surface); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 10px 10px 10px 16px; font-size: 14px; transition: .3s; color: var(--p-ink); }
+.wtinv.on { opacity: 1; transform: translate(-50%, 0); }
+.wtinv i { font-style: normal; color: var(--p-muted); }
+.wtinv button { border: 0; border-radius: var(--r-btn); height: 36px; padding: 0 14px; font: inherit; font-weight: 500; cursor: pointer; }
+.wtgo, .wtbtns .wtnext { background: var(--p-action); color: var(--p-action-ink); }
+.wtno { background: none; color: var(--p-muted); }
+.wtour { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
+.wthole { position: fixed; border-radius: var(--r-lg); box-shadow: 0 0 0 9999px rgba(5,5,8,.78), 0 0 0 2px var(--p-accent); transition: all .35s ease; pointer-events: none; }
+.wtbub { pointer-events: auto; position: fixed; width: 340px; max-width: calc(100vw - 32px); background: var(--p-surface); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 16px 18px; transition: top .35s, left .35s; color: var(--p-ink); }
+.wtk { display: block; font-size: 13px; font-weight: 500; color: var(--ec-link); margin-bottom: 6px; }
+.wtbub b { font-size: 18px; font-weight: 500; display: block; }
+.wtbub p { color: var(--p-muted); font-size: 14px; line-height: 1.5; margin: 6px 0 14px; }
+.wtbtns { display: flex; gap: 8px; align-items: center; } .wtn { flex: 1; color: var(--p-muted); font-size: 13px; }
+.wtbtns button { border: 1px solid var(--line-strong); border-radius: var(--r-btn); height: 36px; padding: 0 14px; font: inherit; font-weight: 500; cursor: pointer; background: transparent; color: inherit; }
+
+/* GPU makers' marks on light tiles (their real colours need a light ground) */
+.ec-icons li.ec-tile { background: #f4f4f4; border-color: transparent; padding: 10px 14px; }
+.ec-icons li.ec-tile img { width: auto; height: 19px; }
+.ec-faq { margin-top: var(--s-7); }
+.ec-hub { --p-h: 520px; min-height: var(--p-h); }
+/* tablet and phone heights: the feature tiles fit their two screens, the phone hero its one */
+@media (max-width: 1279px) { #features .panel { --p-h: 240px; } }
+@media (max-width: 1023px) { .ec-hub { --p-h: 400px; margin-top: var(--s-7); } }
+@media (min-width: 640px) and (max-width: 1023px) { .ec-faq { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .ec-faq > .faq { grid-column: auto; } }
+/* (was: #faq, #faq-setup two screens at 1024-1279; they fit one, the checker called them sparse) */
+@media (max-width: 639px) {
+  #features .panel { --p-h: 150px; }
+  .ec-faq { margin-top: var(--s-6); }
+  .faq details { padding: var(--s-3) 0; }
+  .hero__note { display: none; }
+  .hero--product .hero__stage { aspect-ratio: 4 / 3; }
+  .ec-hub { --p-h: 320px; }
+}
+
+.ec-soft { color: #c4c4c4; }
+.ec-menu .ec-sep { border-top: 1px solid #26262c; padding-top: 8px; margin-top: 6px; }
+.hero__head .dl > .btn--secondary:first-child, .hero__head .dl > .btn--primary + .btn--secondary { margin-left: calc(-1 * var(--s-2)); }
+.footer.closing { --action: var(--p-action); --action-ink: var(--p-action-ink); }
+.mo-pc__visual > img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: var(--r-lg); }
+@media (max-width: 639px) {
+  #features .ui-tg:nth-child(n+4) { display: none; }
+  .ec-hub { --p-h: 240px; }
+}
+
+/* the hero's lead and buttons start on the page's split line (col 8, x 841 at 1440), the h1 keeps cols 1-7 */
+@media (min-width: 1280px) {
+  html .hero--product:has(.hero__stage > :is([data-product], img, picture)) .hero__head .hero__lead,
+  html .hero--product:has(.hero__stage > :is([data-product], img, picture)) .hero__head > .btn-row { grid-column: 8 / -1; }
+}
+.ec-faq { align-items: stretch; }
+@media (max-width: 639px) { .mmeta strong, .mmeta small { white-space: normal; overflow: visible; text-overflow: clip; } }
+.hero__stage > picture { position: absolute; inset: 0; }
+.hero__stage > picture > img { width: 100%; height: 100%; max-width: none; object-fit: cover; object-position: var(--ly-pos, 0% 0%); display: block; }
+
+/* 11 Nov 2026 (the user): no pale "sage" boxes; the example panels sit on a dark Echo-violet ground */
+html[data-ground] { --ground-bg: #17141f; --ground-surface: #201b2c; --ground-ink: #efefef; --ground-muted: #aaa4bb; --ground-accent: #8b6dff; }
+/* the Copy menu: a little larger, rows of one height, like the app's own menu */
+.ec-menu { width: 340px; padding: 8px; font-size: 14px; }
+.ec-menu > div { min-height: 40px; }
+.ec-games { width: 380px; }
+.ec-games img { width: 80px; height: 45px; }
+.ec-games > div { grid-template-columns: 80px minmax(0, 1fr) auto; }
+
+/* big screens (echo-head.js zooms the page by --z): screen units are zoomed too, so every rule that sizes by the
+   screen divides by --z again; the page then is one 1600x900 layout at 1920x1080 and at 2560x1440 */
+html[data-zoom] { --ly-screen: calc(100svh / var(--z) - var(--ly-nav)); --ly-fit: calc(100svh / var(--z) - var(--padt, 120px) - var(--padb, 72px) - var(--bar, 0px)); --ly-hero-h: calc(100svh / var(--z) - var(--nav, 72px) - var(--hgap, 48px) - var(--hpadb, 64px) - var(--bar, 0px)); }
+html[data-zoom] main > :is(section, .section), html[data-zoom] footer.closing { height: calc(var(--h, 1) * 100svh / var(--z)); }
+html[data-zoom] main > :is(.hero, .section--hero) { height: calc(100svh / var(--z)); }
+html[data-zoom] .hero--product .hero__stage:has(> img:not(.is-cutout), > picture) { margin-inline: calc(50% - 50vw / var(--z)); }
+html[data-zoom] [data-moment="pinned-chapters"].is-live { height: calc((var(--mo-hold) + 1) * 100svh / var(--z)); }
+html[data-zoom] main [data-moment="pinned-chapters"][data-moment].is-live > .mo-pc__grid { height: calc(100svh / var(--z)); }
+html[data-zoom] [data-moment="pinned-chapters"].is-live .mo-pc__visuals { max-height: calc(100svh / var(--z) - 128px); }
+html[data-zoom] .mo-lt__type { font-size: min(150px, 9vw / var(--z)); }
+
+/* the small extras: today's twelve, three columns */
+.ec-extras { list-style: none; margin: var(--s-7) 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-6) var(--gutter); }
+.ec-extras li { display: flex; gap: var(--s-4); align-items: flex-start; }
+.ec-extras b { display: block; font-weight: 500; font-size: var(--t-body); margin-bottom: 2px; }
+.ec-extras li > span:last-child > span { display: block; color: #c4c4c4; font-size: var(--t-body); line-height: 1.5; }
+.ec-ico { flex: none; width: 40px; height: 40px; border-radius: var(--r-md); background: var(--ground-surface); color: #a996ff; display: grid; place-items: center; }
+.ec-ico svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 1023px) { .ec-extras { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 639px) { .ec-extras { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); } }
+/* built with + the Electron comparison */
+.ec-built h3 { margin: 0 0 var(--s-4); font-size: var(--t-card); font-weight: 500; }
+.ec-built h2 { margin: 0 0 var(--s-6); }
+.ec-gpus { margin-bottom: var(--s-5); }
+
+.ec-spec { margin: 0; }
+.ec-spec > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--s-4); padding: var(--s-3) 0; border-top: 1px solid var(--line); }
+.ec-spec dt { color: var(--muted); font-size: var(--t-small); padding-top: 2px; }
+.ec-spec dd { margin: 0; }
+.ec-vs td:first-child { color: var(--muted); font-size: var(--t-small); padding-right: var(--s-4); }
+.ec-vs td { vertical-align: top; padding-right: var(--s-4); }
+.ec-vs td:last-child { color: #c4c4c4; }
+.ec-claim { margin: var(--s-4) 0 0; font-weight: 500; }
+@media (max-width: 1023px) { .ec-built > .span-6 { margin-top: var(--s-7); } }
+
+/* violet options for the user to compare (11 Nov 2026): <html data-accent="..."> */
+:root[data-accent="true"]   { --p-accent: #8a3ffc; --p-action: #7a2ff0; --p-inv-accent: #8a3ffc; --p-inv-action: #7a2ff0; --ec-link: #b98cff; --accent-rgb: 138,63,252; }
+:root[data-accent="grape"]  { --p-accent: #7b3fe4; --p-action: #6a2fd1; --p-inv-accent: #7b3fe4; --p-inv-action: #6a2fd1; --ec-link: #b794f6; --accent-rgb: 123,63,228; }
+:root[data-accent="orchid"] { --p-accent: #a84cf0; --p-action: #9036d9; --p-inv-accent: #a84cf0; --p-inv-action: #9036d9; --ec-link: #d39bff; --accent-rgb: 168,76,240; }
+:root[data-accent="plum"]   { --p-accent: #8f63c9; --p-action: #7650b0; --p-inv-accent: #8f63c9; --p-inv-action: #7650b0; --ec-link: #c3a6ec; --accent-rgb: 143,99,201; }
+:root[data-accent] { --ground-accent: var(--p-accent); }
+
+/* the extras: icon above the words, so every line starts on the column */
+.ec-extras li { display: block; }
+.ec-extras .ec-ico { margin-bottom: var(--s-3); }
+/* the example boxes: a mid Echo-violet ground (light enough for the UI to stand on, not pale) */
+html[data-ground] { --ground-bg: #6b56c2; --ground-surface: #7a66cf; --ground-ink: #ffffff; --ground-muted: #e8e2ff; --ground-accent: #ffffff; }
+.ec-ico { background: #201b2c; }
+/* the extras' icons sit flush on the column line (no tile), so every item starts on the grid */
+.ec-extras .ec-ico { width: auto; height: auto; background: none; display: block; color: #a996ff; }
+.ec-extras .ec-ico svg { width: 24px; height: 24px; display: block; }
+@media (max-width: 639px) { #built .ec-hub { --p-h: 520px; } }
+
+/* 11 Nov 2026 (the user: "is this supposed to be it?"): the hero screenshot no longer runs off both sides of the
+   screen; it sits inside the page edges as an app window, the whole width of the app visible, the bottom
+   running into the next screen */
+html .hero--product .hero__stage:has(> img:not(.is-cutout), > picture), html[data-zoom] .hero--product .hero__stage:has(> img:not(.is-cutout), > picture) {
+  margin-inline: 0; border: 1px solid var(--line-strong); border-bottom: 0; border-radius: var(--r-lg) var(--r-lg) 0 0;
+  overflow: hidden; box-shadow: 0 -20px 80px rgba(var(--accent-rgb), .18);
+}
+html .hero__stage > picture > img { object-position: 0% 0%; }
+@media (max-width: 639px) { html .hero--product .hero__stage:has(> img:not(.is-cutout), > picture) { border-bottom: 1px solid var(--line-strong); border-radius: var(--r-lg); } }
+
+/* 11 Nov 2026 (the user): Echo's REAL in-app look, from prototype-native: the in-game popup (ui/popup.slint) and the
+   Copy menu (ui/theme.slint CopyMenuBody), the app's own sizes and colours, shown 1.25x so they read on the page */
+.ec-real { zoom: 1.25; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; color: #f5f5f7; letter-spacing: 0; }
+.ec-toasts { display: grid; gap: 10px; justify-items: end; width: 340px; }
+.ec-toast { display: flex; align-items: center; gap: 12px; height: 58px; min-width: 220px; max-width: 340px; padding: 0 16px 0 12px; box-sizing: border-box;
+  background: #141418f2; border: 1px solid #ffffff1c; border-radius: 14px; box-shadow: 0 10px 30px #0006; text-align: left; }
+.ec-toast__ico { position: relative; flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: linear-gradient(135deg, #8b6cff, #4f7bff); }
+.ec-toast__ico svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.ec-toast__txt { display: grid; gap: 1px; min-width: 0; }
+.ec-toast__txt b { font-size: 14px; font-weight: 600; line-height: 1.25; color: #f5f5f7; }
+.ec-toast__txt small { font-size: 12px; line-height: 1.3; color: #a0a0ab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.ec-copy { width: 260px; padding: 6px; background: #16161a; border: 1px solid #26262c; border-radius: 12px; box-shadow: 0 14px 40px #000a; font-size: 13.5px; }
+.ec-copy p { margin: 0; height: 26px; line-height: 26px; padding-left: 10px; font-size: 11.5px; color: #6b6b76; }
+.ec-copy > div { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px; }
+.ec-copy > div.hov { background: #1e1e23; }
+.ec-copy em { font-style: normal; font-size: 10.5px; line-height: 16px; color: #ffd23f; border: 1px solid #ffd23f66; border-radius: 9px; padding: 0 6px; }
+.ec-copy small { margin-left: auto; font-size: 12.5px; color: #a0a0ab; }
+.ec-copy input { margin-left: auto; width: 54px; height: 24px; box-sizing: border-box; padding: 0 6px; font: inherit; font-size: 12.5px; color: #f5f5f7; background: #1e1e23; border: 1px solid #26262c; border-radius: 6px; pointer-events: none; }
+.ec-copy input + small { margin-left: 0; }
+
+/* the share link as it lands in a chat: the link, then the clip playing inline (og:video) */
+.ec-chat { display: flex; gap: 14px; width: 420px; padding: 18px; background: #1b1b1f; border: 1px solid #ffffff14; border-radius: 14px; box-shadow: 0 14px 40px #0008; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; text-align: left; }
+.ec-chat__av { flex: none; width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #8b6cff, #4f7bff); }
+.ec-chat__msg { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.ec-chat p { margin: 0; }
+.ec-chat__who b { font-size: 15px; font-weight: 600; color: #f2f3f5; }
+.ec-chat__who time { margin-left: 8px; font-size: 12px; color: #8e8e98; }
+.ec-chat__link { font-size: 15px; color: #6fb2f2; }
+.ec-chat__embed { margin-top: 4px; display: grid; gap: 4px; padding: 12px 14px 14px; background: #232328; border-left: 4px solid #3a3a42; border-radius: 6px; }
+.ec-chat__embed small { font-size: 12px; color: #a8a8b2; }
+.ec-chat__embed b { font-size: 15px; font-weight: 600; color: #f2f3f5; }
+.ec-chat__vid { position: relative; display: block; margin-top: 6px; border-radius: 6px; overflow: hidden; aspect-ratio: 16 / 9; }
+.ec-chat__vid img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ec-chat__vid i { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; background: #000a; }
+.ec-chat__vid i::after { content: ""; position: absolute; left: 19px; top: 15px; border-left: 15px solid #fff; border-top: 9px solid transparent; border-bottom: 9px solid transparent; }
+.ec-chat__vid em { position: absolute; right: 8px; bottom: 8px; font-style: normal; font-size: 12px; color: #fff; background: #000b; border-radius: 4px; padding: 1px 6px; }
+
+/* Never miss the moment: a real game frame with Echo's popup in its top-right corner, as it shows in a game */
+.mo-pc__visual.ec-frame { position: relative; }
+.mo-pc__visual.ec-frame > img { width: 100%; height: 100%; object-fit: cover; }
+.ec-frame > .ec-toast { position: absolute; top: 16px; right: 16px; zoom: 1.15; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; }
+@media (max-width: 639px) { .ec-frame > .ec-toast { zoom: .9; top: 10px; right: 10px; } .ec-chat { width: 330px; } }
+@media (max-width: 639px) {
+  #features .panel { --p-h: 300px; }
+  .ec-real { zoom: 1; }
+  .ec-toasts { width: 300px; }
+  .ec-chat { zoom: .85; }
+}
+
+/* 11 Nov 2026 (the user: "off to the side and not animated"): the popups are one width and centred in their card;
+   they come in one after another the way Echo's popup does (fade in, content slides in from the right, 250 ms),
+   stay, then all fade out and the loop starts again (7.5 s). The Copy menu's highlight walks down the rows.
+   Still with reduced motion. */
+.ec-toasts { justify-items: stretch; width: 340px; }
+.ec-toasts .ec-toast { width: 100%; max-width: none; }
+@keyframes ec-toast-in {
+  0% { opacity: 0; }
+  4% { opacity: 1; }
+  88% { opacity: 1; }
+  96%, 100% { opacity: 0; }
+}
+@keyframes ec-toast-slide { 0% { transform: translateX(14px); } 4%, 100% { transform: none; } }
+html:not([data-motion="off"]) .ec-toasts .ec-toast { animation: ec-toast-in 7.5s linear infinite both; }
+html:not([data-motion="off"]) .ec-toasts .ec-toast > * { animation: ec-toast-slide 7.5s cubic-bezier(.2, .9, .3, 1.2) infinite both; }
+.ec-toasts .ec-toast:nth-child(2), .ec-toasts .ec-toast:nth-child(2) > * { animation-delay: .9s !important; }
+.ec-toasts .ec-toast:nth-child(3), .ec-toasts .ec-toast:nth-child(3) > * { animation-delay: 1.8s !important; }
+@keyframes ec-row-hi { 0%, 18% { background: #1e1e23; } 22%, 100% { background: transparent; } }
+html:not([data-motion="off"]) .ec-copy > div { animation: ec-row-hi 6s linear infinite; }
+html:not([data-motion="off"]) .ec-copy > div.hov { background: transparent; }
+.ec-copy > div:nth-of-type(2) { animation-delay: 1.2s !important; }
+.ec-copy > div:nth-of-type(3) { animation-delay: 2.4s !important; }
+.ec-copy > div:nth-of-type(4) { animation-delay: 3.6s !important; }
+.ec-copy > div:nth-of-type(5) { animation-delay: 4.8s !important; }
+@media (prefers-reduced-motion: reduce) {
+  .ec-toasts .ec-toast, .ec-toasts .ec-toast > *, .ec-copy > div { animation: none !important; }
+  .ec-copy > div.hov { background: #1e1e23 !important; }
+}
+/* the shared clip plays in the chat (play button fades, a progress line runs), the Medal import counts up */
+@keyframes ec-play-btn { 0%, 12% { opacity: 1; } 18%, 92% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes ec-play-bar { 0%, 15% { transform: scaleX(0); } 92% { transform: scaleX(1); } 100% { transform: scaleX(1); opacity: 0; } }
+.ec-chat__vid::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #fff; transform-origin: left; transform: scaleX(0); }
+html:not([data-motion="off"]) .ec-chat__vid::after { animation: ec-play-bar 6s linear infinite; }
+html:not([data-motion="off"]) .ec-chat__vid i { animation: ec-play-btn 6s linear infinite; }
+@keyframes ec-import { 0% { width: 18%; } 85%, 100% { width: 100%; } }
+html:not([data-motion="off"]) .imr i u { animation: ec-import 7s cubic-bezier(.3, .1, .3, 1) infinite; }
+@media (prefers-reduced-motion: reduce) { .ec-chat__vid::after, .ec-chat__vid i, .imr i u { animation: none !important; } }
+/* phones: the kit centres only its own .ui fragments; Echo's examples centre the same way and never run past the panel */
+.stage > :is(.at-rise, .at-corner) > :is(.ec-toasts, .ec-copy, .ec-chat, .impmock) { margin-inline: auto; max-width: 100%; box-sizing: border-box; }
+@media (max-width: 639px) { .ec-toasts { width: 300px; } }
+@media (max-width: 639px) { .impmock { zoom: .86; } }
+/* tablets: two narrow columns, so the examples show at the app's own size and the panels are tall enough to hold them */
+@media (min-width: 640px) and (max-width: 1023px) {
+  #features .panel { --p-h: 420px; }
+  .ec-real { zoom: 1; }
+  .ec-chat { zoom: .9; }
+}
+
+/* 11 Nov 2026 (the user: "not very comparative"): Echo Cloud vs your own cloud, row by row */
+.ec-cmp { margin-top: var(--s-7); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--p-surface); overflow: hidden; }
+.ec-cmp__row { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); align-items: center; border-top: 1px solid var(--line); }
+.ec-cmp__row:first-child { border-top: 0; }
+.ec-cmp__row > * { padding: 14px var(--s-5); color: #d6d6d6; }
+.ec-cmp__row > [role="rowheader"] { color: #c4c4c4; }
+.ec-cmp__row > :nth-child(3) { background: rgba(var(--accent-rgb), .07); }
+.ec-cmp__head > * { padding-top: var(--s-5); padding-bottom: var(--s-5); align-self: stretch; }
+.ec-cmp__col { display: grid; gap: 6px; align-content: start; }
+.ec-cmp__col b { font-family: var(--font-display); font-weight: 500; font-size: var(--t-card); color: var(--ink); display: flex; align-items: center; gap: 10px; }
+.ec-cmp__col em { font-style: normal; font-family: var(--font-text); font-size: 12px; font-weight: 500; letter-spacing: .04em; color: #b9f5d0; border: 1px solid #34d39966; background: #34d3991a; border-radius: 99px; padding: 1px 9px; }
+.ec-cmp__col small { color: #a3a3a3; font-size: var(--t-small); }
+.ec-cmp__logos { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ec-cmp__logos img { width: 20px; height: 20px; display: block; }
+.ec-cmp__logos span { margin-left: 2px; }
+.ec-yes { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: rgba(var(--accent-rgb), .22); }
+.ec-yes svg { width: 15px; height: 15px; fill: none; stroke: #cdbfff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.ec-no { display: inline-grid; place-items: center; width: 26px; height: 26px; color: #8a8a8a; font-size: 18px; }
+.ec-no + small { margin-left: 8px; color: #a3a3a3; font-size: var(--t-small); }
+.ec-cmp__foot > * { padding-top: var(--s-4); padding-bottom: var(--s-4); }
+@media (max-width: 639px) {
+  .ec-cmp__row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .ec-cmp__row > [role="rowheader"], .ec-cmp__head > :first-child, .ec-cmp__foot > :first-child { grid-column: 1 / -1; padding-bottom: 0; }
+  .ec-cmp__head > :first-child, .ec-cmp__foot > :first-child { display: none; }
+  .ec-cmp__row > * { padding: 10px var(--s-4); font-size: 15px; }
+  .ec-cmp__row > [role="rowheader"] { padding-top: 14px; font-weight: 500; color: var(--ink); }
+  .ec-cmp__row > :nth-child(3) { background: none; }
+  .ec-cmp__col b { font-size: 19px; flex-wrap: wrap; }
+  .ec-cmp__logos span { flex-basis: 100%; margin: 0; }
+}
+.ec-cmp__logos img[src$="filen.svg"] { filter: invert(1); }
+.ec-cmp__row { align-items: stretch; }
+.ec-cmp__row > span { display: flex; align-items: center; flex-wrap: wrap; }
+
+/* the editor card: Echo's editor (prototype-native ui/editor.slint) in small - top bar, video with a caption, tools,
+   the timeline (pieces #333 with film strips, the selected one yellow with handles, the red playhead sweeping) */
+.ec-ed { width: 340px; background: #0d0d10; border: 1px solid #26262c; border-radius: 12px; box-shadow: 0 14px 40px #000a; overflow: hidden; font-size: 12px; }
+.ec-ed svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ec-ed__top { display: flex; align-items: center; gap: 8px; padding: 8px; }
+.ec-ed__top b { flex: 1; min-width: 0; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-ed__btn { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 7px; background: #1e1e23; border: 1px solid #26262c; color: #f5f5f7; font-size: 11.5px; }
+.ec-ed__btn--p { background: #7c5cff; border-color: transparent; color: #fff; }
+.ec-ed__vid { position: relative; aspect-ratio: 16 / 9; background: #000; }
+.ec-ed__vid img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ec-ed__cap { position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); white-space: nowrap; font-weight: 700; font-size: 14px; color: #fff; background: #000000b0; padding: 2px 8px; border-radius: 4px; }
+.ec-ed__tools { display: flex; gap: 2px; padding: 6px 8px; border-top: 1px solid #26262c; }
+.ec-ed__tools span { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px; border-radius: 6px; color: #a0a0ab; font-size: 11px; }
+.ec-ed__tools span:first-child { color: #f5f5f7; background: #ffffff12; }
+.ec-ed__tl { position: relative; padding: 8px 8px 10px; border-top: 1px solid #26262c; display: grid; gap: 6px; }
+.ec-ed__track { display: flex; gap: 2px; height: 38px; background: #ffffff05; border-radius: 6px; }
+.ec-ed__track i { position: relative; width: var(--w); border-radius: 6px; background: #333 url(/img/clip-cs1-128.webp) 0 0 / auto 100% repeat-x; box-shadow: inset 0 0 0 1px #ffffff30; }
+.ec-ed__track i:nth-child(1) { background-image: url(/img/clip-cs2-128.webp); }
+.ec-ed__track i:nth-child(3) { background-image: url(/img/clip-cs3-128.webp); }
+.ec-ed__track i.sel { box-shadow: inset 0 0 0 2px #ffd23f, 0 0 18px #ffd23f40; }
+.ec-ed__track i.sel::before, .ec-ed__track i.sel::after { content: ""; position: absolute; top: 0; bottom: 0; width: 7px; background: #ffd23f; }
+.ec-ed__track i.sel::before { left: 0; border-radius: 6px 0 0 6px; }
+.ec-ed__track i.sel::after { right: 0; border-radius: 0 6px 6px 0; }
+.ec-ed__caps { position: relative; height: 22px; background: #ffffff05; border-radius: 6px; }
+.ec-ed__caps em { position: absolute; left: var(--l); width: var(--w); top: 2px; bottom: 2px; font-style: normal; font-size: 10px; line-height: 16px; padding: 0 5px; border: 1px solid #6d5bd0; background: #6d5bd033; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #f5f5f7; }
+.ec-ed__ph { position: absolute; top: 4px; bottom: 6px; left: 30%; width: 2px; background: #ff4d6d; box-shadow: 0 0 6px #ff4d6d99; }
+.ec-ed__ph::before { content: ""; position: absolute; left: -5px; top: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 7px solid #ff4d6d; }
+@keyframes ec-ph { 0% { left: 10%; } 100% { left: 92%; } }
+html:not([data-motion="off"]) .ec-ed__ph { animation: ec-ph 6s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ec-ed__ph { animation: none !important; } }
+.stage > :is(.at-rise, .at-corner) > .ec-ed { margin-inline: auto; max-width: 100%; }
+@media (max-width: 1023px) { .ec-ed { zoom: 1; } }
+
+/* 11 Nov 2026 (the user): the app's title-bar glow is back, ONLY on the library preview's title bar - the same two
+   layers as prototype-native ui/app.slint: an accent light from the left (15% -> 6% at 28% -> 0 at 60%), faded out
+   toward the bar's bottom edge, on the rail colour. Plus the window's own drop shadow. */
+#library .app > .atop { background:
+  linear-gradient(180deg, rgba(10, 10, 12, 0) 0%, rgba(10, 10, 12, .55) 60%, #0a0a0c 100%),
+  linear-gradient(90deg, rgba(124, 92, 255, .15) 0%, rgba(124, 92, 255, .06) 28%, rgba(124, 92, 255, 0) 60%),
+  #0a0a0c; }
+#library .app { box-shadow: 0 30px 80px #00000080; }
+
+/* the search card: Echo's "Search clips…" box (14 px, panel #16161a) finding clips by their auto-caption words */
+.ec-sr { width: 352px; padding: 12px; background: #0d0d10; border: 1px solid #26262c; border-radius: 12px; box-shadow: 0 14px 40px #000a; }
+.ec-sr__box { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; background: #16161a; border: 1px solid #7c5cff; border-radius: 8px; font-size: 14px; }
+.ec-sr__box svg { width: 14px; height: 14px; fill: none; stroke: #a0a0ab; stroke-width: 2; stroke-linecap: round; }
+.ec-sr__box i { width: 1.5px; height: 16px; background: #f5f5f7; margin-left: -6px; }
+.ec-sr__box small { margin-left: auto; color: #a0a0ab; font-size: 12px; }
+@keyframes ec-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+html:not([data-motion="off"]) .ec-sr__box i { animation: ec-caret 1.1s steps(1) infinite; }
+.ec-sr__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.ec-sr__clip { background: #16161a; border: 1px solid #26262c; border-radius: 10px; overflow: hidden; display: grid; }
+.ec-sr__clip img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.ec-sr__clip b { font-size: 12px; font-weight: 600; padding: 7px 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-sr__clip small { font-size: 11px; color: #a0a0ab; padding: 1px 8px 8px; }
+@keyframes ec-sr-in { 0%, 8% { opacity: 0; transform: translateY(6px); } 16%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+html:not([data-motion="off"]) .ec-sr__clip { animation: ec-sr-in 6s ease-out infinite both; }
+html:not([data-motion="off"]) .ec-sr__clip + .ec-sr__clip { animation-delay: .25s; }
+.stage > :is(.at-rise, .at-corner) > .ec-sr { margin-inline: auto; max-width: 100%; box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) { .ec-sr__box i, .ec-sr__clip { animation: none !important; } }
+@media (max-width: 1023px) { #features-more .panel { --p-h: 420px; } }
+@media (max-width: 639px) { #features-more .panel { --p-h: 300px; } .ec-sr { zoom: 1; } }
+/* the editor's video: zoom past the library thumbnail's own badges (Edited, length) at its edges */
+.ec-ed__vid { overflow: hidden; }
+.ec-ed__vid img { transform: scale(1.14); }
+
+/* 11 Nov 2026 (the user: hover hid the name at once): like library.slint's .more - the extra buttons' box opens from
+   no width (0 -> its width, .18 s ease), fades in .15 s after .05 s (out .12 s), and the name is squeezed and ends in … */
+.mclip:hover .mmeta > div, .mclip.menu .mmeta > div { visibility: visible; }
+.mact .mx, .mclip:hover .mact .mx, .mclip.menu .mact .mx { display: grid; }
+.mmore { display: flex; gap: 4px; width: 0; overflow: hidden; opacity: 0; flex: none; transition: width .18s ease, opacity .12s; }
+.mclip:hover .mmore, .mclip.menu .mmore { width: 100px; opacity: 1; transition: width .18s ease, opacity .15s .05s; }
+@media (prefers-reduced-motion: reduce) { .mmore { transition: none !important; } }
+.mmore > .mx { flex: none; }
+
+/* every feature example sits in the middle of its panel at every width, whatever its height (no hand-set tops) */
+.stage > .at-rise.ec-mid { top: 50%; translate: 0 -50%; }
+/* the editor, shorter so it fits a 16:9 screen's panel (~330 px): app size (no 1.25x), a wide video crop,
+   a slimmer timeline */
+.ec-ed.ec-real { zoom: 1; }
+.ec-ed { width: 360px; }
+.ec-ed__vid { aspect-ratio: 2.4 / 1; }
+.ec-ed__tl { padding: 6px 8px 8px; gap: 5px; }
+.ec-ed__track { height: 30px; }
+.ec-ed__caps { height: 18px; }
+.ec-ed__caps em { line-height: 12px; }
+/* phones: the audio card keeps 3 switches (that rule was only on #features), panels hold the editor */
+@media (max-width: 639px) {
+  #features-more .ui-tg:nth-child(n+4) { display: none; }
+  #features .panel, #features-more .panel { --p-h: 320px; }
+  .ec-ed { zoom: .92; }
+}
+
+/* 11 Nov 2026 (the user's real example): the share link as Discord shows it - time next to the name, the full link,
+   an embed with the author line "<name> (@handle) on Echo · lightweight, ad-free clipping", the clip name as a blue
+   link title, a violet bar, the video with a play button and Echo's watermark bottom-right (no length badge) */
+.ec-chat { background: #313338; border-color: #ffffff10; }
+.ec-chat__who time { font-size: 11.5px; color: #949ba4; }
+.ec-chat__link { font-size: 14px; color: #00a8fc; word-break: break-all; }
+.ec-chat__embed { background: #2b2d31; border-left-color: #7c5cff; border-radius: 4px; gap: 6px; }
+.ec-chat__embed small { font-size: 12px; color: #dbdee1; }
+.ec-chat__embed b { font-size: 15px; font-weight: 600; color: #00a8fc; }
+.ec-chat__vid { margin-top: 4px; border-radius: 4px; }
+.ec-chat__vid i { width: 44px; height: 44px; margin: -22px 0 0 -22px; background: #000000a0; }
+.ec-chat__vid i::after { left: 17px; top: 13px; }
+.ec-chat__wm { position: absolute; right: 7px; bottom: 7px; display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; color: #fff; text-shadow: 0 1px 3px #000c; }
+.ec-chat__wm .ec-logo { width: 13px; height: 13px; border-radius: 4px; display: grid; place-items: center; }
+.ec-chat__wm .ec-logo svg { width: 10px; height: 10px; }
+
+/* the audio card: Echo's Settings > Audio (settings.rs + settings.slint): box titles, rows with the app's slider
+   (4 px track, accent fill, 16 px white knob) + "%" + switch (42x24, accent on / #3a3a3a off, 18 px knob) */
+.ec-au.ec-real { zoom: 1; }
+.ec-au { width: 380px; padding: 6px 14px 10px; background: #16161a; border: 1px solid #26262c; border-radius: 12px; box-shadow: 0 14px 40px #000a; font-size: 13px; }
+.ec-au > p { margin: 10px 0 2px; font-size: 11.5px; font-weight: 600; color: #6b6b76; }
+.ec-au__row { display: flex; align-items: center; gap: 10px; height: 40px; border-top: 1px solid #26262c; }
+.ec-au > p + .ec-au__row { border-top: 0; }
+.ec-au__row > span { flex: 1; min-width: 0; color: #f5f5f7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-au__row.off > span, .ec-au__row.off .ec-sl, .ec-au__row.off em { opacity: .45; }
+.ec-sl { position: relative; flex: none; width: 112px; height: 16px; }
+.ec-sl::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 4px; border-radius: 2px; background: #2a2a31; }
+.ec-sl::after { content: ""; position: absolute; left: 0; top: 6px; height: 4px; border-radius: 2px; background: #7c5cff; width: calc(8px + (100% - 16px) * var(--v)); }
+.ec-sl b { position: absolute; top: 0; left: calc((100% - 16px) * var(--v)); width: 16px; height: 16px; border-radius: 50%; background: #fff; z-index: 1; box-shadow: 0 1px 3px #0006; }
+.ec-au__row em { flex: none; width: 40px; font-style: normal; font-size: 12.5px; color: #a0a0ab; }
+.ec-sw { flex: none; position: relative; width: 42px; height: 24px; border-radius: 12px; background: #3a3a3a; }
+.ec-sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+.ec-sw.on { background: #7c5cff; }
+.ec-sw.on::after { left: 21px; }
+/* one slider moves, the way you'd set Discord quieter (loop) */
+@property --v { syntax: "<number>"; inherits: true; initial-value: 0; }
+@keyframes ec-vol { 0%, 15% { --v: .4; } 45%, 65% { --v: .22; } 95%, 100% { --v: .4; } }
+@keyframes ec-vol-txt { 0%, 15% { content: "80%"; } 30% { content: "60%"; } 45%, 65% { content: "45%"; } 80% { content: "60%"; } 95%, 100% { content: "80%"; } }
+html:not([data-motion="off"]) .ec-au__live .ec-sl { animation: ec-vol 5s ease-in-out infinite; }
+html:not([data-motion="off"]) .ec-au__live em { font-size: 0; }
+html:not([data-motion="off"]) .ec-au__live em::after { content: "80%"; font-size: 12.5px; animation: ec-vol-txt 5s linear infinite; }
+
+/* the tidy card: Echo's Tidy up dialog (tidy.slint): panel, section heads (11 px caps + note), clip rows with a check
+   (accent when ticked), thumbnail, name + tag (KEEP green), note line; Delete selected */
+.ec-td.ec-real { zoom: 1; }
+.ec-td { width: 390px; padding: 12px 14px; background: #16161a; border: 1px solid #26262c; border-radius: 16px; box-shadow: 0 14px 40px #000c; font-size: 13px; }
+.ec-td__top { display: flex; align-items: baseline; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid #26262c; }
+.ec-td__top b { font-size: 16px; font-weight: 700; color: #f5f5f7; }
+.ec-td__top small { margin-left: auto; color: #a0a0ab; font-size: 12px; }
+.ec-td > p { margin: 10px 0 4px; font-size: 11px; color: #6b6b76; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-td > p b { color: #a0a0ab; font-weight: 700; letter-spacing: .04em; margin-right: 4px; }
+.ec-td__row { display: flex; align-items: center; gap: 10px; padding: 5px 6px; border-radius: 9px; }
+.ec-td__ck { flex: none; width: 17px; height: 17px; box-sizing: border-box; border-radius: 4px; border: 1.5px solid #a0a0ab; position: relative; }
+.ec-td__row.on .ec-td__ck { background: #7c5cff; border-color: #7c5cff; }
+.ec-td__row.on .ec-td__ck::after { content: ""; position: absolute; left: 4.5px; top: 1.5px; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ec-td__row img { flex: none; width: 72px; height: 41px; object-fit: cover; border-radius: 6px; background: #000; }
+.ec-td__row > span { min-width: 0; display: grid; gap: 1px; }
+.ec-td__row b { font-size: 12.5px; font-weight: 600; color: #f5f5f7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ec-td__row b em { font-style: normal; font-size: 10px; font-weight: 700; color: #34d399; margin-left: 6px; }
+.ec-td__row small { font-size: 11.5px; color: #a0a0ab; }
+.ec-td__foot { display: flex; justify-content: flex-end; padding-top: 10px; margin-top: 6px; border-top: 1px solid #26262c; }
+.ec-td__btn { height: 30px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 8px; background: #fb5c7c; color: #fff; font-weight: 600; font-size: 12.5px; }
+.stage > :is(.at-rise, .at-corner) > :is(.ec-au, .ec-td) { margin-inline: auto; max-width: 100%; box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) { .ec-au__live .ec-sl, .ec-au__live em::after { animation: none !important; } }
+@media (max-width: 639px) { .ec-au, .ec-td { zoom: .86; } }
+
+/* the "Bring your old clips" menu card (the user, 11 Nov 2026): a small library column - imported clips slide into
+   their own month ("March 2025", library.rs group names), not into today */
+.menu-card .ec-imp { display: grid; align-content: center; gap: 4px; padding: 12px 14px; background: #0d0d10; aspect-ratio: 405 / 228; box-sizing: border-box; overflow: hidden; }
+.ec-imp p { margin: 2px 0 0; font-size: 11px; font-weight: 600; color: #f5f5f7; }
+.ec-imp p small { color: #6b6b76; font-weight: 400; margin-left: 4px; }
+.ec-imp__row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.ec-imp__row img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 5px; display: block; border: 1px solid #26262c; }
+@keyframes ec-imp-in { 0%, 20% { opacity: 0; transform: translate(40px, -10px) scale(.9); } 38%, 88% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+html:not([data-motion="off"]) .ec-imp__in img { animation: ec-imp-in 4.5s cubic-bezier(.2, .9, .3, 1.1) infinite both; }
+html:not([data-motion="off"]) .ec-imp__in img + img { animation-delay: .3s; }
+.ec-imp__in img { box-shadow: 0 0 0 1.5px #7c5cff; }
+@media (prefers-reduced-motion: reduce) { .ec-imp__in img { animation: none !important; } }
+.ec-td__t { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ec-td__t b { min-width: 0; }
+.ec-td__t em { flex: none; font-style: normal; font-size: 10px; font-weight: 700; color: #34d399; }
+html .menu-card > .panel.ec-imp { background: #0d0d10; border: 1px solid #26262c; }
+.menu-card > .panel.ec-imp { background: #0d0d10 !important; } .menu-card > .panel.ec-imp::before { content: none !important; }
+.menu-card > .panel.ec-imp { min-height: 0; height: auto; aspect-ratio: 405 / 228; } .ec-imp .ec-imp__row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.menu-card > .panel.ec-imp { aspect-ratio: 406 / 183; padding: 10px 12px; gap: 3px; }
+.menu-card > .panel.ec-imp { aspect-ratio: auto; height: var(--p-h, 160px); box-sizing: border-box; }
+.menu-card > .panel.ec-imp { padding: 7px 12px; gap: 2px; } .ec-imp p { margin-top: 1px; line-height: 1.3; }
+@media (max-width: 639px) { html #features-more .panel { --p-h: 380px; } }
+
+/* "Bring your old clips" menu picture, round 2 (the user: "too much empty space, less colourful"): the violet ground
+   like the feature panels, two full-width rows of big thumbnails, the group names as small labels on each row */
+html .menu-card > .panel.ec-imp { background: radial-gradient(120% 140% at 15% 0%, #8b6dff, #5b45b8 60%, #4a3a9a) !important; border: 0; padding: 8px; gap: 6px; display: grid; grid-template-rows: 1fr 1fr; align-content: stretch; }
+.menu-card > .panel.ec-imp .ec-imp__row { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; min-height: 0; }
+.menu-card > .panel.ec-imp .ec-imp__row img { width: 100%; height: 100%; aspect-ratio: auto; object-fit: cover; border-radius: 7px; border: 0; box-shadow: 0 6px 16px #0005; }
+.menu-card > .panel.ec-imp .ec-imp__row p { position: absolute; z-index: 1; left: 6px; top: 6px; margin: 0; padding: 2px 7px; border-radius: 6px; background: #0d0d10d9; color: #f5f5f7; font-size: 10.5px; font-weight: 600; line-height: 1.4; }
+.menu-card > .panel.ec-imp .ec-imp__in img { box-shadow: 0 0 0 2px #fff, 0 6px 16px #0006; }
+html:not([data-motion="off"]) .menu-card > .panel.ec-imp .ec-imp__in img:nth-of-type(3) { animation-delay: .6s; }
+
+/* 11 Nov 2026 (the user: the theme button "looks weird"): no outlined circle with a palette icon - a small dot in the
+   current theme's colour (the same swatch as in the picker), with a thin ring; the ring lights up on hover / open */
+html .themebtn { width: 40px; height: 40px; border: 0; border-radius: 50%; background: transparent; position: relative; }
+html .themebtn svg { display: none; }
+html .themebtn::before { content: ""; width: 20px; height: 20px; border-radius: 50%; background: linear-gradient(135deg, var(--p-accent), color-mix(in oklab, var(--p-accent) 55%, transparent)); box-shadow: 0 0 0 3px var(--p-bg), 0 0 0 4.5px var(--line-strong); transition: box-shadow .15s, transform .15s; }
+html .themebtn:hover::before, html .themebtn[aria-expanded="true"]::before { box-shadow: 0 0 0 3px var(--p-bg), 0 0 0 4.5px var(--ink); transform: scale(1.06); }
+html .themebtn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* 11 Nov 2026 (the user): Echo Cloud reachable at the very end - one quiet line under the last Download button */
+.ec-cloudline { margin: var(--s-4) 0 0; font-size: var(--t-small); color: #c4c4c4; }
+.ec-cloudline a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); white-space: nowrap; }
+.ec-cloudline a::after { content: " →"; }
+.ec-cloudline a:hover { text-decoration-color: currentColor; }
+.ec-vslink { margin-top: var(--s-3); } .ec-vslink a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); } .ec-vslink a::after { content: " →"; } .ec-vslink a:hover { text-decoration-color: currentColor; }
+
+/* 12 Nov 2026, tasteskill gate on the shipped page */
+/* phones: every section grows with what it holds (at least one screen), so nothing runs into the next section and
+   the gaps between sections stay alike (gate: collide at 320, section-gaps / screen-height at 390) */
+@media (max-width: 639px) {
+  html main > section.section:not(.hero), html main > section.section:not(.hero).g2 { height: auto; min-height: calc(var(--hm, 1) * 100lvh); }
+  html main > section.section:not(.hero) > .wrap { height: auto; }
+}
+/* the comparison table: the corner cell says what the rows are (every row starts on the left), no link row */
+.ec-cmp__what { color: #a3a3a3; font-size: var(--t-small); align-self: end; }
+#storage .ec-cmp + .ec-vslink { margin-top: var(--s-5); }
+/* the watermark on the Discord example reads on any video frame */
+.ec-chat__wm { background: #000000b3; padding: 2px 6px 2px 3px; border-radius: 5px; text-shadow: none; }
+/* the hero's app window ends 32px above the fold, all corners round */
+@media (min-width: 640px) {
+  html .hero--product .hero__stage:has(> img:not(.is-cutout), > picture), html[data-zoom] .hero--product .hero__stage:has(> img:not(.is-cutout), > picture) { margin-bottom: 32px; border-bottom: 1px solid var(--line-strong); border-radius: var(--r-lg); }
+}
+@media (max-width: 639px) { html main > section.section:not(.hero) > .wrap > .fill { flex: none; } }

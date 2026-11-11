@@ -136,9 +136,11 @@ async function userFromToken(req, env) {
 async function usage(env, user, fresh = false) {
   if (now() - user.used_at < (fresh ? USAGE_FRESH_SECONDS : USAGE_CACHE_SECONDS)) return user.used_bytes;
   let used = 0, cursor;
+  // faster-share-links: a hidden original whose small copy took over is only kept a few hours for players - not counted
+  const gone = new Set(((await env.DB.prepare("SELECT tmp FROM swaps WHERE user_id = ? AND done > 0").bind(user.id).all()).results || []).map((r) => r.tmp));
   for (let page = 0; page < 200; page++) {
     const l = await env.BUCKET.list({ prefix: `u/${user.id}/`, cursor, limit: 1000 });
-    for (const o of l.objects) used += o.size;
+    for (const o of l.objects) if (!gone.has(o.key)) used += o.size;
     if (!l.truncated) break;
     cursor = l.cursor;
   }
@@ -329,12 +331,125 @@ const userPath = (user, key) => key.slice(`u/${user.id}/`.length);
 async function sameContent(env, user, hash, key) {
   const rows = (await env.DB.prepare("SELECT key, moved_from FROM objects WHERE user_id = ? AND hash = ? AND key != ? LIMIT 5").bind(user.id, hash, key).all()).results || [];
   for (const r of rows) {
-    if (await env.BUCKET.head(r.key)) return r;
+    if ((await env.BUCKET.head(r.key)) || (await liveSwap(env, r.key))) return r;
     // gone - unless its upload is still running (the row is written when the upload link is handed out)
     const pending = await env.DB.prepare("SELECT 1 FROM uploads WHERE key = ? AND expires > ?").bind(r.key, now()).first();
     if (!pending) await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
   }
   return null;
+}
+
+// ----- share first, shrink after (faster-share-links, 11 Nov 2026) -----
+// Making Echo Cloud's smaller copy of a long clip takes a while. For a share link Echo (2.0.5+) now uploads the
+// ORIGINAL first, to a hidden key (swaps.tmp = u/<id>/Echo/.swap/<random>.mp4 - Echo's cloud list skips dot folders,
+// 2.0.4 too), and the link plays it at once. Echo then makes the smaller copy, uploads it to the clip's real key and
+// calls POST /upload/swap: from then on the link plays the small copy. Nothing is overwritten while someone watches:
+// the share page asks for "?v=o" while the swap is pending and keeps getting the original for SWAP_GRACE after it,
+// then tmp is deleted (daily job). The quota stops counting tmp once the swap is done (usage()).
+// Echo 2.0.4 and older never send share_first: for them nothing changes.
+const SWAP_GRACE = 6 * 3600;
+/// objects.fmt values Echo may send (see upload())
+const FMTS = new Set(["small", "orig", "keep"]);
+/// the swap row of a clip key (pending: done = 0; done: when the small copy took over)
+const swapOf = (env, key) => env.DB.prepare("SELECT * FROM swaps WHERE key = ?").bind(key).first();
+/// a pending swap whose original is in R2 (the clip's link plays it until the small copy is there)
+async function liveSwap(env, key) {
+  const s = await swapOf(env, key);
+  return s && !s.done && (await env.BUCKET.head(s.tmp)) ? s : null;
+}
+/// the clip is deleted: its swap (and hidden original) goes too
+async function dropSwap(env, key) {
+  const s = await swapOf(env, key);
+  if (!s) return;
+  await env.BUCKET.delete(s.tmp);
+  await env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(key).run();
+}
+/// the original becomes the clip itself (no smaller copy came): copied inside R2, like /move; tmp stays for SWAP_GRACE
+async function promoteSwap(env, s) {
+  const o = await env.BUCKET.get(s.tmp);
+  if (!o) return false;
+  const { readable, writable } = new FixedLengthStream(o.size);
+  const put = env.BUCKET.put(s.key, readable, { httpMetadata: o.httpMetadata, customMetadata: o.customMetadata });
+  await o.body.pipeTo(writable);
+  await put;
+  return true;
+}
+
+/// POST /upload/swap {path, keep_original?}: the smaller copy is uploaded to the clip's key - the link plays it from
+/// now on. keep_original: no smaller copy (it wouldn't save enough, or making it failed): the original is kept as
+/// the clip. Answers {swap: false} when there's nothing to swap (old row gone, clip moved / deleted meanwhile).
+async function uploadSwap(req, user, env) {
+  const b = await body(req);
+  const key = userKey(user, b.path);
+  if (!key) return fail("Bad clip path");
+  const s = await swapOf(env, key);
+  if (!s || s.user_id !== user.id) return json({ ok: true, swap: false });
+  if (s.done) return json({ ok: true, swap: true, done: true });
+  let have = !!(await env.BUCKET.head(key));
+  if (!have && b.keep_original) have = await promoteSwap(env, s);
+  if (!have) return fail(b.keep_original ? "The upload is gone - share the clip again" : "Upload the smaller copy first", 409);
+  // kept as it is: on purpose ("keep": a copy wouldn't save enough) or for now ("orig": Echo's sweep makes it smaller later)
+  if (b.keep_original) await env.DB.prepare("UPDATE objects SET fmt = ? WHERE key = ? AND user_id = ?").bind(b.keep ? "keep" : "orig", key, user.id).run();
+  await env.DB.prepare("UPDATE swaps SET done = ? WHERE key = ?").bind(now(), key).run();
+  await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount without tmp
+  return json({ ok: true, swap: true, done: true });
+}
+
+/// POST /objects/fmt {paths}: for Echo's daily sweep (faster-share-links) - per clip what Echo Cloud knows:
+/// {files: {path: {fmt, hash, last_read}}} (fmt: small / orig / keep / null = uploaded by an older Echo, unknown).
+/// Clips without a row are missing from the answer (older uploads). Echo decides with the clip on its PC.
+async function objectsFmt(req, user, env) {
+  const b = await body(req);
+  const keys = (Array.isArray(b.paths) ? b.paths : []).slice(0, 500).map((p) => userKey(user, p)).filter(Boolean);
+  const files = {};
+  for (let i = 0; i < keys.length; i += 90) {
+    const part = keys.slice(i, i + 90);
+    const rows = (await env.DB.prepare(`SELECT key, fmt, hash, last_read FROM objects WHERE user_id = ? AND key IN (${part.map(() => "?").join(",")})`)
+      .bind(user.id, ...part).all()).results || [];
+    for (const r of rows) files[userPath(user, r.key)] = { fmt: r.fmt || null, hash: r.hash || null, last_read: r.last_read || 0 };
+  }
+  return json({ files });
+}
+
+/// POST /objects/mark {path, fmt: "keep"}: Echo found that this clip stays as it is (a smaller copy wouldn't save
+/// enough) - its sweep doesn't try it again.
+async function objectsMark(req, user, env) {
+  const b = await body(req);
+  const key = userKey(user, b.path);
+  if (!key || b.fmt !== "keep") return fail("Bad request");
+  await env.DB.prepare(`INSERT INTO objects (key, user_id, fmt) VALUES (?, ?, 'keep') ON CONFLICT(key) DO UPDATE SET fmt = 'keep' WHERE objects.user_id = excluded.user_id`)
+    .bind(key, user.id).run();
+  return json({ ok: true });
+}
+
+/// Daily: hidden originals whose grace time is over are deleted; a swap Echo never finished (closed, clip renamed
+/// meanwhile) is finished here after a day - with the small copy if it got uploaded, else the original is kept.
+async function cleanupSwaps(env) {
+  await migrate(env);
+  const t = now();
+  let deleted = 0, finished = 0;
+  const old = (await env.DB.prepare("SELECT * FROM swaps WHERE done > 0 AND done < ? LIMIT 500").bind(t - SWAP_GRACE).all()).results || [];
+  for (const s of old) {
+    await env.BUCKET.delete(s.tmp);
+    await env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(s.key).run();
+    deleted++;
+  }
+  const stuck = (await env.DB.prepare("SELECT * FROM swaps WHERE done = 0 AND created < ? LIMIT 50").bind(t - 86400).all()).results || [];
+  for (const s of stuck) {
+    const small = await env.BUCKET.head(s.key);
+    if (small || (await promoteSwap(env, s))) {
+      // kept as the original: counted in full against the plan, Echo's daily sweep makes it smaller when the clip
+      // is still on one of the user's PCs
+      if (!small) await env.DB.prepare("UPDATE objects SET fmt = 'orig' WHERE key = ?").bind(s.key).run();
+      await env.DB.prepare("UPDATE swaps SET done = ? WHERE key = ?").bind(t, s.key).run();
+      finished++;
+    } else {
+      await env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(s.key).run();
+    }
+    await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(s.user_id).run();
+  }
+  console.log("cleanup: swaps - originals deleted", deleted, "unfinished swaps finished", finished);
+  return { deleted, finished };
 }
 
 /// POST /upload/check {path, hash}: is this clip (same content) already in Echo Cloud under another name?
@@ -346,7 +461,8 @@ async function uploadCheck(req, user, env) {
   if (!key || !hash) return fail("Bad clip path");
   const dup = await sameContent(env, user, hash, key);
   // moved_from: that copy was moved there by an earlier dedup from this very path - Echo then keeps it as it is
-  return json({ dup: dup ? userPath(user, dup.key) : null, moved_from: dup && dup.moved_from ? userPath(user, dup.moved_from) : null });
+  // share_first: this server knows "share first, shrink after" (Echo checks before it uses it)
+  return json({ dup: dup ? userPath(user, dup.key) : null, moved_from: dup && dup.moved_from ? userPath(user, dup.moved_from) : null, share_first: true });
 }
 
 /// POST /keep {paths}: these clips are backed up on purpose now (favourite, auto upload, removed from the PC):
@@ -401,55 +517,82 @@ async function upload(req, user, env) {
     if (dup) return json({ error: "This clip is already in Echo Cloud under another name", dup: userPath(user, dup.key) }, 409);
   }
   if (!(await allow(env, `up:${user.id}`, 600, 3600))) return fail("Too many uploads - try again in a while", 429);
+  // faster-share-links: share_first = the ORIGINAL of a long clip for its share link, to a hidden key (swapOf()).
+  // Only for a clip that isn't in Echo Cloud yet; otherwise this is a normal upload (no "swap" in the answer).
+  const existing = await env.BUCKET.head(key);
+  const first = !!b.share_first && !existing;
+  const target = first ? `u/${user.id}/Echo/.swap/${randomId()}${randomId()}.mp4` : key;
+  // the small copy of a pending swap: the hidden original goes once it's in, so it doesn't count against the room
+  const sw = first ? null : await swapOf(env, key);
+  const freeing = sw && !sw.done && sw.user_id === user.id ? sw.size : 0;
   // uploads that got a link but aren't finished yet still count (else many links could be fetched first and
   // all used later); finished ones are in R2 and counted by usage(), expired ones are forgotten
   const pend = (await env.DB.prepare("SELECT key, size FROM uploads WHERE user_id = ? AND expires > ?").bind(user.id, now()).all()).results || [];
   if (pend.length > 50) return fail("Too many uploads at once - wait for some to finish", 429);
   let pending = 0;
   for (const p of pend) {
-    if (p.key === key) continue;   // this file again (a retry): replaced below
+    if (p.key === target) continue;   // this file again (a retry): replaced below
     const o = await env.BUCKET.head(p.key);
     if (o && o.size === p.size) await env.DB.prepare("DELETE FROM uploads WHERE key = ?").bind(p.key).run();
     else pending += p.size;
   }
   await env.DB.prepare("DELETE FROM uploads WHERE expires <= ?").bind(now()).run();
-  const used = await usage(env, user, true);
-  const old = await env.BUCKET.head(key);
+  const used = Math.max(0, (await usage(env, user, true)) - freeing);
+  const old = first ? null : existing;
   const after = used + pending - (old ? old.size : 0) + size;
   if (after > user.quota_bytes)
     return json({ error: `Echo Cloud is full - this clip needs ${(size / GB).toFixed(2)} GB but only ${(Math.max(0, user.quota_bytes - used - pending) / GB).toFixed(2)} GB is left`, full: true, used: used + pending, quota: user.quota_bytes }, 413);
-  const k = await tempKeys(env, "object-read-write", [key], UPLOAD_SECONDS);
+  const k = await tempKeys(env, "object-read-write", [target], UPLOAD_SECONDS);
   if (!k) return fail("Echo Cloud couldn't prepare the upload - try again later", 502);
   const url = await presign({
-    method: "PUT", host: `${env.ACCOUNT_ID}.r2.cloudflarestorage.com`, path: `/${env.BUCKET_NAME}/${key}`,
+    method: "PUT", host: `${env.ACCOUNT_ID}.r2.cloudflarestorage.com`, path: `/${env.BUCKET_NAME}/${target}`,
     accessKey: k.accessKeyId, secretKey: k.secretAccessKey, sessionToken: k.sessionToken,
     expires: UPLOAD_SECONDS, headers: { "content-length": size },
   });
   await env.DB.prepare("INSERT OR REPLACE INTO uploads (key, user_id, size, expires) VALUES (?, ?, ?, ?)")
-    .bind(key, user.id, size, now() + UPLOAD_SECONDS).run();
+    .bind(target, user.id, size, now() + UPLOAD_SECONDS).run();
   // chat 28: many /upload calls at the same moment (a self-built client) could all pass the check above before
   // any of them was recorded. Now that this one is recorded, count all open uploads again; if together they're
   // over the plan, this one is taken back (in a tie both may be refused - the app simply retries later).
   const again = await env.DB.prepare("SELECT COALESCE(SUM(size), 0) AS n FROM uploads WHERE user_id = ? AND expires > ? AND key != ?")
-    .bind(user.id, now(), key).first();
+    .bind(user.id, now(), target).first();
   if (used - (old ? old.size : 0) + Number((again && again.n) || 0) + size > user.quota_bytes) {
-    await env.DB.prepare("DELETE FROM uploads WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+    await env.DB.prepare("DELETE FROM uploads WHERE key = ? AND user_id = ?").bind(target, user.id).run();
     return json({ error: "Echo Cloud is full - other uploads are already using the space left", full: true, used, quota: user.quota_bytes }, 413);
+  }
+  if (first) {
+    // a share-first upload of this clip before (cancelled, made again): its hidden original goes
+    const prev = await swapOf(env, key);
+    if (prev && prev.tmp !== target) await env.BUCKET.delete(prev.tmp);
+    await env.DB.prepare("INSERT OR REPLACE INTO swaps (key, user_id, tmp, size, created, done) VALUES (?, ?, ?, ?, ?, 0)")
+      .bind(key, user.id, target, size, now()).run();
   }
   // share_only (cloud-savings): uploaded just for an expiring share link - deleted with the link (cleanupExpired).
   // Never for a clip that was already backed up here (a normal upload over it, or one from before this server).
   // A normal upload (no share_only) over a share-only one makes it a backup.
   const row = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
   const shareOnly = !!b.share_only && (!old || !!(row && row.share_only)) ? 1 : 0;
-  await env.DB.prepare(`INSERT INTO objects (key, user_id, hash, share_only) VALUES (?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET user_id = excluded.user_id, hash = excluded.hash, share_only = excluded.share_only`)
-    .bind(key, user.id, hash, shareOnly).run();
-  return json({ url, size, expires: now() + UPLOAD_SECONDS, share_only: !!shareOnly });
+  // fmt (faster-share-links): what Echo uploads - "small" = its smaller copy, "orig" = the clip as it is (to be made
+  // smaller later), "keep" = as it is on purpose (a copy wouldn't save enough / tiny clip). Older Echo: unknown (NULL).
+  // A share-first upload is the original until its smaller copy takes over.
+  const fmt = first ? "orig" : FMTS.has(b.fmt) ? b.fmt : null;
+  await env.DB.prepare(`INSERT INTO objects (key, user_id, hash, share_only, fmt) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET user_id = excluded.user_id, hash = excluded.hash, share_only = excluded.share_only, fmt = excluded.fmt`)
+    .bind(key, user.id, hash, shareOnly, fmt).run();
+  return json({ url, size, expires: now() + UPLOAD_SECONDS, share_only: !!shareOnly, ...(first ? { swap: userPath(user, target) } : {}) });
 }
 
 async function deleteKeys(env, user, keys) {
   if (!keys.length) return;
   for (let i = 0; i < keys.length; i += 1000) await env.BUCKET.delete(keys.slice(i, i + 1000));
+  // a share-first upload's hidden original goes too (faster-share-links)
+  for (let i = 0; i < keys.length; i += 90) {
+    const part = keys.slice(i, i + 90), q = part.map(() => "?").join(",");
+    const sw = (await env.DB.prepare(`SELECT tmp FROM swaps WHERE user_id = ? AND key IN (${q})`).bind(user.id, ...part).all()).results || [];
+    if (!sw.length) continue;
+    await env.BUCKET.delete(sw.map((s) => s.tmp));
+    await env.DB.prepare(`DELETE FROM swaps WHERE user_id = ? AND key IN (${q})`).bind(user.id, ...part).run();
+  }
   // their share links go too
   for (const key of keys) {
     const rows = (await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).all()).results || [];
@@ -477,7 +620,25 @@ async function move(req, user, env) {
   if (!from || !to) return fail("Bad clip path");
   if (from === to) return json({ ok: true });
   const o = await env.BUCKET.get(from);
+  // faster-share-links: renamed while its smaller copy is still being made - only the names move (the hidden original
+  // stays where it is; Echo's /upload/swap for the old name then says swap: false, the daily job finishes it)
+  const sw = await swapOf(env, from);
+  if (!o && sw && !sw.done && sw.user_id === user.id) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(to),
+      env.DB.prepare("UPDATE swaps SET key = ? WHERE key = ?").bind(to, from),
+      env.DB.prepare("UPDATE shares SET key = ? WHERE key = ? AND user_id = ?").bind(to, from, user.id),
+      env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(to),
+      env.DB.prepare("UPDATE objects SET key = ?, moved_from = ? WHERE key = ? AND user_id = ?").bind(to, b.dedup ? from : null, from, user.id),
+    ]);
+    return json({ ok: true });
+  }
   if (!o) return fail("That clip isn't in Echo Cloud", 404);
+  // a finished swap's grace time moves with it (links that still play the original)
+  if (sw && sw.user_id === user.id) await env.DB.batch([
+    env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(to),
+    env.DB.prepare("UPDATE swaps SET key = ? WHERE key = ?").bind(to, from),
+  ]);
   // R2 has no server-side copy in Workers: stream it over (doesn't use more space for long: the old one is deleted)
   const { readable, writable } = new FixedLengthStream(o.size);
   const put = env.BUCKET.put(to, readable, { httpMetadata: o.httpMetadata, customMetadata: o.customMetadata });
@@ -657,8 +818,9 @@ async function cleanupExpired(env) {
       ? await env.DB.prepare("SELECT 1 FROM shares WHERE key = ? LIMIT 1").bind(r.key).first()
       : !(await shareOnlyUnused(env, r.key));
     if (!still) {
-      const o = await env.BUCKET.head(r.key);
+      const o = (await env.BUCKET.head(r.key)) || (await liveSwap(env, r.key));   // (a swap row has .size too)
       await env.BUCKET.delete(r.key);
+      await dropSwap(env, r.key);
       await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
       await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(r.user_id).run();
       if (isShareCopy(r.key)) copies++; else uploads++;
@@ -902,6 +1064,7 @@ async function deleteAccount(req, user, env) {
     env.DB.prepare("DELETE FROM codes WHERE email = ?").bind(user.email),
     env.DB.prepare("DELETE FROM uploads WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM objects WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM swaps WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM pins WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM follows WHERE follower = ? OR followee = ?").bind(user.id, user.id),
@@ -915,7 +1078,7 @@ async function deleteAccount(req, user, env) {
 // The pages are static files, so site.js pings POST /hit {t:"view",p,r} or {t:"click",k}; downloads are counted
 // in /download. Unique visitors: a scrambled code of day + IP + browser (kept 2 days in uv, only to not count anyone twice).
 const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embed|curl|wget|python|go-http|headless|lighthouse|monitor|scan/i;
-const SITE_PAGES = new Set(["/", "/download", "/pricing", "/changelog", "/privacy", "/terms", "/code-signing"]);
+const SITE_PAGES = new Set(["/", "/download", "/vs-medal", "/pricing", "/changelog", "/privacy", "/terms", "/code-signing"]);
 const SITE_CLICKS = new Set(["plans", "storage", "features", "discord", "changelog", "github", "download"]);
 const utcDay = (t = now()) => new Date(t * 1000).toISOString().slice(0, 10);
 const isBot = (req) => { const ua = req.headers.get("user-agent") || ""; return !ua || BOT_UA.test(ua); };
@@ -1016,10 +1179,15 @@ async function countApp(req, env, os, version) {
 // perf-states (10 Nov 2026): Echo with sv=1 also sends s_<state>=n,rn,m,mp,c,cp,rm,rc for each state it was in
 // (tray / idle / active / player, perf.rs) -> one row per state. Older Echo: one row, state "mixed".
 const PERF_STATES = ["tray", "idle", "active", "player"];
+// Fresh start (the user, 11 Nov 2026): only reports from this version on count - older ones carried fixed problems
+// (RGB theme CPU in the window, untrimmed tray memory) and made Echo look worse than it is. The old rows were deleted
+// by hand (Claude outputs/echo-perf-reset.md). Dev builds (0.1.0) and the 2.0.72 test build never count.
+const PERF_MIN_VER = "2.0.5";
 async function countPerf(req, env, url, os, version) {
   try {
     const q = url.searchParams;
     if (!UPDATE_FILES[os] || !q.has("m") || !q.has("n")) return;
+    if (String(version) === "2.0.72" || newer(PERF_MIN_VER, version)) return;
     const int = (k, max) => { const v = Math.round(Number(q.get(k))); return Number.isFinite(v) && v >= 0 ? Math.min(v, max) : null; };
     const str = (k) => { const v = String(q.get(k) || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80); return v || null; };
     const n = int("n", 100000);
@@ -1089,7 +1257,7 @@ async function perfStats(env) {
     qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? GROUP BY state`).bind(from));
     qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc, state FROM perf ORDER BY at DESC, rowid LIMIT 40"));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
-    const out = { total: res[12][0] || {}, from, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14] };
+    const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14] };
     for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
     Object.keys(cols).forEach((name, i) => {
       out[name] = res[i * 2];
@@ -1277,26 +1445,27 @@ async function profilePage(req, env, handle) {
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
+@font-face{font-family:"Host Grotesk";font-weight:400 700;font-display:swap;src:url(/fonts/host-grotesk.woff2) format("woff2")}
 *{box-sizing:border-box;margin:0}
-body{min-height:100vh;background:#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+body{min-height:100vh;background:#0a0a0a;color:#efefef;font:16px/1.5 "Host Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}
-header{max-width:960px;margin:0 auto;padding:18px 20px;display:flex;align-items:center;gap:12px}
-.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px}
-.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);display:grid;place-items:center}
-.top{margin-left:auto;font-size:14px;color:#a0a0ab}.top:hover{color:#f5f5f7}
+header{max-width:1280px;margin:0 auto 32px;padding:0 24px;height:72px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #ffffff14}
+.brand{display:flex;align-items:center;gap:10px;font-weight:500;font-size:20px;letter-spacing:-.02em}
+.logo{width:30px;height:30px;border-radius:9px;background:#7c5cff;display:grid;place-items:center}
+.top{margin-left:auto;font-size:14px;color:#c4c4c4}.top:hover{color:#efefef}
 main{max-width:960px;margin:0 auto;padding:0 20px 40px}
 .banner{height:150px;border-radius:18px;background:radial-gradient(500px 200px at 20% 0%,${color}cc,transparent 70%),radial-gradient(600px 220px at 90% 120%,${color}66,transparent 70%),#16161a;border:1px solid #26262c}
 .head{display:flex;align-items:flex-end;gap:18px;padding:0 24px;margin-top:-52px;flex-wrap:wrap}
 .av{width:112px;height:112px;border-radius:50%;object-fit:cover;border:5px solid #0d0d10;background:${color};display:grid;place-items:center;font-size:44px;font-weight:700;color:#fff;flex:none}
 .who{padding-bottom:8px;min-width:0}
-h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:28px;line-height:1.15;word-break:break-word}
+h1{font-weight:500;font-size:32px;line-height:1.1;letter-spacing:-.03em;word-break:break-word}
 .handle{color:#a0a0ab;font-size:15px}
 .meta{margin-left:auto;padding-bottom:12px;display:flex;gap:10px;align-items:center}
 .count{color:#a0a0ab;font-size:14px}.count b{color:#f5f5f7}
 .fbtn{height:38px;padding:0 18px;border-radius:11px;border:0;font:inherit;font-weight:600;color:#fff;background:${color};cursor:pointer}
 .fbtn:hover{filter:brightness(1.1)}
 .bio{margin:16px 24px 0;color:#c9c9d1;white-space:pre-wrap;max-width:640px}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#6b6b76;margin:34px 0 12px}
+h2{font-size:20px;font-weight:500;letter-spacing:-.01em;color:#efefef;margin:40px 0 16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
 .clip{background:#16161a;border:1px solid #26262c;border-radius:14px;overflow:hidden;transition:transform .15s,border-color .15s}
 .clip:hover{transform:translateY(-3px);border-color:${color}99}
@@ -1305,11 +1474,11 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#6b6b76;ma
 .th b{position:absolute;right:8px;bottom:8px;font-size:12px;background:#000c;padding:1px 6px;border-radius:6px}
 .play{position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;background:#0009;display:grid;place-items:center;opacity:0;transition:opacity .15s}
 .clip:hover .play{opacity:1}.play svg{width:22px;height:22px;fill:#fff;margin-left:2px}
-.ct{display:block;padding:10px 12px}.ct strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ct small{color:#6b6b76;font-size:12.5px}
+.ct{display:block;padding:12px 14px}.ct strong{display:block;font-size:15px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ct small{color:#a3a3a3;font-size:13px}
 .empty{color:#6b6b76}
 .note{position:fixed;left:50%;bottom:24px;width:min(560px,calc(100vw - 32px));transform:translateX(-50%) translateY(20px);opacity:0;transition:.2s;background:#1e1e23;border:1px solid #26262c;border-radius:12px;padding:12px 16px;font-size:14px;color:#a0a0ab;max-width:92vw;box-shadow:0 10px 30px #000a}
 .note.on{opacity:1;transform:translateX(-50%)}.note b{color:#f5f5f7}.note a{color:${color};font-weight:600}
-footer{max-width:960px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-size:13px}footer a{color:#a0a0ab}
+footer{max-width:960px;margin:0 auto;padding:16px 20px 40px;color:#a3a3a3;font-size:14px}footer a{color:#c4c4c4}
 @media(max-width:640px){.head{padding:0 8px}.meta{margin-left:0;width:100%}.bio{margin:14px 8px 0}.top{display:none}}
 </style></head><body>
 <header><a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a><a class="top" href="/download">Get Echo - free, no ads</a></header>
@@ -1327,7 +1496,7 @@ ${cards ? `<div class="grid">${cards}</div>` : `<p class="empty">No pinned clips
 </body></html>`;
   return new Response(req.method === "HEAD" ? null : html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60",
-    "content-security-policy": "default-src 'none'; script-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "content-security-policy": "default-src 'none'; script-src 'self'; img-src 'self'; font-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin",
   } });
 }
@@ -1490,7 +1659,7 @@ async function shareTakedown(env, id, deleteClip) {
   const owner = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(row.user_id).first();
   await env.BUCKET.delete(`thumbs/${id}.jpg`);
   await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
-  if (deleteClip) { await env.BUCKET.delete(row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
+  if (deleteClip) { await env.BUCKET.delete(row.key); await dropSwap(env, row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
   console.log("takedown", id, row.key, deleteClip ? "(clip deleted)" : "");
   return { id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!deleteClip };
 }
@@ -1523,6 +1692,9 @@ async function migrate(env) {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, hash TEXT, share_only INTEGER NOT NULL DEFAULT 0,
       last_read INTEGER NOT NULL DEFAULT 0, reads INTEGER NOT NULL DEFAULT 0, reads_since INTEGER NOT NULL DEFAULT 0, moved_from TEXT)`),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS objects_hash ON objects (user_id, hash)"),
+    // faster-share-links (11 Nov 2026): "share first, shrink after" for long clips - see swapOf()
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS swaps (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, tmp TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS swaps_user ON swaps (user_id)"),
     // light profiles (chat 19): a name, picture, bio and colour, up to 6 pinned share links, and who you follow
     env.DB.prepare("CREATE TABLE IF NOT EXISTS profiles (user_id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT, bio TEXT, color TEXT, avatar INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS pins (user_id TEXT NOT NULL, share_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (user_id, share_id))"),
@@ -1563,6 +1735,9 @@ async function migrate(env) {
   // perf-states (10 Nov 2026): what Echo was doing in those minutes; rows from before = "mixed"
   const pcols = new Set(((await env.DB.prepare("PRAGMA table_info(perf)").all()).results || []).map((c) => c.name));
   if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
+  // faster-share-links: what kind of file Echo uploaded (upload(): small / orig / keep; NULL = older Echo, unknown)
+  const ocols = new Set(((await env.DB.prepare("PRAGMA table_info(objects)").all()).results || []).map((c) => c.name));
+  if (!ocols.has("fmt")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN fmt TEXT").run();
   await modTables(env);
   migrated = true;
 }
@@ -1572,7 +1747,8 @@ async function share(req, user, env, origin) {
   const path = String(b.path || "").replace(/^\/+/, "");
   if (!path || path.length > 1000 || path.split("/").some((p) => p === ".." || p === "")) return fail("Bad clip path");
   const key = `u/${user.id}/${path}`;
-  if (!(await env.BUCKET.head(key))) return fail("This clip isn't in Echo Cloud yet - upload it first", 404);
+  // (faster-share-links: or its original is up while the smaller copy is made)
+  if (!(await env.BUCKET.head(key)) && !(await liveSwap(env, key))) return fail("This clip isn't in Echo Cloud yet - upload it first", 404);
   const days = Math.max(0, Math.min(3650, Number(b.days) || 0));
   const expires = days ? now() + days * 86400 : 0;
   const old = await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).first();
@@ -1658,8 +1834,10 @@ async function shareViews(req, user, env) {
   }
   return json({ views });
 }
-function sharePage(req, row, id, prof) {
+/// orig (faster-share-links): the link plays a share-first original right now - the player keeps asking for that one
+function sharePage(req, row, id, prof, orig = false) {
   const u = new URL(req.url), base = `${u.origin}/s/${id}`;
+  const vid = `${base}.mp4${orig ? "?v=o" : ""}`;
   const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
   const w = row.w || 1920, h = row.h || 1080;
   const mins = row.dur ? `${Math.floor(row.dur / 60)}:${String(Math.round(row.dur % 60)).padStart(2, "0")}` : "";
@@ -1671,56 +1849,57 @@ function sharePage(req, row, id, prof) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(name)} - Echo</title>
 <meta name="description" content="${esc(desc)}">
-<meta name="theme-color" content="#7c5cff">
+<meta name="theme-color" content="#0a0a0a">
 <meta property="og:site_name" content="Echo">
 <meta property="og:title" content="${esc(name)}">
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:type" content="video.other">
 <meta property="og:url" content="${base}">
 <meta property="og:image" content="${img}">
-<meta property="og:video" content="${base}.mp4">
-<meta property="og:video:url" content="${base}.mp4">
-<meta property="og:video:secure_url" content="${base}.mp4">
+<meta property="og:video" content="${vid}">
+<meta property="og:video:url" content="${vid}">
+<meta property="og:video:secure_url" content="${vid}">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="${w}">
 <meta property="og:video:height" content="${h}">
 <meta name="twitter:card" content="player">
 <meta name="twitter:title" content="${esc(name)}">
 <meta name="twitter:image" content="${img}">
-<meta name="twitter:player" content="${base}.mp4">
+<meta name="twitter:player" content="${vid}">
 <meta name="twitter:player:width" content="${w}">
 <meta name="twitter:player:height" content="${h}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate" type="application/json+oembed" href="${u.origin}/oembed/${id}" title="${esc(name)}">
 <style>
+@font-face{font-family:"Host Grotesk";font-weight:400 700;font-display:swap;src:url(/fonts/host-grotesk.woff2) format("woff2")}
 *{box-sizing:border-box;margin:0}
-body{min-height:100vh;background:radial-gradient(1000px 420px at 50% -160px,#6a4cf540,transparent 70%),#0d0d10;color:#f5f5f7;font:15px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
-a{color:#9d85ff;text-decoration:none}a:hover{text-decoration:underline}
-header{max-width:1180px;margin:0 auto;padding:18px 20px;display:flex;align-items:center;gap:12px}
-.brand{display:flex;align-items:center;gap:9px;color:#f5f5f7;font-weight:700;font-size:17px}.brand:hover{text-decoration:none}
-.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);display:grid;place-items:center;box-shadow:0 6px 18px #6a4cf555}
-.top{margin-left:auto;font-size:14px;color:#a0a0ab}
-main{max-width:1180px;margin:0 auto;padding:4px 20px 40px}
-.player{position:relative;border-radius:16px;overflow:hidden;background:#000;border:1px solid #26262c;box-shadow:0 30px 80px #000a,0 0 0 1px #7c5cff22}
-video{width:100%;max-height:76vh;display:block;background:#000}
+body{min-height:100vh;background:#0a0a0a;color:#efefef;font:16px/1.5 "Host Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#efefef;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#efefef44}a:hover{text-decoration-color:currentColor}
+header{max-width:1280px;margin:0 auto;padding:0 24px;height:72px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #ffffff14}
+.brand{display:flex;align-items:center;gap:10px;color:#efefef;font-weight:500;font-size:20px;letter-spacing:-.02em;text-decoration:none}
+.logo{width:30px;height:30px;border-radius:9px;background:#7c5cff;display:grid;place-items:center}
+.top{margin-left:auto;font-size:14px;color:#c4c4c4}
+main{max-width:1280px;margin:0 auto;padding:32px 24px 48px}
+.player{position:relative;border-radius:20px;overflow:hidden;background:#000;border:1px solid #ffffff1f}
+video{width:100%;aspect-ratio:${w}/${h};max-height:76vh;display:block;background:#000}
 .wm{position:absolute;right:2.5%;bottom:3.5%;height:7.5%;max-height:64px;pointer-events:none;user-select:none}
 .player:fullscreen .wm,.player:-webkit-full-screen .wm{max-height:none}
 .info{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;margin-top:18px}
-h1{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;font-size:26px;line-height:1.2;letter-spacing:-.01em;word-break:break-word}
+h1{font-weight:500;font-size:30px;line-height:1.15;letter-spacing:-.03em;word-break:break-word}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.chip{font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:99px;background:#16161a;border:1px solid #26262c;color:#a0a0ab}
-.chip.g{color:#9d85ff;background:#7c5cff1a;border-color:#7c5cff4d}
+.chip{font-size:13px;font-weight:500;padding:3px 10px;border-radius:99px;background:#151515;border:1px solid #ffffff1f;color:#c4c4c4}
+.chip.g{color:#cdbfff;background:#7c5cff26;border-color:#7c5cff66}
 .acts{display:flex;gap:8px}
-.btn{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-radius:11px;font-weight:600;border:1px solid #26262c;background:#1e1e23;color:#f5f5f7;transition:transform .15s,filter .15s}
+.btn{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px;border-radius:999px;font-weight:500;border:1px solid #ffffff33;background:transparent;color:#efefef;text-decoration:none;transition:transform .15s,filter .15s}
 .btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.btn.p{background:linear-gradient(135deg,#8b6cff,#6a4cf5 55%,#4f7bff);border-color:transparent;box-shadow:0 8px 24px #6a4cf540}
+.btn.p{background:#6a4cf5;border-color:transparent;color:#fff}
 .btn:hover{text-decoration:none;transform:translateY(-1px);filter:brightness(1.1)}
-.promo{margin-top:34px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;background:linear-gradient(160deg,#7c5cff1a,#16161a 60%);border:1px solid #7c5cff40;border-radius:16px;padding:20px 22px}
+.promo{margin-top:40px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;background:#151515;border:1px solid #ffffff1f;border-radius:20px;padding:24px}
 .promo .logo{width:46px;height:46px;border-radius:13px;flex:none}.promo .logo svg{width:28px;height:28px}
-.promo b{display:block;font-size:16.5px}.promo p{color:#a0a0ab;font-size:14px;margin-top:2px}
+.promo b{display:block;font-size:18px;font-weight:500}.promo p{color:#c4c4c4;font-size:15px;margin-top:2px}
 .promo .btn{margin-left:auto}
-.pts{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;color:#6b6b76;font-size:13px}.pts span+span::before{content:"·";margin-right:10px}
-footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-size:13px}
+.pts{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;color:#a3a3a3;font-size:14px}.pts span+span::before{content:"·";margin-right:10px}
+footer{max-width:1280px;margin:0 auto;padding:16px 24px 40px;color:#a3a3a3;font-size:14px}
 .ep video{cursor:pointer}
 .epui{position:absolute;inset:0;pointer-events:none}
 .epbig{position:absolute;left:50%;top:50%;width:76px;height:76px;margin:-38px 0 0 -38px;border-radius:50%;background:#7c5cffd9;display:grid;place-items:center;pointer-events:auto;cursor:pointer;opacity:0;transform:scale(.85);transition:opacity .2s,transform .2s;box-shadow:0 10px 40px #6a4cf580}
@@ -1732,7 +1911,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 .eptrack{position:relative;width:100%;height:6px;border-radius:6px;background:#ffffff33;overflow:hidden;transition:height .12s}
 .eptl:hover .eptrack,.ep.seeking .eptrack{height:9px}
 .eptrack i{position:absolute;inset:0;transform-origin:0 50%;transform:scaleX(0)}
-.epbuf{background:#ffffff40}.epdone{background:linear-gradient(90deg,#8b6cff,#7c5cff 60%,#9d85ff)}
+.epbuf{background:#ffffff40}.epdone{background:#7c5cff}
 .epknob{position:absolute;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px #7c5cff66,0 2px 8px #0008;transform:scale(0);transition:transform .12s}
 .eptl:hover .epknob,.ep.seeking .epknob,.eptl:focus-visible .epknob{transform:scale(1)}
 .eptip{position:absolute;bottom:22px;transform:translateX(-50%);background:#16161ae6;border:1px solid #26262c;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .12s;white-space:nowrap}
@@ -1760,9 +1939,9 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
 </style></head><body>
 <header><a class="brand" href="https://echoclip.link/"><span class="logo">${logo}</span>Echo</a><span class="top">Lightweight game clipping for any PC</span></header>
 <main>
-<div class="player"><video src="${base}.mp4" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" || row.wm === "link" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
+<div class="player"><video src="${vid}" ${row.thumb ? `poster="${base}.jpg"` : ""} controls autoplay playsinline preload="metadata"></video>${row.wm === "kimbo" || row.wm === "echo" || row.wm === "link" ? `<img class="wm" src="/wm/${row.wm}.png" alt="">` : ""}</div>
 <div class="info"><div><h1>${esc(name)}</h1>${prof ? `<a class="by" href="/u/${prof.handle}">${prof.avatar ? `<img src="/u/${prof.handle}/avatar.jpg?v=${prof.avatar}" alt="">` : `<i style="background:${cleanColor(prof.color)}">${esc((prof.name || prof.handle)[0].toUpperCase())}</i>`}<span>${esc(prof.name || prof.handle)} <small>@${esc(prof.handle)}</small></span></a>` : ""}<div class="chips">${mins ? `<span class="chip">${mins}</span>` : ""}${game ? `<span class="chip g">${esc(game)}</span>` : ""}${row.views > 0 ? `<span class="chip">${row.views} view${row.views === 1 ? "" : "s"}</span>` : ""}<span class="chip">Shared with Echo</span></div></div>
-<div class="acts"><a class="btn" href="${base}.mp4" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
+<div class="acts"><a class="btn" href="${vid}" download><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
 <div class="promo"><span class="logo">${logo.replace('width="20" height="20"', 'width="28" height="28"')}</span>
 <div><b>Clip your own moments with Echo</b><p>Free and light enough for low-end PCs. Press one key to save what just happened.</p>
 <div class="pts"><span>No ads</span><span>No account needed</span><span>Copy straight into Discord</span><span>Windows &amp; Linux</span></div></div>
@@ -1774,7 +1953,7 @@ footer{max-width:1180px;margin:0 auto;padding:10px 20px 30px;color:#6b6b76;font-
   return new Response(req.method === "HEAD" ? null : html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300",
     // only our own player script (/player.js); the video and poster come from this site
-    "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; media-src 'self'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; media-src 'self'; img-src 'self'; font-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
   } });
 }
@@ -2312,19 +2491,25 @@ async function serveShare(req, env, id, ext, ctx) {
     if (!t) return new Response("no thumbnail", { status: 404 });
     return new Response(req.method === "HEAD" ? null : t.body, { headers: { "content-type": "image/jpeg", "cache-control": "public, max-age=86400", "x-content-type-options": "nosniff" } });
   }
+  // faster-share-links: while the smaller copy is made the link plays the hidden original; "?v=o" (what the share page
+  // asked for while that was so) keeps getting it for SWAP_GRACE after the swap, so nobody's playback breaks
+  const sw = await swapOf(env, row.key);
+  let key = row.key;
+  if (sw && (!sw.done || new URL(req.url).searchParams.get("v") === "o") && (await env.BUCKET.head(sw.tmp))) key = sw.tmp;
   // the bare link: a page for browsers and link previews (Discord, …); video players get the file as before
   if (!ext) {
     const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";
     // stats page (chat 28): a link pasted into Discord & co = the chat app fetching its preview
     if (BOTS.test(ua)) { try { await bump(env, /discordbot/i.test(ua) ? "sembed:discord" : "sembed:other"); } catch { /* ignore */ } }
-    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id, await profileOf(env, row.user_id));
+    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id, await profileOf(env, row.user_id), key !== row.key);
   }
   const name = row.key.split("/").pop();
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
   const h = new Headers({
     "content-type": "video/mp4",
     "accept-ranges": "bytes",
-    "cache-control": "public, max-age=3600",
+    // the same address can play another file after a swap: not kept by browsers / caches then
+    "cache-control": sw ? "no-store" : "public, max-age=3600",
     "content-disposition": `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
     "access-control-allow-origin": "*",
     // users upload whatever they like: never let a browser run it as a page on echoclip.link
@@ -2333,7 +2518,7 @@ async function serveShare(req, env, id, ext, ctx) {
     "content-security-policy": "sandbox",
   });
   if (req.method === "HEAD") {
-    const o = await env.BUCKET.head(row.key);
+    const o = await env.BUCKET.head(key);
     if (!o) return gone();
     h.set("content-length", String(o.size));
     h.set("etag", o.httpEtag);
@@ -2346,8 +2531,8 @@ async function serveShare(req, env, id, ext, ctx) {
     if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
   }
   let o;
-  try { o = await env.BUCKET.get(row.key, wantsRange ? { range: req.headers } : {}); }
-  catch { o = await env.BUCKET.get(row.key); }
+  try { o = await env.BUCKET.get(key, wantsRange ? { range: req.headers } : {}); }
+  catch { o = await env.BUCKET.get(key); }
   if (!o) return gone();
   h.set("etag", o.httpEtag);
   const r = wantsRange && o.range;
@@ -2364,7 +2549,7 @@ async function serveShare(req, env, id, ext, ctx) {
 }
 
 const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /shares/views", "POST /checkout", "POST /portal", "POST /auth/logout",
-  "POST /upload", "POST /upload/check", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
+  "POST /upload", "POST /upload/check", "POST /upload/swap", "POST /objects/fmt", "POST /objects/mark", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
 
 export default {
   async fetch(req, env, ctx) {
@@ -2432,6 +2617,9 @@ export default {
       if (route === "POST /shares/views") return await shareViews(req, user, env);
       if (route === "POST /upload") return await upload(req, user, env);
       if (route === "POST /upload/check") return await uploadCheck(req, user, env);
+      if (route === "POST /upload/swap") return await uploadSwap(req, user, env);
+      if (route === "POST /objects/fmt") return await objectsFmt(req, user, env);
+      if (route === "POST /objects/mark") return await objectsMark(req, user, env);
       if (route === "POST /keep") return await keep(req, user, env);
       if (route === "POST /touch") return await touch(req, user, env);
       if (route === "POST /delete") return await del(req, user, env);
@@ -2458,7 +2646,7 @@ export default {
   },
   async scheduled(event, env, ctx) {
     // the storage class job after the cleanups (no point moving a copy that is about to be deleted)
-    ctx.waitUntil(cleanupExpired(env).then(() => cleanupStrayCopies(env)).then(() => tierObjects(env)).catch((e) => console.log("cleanup error", e && e.stack)));
+    ctx.waitUntil(cleanupExpired(env).then(() => cleanupSwaps(env)).then(() => cleanupStrayCopies(env)).then(() => tierObjects(env)).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
     ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));

@@ -231,7 +231,7 @@ function perf(P) {
       <td>${esc(r.cpu || "?")}${r.cores ? ` <span class="sub">(${r.cores} threads)</span>` : ""}<div class="sub">${esc(r.gpu || "?")} · ${r.ram ? r.ram + " GB" : "?"}</div></td>
       <td class="sub">${esc(r.res || "?")}${r.fps ? " @ " + r.fps : ""}${r.enc ? "<br>" + esc(r.enc) : ""}</td>
       <td class="n">${r.rn ? pc(r.rc / 10) : "-"}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td><td class="n">${hrs(r.n)}</td></tr>`).join("");
-  return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · ${T.pcs || 0} PC-days</span></summary>
+  return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · Echo ${P.min_ver || "2.0.5"}+ · ${T.pcs || 0} PC-days</span></summary>
     <p class="sub" style="margin:10px 0 10px">Echo + its encoder, measured once a minute on each PC (CPU = share of the whole PC, like Task Manager). Sent with the update check, anonymous: numbers and hardware names only. "Recording" = only the minutes Echo was recording.
       Each minute counts under what Echo was doing then (the state it was in most of that minute).</p>
     <div class="wrap"><table><tr><th>What Echo was doing</th><th class="n">PCs</th><th class="n">Measured</th><th class="n">Memory</th><th class="n">CPU</th><th class="n">Rec memory</th><th class="n">Rec CPU</th><th class="n">Peak memory</th></tr>

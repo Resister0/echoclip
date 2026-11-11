@@ -78,8 +78,7 @@ pub fn find_clips_dir() -> PathBuf {
     }
     cands.push(PathBuf::from(&home).join(".config").join("Clipper").join("settings.json"));
     for c in cands {
-        if let Some(d) = std::fs::read_to_string(&c)
-            .ok()
+        if let Some(d) = read_text(&c)
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v.get("clips_dir").and_then(|d| d.as_str()).map(PathBuf::from))
         {
@@ -331,9 +330,20 @@ pub fn json_cached(p: &Path) -> Option<serde_json::Value> {
             return v;
         }
     }
-    let v: Option<serde_json::Value> = std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let v: Option<serde_json::Value> = read_text(p).and_then(|s| serde_json::from_str(&s).ok());
     CACHE.with(|c| c.borrow_mut().insert(p.to_path_buf(), (stamp, v.clone())));
     v
+}
+
+/// A text file without its UTF-8 byte-order mark. Windows PowerShell 5's `Set-Content -Encoding utf8` and some
+/// editors add one and serde_json refuses it (QA 11 Nov 2026: settings.json with a BOM = "no settings" - the library
+/// fell back to Videos\EchoClips; native_ui.json with a BOM lost every other key on the next save).
+pub fn read_text(p: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(p).ok()?;
+    Some(match s.strip_prefix('\u{feff}') {
+        Some(t) => t.to_string(),
+        None => s,
+    })
 }
 
 /// Echo's fmtLen: 30 -> "30s", 180 -> "3m", 90 -> "1.5m"
@@ -690,8 +700,7 @@ fn keep_remote(thumbs: &Path, keep: Vec<String>) {
 /// Write keys into Echo's settings.json: re-read, replace only these keys, temp file + rename (like the Settings page)
 fn settings_write(keys: &[(&str, serde_json::Value)]) -> Result<(), String> {
     let path = crate::settings::path();
-    let mut disk = std::fs::read_to_string(&path)
-        .ok()
+    let mut disk = read_text(&path)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
@@ -1304,12 +1313,8 @@ impl LibModel {
     }
 
     // ---------- Home ----------
-    /// Echo's homeList: every clip, newest first; Home shows the first `n` (1 big + one row of recent ones)
-    pub fn refresh_home(&self, n: usize) {
-        let all = self.by_id();
-        let mut v: Vec<usize> = (0..all.len()).filter(|&i| !all[i].gone.get()).collect();
-        v.sort_by(|&a, &b| all[b].mtime.cmp(&all[a].mtime));
-        v.truncate(n);
+    /// 11 Nov 2026 (home_inbox.rs): Home shows exactly these clips (card 0 = the clip on show)
+    pub fn set_home(&self, v: Vec<usize>) {
         if *self.home.borrow() != v {
             *self.home.borrow_mut() = v;
             self.home_notify.reset();

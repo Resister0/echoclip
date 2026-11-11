@@ -352,3 +352,10 @@ mod tests {
         assert!(!q().contains("&enc="));
     }
 }
+
+/// "Windows 11 24H2 (26100)" and the GPU name, for log lines (popup.rs: what the popup's see-through depends on)
+#[cfg(windows)]
+pub fn os_gpu() -> (String, String) {
+    let hw = HW.get_or_init(read_hw);
+    (hw.os.clone(), hw.gpu.clone())
+}

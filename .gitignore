@@ -15,3 +15,6 @@ Claude outputs/
 /build-dir/
 /repo/
 /flatpak/flathub/
+
+# design tool state (Taste Skill) - never commit or deploy
+cloud/site/.taste-skill/

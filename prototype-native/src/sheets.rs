@@ -162,7 +162,9 @@ fn own_cache_in(dir: &Path, clip: &Path) -> PathBuf {
 }
 
 fn make(job: &Job, out: &Path) -> Result<(), String> {
-    let d = if job.dur <= 0.0 && remote(&job.clip) { probe_dur(&job.clip) } else { job.dur };
+    // QA 11 Nov 2026: local clips too - a clip opened before its card picture (+ .dur) was made has no length yet;
+    // "clip length unknown" then blanked its seek strip for the whole session (main.rs keeps failed sheets)
+    let d = if job.dur <= 0.0 { probe_dur(&job.clip) } else { job.dur };
     if d <= 0.0 {
         return Err("clip length unknown".into());
     }

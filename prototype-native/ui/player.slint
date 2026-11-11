@@ -7,6 +7,7 @@ import { Cm, CloudMenuBody } from "cloud.slint";
 import { T, Ic, Icon, TipArea, IconBtn, Btn, Kbd, Toast, CopyMenuBody, MenuRow } from "theme.slint";
 import { OverStill } from "over.slint"; // r2-layout (L1): still picture while a menu covers the video
 import { Focus } from "focus.slint"; // port leftovers L2 / L33
+import { PlayGlyph } from "playbadge.slint"; // the play triangle shared with Home
 
 export global Play {
     in-out property <string> title;
@@ -26,6 +27,7 @@ export global Play {
     in-out property <[string]> tags;
     in-out property <string> note;
     in-out property <string> info;         // details under the note
+    in-out property <[string]> info-chips; // the same as chips in the side panel: size, 1080p60, codec, date (11 Nov 2026)
     in-out property <string> size-text;
     in-out property <bool> has-prev;
     in-out property <bool> has-next;
@@ -65,6 +67,7 @@ export global Play {
     in-out property <bool> pv-mpv;            // Windows flip model: mpv draws the seek preview over the video (normal view)
     in-out property <bool> mpv-osd;           // fullscreen controls are drawn by mpv (Slint's stay invisible, for the mouse)  // controls may be drawn over the video (false: Windows window mode)    // Windows window mode: in fullscreen the video is a window BEHIND this one
     in-out property <bool> ui-on: true;     // fullscreen: strip + controls visible (Rust cuts them out of the video window)
+    in-out property <float> speed: 1;       // playback speed (the bar's SPEED menu, 11 Nov 2026)
     callback close();
     callback toggle-pause();
     callback seek(float, bool);            // fraction, still dragging
@@ -193,16 +196,28 @@ component NavArrow inherits Rectangle {
     }
 }
 
-// Echo's .pb (round-cornered control button, white icon)
-component Pb inherits Rectangle {
+// ---- the player bar (11 Nov 2026): plain icons, hover only - no boxes, no glow ----
+global Ic2 {
+    // rounded-corner fullscreen frames (Ic.fs had sharp corners)
+    out property <string> fs: "M4 9V6.5A2.5 2.5 0 0 1 6.5 4H9 M15 4h2.5A2.5 2.5 0 0 1 20 6.5V9 M20 15v2.5a2.5 2.5 0 0 1-2.5 2.5H15 M9 20H6.5A2.5 2.5 0 0 1 4 17.5V15";
+    out property <string> unfs: "M9 4v2.5A2.5 2.5 0 0 1 6.5 9H4 M15 4v2.5A2.5 2.5 0 0 0 17.5 9H20 M20 15h-2.5a2.5 2.5 0 0 0-2.5 2.5V20 M4 15h2.5A2.5 2.5 0 0 1 9 17.5V20";
+    // rounded speaker (Ic.vol was a sharp box + cone)
+    out property <string> vol: "M3 10a1 1 0 0 1 1-1h2.6l4.2-3.5a.7.7 0 0 1 1.2.5v12a.7.7 0 0 1-1.2.5L6.6 15H4a1 1 0 0 1-1-1z M15.5 8.8a4.5 4.5 0 0 1 0 6.4 M18.4 6a8.5 8.5 0 0 1 0 12";
+    out property <string> vol1: "M3 10a1 1 0 0 1 1-1h2.6l4.2-3.5a.7.7 0 0 1 1.2.5v12a.7.7 0 0 1-1.2.5L6.6 15H4a1 1 0 0 1-1-1z M15.5 8.8a4.5 4.5 0 0 1 0 6.4";
+    out property <string> mute: "M3 10a1 1 0 0 1 1-1h2.6l4.2-3.5a.7.7 0 0 1 1.2.5v12a.7.7 0 0 1-1.2.5L6.6 15H4a1 1 0 0 1-1-1z M15.8 9.5l4.6 5 M20.4 9.5l-4.6 5";
+}
+// a bar icon: 20 px in 34 px, theme colour (white in fullscreen), soft round hover, no box when on (just the colour)
+component Cb inherits Rectangle {
     in property <string> icon;
     in property <string> tip;
-    in property <bool> filled;
+    in property <bool> on;
     callback clicked;
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-    background: ta.has-hover ? #ffffff1a : transparent;
+    property <color> fg: Play.full ? #ffffff : T.text;
+    width: 34px;
+    height: 34px;
+    border-radius: 17px;
+    background: ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
+    animate background { duration: 120ms; }
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -215,13 +230,166 @@ component Pb inherits Rectangle {
         width: 20px;
         height: 20px;
         commands: root.icon;
-        stroke: white;
-        fill: root.filled ? white : transparent;
-        stroke-width: root.filled ? 0px : 1.8px;
+        stroke: root.on ? T.accent2 : ta.has-hover ? root.fg : root.fg.with-alpha(0.82);
         transform-scale: ta.pressed ? 0.88 : 1;
         animate transform-scale { duration: 90ms; }
     }
 }
+// play / pause: the shared glyph (Home's optically centred triangle) in the text colour, a soft round hover - no disc
+component BarPlay inherits Rectangle {
+    property <color> fg: Play.full ? #ffffff : T.text;
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
+    animate background { duration: 120ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Play.toggle-pause(); }
+    }
+    TipArea {
+        text: Play.paused ? "Play (Space)" : "Pause (Space)";
+        hover: ta.has-hover;
+    }
+    // paused: Home's play triangle; playing: two crisp 3 px bars, 4 px apart (the glyph's pause blurred into one block)
+    if Play.paused: PlayGlyph {
+        width: 22px;
+        height: 22px;
+        paused: false;
+        colour: root.fg;
+        transform-scale: ta.pressed ? 0.88 : 1;
+        animate transform-scale { duration: 90ms; }
+    }
+    if !Play.paused: Rectangle {
+        width: 10px;
+        height: 14px;
+        transform-scale: ta.pressed ? 0.88 : 1;
+        Rectangle { x: 0; width: 3px; border-radius: 1px; background: root.fg; }
+        Rectangle { x: 7px; width: 3px; border-radius: 1px; background: root.fg; }
+    }
+}
+component SpeedMenu inherits Rectangle {
+    callback picked;
+    background: T.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.line;
+    drop-shadow-blur: 30px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: #00000070;
+    width: 148px;
+    height: sl.preferred-height;
+    sl := VerticalLayout {
+        padding: 6px;
+        spacing: 1px;
+        Text {
+            text: "   SPEED";
+            font-size: 11px;
+            font-weight: 600 + T.fw;
+            letter-spacing: 0.9px;
+            color: T.dim;
+            height: 24px;
+            vertical-alignment: center;
+        }
+        for s in [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]: Rectangle {
+            height: 30px;
+            border-radius: 8px;
+            background: Play.speed == s ? T.accent.with-alpha(0.18) : rta.has-hover ? T.text.with-alpha(0.07) : transparent;
+            rta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    Play.speed = s;
+                    root.picked();
+                    Play.act("speed:" + s);
+                }
+            }
+            Text {
+                x: 12px;
+                text: s + "×";
+                font-size: 13px;
+                font-weight: (Play.speed == s ? 600 : 400) + T.fw;
+                color: T.text;
+            }
+            if s == 1: Text {
+                x: parent.width - self.width - 12px;
+                text: "normal";
+                font-size: 12px;
+                color: T.muted;
+            }
+        }
+    }
+}
+// "1x": plain text, no box (hover only); opens the speed menu
+component SpeedTxt inherits Rectangle {
+    property <color> fg: Play.full ? #ffffff : T.text;
+    width: max(34px, st.preferred-width + 16px);
+    height: 34px;
+    border-radius: 17px;
+    background: ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { spop.show(); }
+    }
+    TipArea {
+        text: "Playback speed";
+        hover: ta.has-hover;
+    }
+    // "SPEED 1.00×"
+    st := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text {
+            text: "SPEED";
+            font-size: 10px;
+            font-weight: 600 + T.fw;
+            letter-spacing: 1.4px;
+            color: Play.full ? #bbbbbb : T.muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: Play.speed.to-fixed(2) + "×";
+            font-family: "Cascadia Mono";
+            font-size: 13px;
+            font-weight: 600 + T.fw;
+            color: Play.speed != 1 ? T.accent2 : ta.has-hover ? root.fg : root.fg.with-alpha(0.92);
+            vertical-alignment: center;
+        }
+    }
+    // a real popup: a plain rectangle would sit BEHIND the video window on Windows
+    spop := PopupWindow {
+        x: (root.width - self.width) / 2;
+        y: - self.height - 10px;
+        width: sm.width;
+        height: sm.height;
+        close-policy: close-on-click-outside;
+        sm := SpeedMenu {
+            picked => { spop.close(); }
+        }
+    }
+}
+// "VOL" label - a click mutes / unmutes ("MUTED" while muted)
+component VolLbl inherits Rectangle {
+    width: t.preferred-width + 8px;
+    height: 34px;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Play.toggle-mute(); }
+    }
+    TipArea {
+        text: Play.muted ? "Unmute (M)" : "Mute (M)";
+        hover: ta.has-hover;
+    }
+    t := Text {
+        x: 4px;
+        text: Play.muted ? "MUTED" : "VOL";
+        font-size: 10px;
+        font-weight: 600 + T.fw;
+        letter-spacing: 1.4px;
+        color: Play.muted ? T.accent2 : ta.has-hover ? (Play.full ? #ffffff : T.text) : (Play.full ? #bbbbbb : T.muted);
+        vertical-alignment: center;
+    }
+}
+
 
 // Echo's .din box with a text field inside (TextInput styled by hand: the std widgets look like Fluent, not Echo)
 component DinField inherits Rectangle {
@@ -232,6 +400,7 @@ component DinField inherits Rectangle {
     callback accepted(string);
     callback edited(string);
     callback focus-out(string);     // the field lost focus (Tags: the typed tag is added, like Echo's onblur)
+    public function open-box() { ti.focus(); } // "+ Tag" / "+ Add a note" open the box
     background: T.panel2;
     border-radius: 9px;
     border-width: 1px;
@@ -295,7 +464,7 @@ component Check inherits Rectangle {
                 width: 12px;
                 height: 12px;
                 commands: Ic.check;
-                stroke: white;
+                stroke: T.on-accent;
                 stroke-width: 3px;
             }
         }
@@ -313,6 +482,175 @@ component Check inherits Rectangle {
     TipArea {
         text: root.tip;
         hover: ta.has-hover && !ta.pressed;
+    }
+}
+
+// ---- side panel parts (11 Nov 2026) ----
+// "+ Tag": a dashed round chip
+component AddChip inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+    width: al.preferred-width;
+    height: 24px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: ta.has-hover ? T.muted : T.line;
+    background: ta.has-hover ? T.text.with-alpha(0.06) : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    al := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 10px;
+        spacing: 4px;
+        alignment: center;
+        Icon {
+            y: 6px;
+            width: 12px;
+            height: 12px;
+            commands: "M12 5v14 M5 12h14";
+            stroke: T.muted;
+        }
+        Text {
+            text: root.text;
+            font-size: 12px;
+            color: T.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+// "+ Add a note": a plain row
+component AddRow inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+    height: 26px;
+    border-radius: 7px;
+    background: ta.has-hover ? T.text.with-alpha(0.06) : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 3px;
+        spacing: 7px;
+        Icon {
+            y: 6.5px;
+            width: 13px;
+            height: 13px;
+            commands: "M12 5v14 M5 12h14";
+            stroke: ta.has-hover ? T.text : T.muted;
+        }
+        Text {
+            text: root.text;
+            font-size: 12.5px;
+            color: ta.has-hover ? T.text : T.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+// a detail chip: "3:00", "205.4 MB", "1080p60", "AV1", "11 Nov · 17:43"
+component InfoChip inherits Rectangle {
+    in property <string> text;
+    width: it.preferred-width + 18px;
+    height: 22px;
+    border-radius: 11px;
+    background: T.text.with-alpha(0.05);
+    it := Text {
+        text: root.text;
+        font-size: 11.5px;
+        color: T.muted;
+        vertical-alignment: center;
+    }
+}
+// Copy / Share in the panel: fills the width it gets (Btn wouldn't shrink: Share stuck out of the card).
+// part: "" / "left" / "right" (the Copy split). ctrl = Ctrl was held on the last press (Ctrl+click Copy = size menu).
+component PanelBtn inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <string> tip;
+    in property <bool> primary;
+    in property <string> part;
+    out property <bool> ctrl;
+    callback clicked;
+    min-width: 26px;
+    height: 36px;
+    border-top-left-radius: root.part == "right" ? 3px : 9px;
+    border-bottom-left-radius: root.part == "right" ? 3px : 9px;
+    border-top-right-radius: root.part == "left" ? 3px : 9px;
+    border-bottom-right-radius: root.part == "left" ? 3px : 9px;
+    background: root.primary ? (ta.pressed ? T.accent.darker(0.12) : ta.has-hover ? T.accent2 : T.accent) : (ta.pressed ? T.text.with-alpha(0.14) : ta.has-hover ? T.text.with-alpha(0.11) : T.text.with-alpha(0.07));
+    animate background { duration: 100ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.ctrl = e.modifiers.control;
+            }
+        }
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        Icon {
+            y: (root.height - 15px) / 2;
+            width: 15px;
+            height: 15px;
+            commands: root.icon;
+            stroke: root.primary ? T.on-accent : T.text;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 600 + T.fw;
+            color: root.primary ? T.on-accent : T.text;
+            vertical-alignment: center;
+        }
+    }
+}
+// an action tile in the panel's grid: icon over a small label; hover lighter; Trim yellow while trimming; Delete red
+component ActTile inherits Rectangle {
+    in property <string> icon;
+    in property <string> text;
+    in property <string> tip;
+    in property <bool> active;
+    in property <bool> red;
+    callback clicked;
+    property <color> fg: root.red ? #ff6b6b : root.active ? T.hi-text : T.text;
+    min-width: 36px;
+    height: 52px;
+    border-radius: 9px;
+    border-width: root.active ? 1px : 0px;
+    border-color: T.hi-text.with-alpha(0.6);
+    background: ta.pressed ? T.text.with-alpha(0.12) : ta.has-hover ? T.text.with-alpha(0.09) : T.text.with-alpha(0.04);
+    animate background { duration: 100ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    TipArea {
+        text: root.tip;
+        hover: ta.has-hover;
+    }
+    Icon {
+        y: 9px;
+        width: 17px;
+        height: 17px;
+        commands: root.icon;
+        stroke: root.fg.with-alpha(ta.has-hover || root.active ? 1 : 0.88);
+    }
+    Text {
+        y: 31px;
+        width: parent.width;
+        text: root.text;
+        font-size: 10.5px;
+        color: root.red ? #ff6b6b : root.active ? T.hi-text : ta.has-hover ? T.text : T.muted;
+        horizontal-alignment: center;
     }
 }
 
@@ -363,7 +701,9 @@ export component PlayerView inherits Rectangle {
     if !Play.full: Rectangle {
         y: root.dim-y;
         height: root.height - root.dim-y;
-        background: #0b0b0fbb;
+        // QA B34 (11 Nov 2026): a light page showed through 73 % (its header ran into the clip's title, its text
+        // under the side panel) - light themes (text #16161c, settings.rs theme_vars) get 90 %
+        background: T.text == #16161c ? #0b0b0fe6 : #0b0b0fbb;
     }
     // click beside the video = close
     TouchArea {
@@ -494,7 +834,8 @@ export component PlayerView inherits Rectangle {
         width: root.vw;
         height: 36px;
     }
-    if !Play.full: HorizontalLayout {
+    // 11 Nov 2026: with the side panel on, every action is in the panel - the top keeps the title and a ✕
+    if !Play.full && root.side-on: HorizontalLayout {
         x: root.vx;
         y: root.vy - 50px;
         width: root.vw;
@@ -504,7 +845,31 @@ export component PlayerView inherits Rectangle {
             text: Play.title;
             font-size: 15px;
             font-weight: 600 + T.fw;
-            color: T.text;
+            color: #f5f5f7;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            min-width: 140px;
+        }
+        Btn {
+            icon: Ic.x;
+            tip: "Close (Esc)";
+            clicked => { Play.close(); }
+        }
+    }
+    if !Play.full && !root.side-on: HorizontalLayout {
+        x: root.vx;
+        y: root.vy - 50px;
+        width: root.vw;
+        height: 36px;
+        spacing: 6px;
+        Text {
+            text: Play.title;
+            font-size: 15px;
+            font-weight: 600 + T.fw;
+            // QA B34 (11 Nov 2026): it sits on the dark dim layer in every theme - near-black (the Light theme's
+            // text colour) melted into the dimmed page header behind it
+            color: #f5f5f7;
             overflow: elide;
             vertical-alignment: center;
             horizontal-stretch: 1;
@@ -813,6 +1178,9 @@ export component PlayerView inherits Rectangle {
                     self.panned = false;
                     self.px0 = self.mouse-x;
                     self.py0 = self.mouse-y;
+                    // QA B33 (11 Nov 2026): a click on the video takes the keys back from the Title / Tags / Note
+                    // boxes (Space / P went into the title). Like any click away, it ends the title edit.
+                    fs.focus();
                 }
             }
             moved => {
@@ -898,7 +1266,8 @@ export component PlayerView inherits Rectangle {
             y: root.bar-y;
             width: root.vw;
             height: root.strip-h;
-            background: Play.full ? #000000aa : @linear-gradient(180deg, #15151b 0%, #101014 100%);
+            // the Light theme gets a light strip background (it was always dark) - the filmstrip itself is unchanged
+            background: Play.full ? #000000aa : T.text == #16161c ? @linear-gradient(180deg, #f4f4f7 0%, #ffffff 100%) : @linear-gradient(180deg, #15151b 0%, #101014 100%);
             Rectangle {
                 height: 1px;
                 y: 0;
@@ -923,7 +1292,7 @@ export component PlayerView inherits Rectangle {
             width: root.vw - 36px;
             height: 46px;
             border-radius: 10px;
-            background: #2a2a32;
+            background: T.text == #16161c && !Play.full ? #dcdce3 : #2a2a32; // Light: light grey behind the pictures
             clip: true;
             property <string> drag: "";   // "" / "seek" / "t0" / "t1"
             property <float> drag-frac: 0;
@@ -1220,31 +1589,37 @@ export component PlayerView inherits Rectangle {
             y: root.bar-y + root.strip-h;
             width: root.vw;
             height: root.ctl-h;
-            background: Play.full ? #000000aa : T.panel2;
+            // near-black fading into a deep shade of the theme colour (Light: white into a faint lavender)
+            background: Play.full ? #000000aa : T.text == #16161c ? @linear-gradient(180deg, #ffffff 0%, T.accent.mix(#ffffff, 0.06) 100%) : @linear-gradient(180deg, #0b0b0e 0%, T.accent.mix(#0d0d10, 0.14) 100%);
             border-bottom-left-radius: Play.full ? 0 : 11px;
             border-bottom-right-radius: Play.full ? 0 : 11px;
-            Rectangle {
-                y: 0;
-                height: 1px;
-                background: T.line;
-            }
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
+                padding-left: 12px;
+                padding-right: 12px;
                 padding-top: 10px;
                 padding-bottom: 10px;
-                spacing: 12px;
-                Pb {
-                    icon: Play.paused ? Ic.play : Ic.pause;
-                    filled: true;
-                    tip: Play.paused ? "Play (Space)" : "Pause (Space)";
-                    clicked => { Play.toggle-pause(); }
-                }
-                Text {
-                    text: Play.time-text + " / " + Play.dur-text;
-                    font-size: 12.5px;
-                    color: #dddddd;
-                    vertical-alignment: center;
+                spacing: 4px;
+                BarPlay { }
+                Rectangle { width: 6px; }
+                // current time bold, total muted
+                HorizontalLayout {
+                    spacing: 0px;
+                    // the editor's mono font
+                    Text {
+                        text: Play.time-text;
+                        font-family: "Cascadia Mono";
+                        font-size: 14px;
+                        font-weight: 600 + T.fw;
+                        color: Play.full ? #ffffff : T.text;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: " / " + Play.dur-text;
+                        font-family: "Cascadia Mono";
+                        font-size: 14px;
+                        color: Play.full ? #bbbbbb : T.muted;
+                        vertical-alignment: center;
+                    }
                 }
                 Text {
                     // prototype stats (where Echo has nothing): codec, decoder, frames
@@ -1315,57 +1690,76 @@ export component PlayerView inherits Rectangle {
                         }
                     }
                 }
-                Pb {
-                    icon: Play.muted || Play.volume == 0 ? Ic.mute : Ic.vol;
-                    tip: "Mute (M)";
-                    clicked => {
-                        Play.toggle-mute();
-                    }
-                }
-                // volume (Echo's #pvol, 90 px)
+                if !Play.trimming: SpeedTxt { }
+                Rectangle { width: 10px; }
+                // "VOL" (click = mute), then 10 slanted ticks: one click = mute / unmute, click + drag =
+                // set the volume (fine, not whole ticks: the last lit tick fills partly). Muted: the level stays faint.
+                VolLbl { }
                 vol := Rectangle {
-                    width: 90px;
-                    Rectangle {
-                        y: (parent.height - 4px) / 2;
-                        height: 4px;
-                        border-radius: 2px;
-                        background: #ffffff26;
-                        Rectangle {
-                            x: 0;
-                            width: parent.width * (Play.muted ? 0 : Play.volume);
-                            border-radius: 2px;
-                            background: T.accent;
-                        }
+                    width: 10 * 7px + 1px;
+                    property <color> fg: Play.full ? #ffffff : T.text;
+                    property <bool> hot: vta.has-hover || vta.pressed;
+                    property <length> start-x;
+                    property <bool> dragging;
+                    for i in 10: Path {
+                        x: i * 7px;
+                        y: (parent.height - 12px) / 2;
+                        width: 7.9px;
+                        height: 12px;
+                        viewbox-width: 7.9;
+                        viewbox-height: 12;
+                        commands: "M3.9 0H7.9L4 12H0Z";
+                        fill: vol.fg.with-alpha(0.18);
+                        stroke-width: 0px;
                     }
+                    // the lit part: the same ticks, cut at the volume
                     Rectangle {
-                        x: (parent.width - 14px) * (Play.muted ? 0 : Play.volume);
-                        y: (parent.height - 14px) / 2;
-                        width: 14px;
-                        height: 14px;
-                        border-radius: 7px;
-                        background: T.accent;
-                        border-width: 2px;
-                        border-color: #ffffffdd;
+                        x: 0;
+                        width: vol.width * Play.volume;
+                        clip: true;
+                        for i in 10: Path {
+                            x: i * 7px;
+                            y: (parent.height - 12px) / 2;
+                            width: 7.9px;
+                            height: 12px;
+                            viewbox-width: 7.9;
+                            viewbox-height: 12;
+                            commands: "M3.9 0H7.9L4 12H0Z";
+                            fill: Play.muted ? vol.fg.with-alpha(0.32) : vol.fg.with-alpha(vol.hot ? 1 : 0.92);
+                            stroke-width: 0px;
+                        }
                     }
                     vta := TouchArea {
                         mouse-cursor: pointer;
                         pointer-event(e) => {
                             if (e.kind == PointerEventKind.down) {
-                                Play.volume = clamp(self.mouse-x / self.width, 0, 1);
-                                Play.muted = false;
-                                Play.set-volume(Play.volume, false);
+                                vol.start-x = self.mouse-x;
+                                vol.dragging = false;
+                            } else if (e.kind == PointerEventKind.up && !vol.dragging) {
+                                Play.toggle-mute();
                             }
                         }
                         moved => {
                             if (self.pressed) {
-                                Play.volume = clamp(self.mouse-x / self.width, 0, 1);
-                                Play.set-volume(Play.volume, false);
+                                if (!vol.dragging && abs(self.mouse-x - vol.start-x) > 3px) {
+                                    vol.dragging = true;
+                                }
+                                if (vol.dragging) {
+                                    Play.volume = clamp(self.mouse-x / self.width, 0, 1);
+                                    Play.muted = false;
+                                    Play.set-volume(Play.volume, false);
+                                }
                             }
                         }
                     }
+                    TipArea {
+                        text: vol.dragging ? round(Play.volume * 100) + " %" : Play.muted ? "Click: unmute · drag: volume" : "Click: mute · drag: volume";
+                        hover: vta.has-hover;
+                    }
                 }
-                Pb {
-                    icon: Play.full ? Ic.unfs : Ic.fs;
+                Rectangle { width: 8px; }
+                Cb {
+                    icon: Play.full ? Ic2.unfs : Ic2.fs;
                     tip: Play.full ? "Exit fullscreen (F)" : "Fullscreen (F)";
                     clicked => { Play.toggle-full(); }
                 }
@@ -1374,10 +1768,20 @@ export component PlayerView inherits Rectangle {
     }
 
     // ---- .phint ----
-    if !Play.full: HorizontalLayout {
+    // the key hints stay hidden until the mouse is over their spot under the player
+    if !Play.full: Rectangle {
+        x: root.vx;
+        y: root.vy + root.vh + root.strip-h + root.ctl-h + 4px;
+        width: root.vw;
+        height: 44px;
+        hint-ta := TouchArea { }
+    Rectangle {
+        opacity: hint-ta.has-hover ? 1 : 0;
+        animate opacity { duration: 160ms; }
+    HorizontalLayout {
         width: self.preferred-width;
-        x: (root.width - self.preferred-width) / 2;
-        y: root.vy + root.vh + root.strip-h + root.ctl-h + 16px;
+        x: (parent.width - self.preferred-width) / 2;
+        y: 12px;
         height: 20px;
         spacing: 4px;
         Kbd { text: "←"; }
@@ -1433,19 +1837,27 @@ export component PlayerView inherits Rectangle {
             vertical-alignment: center;
         }
     }
+    }
+    }
 
-    // ---- side panel (#pside), on the right: Title, Tags, Note, details ----
-    if root.side-on && !Play.full: Rectangle {
+    // ---- side panel (#pside), 11 Nov 2026: a compact card with every action of the old top row ----
+    // (a solid card: Home no longer shows through). Narrow windows have no side panel: the old top row stays there.
+    if root.side-on && !Play.full: card := Rectangle {
         x: root.side-x;
-        y: (root.height - sv.preferred-height) / 2;
+        y: clamp((root.height - sv.preferred-height) / 2, root.vy, max(root.vy, root.height - sv.preferred-height - 12px));
         width: root.side-w;
         height: sv.preferred-height;
-        // clicks on the fields don't close the player - but the details text at the bottom (#sinfo) does, like any
-        // click beside the video (kept being hit when clicking off the clip)
-        TouchArea {
-            y: 0;
-            height: parent.height - sinfo.height - 12px;
-        }
+        background: T.panel;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: #ffffff1f;
+        drop-shadow-blur: 60px;
+        drop-shadow-offset-y: 20px;
+        drop-shadow-color: #000000cc;
+        property <bool> tag-open;
+        property <bool> note-open;
+        // clicks inside the card never count as "beside the video"
+        TouchArea { }
         // Esc while typing a tag / note still closes the player (the text fields keep every other key)
         FocusScope {
             focus-on-click: false;
@@ -1458,16 +1870,8 @@ export component PlayerView inherits Rectangle {
                 reject
             }
             sv := VerticalLayout {
-                spacing: 0;
-                // .dl labels: 12 px muted, 10 px above, 5 px below
-                Text {
-                    text: "Title";
-                    font-size: 12px;
-                    color: T.muted;
-                    height: 22px;
-                    vertical-alignment: bottom;
-                }
-                Rectangle { height: 5px; }
+                padding: 14px;
+                spacing: 10px;
                 // Echo's #sname: edit the name here - Enter or clicking away renames the clip (the player keeps
                 // playing from the same spot), Esc puts the old name back
                 Rectangle {
@@ -1523,25 +1927,26 @@ export component PlayerView inherits Rectangle {
                         }
                     }
                 }
-                Text {
-                    text: "Tags";
-                    font-size: 12px;
-                    color: T.muted;
-                    height: 27px;
-                    vertical-alignment: bottom;
-                }
-                Rectangle { height: 5px; }
-                // tags flow and wrap like Echo's (Slint 1.18 FlexboxLayout wraps by default), then the input
+                // tags: the chips, then "+ Tag" (opens the tag box; it closes again when left empty)
                 VerticalLayout {
                     spacing: 6px;
-                    if Play.tags.length > 0: FlexboxLayout {
+                    FlexboxLayout {
                         spacing: 6px;
                         for t in Play.tags: TagChip {
                             text: t;
                             remove => { Play.remove-tag(self.text); }
                         }
+                        if !card.tag-open: AddChip {
+                            text: "Tag";
+                            clicked => {
+                                card.tag-open = true;
+                                tagin.open-box();
+                            }
+                        }
                     }
                     tagin := DinField {
+                        visible: card.tag-open;
+                        height: card.tag-open ? 36px : 0px;
                         placeholder: "Add a tag + Enter";
                         accepted(t) => {
                             Play.add-tag(t);
@@ -1555,10 +1960,11 @@ export component PlayerView inherits Rectangle {
                                 self.text = "";
                             }
                             Play.tag-hints = [];
+                            card.tag-open = false;
                         }
                     }
                     // existing tags that match (a click adds it; focus stays in the box)
-                    if Play.tag-hints.length > 0 && tagin.text != "": Rectangle {
+                    if card.tag-open && Play.tag-hints.length > 0 && tagin.text != "": Rectangle {
                         height: hl.preferred-height;
                         background: T.panel2;
                         border-radius: 9px;
@@ -1589,27 +1995,230 @@ export component PlayerView inherits Rectangle {
                         }
                     }
                 }
-                Text {
-                    text: "Note";
-                    font-size: 12px;
-                    color: T.muted;
-                    height: 27px;
-                    vertical-alignment: bottom;
+                // note: "+ Add a note" until there is one (or you click it)
+                if Play.note == "" && !card.note-open: AddRow {
+                    text: "Add a note";
+                    clicked => {
+                        card.note-open = true;
+                        notein.open-box();
+                    }
                 }
-                Rectangle { height: 5px; }
-                DinField {
+                notein := DinField {
+                    visible: Play.note != "" || card.note-open;
+                    height: self.visible ? 110px : 0px;
                     multi: true;
                     text <=> Play.note;
                     placeholder: "Anything to remember…";
                     edited(t) => { Play.note-edited(t); }
+                    focus-out(t) => {
+                        if (Play.note == "") {
+                            card.note-open = false;
+                        }
+                    }
                 }
-                Rectangle { height: 12px; }
-                // #sinfo
-                sinfo := Text {
-                    text: Play.info;
-                    font-size: 11.5px;
-                    color: T.dim;
-                    wrap: word-wrap;
+                Rectangle { height: 1px; background: T.line; }
+                // the details as chips: length, size, 1080p60, codec, date (Rust: Play.info-chips)
+                FlexboxLayout {
+                    spacing: 5px;
+                    InfoChip { text: Play.dur-text; }
+                    for s in Play.info-chips: InfoChip { text: s; }
+                }
+                Rectangle { height: 1px; background: T.line; }
+                // Copy (split: the arrow = the size menu) + Share
+                acts := HorizontalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 1px;
+                        horizontal-stretch: 1;
+                        PanelBtn {
+                            text: "Copy";
+                            icon: Ic.copy;
+                            primary: true;
+                            part: "left";
+                            horizontal-stretch: 1;
+                            tip: "Copy (Ctrl+click: choose size)";
+                            clicked => {
+                                if (self.ctrl) {
+                                    cm2.show();
+                                } else {
+                                    Play.act("copy");
+                                }
+                            }
+                        }
+                        PanelBtn {
+                            icon: Ic.down;
+                            primary: true;
+                            part: "right";
+                            width: 26px;
+                            tip: "Copy smaller for Discord";
+                            clicked => { cm2.show(); }
+                        }
+                    }
+                    PanelBtn {
+                        text: "Share";
+                        icon: Ic.share;
+                        horizontal-stretch: 1;
+                        tip: "Upload and copy a link that plays in Discord";
+                        clicked => {
+                            Cm.open = false;
+                            Play.act("share");
+                            if (Cm.open) {
+                                Cm.open = false;
+                                sharepop2.show();
+                            }
+                        }
+                    }
+                }
+                // the rest: Trim, Edit, Frame, Sound / Thumb, Cloud, Folder, Delete
+                tiles := GridLayout {
+                    spacing: 5px;
+                    Row {
+                        ActTile {
+                            icon: Ic.trim;
+                            text: "Trim";
+                            tip: "Trim (T)";
+                            active: Play.trimming;
+                            clicked => {
+                                if (Play.trimming) {
+                                    Play.trim-cancel();
+                                } else {
+                                    Play.trimming = true;
+                                    Play.trim-changed(false);
+                                }
+                            }
+                        }
+                        ActTile {
+                            icon: Ic.edit;
+                            text: "Edit";
+                            tip: "Open in editor (E)";
+                            clicked => { Play.act("edit"); }
+                        }
+                        ActTile {
+                            icon: Ic.frame;
+                            text: "Frame";
+                            tip: "Save this frame as a picture + copy it (P)";
+                            clicked => { Play.act("frame"); }
+                        }
+                        ActTile {
+                            icon: Ic.music;
+                            text: "Sound";
+                            tip: "Save the sound as MP3 or WAV + copy it";
+                            clicked => { mp3pop2.show(); }
+                        }
+                    }
+                    Row {
+                        ActTile {
+                            icon: Ic.image;
+                            text: "Thumb";
+                            tip: "Use this frame as the clip's thumbnail";
+                            clicked => { Play.act("thumb"); }
+                        }
+                        ActTile {
+                            icon: Ic.cloud;
+                            text: "Cloud";
+                            tip: "Cloud: upload, free up space, download, delete";
+                            clicked => {
+                                Cm.open = false;
+                                Play.act("cloud");
+                                if (Cm.open) {
+                                    Cm.open = false;
+                                    cloudpop2.show();
+                                }
+                            }
+                        }
+                        ActTile {
+                            icon: Ic.folder;
+                            text: "Folder";
+                            tip: "Show in folder";
+                            clicked => { Play.act("folder"); }
+                        }
+                        ActTile {
+                            icon: Ic.del;
+                            text: "Delete";
+                            tip: "Delete (Del)";
+                            red: true;
+                            clicked => { Play.act("delete"); }
+                        }
+                    }
+                }
+            }
+        }
+        // the menus open to the LEFT of the card (over the video, which Rust parks while a popup is open), level
+        // with the button that opened them
+        property <length> acts-y: acts.absolute-position.y - self.absolute-position.y;
+        property <length> tiles-y: tiles.absolute-position.y - self.absolute-position.y;
+        cm2 := PopupWindow {
+            x: - self.width - 8px;
+            y: card.acts-y;
+            width: cmb2.preferred-width;
+            height: cmb2.preferred-height;
+            close-policy: close-on-click-outside;
+            cmb2 := CopyMenuBody {
+                size-text: Play.size-text;
+                picked(k) => {
+                    cm2.close();
+                    Play.act("copy:" + k);
+                    fs.focus();
+                }
+                cancel => {
+                    cm2.close();
+                    fs.focus();
+                }
+            }
+        }
+        sharepop2 := PopupWindow {
+            x: - self.width - 8px;
+            y: card.acts-y;
+            width: sharepopb2.preferred-width;
+            height: sharepopb2.preferred-height;
+            close-policy: close-on-click-outside;
+            sharepopb2 := CloudMenuBody {
+                done => { sharepop2.close(); }
+            }
+        }
+        cloudpop2 := PopupWindow {
+            x: - self.width - 8px;
+            y: card.tiles-y;
+            width: cloudpopb2.preferred-width;
+            height: cloudpopb2.preferred-height;
+            close-policy: close-on-click-outside;
+            cloudpopb2 := CloudMenuBody {
+                done => { cloudpop2.close(); }
+            }
+        }
+        mp3pop2 := PopupWindow {
+            x: - self.width - 8px;
+            y: card.tiles-y;
+            width: 230px;
+            height: mp3l2.preferred-height;
+            close-policy: close-on-click-outside;
+            Rectangle {
+                background: T.panel;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: T.line;
+                drop-shadow-blur: 40px;
+                drop-shadow-offset-y: 14px;
+                drop-shadow-color: #000000aa;
+                TouchArea { }
+            }
+            mp3l2 := VerticalLayout {
+                padding: 6px;
+                MenuRow {
+                    text: "Save as MP3";
+                    clicked => {
+                        mp3pop2.close();
+                        Play.act("audio");
+                        fs.focus();
+                    }
+                }
+                MenuRow {
+                    text: "Save as WAV (sound effects)";
+                    clicked => {
+                        mp3pop2.close();
+                        Play.act("wav");
+                        fs.focus();
+                    }
                 }
             }
         }

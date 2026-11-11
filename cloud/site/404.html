@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software" data-radius="round" data-ground="sage" data-buttons="arrow" data-motion>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Page not found - Echo</title>
 <meta name="description" content="This page doesn't exist. Echo is a free, lightweight game clip recorder for Windows and Linux.">
-<meta name="theme-color" content="#7c5cff">
+<meta name="theme-color" content="#0a0a0a">
 <!-- seo: managed by cloud/site-src/seo.py, edit there -->
 <meta name="robots" content="noindex">
 <meta property="og:title" content="Page not found - Echo">
@@ -13,52 +13,106 @@
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="en_US">
-<meta property="og:image" content="https://echoclip.link/og.png?v=2">
+<meta property="og:image" content="https://echoclip.link/og.png?v=3">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Echo - lightweight game clipping for any PC. One key saves the last moments. Free, no ads, no account.">
+<meta property="og:image:alt" content="Echo - game clip recorder for Windows and Linux. One key saves the last minutes; about 150 MB of memory while it records. Free, no ads, no account.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/site.webmanifest">
 <!-- /seo -->
-<link rel="stylesheet" href="/style.css">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/system.css">
+<link rel="stylesheet" href="/assets/motion/motion.css">
+<link rel="stylesheet" href="/assets/layout/layout.css">
+<link rel="stylesheet" href="/echo.css">
+<link rel="stylesheet" href="/sub.css">
 <script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/echo-head.js"></script>
 </head>
 <body>
-<header><div class="wrap">
-  <a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
-  <nav>
-    <a href="/#features" class="hide-s">Features</a>
-    <a href="/#storage">Storage</a>
-    <a href="https://discord.gg/JPVewEfUQs" class="hide-s">Discord</a>
-    <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
-    <a href="/download" class="btn primary small">Download</a>
-  </nav>
-  <div class="themes" id="themes" hidden><p>Theme</p></div>
-</div></header>
-<main>
-<section class="hero">
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="/#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <a class="menu-card span-4" href="/#library">
+              <div class="panel"><img class="frame__img" src="/img/clip-ow1.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="An Overwatch 2 victory screen saved as a clip" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Clip library</span>
+              <span class="t-small muted">Every clip sorted by game, ready to share</span>
+            </a>
+            <a class="menu-card span-4" href="/#moments">
+              <div class="panel"><img class="frame__img" src="/img/clip-sw2.webp" srcset="/img/clip-sw2-128.webp 128w, /img/clip-sw2-300.webp 300w, /img/clip-sw2.webp 405w, /img/clip-sw2-810.webp 810w, /img/clip-sw2-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="A Star Wars Battlefront II clip of a burning desert" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Never miss the moment</span>
+              <span class="t-small muted">Save, mark and keep every track</span>
+            </a>
+            <a class="menu-card span-4" href="/#switch">
+              <div class="panel ec-imp" role="img" aria-label="Clips brought in from Medal sort into March 2025, the day they were recorded, not today"><div class="ec-imp__row"><p>This week</p><img src="/img/clip-mc2-128.webp" srcset="/img/clip-mc2-128.webp 128w, /img/clip-mc2-300.webp 300w, /img/clip-mc2.webp 405w, /img/clip-mc2-810.webp 810w, /img/clip-mc2-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-cs1-128.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-ow1-128.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div><div class="ec-imp__row ec-imp__in"><p>March 2025</p><img src="/img/clip-gi1-128.webp" srcset="/img/clip-gi1-128.webp 128w, /img/clip-gi1-300.webp 300w, /img/clip-gi1.webp 405w, /img/clip-gi1-810.webp 810w, /img/clip-gi1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-sw1-128.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-eve-128.webp" srcset="/img/clip-eve-128.webp 128w, /img/clip-eve-300.webp 300w, /img/clip-eve.webp 405w, /img/clip-eve-810.webp 810w, /img/clip-eve-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div></div>
+              <span class="t-card">Bring your old clips</span>
+              <span class="t-small muted">They land on the day they were recorded</span>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="/#storage">Storage</a></div>
+      <div class="nav__item"><a class="nav__link" href="/pricing">Echo Cloud</a></div>
+      <div class="nav__item"><a class="nav__link" href="/changelog">Changelog</a></div>
+      <div class="nav__item"><a class="nav__link" href="https://discord.gg/JPVewEfUQs">Discord</a></div>
+    </nav>
+    <div class="nav__actions">
+      <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
+      <div class="themes" id="themes" hidden><p>Theme</p></div>
+      <a class="btn btn--primary" href="/download">Download Echo</a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+<main id="top" class="sub sub--404">
+<section class="sub-hero">
   <div class="wrap">
-    <h1>Nothing <span>here.</span></h1>
+    <h1>Nothing here</h1>
     <p class="lead">This page doesn't exist. If you followed a clip link, the clip may have expired or been removed.</p>
-    <div class="dl"><a class="btn primary" href="/">Go to the home page</a></div>
+    <div class="dl"><a class="btn btn--primary primary" href="/">Go to the home page</a><a class="btn btn--secondary" href="/download">Download Echo</a></div>
+    <ul class="ec-404links">
+      <li><a href="/changelog">What's new in Echo</a></li>
+      <li><a href="/pricing">Echo Cloud</a></li>
+      <li><a href="https://discord.gg/JPVewEfUQs">Ask in the Echo Discord</a></li>
+    </ul>
   </div>
 </section>
 </main>
-<footer><div class="wrap">
-  <span>© 2026 Echo · Made in Denmark · <a href="https://github.com/Resister0/echoclip">Open source (GPL-3.0)</a></span>
-  <nav>
-    <a href="/pricing">Pricing</a>
-    <a href="/changelog">Changelog</a>
-    <a href="https://discord.gg/JPVewEfUQs">Discord</a>
-    <a href="/terms">Terms</a>
-    <a href="/privacy">Privacy</a>
-    <a href="/code-signing">Code signing</a>
-    <a href="mailto:support@echoclip.link">support@echoclip.link</a>
-  </nav>
-</div></footer>
+<footer class="footer closing footer--dark ec-subfoot">
+  <div class="wrap">
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a>
+          <p class="footer__lede">A free, open-source game clip recorder for Windows and Linux.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Echo</h3><ul><li><a href="/#features">Features</a></li><li><a href="/#extras">Small extras</a></li><li><a href="/pricing">Echo Cloud</a></li><li><a href="/changelog">Changelog</a></li><li><a href="/vs-medal">Echo vs Medal</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="https://discord.gg/JPVewEfUQs">Discord</a></li><li><a href="mailto:support@echoclip.link">Email support</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Source</h3><ul><li><a href="https://github.com/Resister0/echoclip">GitHub</a></li><li><a href="/code-signing">Code signing policy</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Echo · Open source (GPL-3.0)</span>
+        <span>Product names and logos are trademarks of their owners.</span>
+      </div>
+    </div>
+  </div>
+</footer>
 <script src="/site.js"></script>
+<script type="module" src="/assets/system.js"></script>
+<script type="module" src="/assets/motion/motion.js"></script>
 </body>
 </html>

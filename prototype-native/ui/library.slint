@@ -537,7 +537,7 @@ component PickTick inherits Rectangle {
         width: 14px;
         height: 14px;
         commands: Ic.check;
-        stroke: white;
+        stroke: T.on-accent;
         stroke-width: 3px;
     }
 }
@@ -763,6 +763,7 @@ component Thumb inherits Rectangle {
         y: parent.height - self.height - 9px;
         text: "Edited";
         bg: T.accent.with-alpha(0.85);
+        fg: T.on-accent;
     }
     // Echo's .tbadges (top right): "Shared" + a cloud mark when the clip is also in the cloud
     HorizontalLayout {
@@ -782,6 +783,7 @@ component Thumb inherits Rectangle {
         if data.cloud-only: Badge {
             text: "Cloud only";
             bg: T.accent.with-alpha(0.85);
+            fg: T.on-accent;
             HoverTip {
                 text: "Only in the cloud - plays from there";
                 mx: root.mx;
