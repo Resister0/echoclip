@@ -157,8 +157,15 @@ impl Osd {
         self.base_key.clear();
     }
 
+    /// QA E10 (11 Nov 2026): `size` is a CSS / Slint font size (the em). ab_glyph's scale is the line height
+    /// (ascent - descent), ~1.33 em for Segoe UI - so every text here came out ~25 % smaller than Slint's.
+    fn em(font: &FontVec, size: f32) -> ab_glyph::PxScale {
+        let upem = font.units_per_em().unwrap_or(1000.0).max(1.0);
+        ab_glyph::PxScale::from(size * font.height_unscaled() / upem)
+    }
+
     fn text_width(font: &FontVec, size: f32, s: &str) -> f32 {
-        let f = font.as_scaled(size);
+        let f = font.as_scaled(Self::em(font, size));
         let mut w = 0.0;
         let mut prev = None;
         for ch in s.chars() {
@@ -174,6 +181,7 @@ impl Osd {
 
     /// draw text (premultiplied BGRA), `y_mid` = vertical centre of the line
     fn text(pm: &mut PixmapMut, font: &FontVec, size: f32, x: f32, y_mid: f32, s: &str, rgb: (u8, u8, u8), a: f32) {
+        let size = Self::em(font, size);
         let f = font.as_scaled(size);
         let base = y_mid + (f.ascent() + f.descent()) / 2.0;
         let (w, h) = (pm.width() as i32, pm.height() as i32);

@@ -5,14 +5,19 @@
 // The clip on show is Home card 0 (Card.idx = HOME_BASE), so hover / play / Copy / Share / Edit / Captions work
 // through the same paths as before (Edit opens the editor directly; the picture is the sharp still).
 import { T, Ic, Icon, TipArea, CopyMenuBody } from "theme.slint";
-import { Card, CardView, Lib } from "library.slint";
+import { Card, CardView } from "library.slint";
 import { PlayBadge } from "playbadge.slint";
+import { Play } from "player.slint"; // 11 Nov 2026: the clip plays inside the picture (Play.inline)
 
 export global HomeState {
     in-out property <[Card]> cards;        // [0] = the clip on show
     in-out property <image> hero;          // a sharp still of the clip on show (ffmpeg), else its card picture
     in-out property <string> hero-meta;    // "FiveM · 32 min ago"
     in-out property <length> hero-w;       // the picture's width - its hover video is made this big (hover_vid.rs)
+    // 11 Nov 2026: where the picture is in the window - the clip plays right there (app.slint, Play.inline)
+    in-out property <length> hero-x;
+    in-out property <length> hero-y;
+    in-out property <length> hero-h;
     // Inbox (home_inbox.rs)
     in-out property <bool> loading;        // the clips folder is still being read: show nothing yet
     in-out property <string> label;        // "NEW SINCE YOU LAST LOOKED" / "YOUR LATEST CLIP" / "YOUR CLIPS"
@@ -338,6 +343,10 @@ export component HomePage inherits Rectangle {
     property <length> fixed-h: pad-t + head-h + 16px + games-h + pad-b;
     property <length> vw: max(320px, min(cw - 24px - aw, (self.height - fixed-h) * 16 / 9));
     property <length> vh: vw * 9 / 16;
+    // 11 Nov 2026: while the clip plays inside the picture it grows by the player's strip + bar (66 + 57), so the
+    // video keeps its full 16:9 size
+    // 12 Nov 2026: always (the clip sits loaded + paused there, playing or not looks the same)
+    property <length> sh: root.vh + 123px;
     // the panel's size step: full (6 details rows + hint) / compact (4 rows, smaller buttons) / no details
     property <int> tier: aw >= 320px && vh >= 610px ? 0 : vh >= 430px ? 1 : 2;
     property <length> btn-h: tier == 0 ? 42px : 36px;
@@ -363,6 +372,15 @@ export component HomePage inherits Rectangle {
         height: parent.height;
         // = the page's own height when everything fits (nothing to scroll); taller only in a very small window
         content-height: max(self.height, body.preferred-height);
+        // 11 Nov 2026 (William): a click anywhere on Home outside the clip playing in the picture closes it - back to
+        // the still with the play button (buttons, the picture and the player itself take their own clicks)
+        if Play.inline-active: TouchArea {
+            x: 0;
+            y: 0;
+            width: body.width;
+            height: body.height;
+            clicked => { Play.act("inline-stop"); }
+        }
         body := VerticalLayout {
             width: fl.width;
             height: max(fl.height, self.preferred-height);
@@ -513,31 +531,48 @@ export component HomePage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 24px;
                     alignment: start;
-                    height: max(root.vh, panel.need-h);
+                    height: max(root.sh, panel.need-h);
                     // the picture: the clip's card (badges, hover video, click plays) with the sharp still
                     shot := Rectangle {
                         width: root.vw;
-                        height: root.vh;
+                        height: root.sh;
                         y: 0;
                         border-radius: 14px;
                         background: #0a0a0c;
                         clip: true;
-                        init => { HomeState.hero-w = self.width; }
+                        init => {
+                            HomeState.hero-w = self.width;
+                            HomeState.hero-h = self.height;
+                            HomeState.hero-x = self.absolute-position.x;
+                            HomeState.hero-y = self.absolute-position.y;
+                        }
                         changed width => { HomeState.hero-w = self.width; }
-                        property <bool> hov: Lib.hover-idx == HomeState.cards[0].idx;
+                        changed height => { HomeState.hero-h = self.height; }
+                        changed absolute-position => {
+                            HomeState.hero-x = self.absolute-position.x;
+                            HomeState.hero-y = self.absolute-position.y;
+                        }
+                        property <bool> hov: pta.has-hover;
                         CardView {
                             x: -1px;
-                            // the card lifts 3 px on hover: move it down as much, so the picture itself stays still
-                            y: parent.hov ? 2px : -1px;
-                            animate y { duration: T.lift; easing: ease-out; }
+                            y: -1px;
                             width: parent.width + 2px;
-                            height: parent.height + 2px;
+                            height: root.vh + 2px; // the video's part (the strip + bar under it come with the clip)
                             data: root.hero-card;
+                        }
+                        // 11 Nov 2026 (William: "remove hover to play, only for the Home player"): this takes the mouse over
+                        // the picture, so the card under it never starts its hover preview; a click plays it here
+                        pta := TouchArea {
+                            height: root.vh;
+                            y: 0;
+                            mouse-cursor: pointer;
+                            clicked => { HomeState.act("play"); }
                         }
                         // Echo's shared play button (playbadge.slint): shows while the mouse is on the picture
                         PlayBadge {
-                            size: clamp(root.vh * 0.14, 56px, 84px);
+                            size: clamp(root.vh * 0.09, 44px, 56px); // 11 Nov 2026: smaller (was 56-84 px)
                             hover: parent.hov;
+                            y: (root.vh - self.height) / 2;
                             opacity: parent.hov || HomeState.test-hover ? 1 : 0;
                             animate opacity { duration: 180ms; }
                         }
@@ -546,7 +581,7 @@ export component HomePage inherits Rectangle {
                     panel := Rectangle {
                         out property <length> need-h: pl.preferred-height;
                         width: root.aw;
-                        height: max(root.vh, pl.preferred-height);
+                        height: max(root.sh, pl.preferred-height);
                         y: 0;
                         border-radius: 14px;
                         border-width: 1px;
@@ -558,7 +593,9 @@ export component HomePage inherits Rectangle {
                             padding-top: root.tier == 0 ? 14px : 12px;
                             padding-bottom: root.tier == 0 ? 12px : 10px;
                             spacing: 0;
-                            alignment: space-between;
+                            // QA E12: without the clip details (small sizes) the buttons stay under the pager (space-between
+                            // left a ~170 px gap above them)
+                            alignment: root.tier < 2 ? LayoutAlignment.space-between : LayoutAlignment.start;
                             // pager
                             HorizontalLayout {
                                 spacing: 8px;
@@ -647,7 +684,8 @@ export component HomePage inherits Rectangle {
                                                     horizontal-stretch: 1;
                                                     overflow: elide;
                                                 }
-                                                KeyCap {
+                                                // playing: S cuts (the player's key) - no chip then (an empty one drew a box)
+                                                if !Play.inline-active: KeyCap {
                                                     y: (parent.height - self.height) / 2;
                                                     k: "S";
                                                     on-accent: true;
@@ -700,7 +738,7 @@ export component HomePage inherits Rectangle {
                                         h: root.btn-h;
                                         text: "Share link";
                                         icon: Ic.link;
-                                        k: "L";
+                                        k: Play.inline-active ? "" : "L"; // playing: L = +10 s (player)
                                         clicked => { HomeState.act("link"); }
                                     }
                                     PanelBtn {
@@ -724,7 +762,7 @@ export component HomePage inherits Rectangle {
                                             h: root.btn-h;
                                             text: "Keep";
                                             icon: Ic.star;
-                                            k: root.aw >= 320px ? "K" : "";
+                                            k: root.aw >= 320px && !Play.inline-active ? "K" : ""; // playing: K = pause
                                             clicked => { HomeState.act("keep"); }
                                         }
                                         PanelBtn {

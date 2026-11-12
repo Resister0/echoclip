@@ -63,6 +63,9 @@ export struct FLine {
 export global HoverVid {
     in-out property <int> row: -1;       // view row of the card that plays it (-1 = none)
     in-out property <image> frame;
+    // 11 Nov 2026: the hovered picture's size (set by Thumb): the preview is decoded at exactly its screen size
+    in-out property <length> want-w;
+    in-out property <length> want-h;
 }
 
 // the hover flipbook (60 pictures, 10 x 6) shared by all cards: only the hovered card shows it
@@ -683,7 +686,7 @@ component NameLine inherits Rectangle {
 component TagChip inherits Rectangle {
     in property <string> text;
     height: 18px;
-    // r2-layout (L9): a very long tag ends in … (over.rs tag_lines counts with the same 160 px cap)
+    // r2-layout (L9): a very long tag ends in … (list view; the grid shows tags on the picture - ThumbTag)
     width: min(tt.preferred-width + 16px, 160px);
     border-radius: 9px;
     background: T.accent.with-alpha(0.15);
@@ -696,6 +699,30 @@ component TagChip inherits Rectangle {
         text: "#" + root.text;
         font-size: 11px;
         color: T.accent2;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
+
+// 11 Nov 2026: a tag on the card's picture (same shape as the Badges there; accent edge = a tag)
+component ThumbTag inherits Rectangle {
+    in property <string> text;
+    in property <length> max-w: 160px;
+    height: 20px;
+    width: min(tt.preferred-width + 14px, root.max-w);
+    border-radius: 6px;
+    background: #000000bb;
+    border-width: 1px;
+    border-color: T.accent.with-alpha(0.7);
+    tt := Text {
+        x: 7px;
+        width: parent.width - 14px;
+        height: parent.height;
+        text: "#" + root.text;
+        font-size: 11.5px;
+        font-weight: 600 + T.fw;
+        color: white;
         vertical-alignment: center;
         horizontal-alignment: center;
         overflow: elide;
@@ -724,6 +751,13 @@ component Thumb inherits Rectangle {
     in property <length> my: -9999px;
     background: #0a0a0c;
     clip: true;
+    // 11 Nov 2026: tell hover_vid.rs how big this picture is, so the preview is made at its real size (sharp, 1:1)
+    changed hov => {
+        if (self.hov) {
+            HoverVid.want-w = self.width;
+            HoverVid.want-h = self.height;
+        }
+    }
     Image {
         source: data.thumb;
         width: 100%;
@@ -758,12 +792,38 @@ component Thumb inherits Rectangle {
         text: data.dur;
         bg: #000000dd;
     }
-    if data.edited && data.job == "": Badge {
+    // bottom left: "Edited", then the tags (11 Nov 2026, William: a tag must not make the whole row of cards taller -
+    // they were a line under the name). Up to 2 tags, cut with … to stay clear of the length badge, the rest "+N".
+    // The list view keeps its tag line next to the 176 px picture (its rows have a fixed height anyway).
+    if (data.edited || (data.tags.length > 0 && !root.small)) && data.job == "": tg := HorizontalLayout {
+        // room left of the length badge (~66 px with its gap); "Edited" ~58 px
+        property <length> room: root.width - 18px - 66px - (data.edited ? 63px : 0px);
+        property <int> tags: root.small ? 0 : data.tags.length;
+        property <int> shown: self.tags >= 2 && self.room >= 150px ? 2 : min(1, self.tags);
+        property <int> more: self.tags - self.shown;
+        property <length> chip-max: max(40px, (self.room - (self.more > 0 ? 36px : 0px) - (self.shown - 1) * 5px) / max(1, self.shown));
         x: 9px;
-        y: parent.height - self.height - 9px;
-        text: "Edited";
-        bg: T.accent.with-alpha(0.85);
-        fg: T.on-accent;
+        y: parent.height - 20px - 9px;
+        width: min(self.preferred-width, root.width - 18px - 66px);
+        height: 20px;
+        spacing: 5px;
+        if data.edited: Badge {
+            text: "Edited";
+            bg: T.accent.with-alpha(0.85);
+            fg: T.on-accent;
+        }
+        if tg.shown >= 1: ThumbTag {
+            text: data.tags[0];
+            max-w: tg.chip-max;
+        }
+        if tg.shown >= 2: ThumbTag {
+            text: data.tags[1];
+            max-w: tg.chip-max;
+        }
+        if tg.more > 0: Badge {
+            text: "+" + tg.more;
+            bg: #000000bb;
+        }
     }
     // Echo's .tbadges (top right): "Shared" + a cloud mark when the clip is also in the cloud
     HorizontalLayout {
@@ -906,6 +966,9 @@ component CardButtons inherits HorizontalLayout {
     in property <string> size-text;
     spacing: 2px;
     alignment: end;
+    // 11 Nov 2026 (William: the name is cut with … far too early on a maximised window): only as wide as the buttons.
+    // With the default stretch this layout took half of every spare pixel, so on big cards the name got only half.
+    horizontal-stretch: 0;
     // .more: takes no room until hover (the name gets the full width), then slides open to the LEFT of copy
     // (max-width 0 -> 142 + margin 6, .18 s ease; opacity in .15 s after .05 s, out .12 s). Ctrl held: at once.
     property <bool> open: root.hov || Lib.ctrl-held;
@@ -1102,9 +1165,6 @@ component CardButtons inherits HorizontalLayout {
 
 export component CardView inherits Rectangle {
     in property <Card> data;
-    // r2-layout (L9): the library grid wraps the tags (Echo's .card .tags flex-wrap; Rust gives the row room for the
-    // lines: over.rs tag_lines); Home's narrow recent cards keep one line, cut at the card's edge
-    in property <bool> tag-wrap: true;
     // ta wraps the whole card: it stays "hovered" while the mouse is on the tick or the buttons inside it
     property <bool> hov: ta.has-hover || Lib.menu-idx == data.idx;
     // safety net: the mouse is back on the card = its drop-down is gone (popups take all mouse events while open)
@@ -1203,37 +1263,7 @@ export component CardView inherits Rectangle {
                             overflow: elide;
                         }
                     }
-                    // never wider than the room left by the buttons (the hover buttons slide in: the tags reflow)
-                    if data.tags.length > 0 && root.tag-wrap: Rectangle {
-                        min-width: 0px;
-                        clip: true;
-                        height: tfl.preferred-height + 4px;
-                        tfl := FlexboxLayout {
-                            y: 4px;
-                            width: parent.width;
-                            height: self.preferred-height;
-                            flex-wrap: wrap;
-                            spacing-horizontal: 4px;
-                            spacing-vertical: 4px;
-                            for t in data.tags: TagChip {
-                                text: t;
-                            }
-                        }
-                    }
-                    if data.tags.length > 0 && !root.tag-wrap: Rectangle {
-                        height: 22px;
-                        min-width: 0px;
-                        clip: true;
-                        HorizontalLayout {
-                            x: 0;
-                            width: self.preferred-width;
-                            spacing: 4px;
-                            padding-top: 4px;
-                            for t in data.tags: TagChip {
-                                text: t;
-                            }
-                        }
-                    }
+                    // (the tags are on the picture since 11 Nov 2026 - Thumb)
                     if data.note != "": Text {
                         text: data.note;
                         font-size: 12px;

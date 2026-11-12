@@ -3,6 +3,20 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.6 - 11 Nov
+- New Echo logo
+- Home has the player built in: the clip waits loaded and sharp in the page, ready the moment you open Home, with the player's keys (S cuts, then Save) and a smaller, calmer play button. In fullscreen on Home, ← / → at the very start or end of a clip go to the previous / next clip
+- Menus over a playing video no longer make it blink or turn soft
+- Much less graphics memory: the player used about 700 MB and kept about 365 MB after closing - now about 310 and 170. Echo also gives memory back when the player closes and while it sits behind a game
+- Library: a sharp hover preview that only plays while Echo is in front, tags sit on the picture (cards keep their height), and clip names use the full width
+- Home: Next and Prev no longer stop or skip at clips that share a file name, a trimmed clip doesn't come back as new, and new clips start at the newest
+- Copy for Discord never pastes a different clip with the same name, and small AV1 clips now fit the size too
+- Echo Cloud: a share link's smaller copy that finishes days later no longer removes the clip, and the daily clean-up no longer crashes on older uploads
+- Editor: the toolbar fits smaller windows, and the play button shows in the Light theme
+- Fullscreen: the bar's text has the right size on 1440p screens
+- The recorder never takes another copy of Echo for a game
+- Smaller fixes: one smooth background under the filmstrip and the play bar, scrolling does nothing while Echo is minimised or behind a game, a softer shadow under the player, the first-run tour points at the first clip, and the tick in notifications sits in the middle of its circle
+
 ## 2.0.5 - 11 Nov
 - New Home: your clips one at a time, newest first, with a side panel for keys and clip details, and shelves per game. A clip you watched in the Library no longer shows as new
 - New player: a cleaner control bar, a compact side panel with every action, a light look in the Light theme, and the same look in fullscreen (its empty filmstrip is fixed too)

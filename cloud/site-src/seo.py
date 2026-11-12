@@ -20,8 +20,8 @@ import datetime, html, json, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parent          # cloud/site-src
 SITE = ROOT.parent / "site"
 ORIGIN = "https://echoclip.link"
-OG_IMAGE = f"{ORIGIN}/og.png?v=3"   # Discord caches images per URL: bump v when og.png changes
-OG_ALT = "Echo - game clip recorder for Windows and Linux. One key saves the last minutes; about 150 MB of memory while it records. Free, no ads, no account."
+OG_IMAGE = f"{ORIGIN}/og.png?v=5"   # Discord caches images per URL: bump v when og.png changes
+OG_ALT = "Echo - incredibly lightweight clipper for Windows and Linux. About 150 MB of RAM while recording, Copy for Discord shrinks clips to fit the limit, no ads and no account."
 
 # page file -> public path (the Worker serves download.html at /download etc.). Order = sitemap order.
 PAGES = {
@@ -120,9 +120,9 @@ def block(name, page):
         '<meta property="og:image:height" content="630">',
         f'<meta property="og:image:alt" content="{html.escape(OG_ALT)}">',
         '<meta name="twitter:card" content="summary_large_image">',
-        '<link rel="icon" href="/favicon.ico" sizes="48x48">',
-        '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
-        '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+        '<link rel="icon" href="/favicon.ico?v=2" sizes="48x48">',
+        '<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">',
+        '<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">',
         '<link rel="manifest" href="/site.webmanifest">',
     ]
     ld = "" if name in NOINDEX else jsonld(name, page, desc)

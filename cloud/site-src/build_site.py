@@ -3,10 +3,7 @@
 import pathlib, re
 
 ROOT = pathlib.Path(__file__).parent
-LOGO = ('<svg viewBox="0 0 256 256" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" '
-        'stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" '
-        'stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" '
-        'stroke-width="12" stroke-linejoin="round"/></svg>')
+LOGO = ('<svg viewBox="0 0 64 64" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>')
 
 HEAD = """<!doctype html>
 <html lang="en">
@@ -22,7 +19,7 @@ HEAD = """<!doctype html>
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://echoclip.link/og.png?v=2">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 <script>try{{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}}catch(e){{}}</script>
 </head>

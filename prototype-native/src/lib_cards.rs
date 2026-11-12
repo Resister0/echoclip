@@ -380,7 +380,37 @@ pub fn move_ui(a: &AppWindow, lib: &Rc<LibModel>, ids: Vec<usize>, folder: Strin
     }));
 }
 
+/// test hook (11 Nov 2026): ECHO_CARD_SNAP=<folder> - every 1.5 s the window is drawn with take_snapshot (no screen
+/// needed: works for a test copy kept off screen) into <folder>/snap.png; a file <folder>/move.txt with "x y" (logical
+/// px, window coordinates) moves Slint's pointer there first (card hover without real input), "leave" = pointer out.
+fn snap_hook(app: &AppWindow) {
+    let Some(dir) = std::env::var_os("ECHO_CARD_SNAP").map(std::path::PathBuf::from) else { return };
+    let w = app.as_weak();
+    let t = Box::leak(Box::new(slint::Timer::default()));
+    t.start(slint::TimerMode::Repeated, Duration::from_millis(1500), move || {
+        let Some(a) = w.upgrade() else { return };
+        let win = a.window();
+        if let Ok(m) = std::fs::read_to_string(dir.join("move.txt")) {
+            let _ = std::fs::remove_file(dir.join("move.txt"));
+            let v: Vec<f32> = m.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if let [x, y] = v[..] {
+                win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(x, y) });
+            } else if m.trim() == "leave" {
+                win.dispatch_event(slint::platform::WindowEvent::PointerExited);
+            }
+            return; // draw on the next tick (the hover lift / preview have started)
+        }
+        if let Ok(b) = win.take_snapshot() {
+            let tmp = dir.join("snap.tmp.png");
+            if image::RgbaImage::from_raw(b.width(), b.height(), b.as_bytes().to_vec()).is_some_and(|im| im.save(&tmp).is_ok()) {
+                let _ = std::fs::rename(&tmp, dir.join("snap.png"));
+            }
+        }
+    });
+}
+
 pub fn wire(app: &AppWindow, lib: Rc<LibModel>, sync: Rc<dyn Fn(bool)>) {
+    snap_hook(app);
     // Echo's av1_support, 15 s after start like Echo: does this PC's graphics card encode AV1? (a tiny test encode,
     // once) - only then the menus offer "Convert to AV1". rec_core sets AV1_PLAYS (mpv decodes it in hardware).
     {

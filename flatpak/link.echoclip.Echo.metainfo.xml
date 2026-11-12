@@ -72,11 +72,23 @@
   </branding>
 
   <!-- PNGs in cloud/site/screenshots/ (served by echoclip.link after "wrangler deploy"). Shown in Discover / GNOME Software
-       for the Flatpak. Add more (player.png, editor.png, settings.png) as <screenshot> entries once they exist -->
+       for the Flatpak. Taken from Echo 2.0.5 with demo clips (11 Nov 2026). An editor.png can be added the same way -->
   <screenshots>
     <screenshot type="default">
       <caption>Your clips, sorted by game</caption>
       <image>https://echoclip.link/screenshots/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Home: your newest clips, one at a time, ready to copy for Discord</caption>
+      <image>https://echoclip.link/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The player with a timeline to trim, copy and share</caption>
+      <image>https://echoclip.link/screenshots/player.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Settings: recording quality</caption>
+      <image>https://echoclip.link/screenshots/settings.png</image>
     </screenshot>
   </screenshots>
 
@@ -86,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.6" date="2026-11-12">
+      <description>
+        <p>Echo 2.0.6: a new logo, Home with the player built in, much less graphics memory, a sharper hover preview, steadier menus over videos, and fixes for Home, Copy for Discord and Echo Cloud.</p>
+      </description>
+    </release>
     <release version="2.0.5" date="2026-11-11">
       <description>
         <p>Echo 2.0.5: a new Home and a new player, smooth editor scrolling, the same size on 1080p and 1440p, much faster Echo Cloud sharing, Copy for Discord that hits its size, less memory in the tray, and lots of fixes.</p>

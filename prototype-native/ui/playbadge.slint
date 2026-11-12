@@ -1,7 +1,6 @@
 // 11 Nov 2026: Echo's ONE play / pause button (Home's big clip, the player bar, anything else that shows a play state).
-// Echo's look from the theme (accent circle, on-accent glyph - works with every theme, also a white custom accent),
-// a vector glyph (crisp at every UI scale), a soft shadow + thin light edge so it reads on bright and dark frames,
-// hover / press states. The play triangle is optically centred: its centroid sits on the circle's centre (the
+// A see-through dark circle + white glyph (reads on bright and dark frames, every theme), a vector glyph (crisp at
+// every UI scale), a thin light edge, hover / press states. The play triangle is optically centred: its centroid sits on the circle's centre (the
 // triangle's box is ~1/12 of its width right of centre - a box-centred triangle looks too far left).
 import { T } from "theme.slint";
 
@@ -26,9 +25,11 @@ export component PlayGlyph inherits Path {
 }
 
 // the round button: set `size`; `hover` / `pressed` from the owner's TouchArea (the badge takes no clicks itself, so
-// the owner's own click / hover handling keeps working underneath it)
+// the owner's own click / hover handling keeps working underneath it).
+// 11 Nov 2026 (the user: "more minimal and smaller"): a see-through dark circle with a white triangle, like the calm
+// play button of the player bar - no accent fill, no glow; hover brightens it a little.
 export component PlayBadge inherits Rectangle {
-    in property <length> size: 64px;
+    in property <length> size: 52px;
     in property <bool> paused;
     in property <bool> hover;
     in property <bool> pressed;
@@ -38,19 +39,19 @@ export component PlayBadge inherits Rectangle {
         width: root.size;
         height: root.size;
         border-radius: root.size / 2;
-        background: root.pressed ? T.accent.darker(0.12) : root.hover ? T.accent.brighter(0.1) : T.accent;
+        background: root.pressed ? #000000c4 : root.hover ? #000000b3 : #000000a1;
         border-width: 1px;
-        border-color: #ffffff38;
-        drop-shadow-blur: root.size * 0.4;
-        drop-shadow-offset-y: root.size * 0.06;
-        drop-shadow-color: #00000080;
-        animate background { duration: T.fade; enabled: !T.rgb-live; }
-        transform-scale: root.pressed ? 0.94 : root.hover ? 1.05 : 1.0;
+        border-color: root.hover ? #ffffff59 : #ffffff38;
+        drop-shadow-blur: root.size * 0.25;
+        drop-shadow-color: #00000040;
+        animate background, border-color { duration: T.fade; }
+        transform-scale: root.pressed ? 0.95 : root.hover ? 1.04 : 1.0;
         animate transform-scale { duration: 120ms; easing: ease-out; }
         PlayGlyph {
-            width: root.size * 0.44;
-            height: root.size * 0.44;
+            width: root.size * 0.46;
+            height: root.size * 0.46;
             paused: root.paused;
+            colour: root.hover ? #ffffff : #ffffffeb;
         }
     }
 }

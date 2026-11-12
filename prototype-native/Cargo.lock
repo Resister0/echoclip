@@ -1113,6 +1113,7 @@ dependencies = [
  "dbus",
  "echo-core",
  "glow 0.16.0",
+ "i-slint-core",
  "image",
  "ksni",
  "libloading 0.8.9",

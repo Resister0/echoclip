@@ -543,6 +543,13 @@ export component AppWindow inherits Window {
     changed view => {
         root.prev-view = root.last-view;
         root.last-view = root.view;
+        if (root.view == "home") {
+            HomeState.act("show"); // 12 Nov 2026: Home's player ready at once
+        }
+        // 11 Nov 2026: a clip playing inside Home's picture stops when Home is left
+        if (Play.inline && root.player-open && !Play.full && root.view != "home") {
+            Play.close();
+        }
     }
     public function focus-settings() {
         sp.focus-page();
@@ -575,14 +582,25 @@ export component AppWindow inherits Window {
     property <length> pw-norm: max(320px, min(root.width - 56px, (root.height - 330px) * 16 / 9));
     property <length> block: 50px + pw-norm * 9 / 16 + 66px + 57px + 2px + 36px;
     // the editor (native chat 5) shows the same mpv video in its stage
-    out property <length> video-w: Ed.open ? ev.vw : Play.full ? root.width : pw-norm;
-    out property <length> video-h: Ed.open ? ev.vh : Play.full ? (Play.overlay-ok ? root.height : root.height - 123px) : pw-norm * 9 / 16;
-    out property <length> video-x: Ed.open ? ev.vx : Play.full ? 0 : (root.width - pw-norm) / 2;
-    out property <length> video-y: Ed.open ? ev.vy : Play.full ? 0 : max(64px, (root.height - block) / 2 + 51px);
+    // 11 Nov 2026: playing inside Home's picture - the video takes its top, strip + bar (66 + 57) its bottom
+    property <bool> inl: Play.inline && !Play.full && !Ed.open;
+    // 12 Nov 2026: Home's paused clip was started (its ▶, a click on it, Space - main.rs sets inline-active): the
+    // player's keys
+    property <bool> inl-act: Play.inline && Play.inline-active && root.player-open;
+    changed inl-act => {
+        if (self.inl-act) {
+            pv.take-focus();
+        }
+    }
+    out property <length> video-w: Ed.open ? ev.vw : Play.full ? root.width : inl ? HomeState.hero-w : pw-norm;
+    out property <length> video-h: Ed.open ? ev.vh : Play.full ? (Play.overlay-ok ? root.height : root.height - 123px) : inl ? max(60px, HomeState.hero-h - 123px) : pw-norm * 9 / 16;
+    out property <length> video-x: Ed.open ? ev.vx : Play.full ? 0 : inl ? HomeState.hero-x : (root.width - pw-norm) / 2;
+    out property <length> video-y: Ed.open ? ev.vy : Play.full ? 0 : inl ? HomeState.hero-y : max(64px, (root.height - block) / 2 + 51px);
     property <length> side-w: min(300px, (root.width - pw-norm) / 2 - 110px);
     out property <bool> preview-on: player-open && !Ed.open && pv.preview-on;
-    out property <length> preview-x: pv.preview-x;
-    out property <length> preview-y: pv.preview-y;
+    // window coordinates (12 Nov 2026: Home's player sits inside Home's picture, not at 0,0 - the preview floated)
+    out property <length> preview-x: pv.x + pv.preview-x;
+    out property <length> preview-y: pv.y + pv.preview-y;
     out property <length> preview-w: pv.pw;
     out property <length> preview-h: pv.ph;
     // for the fullscreen controls mpv draws
@@ -697,24 +715,41 @@ export component AppWindow inherits Window {
                 drop-shadow-blur: 14px;
                 drop-shadow-offset-y: 4px;
                 drop-shadow-color: T.accent.with-alpha(0.33);
-                Path {
-                    width: 18px;
-                    height: 18px;
-                    viewbox-width: 256;
-                    viewbox-height: 256;
-                    stroke: T.on-accent;
-                    stroke-width: 1.8px;
-                    stroke-line-cap: round;
-                    fill: transparent;
-                    commands: "M 52.82 155.36 A 80 80 0 1 1 143.26 206.53";
+                // new logo (12 Nov 2026): ring + small arrow lined up on it (see-through, the "glass"), solid play
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
+                    opacity: 0.72;
+                    Path {
+                        width: 22px;
+                        height: 22px;
+                        viewbox-width: 64;
+                        viewbox-height: 64;
+                        fill: T.on-accent;
+                        stroke: T.on-accent;
+                        stroke-width: 0.5px;
+                        commands: "M 11.8 40 A 21.75 21.75 0 1 1 35.6 53.5 A 1.75 1.75 0 0 1 35 50 A 18.25 18.25 0 1 0 15 38.7 A 1.75 1.75 0 0 1 11.8 40 Z";
+                    }
+                    Path {
+                        width: 22px;
+                        height: 22px;
+                        viewbox-width: 64;
+                        viewbox-height: 64;
+                        fill: T.on-accent;
+                        stroke: T.on-accent;
+                        stroke-width: 0.6px;
+                        commands: "M 18 16.7 L 9.4 21.2 L 17.7 26.4 Z";
+                    }
                 }
                 Path {
-                    width: 18px;
-                    height: 18px;
-                    viewbox-width: 256;
-                    viewbox-height: 256;
+                    width: 22px;
+                    height: 22px;
+                    viewbox-width: 64;
+                    viewbox-height: 64;
                     fill: T.on-accent;
-                    commands: "M 48 104 L 58 70 L 82 96 Z M 106 86 L 176 128 L 106 170 Z";
+                    stroke: T.on-accent;
+                    stroke-width: 0.6px;
+                    commands: "M 27.6 21.4 L 43.2 31.9 L 27.6 42.4 Z";
                 }
             }
             Text {
@@ -726,7 +761,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 font-family: "Segoe UI Variable Display";
                 // a clip is open over the page: only the page name fades, the rest of the bar stays lit (10 Nov)
-                opacity: root.player-open && !Ed.open && !Ed.opening && !Play.full ? 0.4 : 1;
+                opacity: root.player-open && !Ed.open && !Ed.opening && !Play.full && !Play.inline ? 0.4 : 1;
                 animate opacity { duration: 150ms; }
             }
             Rectangle {
@@ -1425,8 +1460,18 @@ export component AppWindow inherits Window {
                     // 11 Nov 2026: Home "Inbox" keys - act on the clip on show (home.slint): S Copy for Discord, L Share
                     // link, E Trim / edit, K Keep, Delete, ← / → the pager. Only on Home, nothing open over it, no
                     // Ctrl / Alt / Win; a held key doesn't repeat Keep / Delete / Copy.
-                    if (root.view == "home" && !root.player-open && !Dlg.open && !Ed.open && HomeState.cards.length > 0
+                    if (root.view == "home" && (!root.player-open || (Play.inline && !Play.full)) && !Dlg.open && !Ed.open && HomeState.cards.length > 0
                         && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta) {
+                        // 11 Nov 2026: the clip plays inside Home's picture
+                        if (e.text == " " || e.text == Key.Return) {
+                            if (root.player-open) { Play.toggle-pause(); } else { HomeState.act("play"); }
+                            return accept;
+                        }
+                        if (root.player-open) {
+                            if (e.text == "f" || e.text == "F") { Play.toggle-full(); return accept; }
+                            if (e.text == "m" || e.text == "M") { Play.toggle-mute(); return accept; }
+                            if (e.text == Key.Escape && Play.inline-active) { Play.act("inline-stop"); return accept; }
+                        }
                         if (e.text == Key.LeftArrow) {
                             if (HomeState.can-prev) { HomeState.act("prev"); }
                             return accept;
@@ -1434,6 +1479,24 @@ export component AppWindow inherits Window {
                         if (e.text == Key.RightArrow) {
                             if (HomeState.can-next) { HomeState.act("next"); }
                             return accept;
+                        }
+                        if (root.player-open && Play.inline-active) {
+                            // the clip plays in Home's picture: S / L / K are the player's (cut, +10 s, pause)
+                            if (e.text == "s" || e.text == "S" || e.text == "l" || e.text == "L" || e.text == "k" || e.text == "K") {
+                                pv.take-focus();
+                                if (e.text == "k" || e.text == "K") {
+                                    Play.toggle-pause();
+                                } else if (e.text == "l" || e.text == "L") {
+                                    Play.seek-rel(10);
+                                } else if (Play.h0 < 0) {
+                                    Play.h0 = Play.progress;
+                                    Play.h1 = Play.progress;
+                                } else {
+                                    Play.h1 = Play.progress;
+                                    Play.cut();
+                                }
+                                return accept;
+                            }
                         }
                         if (!e.repeat) {
                             if (e.text == "s" || e.text == "S") { HomeState.act("copy"); return accept; }
@@ -2237,13 +2300,14 @@ export component AppWindow inherits Window {
 
     // ---------- player ----------
     pv := PlayerView {
-        x: 0;
-        y: 0;
-        width: root.width;
-        height: root.height;
+        // 11 Nov 2026: inside Home's picture only that rectangle (Home stays usable around it)
+        x: root.inl ? HomeState.hero-x : 0;
+        y: root.inl ? HomeState.hero-y : 0;
+        width: root.inl ? HomeState.hero-w : root.width;
+        height: root.inl ? HomeState.hero-h : root.height;
         visible: root.player-open && !Ed.open && !Ed.opening; // Edit goes straight to the editor (11 Nov 2026)
-        vx: root.video-x;
-        vy: root.video-y;
+        vx: root.video-x - self.x;
+        vy: root.video-y - self.y;
         vw: root.video-w;
         vh: root.video-h;
         side-w: root.side-w;
@@ -2284,10 +2348,11 @@ export component AppWindow inherits Window {
         width: root.width;
         height: root.height;
         hx: Tour.step == 0 ? grid.absolute-position.x + 28px : Tour.step == 1 ? hkchips.absolute-position.x : Tour.step == 2 ? savebtn.absolute-position.x : Tour.step == 3 ? fbtn.absolute-position.x : sp.absolute-position.x + 12px;
+        // step 1 (11 Nov 2026): the first card sits below its date header row (51 px) - was +8 px, so the box covered the header
         // steps 2/3/5/6 were off - fixed offsets from the old 68 px header. The chips sit at y 12 (28 tall) in
         // the 52 px bar, Save clip's own position already includes its y; Settings rows: Cloud 311 px / Clips &
         // Storage 275 px below the page top (measured on screen, 34 px tall)
-        hy: Tour.step == 0 ? grid.absolute-position.y + 8px : Tour.step == 1 ? hkchips.absolute-position.y + 12px : Tour.step == 2 ? savebtn.absolute-position.y : Tour.step == 3 ? fbtn.absolute-position.y : Tour.step == 4 ? sp.absolute-position.y + 311px : sp.absolute-position.y + 275px;
+        hy: Tour.step == 0 ? grid.absolute-position.y + (root.rows.length > 0 && root.rows[0].header != "" ? 51px : 0px) : Tour.step == 1 ? hkchips.absolute-position.y + 12px : Tour.step == 2 ? savebtn.absolute-position.y : Tour.step == 3 ? fbtn.absolute-position.y : Tour.step == 4 ? sp.absolute-position.y + 311px : sp.absolute-position.y + 275px;
         hw: Tour.step == 0 ? grid.card-w : Tour.step == 1 ? hkchips.width : Tour.step == 2 ? savebtn.width : Tour.step == 3 ? fbtn.width : 206px;
         hh: Tour.step == 0 ? grid.card-h : Tour.step == 1 ? 28px : Tour.step == 2 ? savebtn.height : Tour.step == 3 ? fbtn.height : 34px;
     }

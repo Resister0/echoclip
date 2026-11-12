@@ -330,6 +330,13 @@ fn replace(a: &AppWindow, p: &Rc<RefCell<Player>>, ff: PathBuf, src: PathBuf, th
         return;
     }
     pl.set_busy(true);
+    // QA E6 (11 Nov 2026): the replaced file gets a new date - a clip already seen on Home stays seen (decided now,
+    // while the library still has its old date)
+    if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
+        if let Some(i) = l.index_of_path(&src) {
+            crate::home_inbox::keep_seen(&l, i);
+        }
+    }
     let ext = src.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "mp4".into());
     let stem = src.file_stem().unwrap_or_default().to_string_lossy().to_string();
     // in .thumbs (a dot folder): the library never sees the half-made file as a new clip; same drive = plain rename

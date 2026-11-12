@@ -262,13 +262,15 @@ component KindIcon inherits Rectangle {
     height: 18px;
     border-radius: 9px;
     background: (bad ? T.bad : T.ok).with-alpha(0.16);
+    // the icon's 24-unit box over the whole circle (11 Nov 2026): the check sits in the middle of it; the old
+    // 12 px icon nudged in by 3 px drew the check off-centre
     Icon {
-        x: 3px;
-        y: 3px;
-        width: 12px;
-        height: 12px;
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
         stroke: bad ? T.bad : T.ok;
-        stroke-width: 3px;
+        stroke-width: 2.2px;
         commands: bad ? "M12 6v7.5 M12 18h.01" : Ic.check;
     }
 }

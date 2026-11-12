@@ -48,6 +48,7 @@ mod hover_vid; // 9 Nov: card hover preview = the real clip (was a flipbook)
 mod discord; // 9 Nov: Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
 mod idle; // 9 Nov: efficiency mode for the UI side while hidden in the tray
 mod memtrim; // 11 Nov 2026: trim memory again when it grows while hidden (recorder restarts touch driver set-up memory)
+mod sheet_tiles; // 11 Nov 2026: the player's seek pictures as 60 small images (the whole sheet per picture = ~400 MB VRAM)
 mod focus; // port leftovers L2: keys go back after a rename / overlay / dialog closes
 mod home_inbox; // 11 Nov 2026: Home "Inbox" - the clip on show (new ones first), pager, details, Your games
 mod hdr_home; // gaps (10 Nov): header chips (KDE keys), "On this day" + milestones, Record button, error toasts -> log
@@ -76,6 +77,8 @@ mod notes; // 2.0.2: the notes at the bottom (kinds, Undo, finished-job buttons,
 mod over; // r2-layout: menus over the video (L1), clicks that close a menu and go on (L39)
 #[cfg(windows)]
 mod winvideo;
+#[cfg(windows)]
+mod menuwin; // 11 Nov 2026: menus over the live video in a click-through window of their own
 
 use slint::{ComponentHandle, GraphicsAPI, Model, ModelRc, RenderingState, Rgb8Pixel, SharedPixelBuffer, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
@@ -491,6 +494,8 @@ thread_local! {
     static HOME_COLS: std::cell::Cell<usize> = const { std::cell::Cell::new(4) };
     /// the sharp still on Home: (clip path, picture) - made once per latest clip
     static HERO: RefCell<(PathBuf, Option<slint::Image>)> = RefCell::new((PathBuf::new(), None));
+    /// 12 Nov 2026: play() is loading Home's clip paused in Home's picture (not a real "play": no focus, no "watched")
+    static HOME_QUIET: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Echo's Get started steps: (id, title, text, button)
@@ -605,22 +610,29 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
             if HERO.with(|x| x.borrow().0 == c.path) {
                 return; // already being made
             }
-            HERO.with(|x| *x.borrow_mut() = (c.path.clone(), None));
-            let Some(ff) = sheets::ffmpeg() else { return };
             let (path, dur, w) = (c.path.clone(), c.dur.unwrap_or(0.0), a.as_weak());
             let stamp = c.mtime.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let dir = std::env::temp_dir().join("echo-proto-hero");
+            // "-start": the still is of the clip's start now (the older "-full" files were 15 % in)
+            let out = dir.join(format!("{}-{stamp}-start.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
+            // 11 Nov 2026 (William: "why is this image preview like 360p"): without ffmpeg yet (a first start still
+            // downloads it) this used to mark the still as "being made" and stop - Home kept the small card picture
+            // for good. Now a still already on disk is used without ffmpeg, and with neither, the next fill tries again.
+            let ff = sheets::ffmpeg();
+            if ff.is_none() && !out.exists() {
+                return;
+            }
+            HERO.with(|x| *x.borrow_mut() = (c.path.clone(), None));
             std::thread::spawn(move || {
-                let dir = std::env::temp_dir().join("echo-proto-hero");
                 let _ = std::fs::create_dir_all(&dir);
-                let out = dir.join(format!("{}-{stamp}-full.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
-                if !out.exists() {
+                if let (false, Some(ff)) = (out.exists(), ff) {
                     let mut cmd = std::process::Command::new(&ff);
                     #[cfg(windows)]
                     {
                         use std::os::windows::process::CommandExt;
                         cmd.creation_flags(0x0800_0000);
                     }
-                    let at = if dur > 4.0 { (dur * 0.15).min(5.0) } else { 0.5 };
+                    let at = home_still_at(dur);
                     let _ = cmd
                         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{at:.2}"), "-i"])
                         .arg(&path)
@@ -629,7 +641,18 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
                         .stdin(std::process::Stdio::null())
                         .output();
                 }
-                let Some(px) = library::decode(&out) else { return };
+                let Some(px) = library::decode(&out) else {
+                    // no still came out: let the next fill try again (instead of "being made" for good)
+                    let _ = slint::invoke_from_event_loop(move || {
+                        HERO.with(|x| {
+                            let mut x = x.borrow_mut();
+                            if x.0 == path && x.1.is_none() {
+                                *x = (PathBuf::new(), None);
+                            }
+                        });
+                    });
+                    return;
+                };
                 let _ = slint::invoke_from_event_loop(move || {
                     let img = slint::Image::from_rgb8(px);
                     let still_latest = HERO.with(|x| {
@@ -648,6 +671,29 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
             });
         }
     }
+}
+
+/// 12 Nov 2026: Echo is the window in front right now (Windows: asked from the system - WIN_FOCUSED starts as true and
+/// only follows focus events, which a window shown without activation never gets). Elsewhere: WIN_FOCUSED.
+fn echo_in_front(win: &slint::Window) -> bool {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let h = win.window_handle();
+        if let Ok(RawWindowHandle::Win32(h)) = h.window_handle().map(|h| h.as_raw()) {
+            let fg = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+            return fg as isize == h.hwnd.get();
+        }
+    }
+    let _ = win;
+    WIN_FOCUSED.with(|f| f.get())
+}
+
+/// the moment Home shows of a clip: its still, and where Home's paused clip waits - its start (0:00; half a second
+/// in, the very first frame of a recording can be black). 12 Nov 2026 (William): coming back to Home shows 0:00, not
+/// a spot further in (was 15 % of the clip, at most 5 s).
+fn home_still_at(_dur: f64) -> f64 {
+    0.5
 }
 
 // ---------- Echo's #confirm dialog (confirmBox / choiceBox / askText) ----------
@@ -1737,11 +1783,7 @@ fn main() {
                     }
                 }
                 if s.player == Some(d.key) {
-                    let p = a.global::<Play>();
-                    p.set_sheet(img);
-                    p.set_sheet_tw(d.tw as i32);
-                    p.set_sheet_th(d.th as i32);
-                    p.set_sheet_ok(true);
+                    sheet_tiles::set(&a.global::<Play>(), img, d.tw as i32, d.th as i32);
                 }
             });
         });
@@ -1908,7 +1950,10 @@ fn main() {
             // a Home card: play it at its spot in the library view (prev / next walk the view)
             let row = lib.view_row_of(idx).map(|r| r as i32).unwrap_or(row);
             let c = lib.clip(idx);
-            cleanup::opened(&lib.thumbs_dir, &c.name); // cleanup: "Not watched in 90+ days" needs the last play
+            let quiet = HOME_QUIET.with(|q| q.get());
+            if !quiet {
+                cleanup::opened(&lib.thumbs_dir, &c.name); // cleanup: "Not watched in 90+ days" needs the last play
+            }
             let mut p = p.borrow_mut();
             sn(&mut p);
             p.open = true;
@@ -1922,9 +1967,14 @@ fn main() {
             p.info_done = false;
             let pl = a.global::<Play>();
             pl.set_title(c.shown.as_str().into());
-            let thumb = lib.thumb_img(idx);
+            // 12 Nov 2026: in Home's picture its sharp still (the same frame mpv waits on), not the small card picture
+            let sharp = match HERO.with(|x| x.borrow().clone()) {
+                (hp, Some(img)) if pl.get_inline() && hp == c.path => Some(img),
+                _ => None,
+            };
+            let thumb = sharp.clone().or_else(|| lib.thumb_img(idx));
             p.poster_px = thumb.as_ref().and_then(|i| i.to_rgb8());
-            pl.set_poster(if std::env::var("ECHO_POSTER").is_ok() { thumb.unwrap_or_default() } else { slint::Image::default() });
+            pl.set_poster(if sharp.is_some() || std::env::var("ECHO_POSTER").is_ok() { thumb.unwrap_or_default() } else { slint::Image::default() });
             pl.set_poster_on(true);
             pl.set_snap(true);
             pl.set_progress(0.0);
@@ -1962,32 +2012,132 @@ fn main() {
             });
             if let Some((img, tw, th)) = again {
                 eprintln!("sheet: reused from memory");
-                pl.set_sheet(img);
-                pl.set_sheet_tw(tw);
-                pl.set_sheet_th(th);
-                pl.set_sheet_ok(true);
+                sheet_tiles::set(&pl, img, tw, th);
             }
             a.set_player_open(true);
-            a.invoke_focus_player();
+            // also inside Home's picture: the player's keys (S cuts, T / I / O trim, J / L, K, ...); ← / → there
+            // are Home's other clips (player.slint). Only loaded there, paused: Home keeps its keys.
+            if quiet {
+                a.invoke_focus_library();
+            } else {
+                a.invoke_focus_player();
+            }
             a.window().request_redraw(); // mpv starts / loads the file in the render hook
             // extras AFTER the video starts: opening stays instant
             let (w2, ask2) = (w.clone(), ask.clone());
             // (gaps-cloud: a cloud clip after 6 s - its seek pictures read the stream too, the video goes first)
-            slint::Timer::single_shot(Duration::from_millis(if c.cloud.is_some() { 6000 } else { 400 }), move || {
+            let soon = if c.cloud.is_some() { 6000 } else if a.global::<Play>().get_inline() { 0 } else { 400 }; // Home: at once
+            slint::Timer::single_shot(Duration::from_millis(soon), move || {
                 let Some(a) = w2.upgrade() else { return };
                 if SHEETS.with(|s| s.borrow().player) != Some(idx) {
                     return;
                 }
                 if let Some((img, tw, th)) = ask2(idx) {
-                    let pl = a.global::<Play>();
-                    pl.set_sheet(img);
-                    pl.set_sheet_tw(tw);
-                    pl.set_sheet_th(th);
-                    pl.set_sheet_ok(true);
+                    sheet_tiles::set(&a.global::<Play>(), img, tw, th);
                 }
             });
         })
     };
+    // 12 Nov 2026 (William: "diff between playing and not playing, i want both the same" + "the player opened one is
+    // significantly sharper, just the real freeze frame"): Home's clip sits LOADED and PAUSED in Home's picture, at the
+    // moment Home's still shows - video + filmstrip + bar, the real frame at full size; play starts it right there,
+    // nothing moves. `start` = play it now (Home's play), else only load it paused.
+    let home_load: Rc<dyn Fn(&AppWindow, bool)> = {
+        let (p, lib, play) = (player.clone(), lib.clone(), play.clone());
+        Rc::new(move |a: &AppWindow, start: bool| {
+            let Some(idx) = lib.index_at(library::HOME_BASE) else { return };
+            let c = lib.clip(idx);
+            HOME_QUIET.with(|q| q.set(!start));
+            a.global::<Play>().set_inline(true);
+            a.global::<Play>().set_inline_active(start);
+            play(library::HOME_BASE as i32);
+            HOME_QUIET.with(|q| q.set(false));
+            if !start {
+                // 12 Nov 2026 (William: back on Home it showed 0:00 but kept the old spot): always a fresh load from the
+                // start - mpv itself is there; the time and the playhead only come from mpv (play() starts them at 0)
+                let mut pb = p.borrow_mut();
+                pb.pending = Some((c.path.clone(), home_still_at(c.dur.unwrap_or(0.0))));
+                pb.start_paused = true;
+                a.global::<Play>().set_paused(true);
+            }
+        })
+    };
+    // 12 Nov 2026 (William): Home's player in FULLSCREEN, ← at the very start / → at the very end = Home's previous / next
+    // clip (the same as Home's ‹ ›), loaded in the same player: it stays fullscreen, starts at 0:00, playing or paused as
+    // before. Nothing at the first / last clip.
+    let home_edge: Rc<dyn Fn(&AppWindow, bool)> = {
+        let (p, lib, play) = (player.clone(), lib.clone(), play.clone());
+        Rc::new(move |a: &AppWindow, forward: bool| {
+            let hs = a.global::<HomeState>();
+            if (forward && !hs.get_can_next()) || (!forward && !hs.get_can_prev()) {
+                return;
+            }
+            let ps = a.global::<Play>();
+            let was_paused = ps.get_paused();
+            if home_inbox::act(a, &lib, if forward { "next" } else { "prev" }) {
+                home_fill(a, &lib);
+            }
+            let Some(idx) = lib.index_at(library::HOME_BASE) else { return };
+            let path = lib.clip(idx).path.clone();
+            ps.set_inline(true);
+            ps.set_inline_active(true);
+            play(library::HOME_BASE as i32);
+            if was_paused {
+                let mut pb = p.borrow_mut();
+                pb.pending = Some((path, 0.0));
+                pb.start_paused = true;
+                ps.set_paused(true);
+            }
+        })
+    };
+    // ... loaded while Home shows a clip (a local file) in a visible window, let go when Home is left / hidden, a
+    // dialog or the editor opens; a new clip on show (pager, a new recording) is loaded instead unless it's playing
+    let home_tick: Rc<dyn Fn(&AppWindow)> = {
+        let (p, lib, hl) = (player.clone(), lib.clone(), home_load.clone());
+        Rc::new(move |a: &AppWindow| {
+            let a = a.clone_strong();
+            let ps = a.global::<Play>();
+            let ed = a.global::<Ed>();
+            let idx = lib.index_at(library::HOME_BASE);
+            let minimized = {
+                use slint::winit_030::WinitWindowAccessor;
+                a.window().with_winit_window(|w| w.is_minimized() == Some(true)).unwrap_or(false)
+            };
+            let want = a.get_view() == "home"
+                && a.window().is_visible()
+                && !minimized // minimized: let mpv go (nothing drawn, nothing kept)
+                && !ed.get_open()
+                && !ed.get_opening()
+                && !a.global::<Dlg>().get_open()
+                && idx.is_some_and(|i| lib.clip(i).path.is_file());
+            let (open, clip) = {
+                let pb = p.borrow();
+                (pb.open, pb.clip)
+            };
+            if !open {
+                if want {
+                    hl(&a, false);
+                }
+            } else if ps.get_inline() {
+                if !want {
+                    if !ps.get_full() {
+                        ps.invoke_close();
+                    }
+                } else if clip != idx && !ps.get_inline_active() {
+                    hl(&a, false);
+                }
+            }
+        })
+    };
+    {
+        let (w, tick) = (app.as_weak(), home_tick.clone());
+        let t = Box::leak(Box::new(slint::Timer::default()));
+        t.start(slint::TimerMode::Repeated, Duration::from_millis(400), move || {
+            if let Some(a) = w.upgrade() {
+                tick(&a);
+            }
+        });
+    }
     // gaps-player: Save copy / Replace open a clip like a fresh one (Replace: its old seek pictures are dropped first)
     {
         let (lib, play) = (lib.clone(), play.clone());
@@ -2029,21 +2179,43 @@ fn main() {
                     home_fill(&a, &lib);
                 }
             }
+            if let Some(a) = UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())) {
+                // 11 Nov 2026: Home's big picture plays right there; any other card opens the normal player
+                a.global::<Play>().set_inline(row as usize == library::HOME_BASE && a.get_view() == "home");
+            }
             play(row);
         });
     }
 
     // ---------- Home's buttons ----------
     {
-        let (w, lib, play, tf) = (app.as_weak(), lib.clone(), play.clone(), toggle_fav.clone());
+        let (w, lib, tf, hl, pp, tick) = (app.as_weak(), lib.clone(), toggle_fav.clone(), home_load.clone(), player.clone(), home_tick.clone());
         app.global::<HomeState>().on_act(move |what| {
             let Some(a) = w.upgrade() else { return };
             // 11 Nov 2026 (Home Inbox): sending / editing / playing the clip on show = it isn't new any more
             if matches!(what.as_str(), "play" | "copy" | "copym" | "link" | "edit" | "cap") || what.starts_with("copy:") {
                 home_inbox::touched(&lib);
             }
+            // 11 Nov 2026: the clip plays inside Home's picture - another clip, Delete, the editor or the library
+            // stop it first
+            let inline_on = a.global::<Play>().get_inline() && a.get_player_open();
+            if inline_on && (matches!(what.as_str(), "prev" | "next" | "keep" | "del" | "library" | "edit" | "cap" | "gs-go") || what.starts_with("shelf:")) {
+                a.global::<Play>().invoke_close();
+            }
             match what.as_str() {
-                "play" => play(library::HOME_BASE as i32),
+                "play" => {
+                    hover_vid::stop(&a); // the player takes over: no second decoder on the same clip
+                    // already loaded (paused) in the picture: just play it there; else load it playing
+                    let here = a.get_player_open() && a.global::<Play>().get_inline() && pp.borrow().clip == lib.index_at(library::HOME_BASE);
+                    if here {
+                        if a.global::<Play>().get_paused() {
+                            a.global::<Play>().invoke_toggle_pause();
+                        }
+                        a.global::<Play>().set_inline_active(true);
+                    } else {
+                        hl(&a, true);
+                    }
+                }
                 "library" => a.invoke_pick_filter("all".into()),
                 // gaps (10 Nov): "copy:<size>" = a size from the ▾ menu (home.slint CopyMenuBody)
                 w if w == "copy" || w == "copym" || w.starts_with("copy:") => {
@@ -2130,12 +2302,15 @@ fn main() {
                     }
                 }
                 w if w.starts_with("shelf:") => home_inbox::open_shelf(&a, &w["shelf:".len()..]),
+                "show" => {} // Home came on screen: the check below loads its clip
                 w => {
                     if home_inbox::act(&a, &lib, w) {
                         home_fill(&a, &lib);
                     }
                 }
             }
+            // Home's player ready at once after entering Home, the pager, Keep or Delete (not on the next 400 ms check)
+            tick(&a);
         });
     }
     // 10 Nov: the status card's hover panel - "Manage cloud storage" = Settings > Cloud + its space manager
@@ -2200,6 +2375,7 @@ fn main() {
             });
             if let Some(a) = w.upgrade() {
                 a.set_player_open(false);
+                over::player_closed(&a);
                 a.invoke_focus_library();
                 a.global::<Play>().set_video_window(false);
                 if a.global::<Play>().get_full() {
@@ -2207,9 +2383,9 @@ fn main() {
                     a.window().set_fullscreen(false);
                 }
                 let pl = a.global::<Play>();
+                pl.set_inline(false);
                 pl.set_frame(slint::Image::default());
-                pl.set_sheet(slint::Image::default());
-                pl.set_sheet_ok(false);
+                sheet_tiles::clear(&pl); // sheet + its 60 pictures (their textures go with them)
                 a.window().request_redraw(); // lets the render hook free the video texture
             }
         });
@@ -2228,6 +2404,9 @@ fn main() {
                         m.command(&["seek", &format!("{t:.3}"), "absolute+exact"]);
                         m.set("pause", "no");
                         pl.set_paused(false);
+                        if pl.get_inline() {
+                            pl.set_inline_active(true);
+                        }
                         pl.set_snap(true);
                         pl.set_progress(if d > 0.0 { (t / d) as f32 } else { 0.0 });
                     }
@@ -2238,6 +2417,10 @@ fn main() {
                 if let Some(a) = w.upgrade() {
                     let pl = a.global::<Play>();
                     pl.set_paused(!paused);
+                    // 12 Nov 2026: Home's paused clip started in its picture: the player's keys from now on
+                    if paused && pl.get_inline() {
+                        pl.set_inline_active(true);
+                    }
                     // stop gliding at once: show where it really is
                     let pos = m.get_f64("time-pos").unwrap_or(0.0);
                     if p.duration > 0.0 {
@@ -2279,8 +2462,40 @@ fn main() {
         });
     }
     {
-        let (w, p) = (app.as_weak(), player.clone());
+        let (w, p, edge) = (app.as_weak(), player.clone(), home_edge.clone());
         pl.on_seek_rel(move |s| {
+            // Home's player in fullscreen: a press at the edge changes clip; one that would cross it lands on it first
+            // (so the next press is the one that changes clip - no skipping by accident)
+            if let Some(a) = w.upgrade().filter(|a| a.global::<Play>().get_full() && a.global::<Play>().get_inline()) {
+                let step = {
+                    let pb = p.borrow();
+                    pb.mpv.as_ref().map(|m| {
+                        let pos = m.get_f64("time-pos").unwrap_or(0.0);
+                        let dur = m.get_f64("duration").unwrap_or(pb.duration);
+                        let eof = m.get("eof-reached").as_deref() == Some("yes");
+                        (pos, dur, eof)
+                    })
+                };
+                if let Some((pos, dur, eof)) = step {
+                    if s > 0.0 && (eof || pos >= dur - 0.1) {
+                        return edge(&a, true);
+                    }
+                    if s < 0.0 && pos <= 0.1 {
+                        return edge(&a, false);
+                    }
+                    let to = (pos + s as f64).clamp(0.0, (dur - 0.05).max(0.0));
+                    let pb = p.borrow();
+                    if let Some(m) = pb.mpv.as_ref() {
+                        m.command(&["seek", &format!("{to:.3}"), "absolute+exact"]);
+                    }
+                    if dur > 0.0 {
+                        let pl = a.global::<Play>();
+                        pl.set_snap(true);
+                        pl.set_progress((to / dur) as f32);
+                    }
+                    return;
+                }
+            }
             let p = p.borrow();
             if let Some(m) = p.mpv.as_ref() {
                 m.command(&["seek", &format!("{s}"), "relative+exact"]);
@@ -2311,6 +2526,10 @@ fn main() {
     {
         let (p, play) = (player.clone(), play.clone());
         pl.on_prev(move || {
+            if let Some(a) = UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())).filter(|a| a.global::<Play>().get_inline()) {
+                a.global::<HomeState>().invoke_act("prev".into());
+                return;
+            }
             let r = p.borrow().row;
             if r > 0 {
                 play(r as i32 - 1);
@@ -2320,6 +2539,10 @@ fn main() {
     {
         let (p, play, lib) = (player.clone(), play.clone(), lib.clone());
         pl.on_next(move || {
+            if let Some(a) = UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())).filter(|a| a.global::<Play>().get_inline()) {
+                a.global::<HomeState>().invoke_act("next".into());
+                return;
+            }
             let r = p.borrow().row;
             if r + 1 < lib.view_len() {
                 play(r as i32 + 1);
@@ -2452,6 +2675,21 @@ fn main() {
                 if pl_actions::act(&a, &p, &c.path, &c.thumbs, what.as_str()) {
                     return;
                 }
+            }
+            // 12 Nov 2026: Esc / a click outside the clip playing in Home's picture: back to Home's paused frame
+            if what.as_str() == "inline-stop" {
+                {
+                    let pb = p.borrow();
+                    if let Some(m) = pb.mpv.as_ref() {
+                        m.set("pause", "yes");
+                        m.command(&["seek", &format!("{:.3}", home_still_at(pb.duration)), "absolute+exact"]);
+                    }
+                }
+                let ps = a.global::<Play>();
+                ps.set_paused(true);
+                ps.set_inline_active(false);
+                a.invoke_focus_library();
+                return;
             }
             // the bar's SPEED menu (11 Nov 2026)
             if let Some(sp) = what.as_str().strip_prefix("speed:") {
@@ -2776,7 +3014,9 @@ fn main() {
                         if !pl.open && pl.mpv.is_some() {
                             pl.mpv = None;
                             pl.mpv_error = "stopped - starts again with the next clip".into();
-                            log(pl, "player: mpv shut down (player closed and not used for a while)".into());
+                            // 11 Nov 2026: give back the pages mpv's start touched (D3D11 + driver, ~100 MB) - memtrim.rs
+                            let t = memtrim::trim();
+                            log(pl, format!("player: mpv shut down (player closed and not used for a while), memory trimmed{t}"));
                         }
                     }
                     if !pl.open {
@@ -3142,6 +3382,19 @@ fn main() {
                 }
                 RenderingState::AfterRendering => {
                     glide_step(&w);
+                    // 11 Nov 2026: the parts of open menus that lie over the video window go into a window above it
+                    #[cfg(windows)]
+                    if let Some(a) = w.upgrade() {
+                        let shown = pl.mode == Mode::Window && pl.vwin.as_ref().is_some_and(|v| v.is_shown());
+                        match gl_slot.borrow().as_ref() {
+                            Some(gl) if shown => {
+                                let sf = a.window().scale_factor();
+                                let px = |v: f32| (v * sf).round() as i32;
+                                menuwin::after_render(&a, gl, Some((px(a.get_video_x()), px(a.get_video_y()), px(a.get_video_w()), px(a.get_video_h()))));
+                            }
+                            _ => menuwin::hide(),
+                        }
+                    }
                     if pl.open && pl.mode == Mode::Texture {
                         if let Some(m) = pl.mpv.as_ref() {
                             m.report_swap();
@@ -3218,7 +3471,11 @@ fn main() {
                 }
             } else {
                 hidden_since = None;
-                memtrim::shown();
+                if p.open || WIN_FOCUSED.with(|f| f.get()) {
+                    memtrim::shown();
+                } else if let Some(m) = memtrim::behind_tick() {
+                    log(&mut p, m); // open behind a game for 60 s: trim (memtrim.rs)
+                }
                 if lib.is_suspended() {
                     lib.resume();
                     log(&mut p, "memory: window back - thumbnails reload".into());
@@ -3520,6 +3777,17 @@ fn main() {
                     });
                     wake(&wk);
                     EventResult::Propagate
+                }
+                // 12 Nov 2026 (William: no scrolling work while minimized / in the tray): a wheel turn does nothing while
+                // the window is minimized or hidden, and on Home also while Echo isn't the focused window (Windows'
+                // "scroll inactive windows" sends the wheel to whatever window is under the mouse, e.g. Echo open behind
+                // a game) - no glide, no relayout, nothing loaded
+                winit::event::WindowEvent::MouseWheel { .. }
+                    if !win.is_visible()
+                        || win.is_minimized()
+                        || (!echo_in_front(win) && wk.upgrade().is_some_and(|a| a.get_view() == "home")) =>
+                {
+                    EventResult::PreventDefault
                 }
                 winit::event::WindowEvent::MouseWheel { delta: winit::event::MouseScrollDelta::LineDelta(dx, dy), .. } if step > 0.0 => {
                     SCROLL.with(|s| {

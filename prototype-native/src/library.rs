@@ -1251,20 +1251,14 @@ impl LibModel {
             while k < n {
                 let slot = std::mem::take(&mut ph);
                 let m = (cols - slot as usize).min(n - k);
-                // cards in a row line up: room for the tag lines / note line of the card in the row that needs most
-                // (r2-layout L9: tags wrap - over::tag_lines)
-                let (mut tags, mut note) = (0, false);
-                {
+                // cards in a row line up: room for the note line when a card in the row has one (11 Nov 2026: tags
+                // take no room any more - they sit on the picture, so a tagged clip doesn't make its row taller)
+                let note = {
                     let meta = self.meta.borrow();
                     let all = self.all.borrow();
-                    for &ci in &view[first + k..first + k + m] {
-                        if let Some(e) = meta.get(&all[ci].name) {
-                            tags = tags.max(crate::over::tag_lines(&e.tags, self.card_w.get()));
-                            note |= !e.note.trim().is_empty();
-                        }
-                    }
-                }
-                let extra = crate::over::tag_extra(tags) + if note { 18 } else { 0 };
+                    view[first + k..first + k + m].iter().any(|&ci| meta.get(&all[ci].name).is_some_and(|e| !e.note.trim().is_empty()))
+                };
+                let extra = if note { 18 } else { 0 };
                 rows.push(GridRow { header: "".into(), count: "".into(), first: (first + k) as i32, n: m as i32, extra, last: k + m >= n, saving: slot });
                 k += m;
             }
@@ -1282,20 +1276,10 @@ impl LibModel {
         }
     }
 
-    /// r2-layout (L9): the grid card's width changed (window resize) - the tag lines may change. Rows are rebuilt
-    /// only when a row's room really changes (not on every pixel of a resize).
+    /// the grid card's width (Slint: Over.grid-card-w). Since 11 Nov 2026 the rows don't depend on it (the tags moved
+    /// onto the picture), so a resize no longer rebuilds rows.
     pub fn set_card_w(&self, w: f32) {
-        if (w - self.card_w.get()).abs() < 0.5 {
-            return;
-        }
-        let old = self.card_w.replace(w);
-        let changed = {
-            let meta = self.meta.borrow();
-            meta.values().any(|e| !e.tags.is_empty() && crate::over::tag_lines(&e.tags, old) != crate::over::tag_lines(&e.tags, w))
-        };
-        if changed {
-            self.rebuild_rows();
-        }
+        self.card_w.set(w);
     }
 
     pub fn clip_at(&self, row: usize) -> Option<Rc<Clip>> {

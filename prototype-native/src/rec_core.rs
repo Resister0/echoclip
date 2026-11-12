@@ -193,6 +193,16 @@ pub fn wire(app: &AppWindow) {
         app.set_rail_state("Echo is already running".into());
         app.set_rail_mode("The other Echo records - close it and restart this one to record here".into());
         app.set_rec_tip("The other Echo records - close it and restart this one to record here".into());
+        // test hook for screenshots (site pictures): ECHO_FAKE_GAME shows the normal "Ready to clip" status text here
+        if std::env::var("ECHO_FAKE_GAME").is_ok() {
+            let b = fmt_len(cfg.buffer_seconds());
+            app.set_rec_state(format!("Recording · last {b}").into());
+            app.set_rec_on(true);
+            app.set_rail_state("Ready to clip".into());
+            app.set_rail_mode(format!("Your last {b} is always ready · GPU").into());
+            app.set_rail_tag("GPU".into());
+            app.set_rec_tip("Your last moments are always ready · GPU".into());
+        }
         recorder::log_line("native: another Echo holds the lock - recorder off in this window");
     } else {
         std::panic::set_hook(Box::new(|info| recorder::log_line(&format!("APP CRASH: {info}"))));

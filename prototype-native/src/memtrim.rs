@@ -56,10 +56,39 @@ pub fn trim() -> String {
     }
 }
 
-/// Window shown again: start over at the next hide.
+/// Window shown again (and in front): start over at the next hide.
 pub fn shown() {
     LAST_TRIM.with(|t| t.set(None));
     SETTLED_MB.with(|s| s.set(None));
+    BEHIND_SINCE.with(|b| b.set(None));
+}
+
+/// 11 Nov 2026 (2.0.5, window open on Home behind a game): Task Manager showed 150-300 MB. Every player start
+/// (libmpv + its Direct3D 11 device + the AMD driver) touches ~100 MB of set-up memory; mpv is shut down after a
+/// minute unused and frees it, but the pages stay counted to Echo (a trim on hide: 118 -> 3 MB). Window open but
+/// NOT in front for BEHIND: trim once, then like hidden (trim again when it grows). Nothing is drawn while Echo is
+/// behind, so the soft faults land on the next look at Echo (a few ms).
+const BEHIND: Duration = Duration::from_secs(60);
+thread_local! {
+    static BEHIND_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Call on every UI tick while the window is open but another window is in front (and no clip is playing).
+/// Some(log line) when it trimmed.
+pub fn behind_tick() -> Option<String> {
+    let since = BEHIND_SINCE.with(|b| {
+        let s = b.get().unwrap_or_else(Instant::now);
+        b.set(Some(s));
+        s
+    });
+    if since.elapsed() < BEHIND {
+        return None;
+    }
+    if LAST_TRIM.with(|t| t.get()).is_none() {
+        let t = trim();
+        return Some(format!("memory: Echo behind another window 60 s - trimmed{t}"));
+    }
+    hidden_tick().map(|m| m.replace("while hidden", "while behind"))
 }
 
 /// Call on every UI tick while hidden, after the first trim. Some(log line) when it trimmed again.

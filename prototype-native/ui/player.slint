@@ -35,6 +35,9 @@ export global Play {
     in-out property <bool> sheet-ok;
     in-out property <int> sheet-tw;
     in-out property <int> sheet-th;
+    // the sheet's 60 pictures as small images (sheet_tiles.rs): the filmstrip + seek preview draw THESE, never
+    // cut-outs of the whole sheet - each Image item uploaded its own copy of it (~400 MB of VRAM, 11 Nov 2026)
+    in-out property <[image]> tiles;
     // quick trim (the yellow ends of the strip)
     in-out property <bool> trimming;
     in-out property <float> t0: 0;         // fractions of the clip
@@ -66,6 +69,12 @@ export global Play {
     in-out property <bool> overlay-ok: true;
     in-out property <bool> pv-mpv;            // Windows flip model: mpv draws the seek preview over the video (normal view)
     in-out property <bool> mpv-osd;           // fullscreen controls are drawn by mpv (Slint's stay invisible, for the mouse)  // controls may be drawn over the video (false: Windows window mode)    // Windows window mode: in fullscreen the video is a window BEHIND this one
+    // 11 Nov 2026: the clip plays INSIDE Home's picture (video + strip + bar there; no dim, top row, side card or
+    // arrows); fullscreen works as usual and comes back to Home
+    in-out property <bool> inline;
+    // 12 Nov 2026: Home's clip sits loaded + paused in its picture; true once it's played there (Esc / a click
+    // outside: back to paused at Home's frame). Until then Home keeps its own keys.
+    in-out property <bool> inline-active;
     in-out property <bool> ui-on: true;     // fullscreen: strip + controls visible (Rust cuts them out of the video window)
     in-out property <float> speed: 1;       // playback speed (the bar's SPEED menu, 11 Nov 2026)
     callback close();
@@ -692,21 +701,23 @@ export component PlayerView inherits Rectangle {
     // 10 Nov: the window's title bar (top-h tall) stays lit and live with a clip open - the dim layer, the
     // "click beside = close" area and the key scope all start below it (fullscreen: the whole window as before)
     in property <length> top-h: 52px;
-    property <length> dim-y: Play.full ? 0 : root.top-h;
+    property <length> dim-y: Play.full || inl ? 0 : root.top-h;
+    // playing inside Home's picture (not fullscreen)
+    property <bool> inl: Play.inline && !Play.full;
 
     public function take-focus() {
         fs.focus();
     }
 
-    if !Play.full: Rectangle {
+    if !Play.full && !inl: Rectangle {
         y: root.dim-y;
         height: root.height - root.dim-y;
         // QA B34 (11 Nov 2026): a light page showed through 73 % (its header ran into the clip's title, its text
         // under the side panel) - light themes (text #16161c, settings.rs theme_vars) get 90 %
         background: T.text == #16161c ? #0b0b0fe6 : #0b0b0fbb;
     }
-    // click beside the video = close
-    TouchArea {
+    // click beside the video = close (not inside Home's picture)
+    if !inl: TouchArea {
         y: root.dim-y;
         height: root.height - root.dim-y;
         clicked => {
@@ -726,6 +737,8 @@ export component PlayerView inherits Rectangle {
                     Play.h1 = -1;
                 } else if (Play.full) {
                     Play.toggle-full();
+                } else if (inl) {
+                    Play.act("inline-stop"); // Home: back to the paused frame
                 } else {
                     Play.close();
                 }
@@ -738,6 +751,13 @@ export component PlayerView inherits Rectangle {
             // YouTube-style K = play / pause (Echo's KeyK)
             if (e.text == "k" || e.text == "K") {
                 Play.toggle-pause();
+                return accept;
+            }
+            // ← / → in Home's picture (not fullscreen): Home's other clips, always (William, 12 Nov 2026). Everywhere else
+            // they seek 5 s (Ctrl 2.5 s); Home's player in fullscreen also goes to Home's previous / next clip with a
+            // press at the very start / end (main.rs seek-rel)
+            if (inl && (e.text == Key.LeftArrow || e.text == Key.RightArrow)) {
+                if (e.text == Key.LeftArrow) { Play.prev(); } else { Play.next(); }
                 return accept;
             }
             if (e.text == Key.LeftArrow) {
@@ -828,14 +848,14 @@ export component PlayerView inherits Rectangle {
     // ---- top bar (#player .bar): title, then groups: share · edit · file, Close ----
     // clicks on the bar's empty space aren't "beside the video" (behind the row: inside it, this took a stretchy slot
     // and pushed the clip name toward the middle - 9 Nov)
-    if !Play.full: TouchArea {
+    if !Play.full && !inl: TouchArea {
         x: root.vx;
         y: root.vy - 50px;
         width: root.vw;
         height: 36px;
     }
     // 11 Nov 2026: with the side panel on, every action is in the panel - the top keeps the title and a ✕
-    if !Play.full && root.side-on: HorizontalLayout {
+    if !Play.full && !inl && root.side-on: HorizontalLayout {
         x: root.vx;
         y: root.vy - 50px;
         width: root.vw;
@@ -857,7 +877,7 @@ export component PlayerView inherits Rectangle {
             clicked => { Play.close(); }
         }
     }
-    if !Play.full && !root.side-on: HorizontalLayout {
+    if !Play.full && !inl && !root.side-on: HorizontalLayout {
         x: root.vx;
         y: root.vy - 50px;
         width: root.vw;
@@ -1089,9 +1109,10 @@ export component PlayerView inherits Rectangle {
         // one outline around video + strip + controls (no separate video / bar boxes)
         border-color: #ffffff26;
         border-radius: Play.full ? 0 : 12px;
-        drop-shadow-blur: Play.full ? 0 : 60px;
-        drop-shadow-offset-y: Play.full ? 0 : 20px;
-        drop-shadow-color: #000000cc;
+        // softer (11 Nov 2026): 80 % black pushed 20 px down read as a hard black band under the player
+        drop-shadow-blur: Play.full || inl ? 0 : 36px;
+        drop-shadow-offset-y: Play.full ? 0 : 8px;
+        drop-shadow-color: #00000073;
         TouchArea { } // inside the player panel: not "beside the video"
     }
     // the video
@@ -1221,14 +1242,15 @@ export component PlayerView inherits Rectangle {
         border-color: #ffffff30; // toned down (asked: "a bit less on the actual player")
         border-radius: 12px;
     }
-    if Play.has-prev && !Play.full: NavArrow {
-        x: 18px;
+    if Play.has-prev && !Play.full && !inl: NavArrow {
+        // QA E11: next to the video, not on the dimmed sidebar
+        x: max(8px, root.vx - self.width - 14px);
         y: (root.height - self.height) / 2;
         icon: Ic.prev;
         tip: "Previous clip (Shift+←)";
         clicked => { Play.prev(); }
     }
-    if Play.has-next && !Play.full: NavArrow {
+    if Play.has-next && !Play.full && !inl: NavArrow {
         x: root.width - self.width - 18px;
         y: (root.height - self.height) / 2;
         icon: Ic.next;
@@ -1260,14 +1282,28 @@ export component PlayerView inherits Rectangle {
             width: root.vw;
             height: root.strip-h + root.ctl-h;
         }
+        // 12 Nov 2026 (William: "a small split to gray here, why not fade it all the way"): ONE background for the strip
+        // and the bar under it - the strip's colour at the top fading into the bar's deep theme shade at the bottom
+        // (Light: light grey -> white -> a faint lavender); the strip and the bar draw no background of their own
+        if !Play.full: Rectangle {
+            x: root.vx;
+            y: root.bar-y;
+            width: root.vw;
+            height: root.strip-h + root.ctl-h;
+            border-bottom-left-radius: 11px;
+            border-bottom-right-radius: 11px;
+            background: T.text == #16161c
+                ? @linear-gradient(180deg, #f4f4f7 0%, #ffffff 45%, T.accent.mix(#ffffff, 0.06) 100%)
+                : @linear-gradient(180deg, #15151b 0%, #0e0e12 45%, T.accent.mix(#0d0d10, 0.14) 100%);
+        }
         // ---- .pstrip: the filmstrip seek bar ----
         Rectangle {
             x: root.vx;
             y: root.bar-y;
             width: root.vw;
             height: root.strip-h;
-            // the Light theme gets a light strip background (it was always dark) - the filmstrip itself is unchanged
-            background: Play.full ? #000000aa : T.text == #16161c ? @linear-gradient(180deg, #f4f4f7 0%, #ffffff 100%) : @linear-gradient(180deg, #15151b 0%, #101014 100%);
+            // (outside fullscreen: the one background above)
+            background: Play.full ? #000000aa : transparent;
             Rectangle {
                 height: 1px;
                 y: 0;
@@ -1310,13 +1346,9 @@ export component PlayerView inherits Rectangle {
             if Play.sheet-ok: HorizontalLayout {
                 spacing: 0;
                 for i in seek.n: Image {
-                    property <int> f: min(59, floor((i + 0.5) * 60 / seek.n));
-                    source: Play.sheet;
+                    property <int> f: min(Play.tiles.length - 1, floor((i + 0.5) * Play.tiles.length / seek.n));
+                    source: Play.tiles[f];
                     image-fit: cover;
-                    source-clip-x: mod(f, 10) * Play.sheet-tw;
-                    source-clip-y: floor(f / 10) * Play.sheet-th;
-                    source-clip-width: Play.sheet-tw;
-                    source-clip-height: Play.sheet-th;
                 }
             }
             // dimmed so it reads as UI, brighter on hover
@@ -1559,18 +1591,14 @@ export component PlayerView inherits Rectangle {
             drop-shadow-offset-y: root.pv-in ? 0px : 8px;
             drop-shadow-color: root.pv-in ? transparent : #000000cc;
             property <float> f: seek.drag == "seek" ? seek.drag-frac : seek.drag == "t0" ? Play.t0 : seek.drag == "t1" ? Play.t1 : seek.hover;
-            property <int> n: min(59, floor(f * 60));
+            property <int> n: min(Play.tiles.length - 1, floor(f * Play.tiles.length));
             Image {
                 x: 2px;
                 y: 2px;
                 width: parent.width - 4px;
                 height: parent.height - 4px;
-                source: Play.sheet;
+                source: Play.tiles[n];
                 image-fit: fill;
-                source-clip-x: mod(n, 10) * Play.sheet-tw;
-                source-clip-y: floor(n / 10) * Play.sheet-th;
-                source-clip-width: Play.sheet-tw;
-                source-clip-height: Play.sheet-th;
             }
             Text {
                 y: parent.height - 24px;
@@ -1589,8 +1617,8 @@ export component PlayerView inherits Rectangle {
             y: root.bar-y + root.strip-h;
             width: root.vw;
             height: root.ctl-h;
-            // near-black fading into a deep shade of the theme colour (Light: white into a faint lavender)
-            background: Play.full ? #000000aa : T.text == #16161c ? @linear-gradient(180deg, #ffffff 0%, T.accent.mix(#ffffff, 0.06) 100%) : @linear-gradient(180deg, #0b0b0e 0%, T.accent.mix(#0d0d10, 0.14) 100%);
+            // (outside fullscreen: the one background above the strip - no second colour, no seam)
+            background: Play.full ? #000000aa : transparent;
             border-bottom-left-radius: Play.full ? 0 : 11px;
             border-bottom-right-radius: Play.full ? 0 : 11px;
             HorizontalLayout {
@@ -1769,7 +1797,7 @@ export component PlayerView inherits Rectangle {
 
     // ---- .phint ----
     // the key hints stay hidden until the mouse is over their spot under the player
-    if !Play.full: Rectangle {
+    if !Play.full && !inl: Rectangle {
         x: root.vx;
         y: root.vy + root.vh + root.strip-h + root.ctl-h + 4px;
         width: root.vw;
@@ -1842,7 +1870,7 @@ export component PlayerView inherits Rectangle {
 
     // ---- side panel (#pside), 11 Nov 2026: a compact card with every action of the old top row ----
     // (a solid card: Home no longer shows through). Narrow windows have no side panel: the old top row stays there.
-    if root.side-on && !Play.full: card := Rectangle {
+    if root.side-on && !Play.full && !inl: card := Rectangle {
         x: root.side-x;
         y: clamp((root.height - sv.preferred-height) / 2, root.vy, max(root.vy, root.height - sv.preferred-height - 12px));
         width: root.side-w;
@@ -1851,9 +1879,9 @@ export component PlayerView inherits Rectangle {
         border-radius: 12px;
         border-width: 1px;
         border-color: #ffffff1f;
-        drop-shadow-blur: 60px;
-        drop-shadow-offset-y: 20px;
-        drop-shadow-color: #000000cc;
+        drop-shadow-blur: 36px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #00000073;
         property <bool> tag-open;
         property <bool> note-open;
         // clicks inside the card never count as "beside the video"

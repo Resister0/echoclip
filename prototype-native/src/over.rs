@@ -57,7 +57,10 @@ pub fn init(app: &AppWindow) {
 #[cfg(windows)]
 pub fn menu_open(a: &AppWindow) -> bool {
     use slint::private_unstable_api::re_exports::{WindowInner, WindowKind};
-    let popups = WindowInner::from_pub(a.window()).active_popups().iter().any(|p| !matches!(p.window_kind, WindowKind::ToolTip));
+    // 11 Nov 2026: real popups (PopupWindow) are shown over the LIVE video by menuwin.rs - no parking, no still -
+    // unless that doesn't work on this PC (menuwin::broken). The cloud menu layer and the editor's own menus are
+    // plain rectangles: those still park the video.
+    let popups = crate::menuwin::broken() && WindowInner::from_pub(a.window()).active_popups().iter().any(|p| !matches!(p.window_kind, WindowKind::ToolTip));
     let ed = a.global::<crate::Ed>();
     popups || a.global::<crate::Cm>().get_open() || (ed.get_open() && (ed.get_sticker_menu() || ed.get_export_menu() || ed.get_menu_open()))
 }
@@ -92,47 +95,14 @@ pub fn park_for_menu(a: &AppWindow, m: &crate::mpv::Mpv, shown: bool) -> bool {
     menu
 }
 
-/// L9: how many lines a card's tags take in the library grid (they wrap like Echo's .card .tags), so Rust can give the
-/// row the room (GridRow.extra). `card_w` = the grid card's width (logical px). Text widths are estimated (11 px
-/// Segoe UI), on the generous side: one line too many leaves a little gap, one too few would cut a line off.
-pub fn tag_lines(tags: &[String], card_w: f32) -> i32 {
-    if tags.is_empty() {
-        return 0;
-    }
-    // the tag column = card - info padding (16 + 10) - spacing 10 - the buttons without hover (Copy group 60 + star
-    // 34 + spacing) - 2 border, a little spare
-    let avail = (card_w - 140.0).max(60.0);
-    let text_w = |s: &str| -> f32 {
-        ("#".chars().chain(s.chars()))
-            .map(|c| match c {
-                'i' | 'l' | 'j' | 't' | 'f' | 'r' | 'I' | '.' | ',' | ':' | ';' | '!' | '\'' | '|' | ' ' => 3.6,
-                'm' | 'w' | 'M' | 'W' | '@' => 9.5,
-                c if c.is_ascii_uppercase() || c.is_ascii_digit() || c == '#' => 7.2,
-                c if c.is_ascii() => 6.3,
-                _ => 11.5, // CJK, emoji
-            })
-            .sum()
-    };
-    let (mut lines, mut x) = (1, 0.0f32);
-    for t in tags {
-        let w = (text_w(t) + 16.0).min(160.0);
-        if x > 0.0 && x + 4.0 + w > avail {
-            lines += 1;
-            x = w;
-        } else {
-            x += if x > 0.0 { 4.0 + w } else { w };
-        }
-    }
-    lines
-}
-
-/// px for the tag lines under a card's name (first line 24 like before, each further line 18 + 4)
-pub fn tag_extra(lines: i32) -> i32 {
-    if lines <= 0 {
-        0
-    } else {
-        24 + (lines - 1) * 22
-    }
+/// 12 Nov 2026: the player closed - a still shown for a menu goes too (park_for_menu only runs while the player is
+/// open, so a menu closing together with the player left it on, over the next clip's video)
+pub fn player_closed(a: &AppWindow) {
+    #[cfg(windows)]
+    PARKED.with(|p| p.set(false));
+    let o = a.global::<Over>();
+    o.set_still_on(false);
+    o.set_still(slint::Image::default());
 }
 
 /// tooltips keep off the video window (TipLayer reads Over.video-win)

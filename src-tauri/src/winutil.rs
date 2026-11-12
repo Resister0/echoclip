@@ -347,6 +347,44 @@ pub fn exe_path(pid: u32) -> Option<String> {
     }
 }
 
+/// The exe's version info says it is Echo (ProductName "Echo", set by prototype-native/build.rs) - QA E19, 11 Nov 2026:
+/// a copy of Echo under another file name (a test copy, a renamed portable exe) was taken for a game when maximised.
+pub fn exe_is_echo(exe: &str) -> bool {
+    use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    let w: Vec<u16> = exe.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    unsafe {
+        let n = GetFileVersionInfoSizeW(PCWSTR(w.as_ptr()), None);
+        if n == 0 {
+            return false;
+        }
+        let mut buf = vec![0u8; n as usize];
+        if GetFileVersionInfoW(PCWSTR(w.as_ptr()), 0, n, buf.as_mut_ptr() as *mut _).is_err() {
+            return false;
+        }
+        let (mut p, mut len): (*mut std::ffi::c_void, u32) = (std::ptr::null_mut(), 0);
+        let q = wide("\\VarFileInfo\\Translation");
+        let mut langs: Vec<(u16, u16)> = vec![];
+        if VerQueryValueW(buf.as_ptr() as *const _, PCWSTR(q.as_ptr()), &mut p, &mut len).as_bool() && !p.is_null() {
+            let words = std::slice::from_raw_parts(p as *const u16, (len / 2) as usize);
+            langs = words.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+        }
+        if langs.is_empty() {
+            langs.push((0x0409, 0x04b0));
+        }
+        for (l, c) in langs {
+            let key = wide(&format!("\\StringFileInfo\\{l:04x}{c:04x}\\ProductName"));
+            if VerQueryValueW(buf.as_ptr() as *const _, PCWSTR(key.as_ptr()), &mut p, &mut len).as_bool() && !p.is_null() && len > 0 {
+                let s = String::from_utf16_lossy(std::slice::from_raw_parts(p as *const u16, len as usize));
+                if s.trim_end_matches('\0').trim() == "Echo" {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Is this process still running?
 pub fn pid_alive(pid: u32) -> bool {
     use windows::Win32::System::Threading::GetExitCodeProcess;

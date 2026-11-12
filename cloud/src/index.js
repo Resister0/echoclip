@@ -348,6 +348,9 @@ async function sameContent(env, user, hash, key) {
 // then tmp is deleted (daily job). The quota stops counting tmp once the swap is done (usage()).
 // Echo 2.0.4 and older never send share_first: for them nothing changes.
 const SWAP_GRACE = 6 * 3600;
+/// a finished swap's row stays this long (its hidden original is gone after SWAP_GRACE): Echo 2.0.5 retries a
+/// smaller copy for up to 3 days and, on "swap: false", deleted the clip it had just put in place (QA E4, 11 Nov 2026)
+const SWAP_KEEP_ROW = 4 * 86400;
 /// objects.fmt values Echo may send (see upload())
 const FMTS = new Set(["small", "orig", "keep"]);
 /// the swap row of a clip key (pending: done = 0; done: when the small copy took over)
@@ -361,7 +364,7 @@ async function liveSwap(env, key) {
 async function dropSwap(env, key) {
   const s = await swapOf(env, key);
   if (!s) return;
-  await env.BUCKET.delete(s.tmp);
+  if (s.tmp) await env.BUCKET.delete(s.tmp);
   await env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(key).run();
 }
 /// the original becomes the clip itself (no smaller copy came): copied inside R2, like /move; tmp stays for SWAP_GRACE
@@ -428,12 +431,15 @@ async function cleanupSwaps(env) {
   await migrate(env);
   const t = now();
   let deleted = 0, finished = 0;
-  const old = (await env.DB.prepare("SELECT * FROM swaps WHERE done > 0 AND done < ? LIMIT 500").bind(t - SWAP_GRACE).all()).results || [];
+  // the hidden original goes after the grace time (tmp = "" from then on); the row itself stays SWAP_KEEP_ROW, so an
+  // Echo that comes back late hears "done", not "swap: false"
+  const old = (await env.DB.prepare("SELECT * FROM swaps WHERE done > 0 AND done < ? AND tmp != '' LIMIT 500").bind(t - SWAP_GRACE).all()).results || [];
   for (const s of old) {
     await env.BUCKET.delete(s.tmp);
-    await env.DB.prepare("DELETE FROM swaps WHERE key = ?").bind(s.key).run();
+    await env.DB.prepare("UPDATE swaps SET tmp = '' WHERE key = ?").bind(s.key).run();
     deleted++;
   }
+  await env.DB.prepare("DELETE FROM swaps WHERE done > 0 AND done < ?").bind(t - SWAP_KEEP_ROW).run();
   const stuck = (await env.DB.prepare("SELECT * FROM swaps WHERE done = 0 AND created < ? LIMIT 50").bind(t - 86400).all()).results || [];
   for (const s of stuck) {
     const small = await env.BUCKET.head(s.key);
@@ -590,7 +596,8 @@ async function deleteKeys(env, user, keys) {
     const part = keys.slice(i, i + 90), q = part.map(() => "?").join(",");
     const sw = (await env.DB.prepare(`SELECT tmp FROM swaps WHERE user_id = ? AND key IN (${q})`).bind(user.id, ...part).all()).results || [];
     if (!sw.length) continue;
-    await env.BUCKET.delete(sw.map((s) => s.tmp));
+    const tmps = sw.map((s) => s.tmp).filter(Boolean);
+    if (tmps.length) await env.BUCKET.delete(tmps);
     await env.DB.prepare(`DELETE FROM swaps WHERE user_id = ? AND key IN (${q})`).bind(user.id, ...part).run();
   }
   // their share links go too
@@ -1443,7 +1450,7 @@ async function profilePage(req, env, handle) {
 <meta property="og:url" content="${origin}/u/${p.handle}">
 <meta property="og:image" content="${av ? origin + av : origin + "/og.png"}">
 <meta name="twitter:card" content="summary">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <style>
 @font-face{font-family:"Host Grotesk";font-weight:400 700;font-display:swap;src:url(/fonts/host-grotesk.woff2) format("woff2")}
 *{box-sizing:border-box;margin:0}
@@ -1481,7 +1488,7 @@ h2{font-size:20px;font-weight:500;letter-spacing:-.01em;color:#efefef;margin:40p
 footer{max-width:960px;margin:0 auto;padding:16px 20px 40px;color:#a3a3a3;font-size:14px}footer a{color:#c4c4c4}
 @media(max-width:640px){.head{padding:0 8px}.meta{margin-left:0;width:100%}.bio{margin:14px 8px 0}.top{display:none}}
 </style></head><body>
-<header><a class="brand" href="/"><span class="logo"><svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg></span>Echo</a><a class="top" href="/download">Get Echo - free, no ads</a></header>
+<header><a class="brand" href="/"><span class="logo"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>Echo</a><a class="top" href="/download">Get Echo - free, no ads</a></header>
 <main>
 <div class="banner"></div>
 <div class="head">${avatar}<div class="who"><h1>${esc(name)}</h1><div class="handle">@${esc(p.handle)}</div></div>
@@ -1844,12 +1851,12 @@ function sharePage(req, row, id, prof, orig = false) {
   const img = row.thumb ? `${base}.jpg` : `${u.origin}/og.png`;
   const game = shareGame(row);
   const desc = [mins, game, "Clipped with Echo, the lightweight clipping app"].filter(Boolean).join(" · ");
-  const logo = `<svg viewBox="0 0 256 256" width="20" height="20" aria-hidden="true"><circle cx="128" cy="128" r="80" fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-dasharray="390 503" transform="rotate(-200 128 128)"/><path d="M48 104 L58 70 L82 96 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><path d="M106 86 L176 128 L106 170 Z" fill="#fff" stroke="#fff" stroke-width="12" stroke-linejoin="round"/></svg>`;
+  const logo = `<svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(name)} - Echo</title>
 <meta name="description" content="${esc(desc)}">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#7c5cff">
 <meta property="og:site_name" content="Echo">
 <meta property="og:title" content="${esc(name)}">
 <meta property="og:description" content="${esc(desc)}">
@@ -1868,7 +1875,7 @@ function sharePage(req, row, id, prof, orig = false) {
 <meta name="twitter:player" content="${vid}">
 <meta name="twitter:player:width" content="${w}">
 <meta name="twitter:player:height" content="${h}">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="alternate" type="application/json+oembed" href="${u.origin}/oembed/${id}" title="${esc(name)}">
 <style>
 @font-face{font-family:"Host Grotesk";font-weight:400 700;font-display:swap;src:url(/fonts/host-grotesk.woff2) format("woff2")}
@@ -2495,7 +2502,7 @@ async function serveShare(req, env, id, ext, ctx) {
   // asked for while that was so) keeps getting it for SWAP_GRACE after the swap, so nobody's playback breaks
   const sw = await swapOf(env, row.key);
   let key = row.key;
-  if (sw && (!sw.done || new URL(req.url).searchParams.get("v") === "o") && (await env.BUCKET.head(sw.tmp))) key = sw.tmp;
+  if (sw && sw.tmp && (!sw.done || new URL(req.url).searchParams.get("v") === "o") && (await env.BUCKET.head(sw.tmp))) key = sw.tmp;
   // the bare link: a page for browsers and link previews (Discord, …); video players get the file as before
   if (!ext) {
     const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";

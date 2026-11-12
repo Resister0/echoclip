@@ -106,15 +106,17 @@ pub fn copy_clip_ui(a: &AppWindow, path: PathBuf, thumbs: PathBuf, key: &str) {
                         Err(e) => toast(&a, e),
                     }
                 }
-                Step::Av1 => copy_av1(&a, path),
+                Step::Av1 => copy_av1(&a, path, mb),
                 Step::Shrink => copy_shrunk(&a, path, thumbs, mb),
             }
         },
     );
 }
 
-/// the clip fits but is AV1: Echo's shareable() makes an H.264 copy, that goes on the clipboard
-fn copy_av1(a: &AppWindow, path: PathBuf) {
+/// the clip fits but is AV1: Echo's shareable() makes an H.264 copy, that goes on the clipboard. With a size (`mb`
+/// > 0) an H.264 copy over it is shrunk to the size first (QA 11 Nov 2026: a 7.8 MB AV1 clip came out as a 31.8 MB
+/// H.264 copy for a 10 MB limit - Discord refuses it)
+fn copy_av1(a: &AppWindow, path: PathBuf, mb: f64) {
     let Some(r) = crate::rec_core::rec() else {
         sizing_end(&path);
         return;
@@ -124,7 +126,14 @@ fn copy_av1(a: &AppWindow, path: PathBuf) {
     let w = a.as_weak();
     let src = path.to_string_lossy().to_string();
     crate::lib_net::bg(
-        move || r.shareable(&src).and_then(|p| clipboard_file(Path::new(&p)).map(|_| std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0))),
+        move || {
+            r.shareable(&src)
+                .and_then(|p| {
+                    let big = std::fs::metadata(&p).map_or(0, |m| m.len()) as f64 > mb * 1e6;
+                    if mb > 0.0 && big { r.shrink_clip(&p, mb, &|_| {}) } else { Ok(p) }
+                })
+                .and_then(|p| clipboard_file(Path::new(&p)).map(|_| std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)))
+        },
         move |res| {
             sizing_end(&path);
             prog_done(pb, 300);
@@ -180,14 +189,20 @@ pub fn shrink(ff: &Path, src: &Path, thumbs: &Path, target_mb: f64, progress: &d
     let dir = thumbs.join("discord").join(format!("{}", target_mb.round() as u64));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join(&name);
-    // made earlier (newer than the clip, BT.709-tagged, not far under the size): reuse
+    // QA 11 Nov 2026: cached by file name only - a clip with the same name in another folder got this one's copy;
+    // reuse only a copy made from this exact file (echo-core shrink_clip's .sig)
+    let sig = echo_core::recorder::shrink_sig(src, &src_meta);
+    let sig_file = PathBuf::from(format!("{}.sig", out.to_string_lossy()));
+    // made earlier (newer than the clip, BT.709-tagged, not far under the size, from this file): reuse
     if let (Ok(m), Ok(sm)) = (std::fs::metadata(&out), src_meta.modified()) {
         let colours_ok = crate::edrender::hidden_cmd(&crate::edrender::ffprobe(ff)).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
             .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
-        if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+        let same_src = std::fs::read_to_string(&sig_file).map_or(false, |s| s.trim() == sig);
+        if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok && same_src {
             return Ok(out);
         }
     }
+    let _ = std::fs::remove_file(&sig_file);
     let dur = probe_len(src).or_else(|| crate::pl_media::duration(ff, src)).ok_or("could not read the clip length")?;
     let (_, h, audio, _) = crate::edrender::probe(ff, src);
     let mk = || crate::edrender::hidden_cmd(ff);
@@ -195,6 +210,7 @@ pub fn shrink(ff: &Path, src: &Path, thumbs: &Path, target_mb: f64, progress: &d
         let mut c = e.chars();
         c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
     })?;
+    let _ = std::fs::write(&sig_file, &sig);
     Ok(out)
 }
 
@@ -204,6 +220,11 @@ pub fn clipboard_file(p: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         let s = abs.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+        // ECHO_CLIP_OUT=<file>: test hook - writes the path instead of using the clipboard (a test copy on Windows
+        // put its files on the real clipboard, QA 11 Nov 2026)
+        if let Ok(f) = std::env::var("ECHO_CLIP_OUT") {
+            return std::fs::write(f, &s).map_err(|e| e.to_string());
+        }
         if win::clipboard_files(&[&s]) { Ok(()) } else { Err("Couldn't copy - another app is holding the clipboard".into()) }
     }
     #[cfg(not(windows))]

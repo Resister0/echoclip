@@ -152,17 +152,20 @@
   requestAnimationFrame(tick);
 })();
 
-// homepage app preview: hover shows a clip's buttons like in Echo, Copy ▾ opens the real menu (share link, Discord sizes);
-// pressing anything explains what it does in Echo and points to the download - nothing actually happens
+// homepage app preview: hover shows a clip's buttons like in Echo 2.0.5 (Edit, Cloud, Show in folder, Delete), the
+// Cloud button opens the cloud menu (share link + expiry, upload), Copy ▾ the Discord sizes; pressing anything explains
+// what it does in Echo and points to the download - nothing actually happens. Icons = the app's own (theme.slint Ic.*)
 (() => {
   const app = document.querySelector(".app"); if (!app) return;
   const svg = (d) => `<svg viewBox="0 0 24 24">${d}</svg>`;
   const ICON = {
-    edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
-    link: svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'),
-    folder: svg('<path d="M3 7h6l2 2h10v10H3z"/>'),
-    del: svg('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
+    edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z M14 6l4 4"/>'),
+    cloud: svg('<path d="M7 19a5 5 0 0 1-.7-9.95A6 6 0 0 1 18 9a4.5 4.5 0 0 1 0 10z"/>'),
+    link: svg('<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1 M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>'),
+    folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+    del: svg('<path d="M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6"/>'),
   };
+  const TIP = { edit: "Edit", cloud: "Cloud: upload, free up space, delete", folder: "Show in folder", del: "Delete" };
   const SAY = {
     copy: "copies the clip - paste it straight into Discord or anywhere",
     full: "copies the full-quality clip",
@@ -170,6 +173,7 @@
     basic: "shrinks the clip to fit Nitro Basic, then copies it",
     nitro: "copies the clip sized for Nitro",
     link: "uploads the clip and copies a link that plays right inside Discord",
+    upload: "uploads the clip to Echo Cloud, so you can free up space on this PC",
     edit: "opens the editor: trim, captions, zoom, stickers and more",
     folder: "shows the clip in its folder",
     del: "moves the clip to the Recycle Bin",
@@ -191,30 +195,35 @@
   };
   const out = (t) => { if (!t || t._gone) return; t._gone = true; t.classList.remove("on"); setTimeout(() => t.remove(), 220); };
   const menu = document.createElement("div"); menu.className = "mmenu"; menu.hidden = true;
-  menu.innerHTML = '<button class="main" data-k="link">' + ICON.link + 'Copy share link</button>' +
-    '<div class="chips"><button data-k="link">Never</button><button data-k="link">1 day</button><button data-k="link" class="on">7 days</button><button data-k="link">30 days</button></div><hr>' +
-    '<p>Copy the video</p><button data-k="full">Full size</button><button data-k="free">Discord Free<small>shrinks to fit</small></button>' +
-    '<button data-k="basic">Nitro Basic<small>shrinks to fit</small></button><button data-k="nitro">Nitro</button>';
+  // the app's two menus: the Cloud button's (cloud.rs) and Copy ▾ (the sizes for Discord)
+  const MENU = {
+    cloud: '<button class="main" data-k="link">' + ICON.link + 'Copy share link</button>' +
+      '<div class="chips"><button data-k="link">Never</button><button data-k="link">1 day</button><button data-k="link" class="on">7 days</button><button data-k="link">30 days</button></div><hr>' +
+      '<button data-k="upload">' + ICON.cloud + 'Upload to the cloud</button>',
+    copy: '<p>Copy the video</p><button data-k="full">Full size</button><button data-k="free">Discord Free<small>shrinks to fit</small></button>' +
+      '<button data-k="basic">Nitro Basic<small>shrinks to fit</small></button><button data-k="nitro">Nitro</button>',
+  };
   app.appendChild(menu);
-  let owner = null;
-  const closeMenu = () => { menu.hidden = true; if (owner) owner.classList.remove("menu"); owner = null; };
+  let owner = null, from = null;
+  const closeMenu = () => { menu.hidden = true; if (owner) owner.classList.remove("menu"); owner = null; from = null; };
   app.querySelectorAll(".mclip").forEach((c) => {
     const act = c.querySelector(".mact"); if (!act) return;
     const copy = act.querySelector(".mcopy");   // like the app: the extra buttons slide in left of Copy
     // in one box that opens from no width (library.slint .more), so the name is squeezed smoothly instead of jumping
     const more = document.createElement("span"); more.className = "mmore";
-    for (const k of ["edit", "link", "folder", "del"]) {
-      const i = document.createElement("i"); i.className = "mx" + (k === "del" ? " del" : ""); i.dataset.k = k; i.title = k === "link" ? "Share link" : k[0].toUpperCase() + k.slice(1);
+    for (const k of ["edit", "cloud", "folder", "del"]) {
+      const i = document.createElement("i"); i.className = "mx" + (k === "del" ? " del" : ""); i.dataset.k = k; i.title = TIP[k];
       i.innerHTML = ICON[k]; more.appendChild(i);
     }
     act.insertBefore(more, copy);
   });
   app.addEventListener("click", (e) => {
     const t = e.target;
-    const ch = t.closest(".mch");
+    const ch = t.closest(".mch, .mx[data-k='cloud']");
     if (ch) {
-      const c = ch.closest(".mclip"); if (owner === c) return closeMenu();
-      closeMenu(); owner = c; c.classList.add("menu");
+      const c = ch.closest(".mclip"); if (from === ch) return closeMenu();
+      closeMenu(); owner = c; from = ch; c.classList.add("menu");
+      menu.innerHTML = MENU[ch.classList.contains("mch") ? "copy" : "cloud"];
       const r = ch.getBoundingClientRect(), a = app.getBoundingClientRect();
       menu.hidden = false;
       // the page may be zoomed (big screens: echo-head.js): screen positions are scaled, style.left/top are not

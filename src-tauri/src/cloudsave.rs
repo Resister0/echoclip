@@ -867,6 +867,20 @@ impl Recorder {
         if cfg.ec_token.is_empty() { return Ok(()); }
         let api = ec_api(&cfg);
         let t0 = Instant::now();
+        // QA E4 (11 Nov 2026): first ask whether this swap still waits. While it does, the clip's place is empty and
+        // this call changes nothing ("upload the smaller copy first"). "done" = finished meanwhile (the server kept the
+        // original after a day, or a copy got there before Echo closed); "swap: false" = no swap any more (deleted,
+        // renamed, cleaned up). Then nothing is uploaded here - the daily sweep makes a kept original smaller.
+        match ec_call(&api, "POST", "/upload/swap", &cfg.ec_token, Some(serde_json::json!({ "path": job.key }))) {
+            Err(e) if e.contains("smaller copy first") => {}
+            Ok(j) => {
+                log_line(&format!("echo cloud: {} - no smaller copy to swap in any more ({}) - left to the daily sweep", job.rel,
+                    if j["done"].as_bool() == Some(true) { "finished meanwhile" } else { "deleted, moved or cleaned up" }));
+                return Ok(());
+            }
+            Err(e) if e.contains("not found") => return Ok(()),   // a server without swaps
+            Err(e) => return Err(e),                               // offline...: again later
+        }
         let same = fs::metadata(&job.path).ok().map(|m| format!("{}:{}", m.len(), mtime_secs(Path::new(&job.path)))) == Some(job.sig.clone());
         let small = if same { self.small_copy(&job.path, &job.rel, &|_, _| {}, &|| false)? } else { None };
         let Some(small) = small else {
@@ -885,10 +899,9 @@ impl Recorder {
         crate::net::put_file(j["url"].as_str().unwrap_or(""), &small, |_, _| {}, || false)?;
         let w = ec_call(&api, "POST", "/upload/swap", &cfg.ec_token, Some(serde_json::json!({ "path": job.key })))?;
         if w["swap"].as_bool() == Some(false) {
-            // renamed / deleted in the meantime: what just went up belongs to nothing (the server keeps the original
-            // under the new name by itself)
-            let _ = ec_call(&api, "POST", "/delete", &cfg.ec_token, Some(serde_json::json!({ "path": job.key })));
-            log_line(&format!("echo cloud: {} was moved or deleted while its smaller copy was made - copy dropped", job.rel));
+            // renamed / deleted in the few seconds since the check above: the copy stays where it went - never delete
+            // here (QA E4: that removed a clip and its link when the server had finished the swap by itself)
+            log_line(&format!("echo cloud: {} was moved or deleted while its smaller copy went up - left as it is", job.rel));
         } else {
             let mut st = self.cloud_state();
             st.smaller.insert(job.rel.clone(), [size, job.orig_size]);
@@ -963,8 +976,11 @@ impl Recorder {
         let Some(info) = ask(local.iter().map(|x| &x.1).collect()) else { return };
         let t = now_unix();
         let (mut done, mut kept, mut skipped) = (0, 0, 0);
+        // QA 11 Nov 2026: the server leaves clips without an objects row (older uploads) out of its answer, and
+        // indexing a Map with a missing key panics - that killed the idle thread (and Shrink old clips) every day
+        let null = serde_json::Value::Null;
         for (rel, key, p) in &local {
-            let i = &info[key.as_str()];
+            let i = info.get(key.as_str()).unwrap_or(&null);
             if matches!(i["fmt"].as_str(), Some("small") | Some("keep")) { continue; }
             if i["last_read"].as_u64().unwrap_or(0) + 3600 > t { skipped += 1; continue; }
             if !calm() { break; }
@@ -1247,5 +1263,67 @@ mod cloud_copy_tests {
         assert!(l < legacy_size && fmt(key_l) == "small", "older Echo's upload made smaller");
         assert_eq!(r2_size("gone.mp4"), Some(1000), "cloud-only original left alone");
         println!("PASS sweep: long_b {:.1} -> {:.1} MB, legacy {:.1} -> {:.1} MB, cloud-only original left", long_size as f64 / 1e6, b as f64 / 1e6, legacy_size as f64 / 1e6, l as f64 / 1e6);
+    }
+
+    /// QA E4 (11 Nov 2026): Echo comes back days after a share-first upload, when the server has already kept the
+    /// original (and, on an older server, forgot the swap). The clip and its link must stay. Local test server only.
+    /// Needs ECHO_CLOUD_API, ECHO_SF_DIR (long.mp4 + long_b.mp4: two different H.264 clips over 2 min), APPDATA + TEMP.
+    /// cargo test -p echo-core --release --lib late_return_end_to_end -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn late_return_end_to_end() {
+        let (Ok(dir), Ok(api)) = (std::env::var("ECHO_SF_DIR"), std::env::var("ECHO_CLOUD_API")) else { return };
+        let mut cfg = crate::settings::Settings::default();
+        cfg.clips_dir = dir.clone();
+        cfg.cloud = "echocloud".into();
+        cfg.cloud_accounts = vec![crate::settings::CloudAccount { id: 1, provider: "echocloud".into(), label: "Echo Cloud".into(), root: String::new() }];
+        cfg.ec_token = "tok_harness_test".into();
+        cfg.ec_api = api.clone();
+        let rec = Recorder::new(cfg);
+        let req = |p: &str| { crate::net::request("GET", &format!("{api}{p}"), vec![], None, 120).unwrap(); };
+        let state = || crate::net::get_json(&format!("{api}/__state")).unwrap();
+        let r2_size = |end: &str| state()["r2"].as_array().unwrap().iter().find(|o| o["key"].as_str().unwrap().ends_with(end)).and_then(|o| o["size"].as_u64());
+        let served = |url: &str| { let p = Path::new(&dir).join("served.tmp"); crate::net::download(&format!("{url}.mp4"), &p).unwrap(); let n = fs::metadata(&p).unwrap().len(); let _ = fs::remove_file(&p); n };
+        let a = Path::new(&dir).join("long.mp4");
+        let b = Path::new(&dir).join("long_b.mp4");
+        let (a_size, b_size) = (fs::metadata(&a).unwrap().len(), fs::metadata(&b).unwrap().len());
+        // both shared first; Echo is "closed" before their shrinks (the jobs stay in swaps.json)
+        let url_a = rec.upload_and_link(&a.to_string_lossy(), Some(0), &|_| {}).expect("link a");
+        let url_b = rec.upload_and_link(&b.to_string_lossy(), Some(0), &|_| {}).expect("link b");
+        assert_eq!(rec.swaps().len(), 2);
+        // 1.5 days later the server's daily job has kept both originals
+        req(&format!("/__clock?add={}", 36 * 3600));
+        req("/__cron");
+        assert!(state()["swaps"].as_array().unwrap().iter().all(|s| s["done"].as_u64().unwrap_or(0) > 0), "server finished both");
+        // b: an older server has also forgotten the swap by now (the case that deleted the clip): like its daily job,
+        // the hidden original goes, then the row
+        let tmp_b = state()["swaps"].as_array().unwrap().iter().find(|s| s["key"].as_str().unwrap().ends_with("long_b.mp4"))
+            .map(|s| s["tmp"].as_str().unwrap().rsplit('/').next().unwrap().to_string()).unwrap();
+        req(&format!("/__r2del?prefix={tmp_b}"));
+        let n = crate::net::request("POST", &format!("{api}/__sql"), vec![], Some("DELETE FROM swaps WHERE key LIKE '%long_b.mp4'".into()), 10).unwrap();
+        assert_eq!(n.1.trim(), "1");
+        // Echo starts again
+        let mut v = rec.swaps();
+        for j in &mut v { j.next = 0; j.created = now_unix(); }
+        rec.save_swaps(&v);
+        SWAPS_DUE.store(0, Ordering::Relaxed);
+        rec.run_swaps();
+        assert!(rec.swaps().is_empty(), "jobs done");
+        assert_eq!(r2_size("long.mp4"), Some(a_size), "a: the kept original is still there");
+        assert_eq!(r2_size("long_b.mp4"), Some(b_size), "b: the kept original is still there (not deleted)");
+        assert_eq!(served(&url_a), a_size, "a: link plays");
+        assert_eq!(served(&url_b), b_size, "b: link plays");
+        println!("PASS late return: both clips + links kept ({:.1} / {:.1} MB originals, the sweep makes them smaller)", a_size as f64 / 1e6, b_size as f64 / 1e6);
+        // the server keeps a finished swap's row for days (hidden original gone after 6 h)
+        req(&format!("/__clock?add={}", 2 * 86400));
+        req("/__cron");
+        let s = state()["swaps"].clone();
+        assert!(s.as_array().unwrap().iter().any(|x| x["key"].as_str().unwrap().ends_with("long.mp4") && x["tmp"] == ""), "row kept, original gone: {s}");
+        assert!(!state()["r2"].as_array().unwrap().iter().any(|o| o["key"].as_str().unwrap().contains("/.swap/")), "hidden originals deleted");
+        assert_eq!(served(&url_a), a_size, "a: link still plays after the grace cleanup");
+        req(&format!("/__clock?add={}", 3 * 86400));
+        req("/__cron");
+        assert!(state()["swaps"].as_array().unwrap().is_empty(), "row gone after 4 days");
+        println!("PASS server keeps finished rows 4 days, hidden originals go after 6 h");
     }
 }

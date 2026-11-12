@@ -578,11 +578,46 @@ pub fn play_sound(kind: Sound, cfg: &Settings, force: bool) {
     });
 }
 
+/// QA E19 (11 Nov 2026): this process is a copy of Echo under another exe name (a test copy "EchoQA.exe", a renamed
+/// portable exe) - never a game. Maximised it counts as "full screen", and only the exact names echo / echoclip were
+/// skipped: the running Echo switched its capture to the copy and restarted. Read once per exe (version info).
+#[cfg(windows)]
+fn is_echo_process(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    crate::winutil::exe_path(pid).is_some_and(|exe| exe_is_echo_cached(&exe))
+}
+
+/// winutil::exe_is_echo, once per exe path (the game checks run every second or so)
+#[cfg(windows)]
+fn exe_is_echo_cached(exe: &str) -> bool {
+    static SEEN: Mutex<Option<std::collections::HashMap<String, bool>>> = Mutex::new(None);
+    let exe = exe.to_string();
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(&b) = map.get(&exe) {
+        return b;
+    }
+    let b = crate::winutil::exe_is_echo(&exe);
+    if b {
+        log_line(&format!("games: {exe} is a copy of Echo - never a game"));
+    }
+    if map.len() > 500 {
+        map.clear();
+    }
+    map.insert(exe, b);
+    b
+}
+
 /// Name of the game in front, for clip names. None = not a game (desktop, browser, Clipper...).
 pub fn detect_game() -> Option<String> {
     #[cfg(windows)]
     {
-        let (stem, title) = crate::winutil::foreground_app()?;
+        let (pid, stem, title) = crate::winutil::foreground_pid()?;
+        if is_echo_process(pid) {
+            return None;
+        }
         return game_name(&stem, &title, crate::winutil::foreground_fullscreen());
     }
     #[cfg(target_os = "linux")]
@@ -596,7 +631,7 @@ pub fn game_in_front() -> Option<(String, u32, String)> {
     #[cfg(windows)]
     {
         let (pid, stem, title) = crate::winutil::foreground_pid()?;
-        if pid == std::process::id() {
+        if is_echo_process(pid) {
             return None;
         }
         let name = game_name(&stem, &title, crate::winutil::foreground_fullscreen())?;
@@ -675,8 +710,7 @@ fn linux_game_from_streams() -> Option<(String, u32, String)> {
     const NOT_GAMES: &[&str] = &["steam", "steamwebhelper", "pipewire", "wireplumber", "kwin_wayland", "plasmashell", "gnome-shell",
         "speech-dispatcher", "sd_espeak-ng", "xdg-desktop-portal", "telegram-desktop", "signal-desktop", "slack", "zoom", "teams",
         "mpv", "totem", "celluloid", "haruna", "smplayer", "kdeconnectd", "obs", "gpu-screen-recorder", "echo", "echo-clips"];
-    let known: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
-        .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let known: std::collections::BTreeMap<String, String> = games_seen();
     let known_stems: Vec<String> = known.values().filter_map(|x| Path::new(&x.replace('\\', "/")).file_stem().map(|s| s.to_string_lossy().to_lowercase())).collect();
     for st in linux_sink_inputs().unwrap_or_default() {
         if linux_app_group(&st.binary, &st.name).is_some() { continue; }
@@ -732,6 +766,46 @@ fn app_dir() -> PathBuf {
     std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
 }
 
+/// games.json (game name -> exe) without entries that are Echo itself. QA E19 (11 Nov 2026): a maximised test copy of
+/// Echo was remembered as the game "Echo" (Settings > Games, the sidebar's game icons, Home's game shelves). Such
+/// entries are dropped from the file, with their icon, the first time it is read - so it cleans itself after an update.
+fn games_seen() -> std::collections::BTreeMap<String, String> {
+    let p = app_dir().join("games.json");
+    let mut m: std::collections::BTreeMap<String, String> =
+        fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let bad: Vec<String> = m.iter().filter(|(k, v)| is_echo_entry(k, v)).map(|(k, _)| k.clone()).collect();
+    if !bad.is_empty() {
+        for k in &bad {
+            m.remove(k);
+            let _ = fs::remove_file(app_dir().join("icons").join(format!("{}.png", safe_name(k))));
+        }
+        let _ = fs::write(&p, serde_json::to_string_pretty(&m).unwrap_or_default());
+        log_line(&format!("games: dropped {} from the game list (copies of Echo, not games)", bad.join(", ")));
+    }
+    m
+}
+
+/// a games.json entry that is Echo: named "Echo", an Echo exe name, a test copy of Echo in the Temp folder, or an exe
+/// whose version info says Echo. (No "echo…" prefix rule on its own: "Echoes of …" games stay games.)
+fn is_echo_entry(name: &str, exe: &str) -> bool {
+    let stem = Path::new(&exe.replace('\\', "/")).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if name.trim().eq_ignore_ascii_case("echo") || matches!(stem.as_str(), "echo" | "echoclip" | "echo-clips" | "echo-native-proto" | "echoproto") {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let tmp = std::env::temp_dir().to_string_lossy().to_lowercase();
+        let tmp = tmp.trim_end_matches('\\');
+        if stem.starts_with("echo") && !tmp.is_empty() && exe.to_lowercase().starts_with(tmp) {
+            return true;
+        }
+        if Path::new(exe).is_file() && exe_is_echo_cached(exe) {
+            return true;
+        }
+    }
+    false
+}
+
 #[allow(dead_code)]
 fn b64(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -775,8 +849,11 @@ pub fn remember_game(name: &str, exe: &str) {
 
 /// remember_game() + the running game's pid (Linux: Steam app id / Wine's .exe of the process find its icon).
 pub fn remember_game_pid(name: &str, exe: &str, pid: u32) {
+    if is_echo_entry(name, exe) {
+        return; // QA E19: Echo itself is never remembered as a game
+    }
     let p = app_dir().join("games.json");
-    let mut m: std::collections::BTreeMap<String, String> = fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut m: std::collections::BTreeMap<String, String> = games_seen();
     let icon = app_dir().join("icons").join(format!("{}.png", safe_name(name)));
     if m.get(name).map_or(false, |e| e == exe) {
         // Linux: a game seen before still without an icon gets another try (once per run)
@@ -828,8 +905,7 @@ fn linux_game_icon(name: &str, exe: &str, pid: u32, icon: &Path) {
 pub fn backfill_game_icons() {
     #[cfg(target_os = "linux")]
     {
-        let games: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let games: std::collections::BTreeMap<String, String> = games_seen();
         for (name, exe) in &games {
             linux_game_icon(name, exe, 0, &app_dir().join("icons").join(format!("{}.png", safe_name(name))));
         }
@@ -1667,6 +1743,12 @@ fn share_wm(cfg: &crate::settings::Settings) -> &str {
     if cfg.share_watermark && cfg.watermark_style != "off" { match cfg.watermark_style.as_str() { "echo" => "echo", "link" => "link", _ => "kimbo" } } else { "off" }
 }
 
+/// which clip file a cached Discord-size copy was made from (QA 11 Nov 2026): full path + size + time
+pub fn shrink_sig(src: &Path, meta: &fs::Metadata) -> String {
+    let t = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    format!("{}|{}:{}", src.to_string_lossy(), meta.len(), t)
+}
+
 /// File name of an AV1 clip's H.264 copy in .thumbs/h264/: its place in the library ("Valorant~x.mp4"), or just
 /// its name for a file outside the clips folder. (av1-upload-fix, 10 Nov 2026)
 fn h264_cache_name(rel: Option<&str>, file_name: &str) -> String {
@@ -2176,7 +2258,7 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
             let alive = |pid: u32| procs.iter().any(|p| p.0 == pid);
             // game: the game in front; kept while it runs and no other game takes over
             if let Some((pid, stem, title)) = crate::winutil::foreground_pid() {
-                if pid != std::process::id() && game_name(&stem, &title, crate::winutil::foreground_fullscreen()).is_some() {
+                if !is_echo_process(pid) && game_name(&stem, &title, crate::winutil::foreground_fullscreen()).is_some() {
                     game = Some(pid);
                 }
             }
@@ -2903,6 +2985,9 @@ impl Recorder {
     pub fn new(cfg: Settings) -> Self {
         set_mixer(&cfg);
         ec_sync_state(&cfg, 0);
+        // QA E19: an "Echo" entry an older Echo wrote into games.json (a test copy taken for a game) goes at start - the
+        // app reads the file directly too (Home's game shelves, game icons)
+        let _ = games_seen();
         let volumes = Arc::new([
             AtomicU32::new(cfg.desktop_volume.to_bits()),
             AtomicU32::new(cfg.mic_volume.to_bits()),
@@ -3916,8 +4001,7 @@ impl Recorder {
         if self.settings().not_games.iter().any(|x| x.eq_ignore_ascii_case("FiveM")) {
             return false;
         }
-        let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let seen: std::collections::BTreeMap<String, String> = games_seen();
         if seen.keys().any(|k| k.eq_ignore_ascii_case("FiveM")) || self.clips_dir().join("FiveM").is_dir() {
             return true;
         }
@@ -4006,8 +4090,7 @@ impl Recorder {
     /// Known games (seen while recording, clip folders, rules) with icons.
     pub fn list_games(&self) -> Vec<GameInfo> {
         let mut names: std::collections::BTreeSet<String> = Default::default();
-        let seen: std::collections::BTreeMap<String, String> = fs::read_to_string(app_dir().join("games.json")).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let seen: std::collections::BTreeMap<String, String> = games_seen();
         names.extend(seen.keys().cloned());
         let rules: Vec<String> = self.settings().games.iter().map(|g| g.name.to_lowercase()).collect();
         let is_game = |n: &str| seen.keys().any(|k| k.eq_ignore_ascii_case(n)) || rules.contains(&n.to_lowercase());
@@ -4033,8 +4116,7 @@ impl Recorder {
     /// `never` = also never treat it as a game again (clip names, game folders, Game audio track).
     pub fn forget_game(&self, name: &str, never: bool) {
         let path = app_dir().join("games.json");
-        let mut seen: std::collections::BTreeMap<String, String> = fs::read_to_string(&path).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut seen: std::collections::BTreeMap<String, String> = games_seen();
         seen.retain(|k, _| !k.eq_ignore_ascii_case(name));
         let _ = fs::write(&path, serde_json::to_string(&seen).unwrap_or_default());
         let _ = fs::remove_file(app_dir().join("icons").join(format!("{}.png", safe_name(name))));
@@ -4369,15 +4451,22 @@ impl Recorder {
         let dir = self.thumbs_dir().join("discord").join(format!("{}", target_mb.round() as u64));
         fs::create_dir_all(&dir).map_err(err)?;
         let out = dir.join(&name);
+        // QA 11 Nov 2026: the copy is cached by file name only, so two clips with the same name in different folders
+        // ("Clip 2026-11-11 18-00-00" in Valorant and in Apex Legends) shared it - Copy for Discord pasted the OTHER
+        // clip. A copy is reused only when it was made from this exact file (path + size + time, like shareable's .sig).
+        let sig = shrink_sig(&src, &src_meta);
+        let sig_file = PathBuf::from(format!("{}.sig", out.to_string_lossy()));
         if let (Ok(m), Ok(sm)) = (fs::metadata(&out), src_meta.modified()) {
             // older copies could have broken (too dark) colours: only reuse ones tagged BT.709
             let colours_ok = hidden("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space", "-of", "csv=p=0"])
                 .arg(&out).output().map_or(false, |o| String::from_utf8_lossy(&o.stdout).trim() == "bt709");
+            let same_src = fs::read_to_string(&sig_file).map_or(false, |s| s.trim() == sig);
             // fit-size: a copy far under the limit (made before 11 Nov 2026) is made again
-            if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok {
+            if m.len() > 0 && m.len() <= limit && m.len() as f64 >= limit as f64 * FIT_REUSE && m.modified().map_or(false, |t| t >= sm) && colours_ok && same_src {
                 return Ok(out.to_string_lossy().into());   // made earlier
             }
         }
+        let _ = fs::remove_file(&sig_file);
         // fit-size (11 Nov 2026): the length from the file itself, not the cached .dur - a stale, too long .dur
         // made the bitrate (and the copy) far too small
         let dur = probe_len(&src).or_else(|| self.thumb(path).ok().map(|t| t.duration)).unwrap_or(0.0);
@@ -4387,6 +4476,7 @@ impl Recorder {
         let (_w, h, audio) = self.probe(&src);
         let wm = |th: u32| self.watermark_graph("v0", "out", th);
         fit_to_size(&ffmpeg, &src, &dir.join("shrinking.tmp"), &out, limit, dur, h, audio, &FIT_ENCS, &wm, progress)?;
+        let _ = fs::write(&sig_file, &sig);
         Ok(out.to_string_lossy().into())
     }
 

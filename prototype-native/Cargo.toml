@@ -31,6 +31,9 @@ base64 = "0.22"
 [target.'cfg(windows)'.dependencies]
 # Chat A: tray icon + menu (same crate Tauri used for Echo's tray)
 tray-icon = "0.21"
+# 11 Nov 2026: menus over the video (menuwin.rs) need where Slint placed each open menu - Slint's own core crate,
+# already in Cargo.lock through slint; keep it on the SAME version as slint (update both together)
+i-slint-core = "=1.18.1"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Graphics_Dwm", "Win32_Graphics_OpenGL", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

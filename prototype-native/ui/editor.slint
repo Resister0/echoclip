@@ -860,6 +860,9 @@ export component EditorView inherits Rectangle {
     property <length> insp-w: 324px;
     property <length> tl-h: clamp(Ed.tl-content * 1px, 170px, root.height * 0.45);
     property <length> tools-h: 52px;
+    // QA E8 (11 Nov 2026): under ~1500 px (logical) the tool row ran off the window (1100 px: Captions, Snap and the zoom
+    // buttons out of reach) - narrower windows get icon-only tools (each keeps its tip) and a shorter zoom slider
+    property <bool> tools-compact: root.width < 1520px; // the full row needs ~1475 px
     property <length> top-h: 60px;
     property <length> area-w: root.width - insp-w;
     property <length> area-h: root.height - top-h - tools-h - tl-h;
@@ -1511,7 +1514,7 @@ export component EditorView inherits Rectangle {
                     width: 18px;
                     height: 18px;
                     commands: Ed.playing ? Ic.pause : Ic.play;
-                    fill: pta.has-hover ? T.accent2 : white;
+                    fill: pta.has-hover ? T.accent2 : T.text; // QA 11 Nov 2026: was white - invisible on the Light theme
                     stroke: transparent;
                 }
                 pta := TouchArea {
@@ -1537,21 +1540,21 @@ export component EditorView inherits Rectangle {
                 Tool { icon: "M15 14l5-5-5-5 M20 9H10a6 6 0 0 0 0 12h3"; tip: "Redo (Ctrl+Y)"; enabled: Ed.can-redo; clicked => { Ed.act("redo"); } }
             }
             Group {
-                Tool { icon: Ic.scissors; text: "Split"; tip: "Split at playhead (S)"; clicked => { Ed.act("split"); } }
-                Tool { icon: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6"; text: "Delete"; tip: "Delete - leaves a gap (Del)"; clicked => { Ed.act("del"); } }
-                Tool { icon: "M3 6h11 M8 6V4h4v2 M13 6l-1 14H5L4 6 M17 12h5 M19 9l3 3-3 3"; text: "Ripple"; tip: "Ripple delete - closes the gap (Shift+Del)"; clicked => { Ed.act("ripple"); } }
-                Tool { icon: "M3 6v12 M21 6v12 M7 12h10 M7 12l3-3 M7 12l3 3 M17 12l-3-3 M17 12l-3 3"; text: "Close gaps"; tip: "Close all gaps on the video track"; clicked => { Ed.act("gaps"); } }
+                Tool { icon: Ic.scissors; text: root.tools-compact ? "" : "Split"; tip: "Split at playhead (S)"; clicked => { Ed.act("split"); } }
+                Tool { icon: "M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6"; text: root.tools-compact ? "" : "Delete"; tip: "Delete - leaves a gap (Del)"; clicked => { Ed.act("del"); } }
+                Tool { icon: "M3 6h11 M8 6V4h4v2 M13 6l-1 14H5L4 6 M17 12h5 M19 9l3 3-3 3"; text: root.tools-compact ? "" : "Ripple"; tip: "Ripple delete - closes the gap (Shift+Del)"; clicked => { Ed.act("ripple"); } }
+                Tool { icon: "M3 6v12 M21 6v12 M7 12h10 M7 12l3-3 M7 12l3 3 M17 12l-3-3 M17 12l-3 3"; text: root.tools-compact ? "" : "Close gaps"; tip: "Close all gaps on the video track"; clicked => { Ed.act("gaps"); } }
             }
             Group {
-                Tool { icon: "M5 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M16 10l5-3v10l-5-3 M9.5 9v6 M6.5 12h6"; text: "Media"; tip: "Add another video or a sound to the timeline"; clicked => { Ed.act("media"); } }
-                Tool { icon: "M5 6V4h14v2 M12 4v16 M9 20h6"; text: "Text"; tip: "Add text (T)"; clicked => { Ed.act("text"); } }
-                Tool { icon: "M6 6h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"; text: "Box"; tip: "Blur or colour box over part of the video (B)"; clicked => { Ed.act("box"); } }
-                Tool { icon: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M20 20l-4.5-4.5 M11 8v6 M8 11h6"; text: "Zoom"; tip: "Zoom in on a spot (Z)"; clicked => { Ed.act("zoomfx"); } }
-                stkbtn := Tool { icon: "M14 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8l7-7V6a3 3 0 0 0-3-3z M14 21v-4a3 3 0 0 1 3-3h4"; text: "Sticker"; tip: "Sticker, emoji or picture on the video"; clicked => { Ed.act("sticker"); } }
-                Tool { icon: "M12 2v20 M4 7l16 10 M20 7L4 17"; text: "Freeze"; tip: "Freeze frame at the playhead (F)"; clicked => { Ed.act("freeze"); } }
+                Tool { icon: "M5 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M16 10l5-3v10l-5-3 M9.5 9v6 M6.5 12h6"; text: root.tools-compact ? "" : "Media"; tip: "Add another video or a sound to the timeline"; clicked => { Ed.act("media"); } }
+                Tool { icon: "M5 6V4h14v2 M12 4v16 M9 20h6"; text: root.tools-compact ? "" : "Text"; tip: "Add text (T)"; clicked => { Ed.act("text"); } }
+                Tool { icon: "M6 6h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"; text: root.tools-compact ? "" : "Box"; tip: "Blur or colour box over part of the video (B)"; clicked => { Ed.act("box"); } }
+                Tool { icon: "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12z M20 20l-4.5-4.5 M11 8v6 M8 11h6"; text: root.tools-compact ? "" : "Zoom"; tip: "Zoom in on a spot (Z)"; clicked => { Ed.act("zoomfx"); } }
+                stkbtn := Tool { icon: "M14 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h8l7-7V6a3 3 0 0 0-3-3z M14 21v-4a3 3 0 0 1 3-3h4"; text: root.tools-compact ? "" : "Sticker"; tip: "Sticker, emoji or picture on the video"; clicked => { Ed.act("sticker"); } }
+                Tool { icon: "M12 2v20 M4 7l16 10 M20 7L4 17"; text: root.tools-compact ? "" : "Freeze"; tip: "Freeze frame at the playhead (F)"; clicked => { Ed.act("freeze"); } }
                 Tool {
                     icon: "M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M10 10.5a2 2 0 1 0 0 3 M17 10.5a2 2 0 1 0 0 3";
-                    text: Ed.listening ? "Listening…" : "Captions";
+                    text: root.tools-compact ? "" : Ed.listening ? "Listening…" : "Captions";
                     tip: "Auto captions from your mic and Discord (C)";
                     enabled: !Ed.listening;
                     clicked => { Ed.act("cap"); }
@@ -1562,12 +1565,12 @@ export component EditorView inherits Rectangle {
                 y: 4px;
                 width: snt.width;
                 height: 30px;
-                snt := Tool { icon: "M6 3v8a6 6 0 0 0 12 0V3h-4v8a2 2 0 0 1-4 0V3z"; text: "Snap"; on: Ed.snap; tip: "Snapping: pieces stick to the playhead and to each other"; clicked => { Ed.act("snap"); } }
+                snt := Tool { icon: "M6 3v8a6 6 0 0 0 12 0V3h-4v8a2 2 0 0 1-4 0V3z"; text: root.tools-compact ? "" : "Snap"; on: Ed.snap; tip: "Snapping: pieces stick to the playhead and to each other"; clicked => { Ed.act("snap"); } }
             }
             Group {
                 Tool { icon: "M5 12h14"; tip: "Zoom out (Ctrl+scroll)"; clicked => { Ed.act("zoom-out"); } }
                 Rectangle {
-                    width: 110px;
+                    width: root.tools-compact ? 64px : 110px;
                     ESlider {
                         y: 4px;
                         width: parent.width;

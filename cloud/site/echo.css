@@ -691,3 +691,24 @@ html .themebtn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2p
   html .hero--product .hero__stage:has(> img:not(.is-cutout), > picture), html[data-zoom] .hero--product .hero__stage:has(> img:not(.is-cutout), > picture) { margin-bottom: 32px; border-bottom: 1px solid var(--line-strong); border-radius: var(--r-lg); }
 }
 @media (max-width: 639px) { html main > section.section:not(.hero) > .wrap > .fill { flex: none; } }
+
+/* the last row of every footer (11 Nov 2026, the user: a quiet link to the other Sonela apps, at the end of the scroll) */
+.ec-more { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-6); padding: var(--s-6) 0; border-top: 1px solid var(--line); }
+.ec-more a { display: flex; align-items: center; gap: var(--s-3); color: var(--ink); text-decoration: none; }
+.ec-more img { width: 32px; height: 32px; border-radius: 9px; flex: none; display: block; }
+.ec-more span { display: grid; line-height: 1.3; }
+.ec-more b { font-weight: 500; font-size: var(--t-small); }
+.ec-more small { font-size: 13px; color: #a3a3a3; }
+.ec-more__brand { margin-right: auto; }
+.ec-more__app { padding: 8px 14px 8px 8px; border-radius: 14px; border: 1px solid var(--line); transition: border-color .2s, background .2s; }
+.ec-more__app:hover { border-color: var(--line-strong); background: rgba(255, 255, 255, .04); }
+.ec-more__link { font-size: var(--t-small); text-decoration: underline !important; text-underline-offset: 3px; text-decoration-color: var(--line-strong) !important; }
+.ec-more__link::after { content: " →"; }
+@media (max-width: 639px) { .ec-more__brand { margin-right: 0; flex-basis: 100%; } .ec-more__app { flex: 1 1 100%; } }
+
+/* the close's download button (12 Nov 2026, the user: "weird looking text"): the kit's btn--xl stretched to 640-1024 px
+   but came out ~33 px tall with 26 px display text on zoomed screens. Now the normal primary button, its own width */
+.closing__cta > .btn.ec-closebtn { align-self: flex-start; flex: none; }
+@media (max-width: 639px) { .closing__cta > .btn.ec-closebtn { align-self: stretch; justify-content: center; } }
+/* the footer's one-line description in the body font, normal spacing (the display font's tight tracking squeezed it) */
+.closing__links .footer__lede { font-family: var(--font-text); font-weight: 400; letter-spacing: 0; }

@@ -57,7 +57,14 @@ thread_local! {
     static PROBING: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
     /// shelf pictures by file + its modification time
     static PICS: RefCell<HashMap<PathBuf, (SystemTime, Option<Image>)>> = RefCell::new(HashMap::new());
+    /// the last fill's list (clip keys) + whether it was the new clips; None = no fill yet (QA E7, E14)
+    static PREV: RefCell<Option<(HashSet<String>, bool)>> = const { RefCell::new(None) };
+    /// when the user last paged (← → Keep) - new clips arriving don't move the pager while they page (QA E14)
+    static LAST_ACT: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
 }
+
+/// clips that arrive while the user isn't paging: Home goes to the newest one (QA E14)
+const PAGING_QUIET: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn secs(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -108,8 +115,17 @@ fn can_be_new(c: &Clip) -> bool {
     !c.edited && !c.sound && c.cloud.is_none() && !c.gone.get()
 }
 
+/// a clip's key in the seen list and this run's list: "p:" + its place in the clips folder ("p:Valorant/Clip 1.mp4").
+/// QA E1 (11 Nov 2026): by name, two clips with one file name in two folders were one - seeing one hid the other.
+fn key(c: &Clip) -> String {
+    let file = c.path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| c.name.clone());
+    if c.folder.is_empty() { format!("p:{file}") } else { format!("p:{}/{file}", c.folder) }
+}
+
 fn is_seen(c: &Clip) -> bool {
-    with_seen(|s| secs(c.mtime) <= s.t || s.names.contains(&c.name))
+    // a bare name (no "p:") was saved by an older Echo: it still counts for clips of that name, until the list is
+    // cleared (no new clip left)
+    with_seen(|s| secs(c.mtime) <= s.t || s.names.contains(&key(c)) || s.names.contains(&c.name))
 }
 
 fn is_new(c: &Clip) -> bool {
@@ -123,9 +139,9 @@ fn mark_seen(lib: &LibModel, idx: usize) {
         return;
     }
     with_seen(|s| {
-        s.names.insert(c.name.clone());
+        s.names.insert(key(&c));
     });
-    RUN.with(|r| r.borrow_mut().insert(c.name.clone()));
+    RUN.with(|r| r.borrow_mut().insert(key(&c)));
     // no new clip left: move the time up to the newest clip and forget the names (keeps the file small)
     let all = lib.all();
     if !all.iter().any(|c| is_new(c)) {
@@ -153,7 +169,7 @@ fn build_list(lib: &LibModel) -> (Vec<usize>, bool) {
         .into_iter()
         .filter(|&i| {
             let c = lib.clip(i);
-            is_new(&c) || run.contains(&c.name)
+            is_new(&c) || run.contains(&key(&c))
         })
         .collect();
     (list, true)
@@ -166,7 +182,9 @@ fn pick_current(lib: &LibModel, list: &[usize], new_mode: bool) -> Option<usize>
         return None;
     }
     let cur = CUR.with(|c| c.borrow().clone());
-    if let Some(p) = list.iter().position(|&i| lib.clip(i).name == cur) {
+    // by full path, not name: two clips can share a file name (a copy in another folder) - matching by name sent the
+    // pager back to the first one, so Next stopped there ("25 of 34", 11 Nov 2026)
+    if let Some(p) = list.iter().position(|&i| lib.clip(i).path.to_string_lossy() == cur) {
         return Some(p);
     }
     let from = CUR_POS.with(|p| p.get()).min(list.len() - 1);
@@ -181,7 +199,7 @@ fn pick_current(lib: &LibModel, list: &[usize], new_mode: bool) -> Option<usize>
 
 fn set_current(lib: &LibModel, list: &[usize], pos: usize) {
     if let Some(&i) = list.get(pos) {
-        CUR.with(|c| *c.borrow_mut() = lib.clip(i).name.clone());
+        CUR.with(|c| *c.borrow_mut() = lib.clip(i).path.to_string_lossy().to_string());
         CUR_POS.with(|p| p.set(pos));
     }
 }
@@ -202,8 +220,27 @@ pub fn fill(a: &AppWindow, lib: &Rc<LibModel>, refill: Rc<dyn Fn()>) {
         RUN.with(|r| r.borrow_mut().clear());
         CUR.with(|c| c.borrow_mut().clear());
         CUR_POS.with(|p| p.set(0));
+        PREV.with(|p| *p.borrow_mut() = None);
     }
     let (list, new_mode) = build_list(lib);
+    let keys: HashSet<String> = list.iter().map(|&i| key(&lib.clip(i))).collect();
+    if let Some((prev_keys, prev_new)) = PREV.with(|p| p.borrow_mut().take()) {
+        // QA E7: the new clips ran out without Keep / → (the last one deleted or moved): back to the latest clip, as
+        // after Keep on the last one - was: the old place in the list of all clips ("YOUR CLIPS · 2 of 12")
+        // (only when the clip on show left the list - Copy / Share on the last new clip keep it on show)
+        let cur = CUR.with(|c| c.borrow().clone());
+        let cur_gone = !list.iter().any(|&i| lib.clip(i).path.to_string_lossy() == cur);
+        let ran_out = prev_new && !new_mode && cur_gone;
+        // QA E14: new clips arrived (saved while Echo sat in the back): start at the newest one - was: the pager stayed
+        // on the first one that came in ("3 of 3" = the oldest). Not while the user is paging.
+        let quiet = LAST_ACT.with(|t| t.get().is_none_or(|t| t.elapsed() > PAGING_QUIET));
+        let arrived = new_mode && quiet && keys.iter().any(|k| !prev_keys.contains(k));
+        if ran_out || arrived {
+            CUR.with(|c| c.borrow_mut().clear());
+            CUR_POS.with(|p| p.set(0));
+        }
+    }
+    PREV.with(|p| *p.borrow_mut() = Some((keys, new_mode)));
     let pos = pick_current(lib, &list, new_mode);
     let h = a.global::<HomeState>();
     match pos {
@@ -465,6 +502,9 @@ pub fn act(a: &AppWindow, lib: &Rc<LibModel>, what: &str) -> bool {
     let (list, new_mode) = LIST.with(|l| l.borrow().clone());
     let pos = CUR_POS.with(|p| p.get());
     let cur = current(lib);
+    if matches!(what, "prev" | "next" | "keep") {
+        LAST_ACT.with(|t| t.set(Some(std::time::Instant::now())));
+    }
     match what {
         "prev" => {
             if pos > 0 && pos - 1 < list.len() {
@@ -510,7 +550,25 @@ pub fn seen_idx(lib: &LibModel, idx: usize) {
     }
 }
 
+/// QA E6 (11 Nov 2026): the clip `idx` is about to be rewritten in place (player Trim > Replace): the new file gets a
+/// new date, which made an old, already seen clip "NEW SINCE YOU LAST LOOKED" again. Call BEFORE the library reloads
+/// it (its old date still decides whether it was seen); a seen clip stays seen under its place in the folder.
+pub fn keep_seen(lib: &LibModel, idx: usize) {
+    if idx >= lib.len() {
+        return;
+    }
+    let c = lib.clip(idx);
+    if !can_be_new(&c) || is_new(&c) {
+        return;
+    }
+    with_seen(|s| {
+        s.names.insert(key(&c));
+    });
+    save_seen();
+}
+
 pub fn touched(lib: &LibModel) {
+    LAST_ACT.with(|t| t.set(Some(std::time::Instant::now())));
     if let Some(i) = current(lib) {
         mark_seen(lib, i);
     }
