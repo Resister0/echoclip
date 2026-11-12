@@ -2305,7 +2305,8 @@ export component AppWindow inherits Window {
         y: root.inl ? HomeState.hero-y : 0;
         width: root.inl ? HomeState.hero-w : root.width;
         height: root.inl ? HomeState.hero-h : root.height;
-        visible: root.player-open && !Ed.open && !Ed.opening; // Edit goes straight to the editor (11 Nov 2026)
+        // 12 Nov 2026: hidden while Home is scrolled down (it is drawn over the page and would cover the top bar)
+        visible: root.player-open && !Ed.open && !Ed.opening && !(root.inl && HomeState.scrolled); // Edit goes straight to the editor (11 Nov 2026)
         vx: root.video-x - self.x;
         vy: root.video-y - self.y;
         vw: root.video-w;

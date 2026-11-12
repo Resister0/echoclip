@@ -18,6 +18,8 @@ export global HomeState {
     in-out property <length> hero-x;
     in-out property <length> hero-y;
     in-out property <length> hero-h;
+    // 12 Nov 2026: Home is scrolled down (small window): the player over the picture hides, its video window parks
+    in-out property <bool> scrolled;
     // Inbox (home_inbox.rs)
     in-out property <bool> loading;        // the clips folder is still being read: show nothing yet
     in-out property <string> label;        // "NEW SINCE YOU LAST LOOKED" / "YOUR LATEST CLIP" / "YOUR CLIPS"
@@ -341,14 +343,20 @@ export component HomePage inherits Rectangle {
     property <length> shelf-h: 150px;
     property <length> games-h: 28px + 32px + shelf-h; // gap + "Your games" row + one row of shelves
     property <length> fixed-h: pad-t + head-h + 16px + games-h + pad-b;
-    property <length> vw: max(320px, min(cw - 24px - aw, (self.height - fixed-h) * 16 / 9));
-    property <length> vh: vw * 9 / 16;
     // 11 Nov 2026: while the clip plays inside the picture it grows by the player's strip + bar (66 + 57), so the
     // video keeps its full 16:9 size
     // 12 Nov 2026: always (the clip sits loaded + paused there, playing or not looks the same)
-    property <length> sh: root.vh + 123px;
+    property <length> strip-h: 123px;
+    // 12 Nov 2026 (William: the player stuck out over the top bar): the strip + bar count in what fits - without them
+    // the page was 123 px taller than the window, so Home scrolled and the player (drawn over the page, not clipped
+    // by it) went up over the title bar while the side card was cut off at it
+    // at least 440 px: the bar under it (play, time, SPEED, VOL, fullscreen) needs ~430 (fits the narrowest window: 448)
+    property <length> vw: max(440px, min(cw - 24px - aw, (self.height - fixed-h - strip-h) * 16 / 9));
+    property <length> vh: vw * 9 / 16;
+    property <length> sh: root.vh + strip-h;
     // the panel's size step: full (6 details rows + hint) / compact (4 rows, smaller buttons) / no details
-    property <int> tier: aw >= 320px && vh >= 610px ? 0 : vh >= 430px ? 1 : 2;
+    // 12 Nov 2026: by the panel's own height (= the picture's, sh) - it needs ~600 px full, ~430 px compact
+    property <int> tier: aw >= 320px && sh >= 640px ? 0 : sh >= 460px ? 1 : 2;
     property <length> btn-h: tier == 0 ? 42px : 36px;
     property <length> page-w: vw + 24px + aw;
     property <int> shelf-cols: page-w >= 1400px ? 4 : page-w >= 1000px ? 3 : 2;
@@ -372,6 +380,14 @@ export component HomePage inherits Rectangle {
         height: parent.height;
         // = the page's own height when everything fits (nothing to scroll); taller only in a very small window
         content-height: max(self.height, body.preferred-height);
+        // 12 Nov 2026: scrolled down (a very small window), the player hides (app.slint, main.rs parks its video
+        // window) and Home's still shows, cut at the top bar like the rest of the page; a clip playing stops
+        changed content-y => {
+            HomeState.scrolled = self.content-y < -0.5px;
+            if (HomeState.scrolled && Play.inline-active) {
+                Play.act("inline-stop");
+            }
+        }
         // 11 Nov 2026 (William): a click anywhere on Home outside the clip playing in the picture closes it - back to
         // the still with the play button (buttons, the picture and the player itself take their own clicks)
         if Play.inline-active: TouchArea {

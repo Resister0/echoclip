@@ -63,7 +63,7 @@ def faq(page):
 def app(desc):
     return {
         "@type": "SoftwareApplication", "@id": f"{ORIGIN}/#app",
-        "name": "Echo", "alternateName": "EchoClip",
+        "name": "EchoClip", "alternateName": "Echo",
         "applicationCategory": "MultimediaApplication", "applicationSubCategory": "Game clip recorder",
         "operatingSystem": "Windows 10, Windows 11, Linux",
         "description": desc,
@@ -77,12 +77,12 @@ def app(desc):
 
 
 def jsonld(name, page, desc):
-    org = {"@type": "Organization", "@id": f"{ORIGIN}/#org", "name": "Echo", "url": f"{ORIGIN}/",
+    org = {"@type": "Organization", "@id": f"{ORIGIN}/#org", "name": "EchoClip", "url": f"{ORIGIN}/",
            "logo": f"{ORIGIN}/icon-512.png", "email": "support@echoclip.link",
            "sameAs": ["https://github.com/Resister0/echoclip", "https://discord.gg/JPVewEfUQs"]}
     home = head_info(page if name == "index.html" else (SITE / "index.html").read_text(encoding="utf-8"))[1]
     if name == "index.html":
-        graph = [{"@type": "WebSite", "@id": f"{ORIGIN}/#site", "name": "Echo", "url": f"{ORIGIN}/",
+        graph = [{"@type": "WebSite", "@id": f"{ORIGIN}/#site", "name": "EchoClip", "alternateName": "Echo", "url": f"{ORIGIN}/",
                   "publisher": {"@id": f"{ORIGIN}/#org"}}, org, app(text(home))]
         q = faq(page)
         if q:

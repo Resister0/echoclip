@@ -170,6 +170,9 @@ thread_local! {
     static MENU_IDX: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static VIEWS: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
     static TIMERS: RefCell<Vec<slint::Timer>> = const { RefCell::new(vec![]) };
+    /// clip-thumbs: a fetch_thumbs round is running / cloud-only clips the streaming server was asked for this run
+    static FETCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TRIED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static ECM_ALL: RefCell<Vec<serde_json::Value>> = const { RefCell::new(vec![]) };
     /// cleanup: each Echo Cloud file's categories (by path) and the chip just picked (its safe files get ticked)
     static ECM_CATS: RefCell<HashMap<String, Vec<crate::cleanup::Why>>> = RefCell::new(HashMap::new());
@@ -908,23 +911,52 @@ fn url_enc(s: &str) -> String {
     o
 }
 
-/// thumbnails + lengths for cloud-only clips (Echo's cloud_thumb over the streaming server), one at a time
+/// thumbnails + lengths for cloud-only clips: first the picture the Echo Cloud account keeps (clip_thumbs.rs, a small
+/// JPEG - no streaming), else Echo's cloud_thumb over the streaming server, one at a time and once per run each
+/// (clip-thumbs, 12 Nov 2026: a clip it couldn't read was tried again every 20 s, with ffmpeg + rclone each time)
 fn fetch_thumbs() {
     let Some(l) = lib() else { return };
-    let want: Vec<String> = l.all().iter().filter(|c| c.cloud.is_some() && !c.gone.get() && !c.thumb().exists()).filter_map(|c| c.cloud.clone()).take(12).collect();
-    if want.is_empty() {
+    if FETCHING.with(|f| f.get()) {
+        return;
+    }
+    let all: Vec<String> = l.all().iter().filter(|c| c.cloud.is_some() && !c.gone.get() && !c.thumb().exists()).filter_map(|c| c.cloud.clone()).collect();
+    if all.is_empty() {
+        return;
+    }
+    let (ask, rest): (Vec<String>, Vec<String>) = all.into_iter().partition(|rel| crate::clip_thumbs::may_ask(rel));
+    let ask: Vec<String> = ask.into_iter().take(80).collect();
+    let old: Vec<String> = TRIED.with(|t| {
+        let mut t = t.borrow_mut();
+        let pick: Vec<String> = rest.into_iter().filter(|rel| !t.contains(rel)).take(12).collect();
+        t.extend(pick.iter().cloned());
+        pick
+    });
+    if ask.is_empty() && old.is_empty() {
         return;
     }
     let Some(r) = rec() else { return };
+    let token = token();
+    FETCHING.with(|f| f.set(true));
     crate::lib_net::bg(
         move || {
-            for rel in &want {
+            let got = !ask.is_empty() && crate::clip_thumbs::fetch(&token, &ask);
+            for rel in &old {
                 let _ = r.cloud_thumb(rel);
             }
+            got || !old.is_empty()
         },
-        |_| {
+        |got| {
+            FETCHING.with(|f| f.set(false));
             if let Some(l) = lib() {
                 l.changed_all();
+            }
+            // Home's big "latest clip" picture isn't a card: it follows with the next sync (once, when pictures came)
+            if got {
+                crate::UI_SYNC.with(|f| {
+                    if let Some(f) = f.borrow().as_ref() {
+                        f(false)
+                    }
+                });
             }
         },
     );
@@ -1099,6 +1131,8 @@ fn ec_code(a: &AppWindow, email: String, reload: Rc<dyn Fn()>) {
                 crate::rec_core::sync_soon();
                 reload();
                 load_info(a);
+                crate::game_sync::soon(); // cloud-games: this account's game icons
+                crate::clip_thumbs::soon(); // clip-thumbs: this PC's card pictures to the account
             }
             Err(e) => {
                 crate::toast(a, e);

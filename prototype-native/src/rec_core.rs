@@ -367,17 +367,73 @@ fn handle(a: &AppWindow, e: Ev) {
     }
 }
 
+thread_local! {
+    static MAX_TIMER: slint::Timer = slint::Timer::default();
+    /// the main window was on screen once (open_maximized)
+    static WAS_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 12 Nov 2026: EVERY opening of Echo's window is maximized - start, start from Start / search, a 2nd launch, tray
+/// click / "Open Echo", the show key, after closing it to the tray. The user can un-maximize it while it's open; that
+/// isn't remembered (closed and opened again = maximized). Not while the player is fullscreen.
+/// An existing (hidden) window is maximized before it shows (no jump). The very first window only once it is really on
+/// screen: one made maximized before it existed (set_maximized before the event loop made it) was turned back into a
+/// 1500 x 900 one by Slint's first size update (winit's resize request un-maximizes on Windows).
+fn open_maximized(a: &AppWindow) {
+    use raw_window_handle::HasWindowHandle;
+    use slint::winit_030::WinitWindowAccessor;
+    if a.window().is_fullscreen() {
+        return;
+    }
+    // a window that was never on screen (start into the tray) isn't: maximizing it while hidden showed it at once,
+    // then it hid and showed again (a blink)
+    let exists = WAS_SHOWN.with(|s| s.get()) && a.window().window_handle().window_handle().is_ok();
+    if exists && !a.window().is_maximized() {
+        a.window().set_maximized(true);
+    }
+    // and once more when it is on screen (first window, or anything that un-maximized it while showing)
+    let w = a.as_weak();
+    let tries = std::cell::Cell::new(0u32);
+    MAX_TIMER.with(|t| {
+        t.start(slint::TimerMode::Repeated, Duration::from_millis(20), move || {
+            let Some(a) = w.upgrade() else { return };
+            tries.set(tries.get() + 1);
+            let shown = a.window().with_winit_window(|ww| ww.is_visible() != Some(false)).unwrap_or(false) && a.window().size().width > 0;
+            if !shown && tries.get() < 150 {
+                return;
+            }
+            if shown {
+                WAS_SHOWN.with(|s| s.set(true));
+                if !a.window().is_maximized() {
+                    a.window().set_maximized(true);
+                }
+            }
+            // once (else it would wake Echo every 20 ms for the whole session)
+            MAX_TIMER.with(|t| t.stop());
+        });
+    });
+}
+
+/// Tray click / tray "Open Echo" / a 2nd launch (Start, search) / the show-hide key / an update: bring the window up,
+/// maximized (open_maximized).
 pub fn show_window(a: &AppWindow) {
+    open_maximized(a);
     let _ = a.show();
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE};
         if let Ok(h) = a.window().window_handle().window_handle() {
             if let RawWindowHandle::Win32(h) = h.as_raw() {
                 unsafe {
                     let hw = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
-                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(hw, windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE);
-                    windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hw);
+                    // only un-minimize. 12 Nov 2026: SW_RESTORE on a window that show() had just brought back
+                    // MAXIMIZED from the tray made it a normal window again ~15 ms later ("briefly fullscreens, then
+                    // undoes it")
+                    if IsIconic(hw) != 0 {
+                        ShowWindow(hw, SW_RESTORE);
+                    }
+                    SetForegroundWindow(hw);
                 }
             }
         }
@@ -414,6 +470,7 @@ pub fn run(app: &AppWindow) {
     let tray_start = autostarted && crate::tray::exists() && rec().is_some_and(|r| { let c = r.settings(); c.start_minimized || c.close_to_tray });
     if !tray_start {
         let _ = app.show();
+        open_maximized(app);
     }
     let _ = slint::run_event_loop_until_quit();
     if let Some(r) = rec() {

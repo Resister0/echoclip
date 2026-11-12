@@ -43,6 +43,9 @@ mod pl_actions;
 mod pl_cuts; // 9 Nov: cut out parts on the player's strip (Shift+drag, X)
 mod pl_seek; // 10 Nov: paced, non-blocking seeks while dragging on the strip / the trim ends
 mod perf; // 9 Nov: memory / CPU averages for the admin panel (sent with the update check)
+mod gpumem; // 12 Nov 2026: Echo's graphics-card memory for those numbers (Windows)
+mod game_sync; // 12 Nov 2026: cloud-games - game folders + icons with clips in Echo Cloud show on every PC of the account
+mod clip_thumbs; // 12 Nov 2026: cloud-only clips show their real card picture (kept on the Echo Cloud account)
 mod specs; // r2-perf (10 Nov): the PC's hardware model names + recording settings, sent with those numbers
 mod hover_vid; // 9 Nov: card hover preview = the real clip (was a flipbook)
 mod discord; // 9 Nov: Echo's Discord status ("Playing Echo") - port of src-tauri/src/discord.rs
@@ -622,6 +625,22 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
             if ff.is_none() && !out.exists() {
                 return;
             }
+            // clip-thumbs (12 Nov 2026): a cloud-only clip has no file here - its sharp still comes from the cloud copy
+            // over the streaming server (Home's player streams it from there anyway); before, Home kept the small card
+            // picture stretched big. Not ready yet: Home is filled again once the stream address is there.
+            let input = if c.path.exists() || c.cloud.is_none() || out.exists() {
+                c.path.clone()
+            } else {
+                let (w2, l2) = (a.as_weak(), lib.clone());
+                if !cloud::play_ready(&c.path, move || if let Some(a) = w2.upgrade() { home_fill(&a, &l2) }) {
+                    return;
+                }
+                let u = cloud::play_path(&c.path);
+                if !u.to_string_lossy().starts_with("http") {
+                    return; // not streamable (signed out, not in the cloud): the card picture stays
+                }
+                u
+            };
             HERO.with(|x| *x.borrow_mut() = (c.path.clone(), None));
             std::thread::spawn(move || {
                 let _ = std::fs::create_dir_all(&dir);
@@ -635,7 +654,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
                     let at = home_still_at(dur);
                     let _ = cmd
                         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{at:.2}"), "-i"])
-                        .arg(&path)
+                        .arg(&input)
                         .args(["-frames:v", "1", "-vf", "scale=w='min(iw,1920)':h=-2:flags=lanczos", "-q:v", "2"]) // 11 Nov 2026: full clip width (was 1600 px)
                         .arg(&out)
                         .stdin(std::process::Stdio::null())
@@ -1597,6 +1616,8 @@ fn main() {
         lib_color::wire(&app, store.clone(), rr);
         lib_fx::wire(&app);
         lib_profile::wire(&app);
+        game_sync::start(); // cloud-games: the account's game icons
+        clip_thumbs::start(); // clip-thumbs: card pictures of clips in Echo Cloud
     }
     lib_set::wire(&app, store.clone());
     // Settings > Clips & Storage open: other apps' clip counts follow their folders (Chat B, chat 5)
@@ -3190,6 +3211,8 @@ fn main() {
                                 let dlg = dlg || a.global::<Play>().get_cl_on();
                                 // 11 Nov 2026: Edit from Home / Library loads the clip in the hidden player - no video over the page
                                 let dlg = dlg || a.global::<Ed>().get_opening();
+                                // 12 Nov 2026: Home scrolled down (small window): the picture is partly under the top bar - parked
+                                let dlg = dlg || (a.global::<Play>().get_inline() && !full && a.global::<HomeState>().get_scrolled());
                                 // r2-layout (L1): a menu reaching over the video - parked too, a still of its picture shows (over.rs)
                                 let dlg = over::park_for_menu(&a, m, vw.is_shown()) || dlg;
                                 vw.show(!dlg && (pl.first_frame || (poster_up && !full) || (flip && !full && pl.swap)));

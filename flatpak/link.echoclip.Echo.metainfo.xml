@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>link.echoclip.Echo</id>
-  <name>Echo</name>
+  <name>EchoClip</name>
   <summary>Save game highlights with one key</summary>
   <developer id="link.echoclip">
     <name>Resister0</name>
@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.7" date="2026-11-12">
+      <description>
+        <p>Echo 2.0.7: opens maximized every time, cloud game folders with icons on every PC, real pictures for cloud-only clips, and the Home player stays below the top bar.</p>
+      </description>
+    </release>
     <release version="2.0.6" date="2026-11-12">
       <description>
         <p>Echo 2.0.6: a new logo, Home with the player built in, much less graphics memory, a sharper hover preview, steadier menus over videos, and fixes for Home, Copy for Discord and Echo Cloud.</p>

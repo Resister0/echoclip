@@ -1,4 +1,5 @@
 import { DISPOSABLE } from "./disposable.js";
+import { CLIP_THUMB_TABLES, thumbsHave, thumbsGet, thumbsPut, dropClipThumbs, moveClipThumb, dropUserThumbs } from "./clip_thumbs.js";
 // Echo Cloud server: sign in with an email code, usage / quota, and short-lived R2 keys that only
 // reach the user's own folder (u/<id>/) in the bucket. Echo then talks to R2 directly (rclone s3).
 //
@@ -610,6 +611,7 @@ async function deleteKeys(env, user, keys) {
     const part = keys.slice(i, i + 90);
     await env.DB.prepare(`DELETE FROM objects WHERE user_id = ? AND key IN (${part.map(() => "?").join(",")})`).bind(user.id, ...part).run();
   }
+  await dropClipThumbs(env, user.id, keys);   // their card pictures (clip_thumbs.js)
   await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();   // recount next time
 }
 
@@ -638,6 +640,7 @@ async function move(req, user, env) {
       env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(to),
       env.DB.prepare("UPDATE objects SET key = ?, moved_from = ? WHERE key = ? AND user_id = ?").bind(to, b.dedup ? from : null, from, user.id),
     ]);
+    await moveClipThumb(env, user.id, from, to);
     return json({ ok: true });
   }
   if (!o) return fail("That clip isn't in Echo Cloud", 404);
@@ -658,6 +661,7 @@ async function move(req, user, env) {
     env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(to),
     env.DB.prepare("UPDATE objects SET key = ?, moved_from = ? WHERE key = ? AND user_id = ?").bind(to, b.dedup ? from : null, from, user.id),
   ]);
+  await moveClipThumb(env, user.id, from, to);
   return json({ ok: true });
 }
 
@@ -829,6 +833,7 @@ async function cleanupExpired(env) {
       await env.BUCKET.delete(r.key);
       await dropSwap(env, r.key);
       await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
+      await dropClipThumbs(env, r.user_id, [r.key]);
       await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(r.user_id).run();
       if (isShareCopy(r.key)) copies++; else uploads++;
       freed += (o && o.size) || 0;
@@ -1031,6 +1036,7 @@ async function enforceQuota(env) {
           await env.DB.prepare(`DELETE FROM shares WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).run();
         }
         await env.DB.prepare(`DELETE FROM objects WHERE user_id = ? AND key IN (${q})`).bind(u.id, ...part).run();
+        await dropClipThumbs(env, u.id, part);
       }
     }
     const removed = (u.over_removed || 0) + keys.length;
@@ -1063,6 +1069,7 @@ async function deleteAccount(req, user, env) {
   }
   const left = await env.BUCKET.list({ prefix: `u/${user.id}/`, limit: 1 });
   if (left.objects.length) return json({ done: false, deleted: n });
+  await dropUserThumbs(env, user.id);   // clip card pictures (clip_thumbs.js)
   const shares = (await env.DB.prepare("SELECT id FROM shares WHERE user_id = ?").bind(user.id).all()).results || [];
   for (let i = 0; i < shares.length; i += 1000) await env.BUCKET.delete(shares.slice(i, i + 1000).map((r) => `thumbs/${r.id}.jpg`));
   await env.DB.batch([
@@ -1076,6 +1083,7 @@ async function deleteAccount(req, user, env) {
     env.DB.prepare("DELETE FROM pins WHERE user_id = ?").bind(user.id),
     env.DB.prepare("DELETE FROM follows WHERE follower = ? OR followee = ?").bind(user.id, user.id),
     env.DB.prepare("DELETE FROM profiles WHERE user_id = ?").bind(user.id),
+    env.DB.prepare("DELETE FROM game_icons WHERE user_id = ?").bind(user.id),
   ]);
   console.log("account deleted", user.id);
   return json({ done: true, deleted: n });
@@ -1189,7 +1197,7 @@ const PERF_STATES = ["tray", "idle", "active", "player"];
 // Fresh start (the user, 11 Nov 2026): only reports from this version on count - older ones carried fixed problems
 // (RGB theme CPU in the window, untrimmed tray memory) and made Echo look worse than it is. The old rows were deleted
 // by hand (Claude outputs/echo-perf-reset.md). Dev builds (0.1.0) and the 2.0.72 test build never count.
-const PERF_MIN_VER = "2.0.5";
+const PERF_MIN_VER = "2.0.6"; // 12 Nov 2026: raised from 2.0.5 - 2.0.6 has the player's RAM + VRAM fixes
 async function countPerf(req, env, url, os, version) {
   try {
     const q = url.searchParams;
@@ -1202,7 +1210,12 @@ async function countPerf(req, env, url, os, version) {
     await migrate(env);
     const h = "p" + (await sha256(`${utcDay()}|${ipOf(req)}|perf:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const cc = String((req.cf && req.cf.country) || "").toUpperCase();
-    // [state, m, mp, c, cp, rm, rc, n, rn]
+    // VRAM (12 Nov 2026, Echo 2.0.7+ on Windows): g / gp = graphics-card memory MB avg / peak (all states), v_<state>=g,gp
+    // per state. Missing (Linux, older Echo) = NULL, never 0 - the averages only count rows that have it.
+    const opt = (k) => (q.has(k) ? int(k, 1e6) : null);
+    const pair = (k) => { const v = String(q.get(k) || "").split(",").map((x) => { const y = Math.round(Number(x)); return x !== "" && Number.isFinite(y) && y >= 0 ? Math.min(y, 1e6) : null; });
+      return v.length === 2 && v.every((x) => x != null) ? v : [null, null]; };
+    // [state, m, mp, c, cp, rm, rc, n, rn, g, gp]
     const rows = [];
     if (q.get("sv") === "1") {
       const lim = [100000, 100000, 1e6, 1e6, 1000, 1000, 1e6, 1000];
@@ -1210,12 +1223,12 @@ async function countPerf(req, env, url, os, version) {
         const v = String(q.get("s_" + st) || "").split(",").map((x, i) => { const y = Math.round(Number(x)); return Number.isFinite(y) && y >= 0 ? Math.min(y, lim[i] ?? 0) : null; });
         if (v.length !== 8 || v.some((x) => x == null) || !v[0]) continue;
         const [sn, srn, m, mp, c, cp, rm, rc] = v;
-        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn)]);
+        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn), ...pair("v_" + st)]);
       }
     }
-    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0]);
-    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp")]);
+    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const at = now(), base = [at, utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc")];
     await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st)));
   } catch (e) { console.log("perf report error", e && e.message); }
@@ -1251,7 +1264,8 @@ async function perfStats(env) {
     const agg = `COUNT(DISTINCT day || h) AS pcs, SUM(n) AS mins, SUM(rn) AS rmins,
       ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10, 2) AS cpu, ROUND(SUM(m * n) * 1.0 / NULLIF(SUM(n), 0)) AS mem,
       ROUND(SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10, 2) AS rcpu, ROUND(SUM(rm * rn) * 1.0 / NULLIF(SUM(rn), 0)) AS rmem,
-      ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak`;
+      ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak,
+      ROUND(SUM(g * n) * 1.0 / NULLIF(SUM(CASE WHEN g IS NOT NULL THEN n END), 0)) AS vram, MAX(gp) AS vram_peak`;
     const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
     const cols = { gpu: "gpu", cpu: "cpu", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
     // one round trip: per table the all-states rows + the per-state rows, then the totals
@@ -1262,7 +1276,7 @@ async function perfStats(env) {
     }
     qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ?`).bind(from));
     qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? GROUP BY state`).bind(from));
-    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, cc, state FROM perf ORDER BY at DESC, rowid LIMIT 40"));
+    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state FROM perf ORDER BY at DESC, rowid LIMIT 40"));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
     const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14] };
     for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
@@ -1666,7 +1680,7 @@ async function shareTakedown(env, id, deleteClip) {
   const owner = await env.DB.prepare("SELECT id, email FROM users WHERE id = ?").bind(row.user_id).first();
   await env.BUCKET.delete(`thumbs/${id}.jpg`);
   await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id).run();
-  if (deleteClip) { await env.BUCKET.delete(row.key); await dropSwap(env, row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); }
+  if (deleteClip) { await env.BUCKET.delete(row.key); await dropSwap(env, row.key); await env.DB.prepare("DELETE FROM shares WHERE key = ?").bind(row.key).run(); await dropClipThumbs(env, row.user_id, [row.key]); }
   console.log("takedown", id, row.key, deleteClip ? "(clip deleted)" : "");
   return { id, clip: row.key, owner: owner ? owner.email : null, clip_deleted: !!deleteClip };
 }
@@ -1702,6 +1716,10 @@ async function migrate(env) {
     // faster-share-links (11 Nov 2026): "share first, shrink after" for long clips - see swapOf()
     env.DB.prepare("CREATE TABLE IF NOT EXISTS swaps (key TEXT PRIMARY KEY, user_id TEXT NOT NULL, tmp TEXT NOT NULL, size INTEGER NOT NULL, created INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0)"),
     env.DB.prepare("CREATE INDEX IF NOT EXISTS swaps_user ON swaps (user_id)"),
+    // cloud-games (12 Nov 2026): each game's icon once per account (gamesList / gamesIconSave below), png = base64
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS game_icons (user_id TEXT NOT NULL, k TEXT NOT NULL, name TEXT NOT NULL, hash TEXT NOT NULL, png TEXT NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (user_id, k))"),
+    // clip-thumbs (12 Nov 2026): the card picture of each clip in Echo Cloud (clip_thumbs.js)
+    ...CLIP_THUMB_TABLES.map((q) => env.DB.prepare(q)),
     // light profiles (chat 19): a name, picture, bio and colour, up to 6 pinned share links, and who you follow
     env.DB.prepare("CREATE TABLE IF NOT EXISTS profiles (user_id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT, bio TEXT, color TEXT, avatar INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS pins (user_id TEXT NOT NULL, share_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (user_id, share_id))"),
@@ -1742,6 +1760,8 @@ async function migrate(env) {
   // perf-states (10 Nov 2026): what Echo was doing in those minutes; rows from before = "mixed"
   const pcols = new Set(((await env.DB.prepare("PRAGMA table_info(perf)").all()).results || []).map((c) => c.name));
   if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
+  // VRAM (12 Nov 2026): graphics-card memory MB, average / peak; NULL = not measured (Linux, Echo before 2.0.7)
+  for (const c of ["g", "gp"]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} INTEGER`).run();
   // faster-share-links: what kind of file Echo uploaded (upload(): small / orig / keep; NULL = older Echo, unknown)
   const ocols = new Set(((await env.DB.prepare("PRAGMA table_info(objects)").all()).results || []).map((c) => c.name));
   if (!ocols.has("fmt")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN fmt TEXT").run();
@@ -2555,8 +2575,11 @@ async function serveShare(req, env, id, ext, ctx) {
   return new Response(o.body, { headers: h });
 }
 
+/// what clip_thumbs.js uses from here
+const THUMB_LIB = { body, allow, userKey, randomId };
 const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avatar", "POST /profile/pin", "POST /profile/delete", "POST /follow", "GET /me", "POST /creds", "POST /share", "POST /shares/views", "POST /checkout", "POST /portal", "POST /auth/logout",
-  "POST /upload", "POST /upload/check", "POST /upload/swap", "POST /objects/fmt", "POST /objects/mark", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete"]);
+  "POST /upload", "POST /upload/check", "POST /upload/swap", "POST /objects/fmt", "POST /objects/mark", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete",
+  "GET /games", "POST /games/icons", "POST /games/icon", "POST /thumbs/have", "POST /thumbs/get", "POST /thumbs/put"]);
 
 export default {
   async fetch(req, env, ctx) {
@@ -2632,6 +2655,12 @@ export default {
       if (route === "POST /delete") return await del(req, user, env);
       if (route === "POST /move") return await move(req, user, env);
       if (route === "POST /account/delete") return await deleteAccount(req, user, env);
+      if (route === "GET /games") return await gamesList(user, env);
+      if (route === "POST /games/icons") return await gamesIcons(req, user, env);
+      if (route === "POST /games/icon") return await gamesIconSave(req, user, env);
+      if (route === "POST /thumbs/have") return await thumbsHave(req, user, env, THUMB_LIB);
+      if (route === "POST /thumbs/get") return await thumbsGet(req, user, env, THUMB_LIB);
+      if (route === "POST /thumbs/put") return await thumbsPut(req, user, env, THUMB_LIB);
       if (route === "GET /profile/me") return await profileMe(user, env, url.origin);
       if (route === "POST /profile") return await profileSave(req, user, env, url.origin);
       if (route === "POST /profile/avatar") return await profileAvatar(req, user, env, url.origin);
@@ -2662,6 +2691,66 @@ export default {
   },
 };
 
+
+// ----- cloud games (12 Nov 2026) -----
+// A game folder with clips in Echo Cloud shows in Echo's sidebar on every PC signed in to the account, also where the
+// game was never played. The folder itself comes with the clips (they're stored as Echo/<folder>/<clip>.mp4 - old
+// uploads too, so nothing per clip is needed here); only the game's icon is kept here: once per game per account,
+// k = the folder name in lower case. Echo's icons are 64x64 PNGs of ~1-5 KB, so they live in D1 as base64 (no R2
+// request, gone with the account). Echo sends one only when the account has none for that game or its icon changed.
+const GAME_ICON_MAX = 64 * 1024;   // bytes of PNG
+const GAMES_MAX = 500;             // games per account
+const gameKey = (v) => String(v || "").normalize("NFC").trim().toLowerCase();
+/// a sidebar top folder name: no slashes / control characters, not hidden, not too long ("" = not usable)
+function gameName(v) {
+  const n = String(v || "").normalize("NFC").trim();
+  return n && n.length <= 120 && !/[\\/\u0000-\u001f]/.test(n) && !n.startsWith(".") ? n : "";
+}
+
+/// GET /games -> {games: [{k, name, hash, updated}]} (the pictures come with POST /games/icons)
+async function gamesList(user, env) {
+  const rows = (await env.DB.prepare("SELECT k, name, hash, updated FROM game_icons WHERE user_id = ? ORDER BY k LIMIT ?")
+    .bind(user.id, GAMES_MAX).all()).results || [];
+  return json({ games: rows });
+}
+
+/// POST /games/icons {keys} -> {icons: {k: base64 PNG}, hashes: {k: hash}} (games without an icon are left out)
+async function gamesIcons(req, user, env) {
+  const b = await body(req);
+  const keys = [...new Set((Array.isArray(b.keys) ? b.keys : []).map(gameKey).filter(Boolean))].slice(0, 100);
+  const icons = {}, hashes = {};
+  for (let i = 0; i < keys.length; i += 90) {
+    const part = keys.slice(i, i + 90);
+    const rows = (await env.DB.prepare(`SELECT k, hash, png FROM game_icons WHERE user_id = ? AND k IN (${part.map(() => "?").join(",")})`)
+      .bind(user.id, ...part).all()).results || [];
+    for (const r of rows) { icons[r.k] = r.png; hashes[r.k] = r.hash; }
+  }
+  return json({ icons, hashes });
+}
+
+/// POST /games/icon {name, png: base64}: the icon of game folder `name` for this account (the same picture again = no write)
+async function gamesIconSave(req, user, env) {
+  const b = await body(req);
+  const name = gameName(b.name), k = gameKey(name);
+  const png = String(b.png || "").replace(/\s+/g, "");
+  if (!k) return fail("Bad game name");
+  if (!png || png.length > Math.ceil(GAME_ICON_MAX / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(png)) return fail("Bad game icon");
+  let head = "";
+  try { head = atob(png.slice(0, 12)); } catch { /* not base64: refused below */ }
+  if (!head.startsWith("\x89PNG\r\n\x1a\n")) return fail("Bad game icon");
+  const hash = await sha256(png);
+  const old = await env.DB.prepare("SELECT hash FROM game_icons WHERE user_id = ? AND k = ?").bind(user.id, k).first();
+  if (old && old.hash === hash) return json({ ok: true, k, hash, same: true });
+  if (!(await allow(env, `gicon:${user.id}`, 100, 3600))) return fail("Too many game icons - try again later", 429);
+  if (!old) {
+    const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM game_icons WHERE user_id = ?").bind(user.id).first();
+    if (Number((n && n.n) || 0) >= GAMES_MAX) return fail("Too many games", 409);
+  }
+  await env.DB.prepare(`INSERT INTO game_icons (user_id, k, name, hash, png, updated) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, k) DO UPDATE SET name = excluded.name, hash = excluded.hash, png = excluded.png, updated = excluded.updated`)
+    .bind(user.id, k, name, hash, png, now()).run();
+  return json({ ok: true, k, hash });
+}
 
 // ----- moderators + reports (chat 29) -----
 // The admin adds moderators in /admin (by the email of an existing Echo Cloud account). They sign in at echoclip.link/mod

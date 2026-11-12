@@ -133,6 +133,26 @@ function appDays(A) {
   }
   return { days, per };
 }
+// the version table for a set of days (12 Nov 2026: Today / Yesterday / 7 days / 14 days). Over several days a number
+// is computer-days: a computer that checked in on 3 of the days counts 3 (the server only keeps per-day counts).
+function verTable(per, ds, isNew, label) {
+  const v = {}, c = {};
+  for (const d of ds) {
+    for (const k in per[d].v) { const x = (v[k] = v[k] || { windows: 0, linux: 0 }); x.windows += per[d].v[k].windows; x.linux += per[d].v[k].linux; }
+    for (const k in (per[d].c || {})) for (const cc in per[d].c[k]) { const y = (c[k] = c[k] || {}); y[cc] = (y[cc] || 0) + per[d].c[k][cc]; }
+  }
+  const vers = Object.keys(v).filter((k) => v[k].windows + v[k].linux > 0).sort((a, b) => vcmp(b, a));
+  const rows = vers.length ? vers.map((k) => { const x = v[k], cs = c[k] || {};
+      const where = Object.keys(cs).filter((cc) => cs[cc] > 0).sort((a, b) => cs[b] - cs[a]).map((cc) => `${flag(cc)} ${esc(cc)}${cs[cc] > 1 ? " ×" + cs[cc] : ""}`).join(" · ");
+      return `<tr><td>${esc(k)}</td><td class="n">${x.windows}</td><td class="n">${x.linux}</td><td class="sub">${where || "-"}</td><td>${isNew(k) ? '<span class="pill good">newest</span>' : '<span class="pill bad">outdated</span>'}</td></tr>`; }).join("")
+    : `<tr><td colspan="5" class="sub">No check-ins in this range</td></tr>`;
+  return `<table><tr><th>Version (${label})</th><th class="n">Windows</th><th class="n">Linux</th><th>Where</th><th></th></tr>${rows}</table>`;
+}
+let VR = "day"; // the version table's range, kept across refreshes
+document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest(".vrb"); if (!b) return;
+  VR = b.dataset.r;
+  document.querySelectorAll(".vrb").forEach((x) => x.style.borderColor = x === b ? "var(--accent)" : "");
+  document.querySelectorAll(".vrt").forEach((x) => x.style.display = x.dataset.r === VR ? "" : "none"); });
 function apps(A, site) {
   if (!A) return "";
   const { days, per } = appDays(A);
@@ -145,10 +165,6 @@ function apps(A, site) {
   for (const v of vers) { const n = per[vd].v[v].windows + per[vd].v[v].linux; if (isNew(v)) onNew += n; else old += n; }
   const all7 = days.slice(7).reduce((a, d) => a + tot(d), 0);
   const pct = (n) => (onNew + old) ? Math.round(n / (onNew + old) * 100) + "%" : "-";
-  const vrows = vers.length ? vers.map((v) => { const x = per[vd].v[v];
-      const cs = (per[vd].c && per[vd].c[v]) || {}, where = Object.keys(cs).filter((cc) => cs[cc] > 0).sort((a, b) => cs[b] - cs[a]).map((cc) => `${flag(cc)} ${esc(cc)}${cs[cc] > 1 ? " ×" + cs[cc] : ""}`).join(" · ");
-      return `<tr><td>${esc(v)}</td><td class="n">${x.windows}</td><td class="n">${x.linux}</td><td class="sub">${where || "-"}</td><td>${isNew(v) ? '<span class="pill good">newest</span>' : '<span class="pill bad">outdated</span>'}</td></tr>`; }).join("")
-    : `<tr><td colspan="5" class="sub">No check-ins yet - they start after this server update</td></tr>`;
   const max = Math.max(1, ...days.map(tot)), W = 600, H = 120, bw = W / 14;
   const bars = days.map((d, i) => { const hw = per[d].win / max * (H - 4), hl = per[d].lin / max * (H - 4);
     return `<g><title>${d}: ${tot(d)} copies (${per[d].win} Windows, ${per[d].lin} Linux)${per[d].inst ? ` · ${per[d].inst} new installs` : ""}</title><rect x="${i * bw}" y="0" width="${bw}" height="${H}" fill="transparent"/>
@@ -183,7 +199,9 @@ function apps(A, site) {
     </div>
     <div class="chart"><div class="lg"><span><i style="background:var(--accent)"></i>Windows</span><span><i style="background:var(--accent);opacity:.45"></i>Linux</span><span style="margin-left:auto">last 14 days · hover a day</span></div>
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg><div class="ax"><span>${days[0].slice(5)}</span><span>max ${max} a day</span><span>today</span></div></div>
-    <div class="wrap" style="margin-top:10px"><table><tr><th>Version (${vd === today ? "today" : "yesterday"})</th><th class="n">Windows</th><th class="n">Linux</th><th>Where</th><th></th></tr>${vrows}</table></div>
+    <div style="margin-top:10px">${[["day", vd === today ? "Today" : "Yesterday"], ["yest", "Yesterday"], ["7", "7 days"], ["14", "14 days"]].filter((r, i) => i !== 1 || vd === today).map(([r, l]) => `<button class="pstb vrb" data-r="${r}"${r === VR ? ' style="border-color:var(--accent)"' : ""}>${l}</button>`).join(" ")}
+      <span class="sub" style="margin-left:8px">over several days: computer-days (a computer counts once per day it checked in)</span></div>
+    ${[["day", [vd], vd === today ? "today" : "yesterday"], ["yest", [yest], "yesterday"], ["7", days.slice(7), "7 days"], ["14", days, "14 days"]].map(([r, ds, l]) => `<div class="wrap vrt" data-r="${r}" style="margin-top:10px${r === VR ? "" : ";display:none"}">${verTable(per, ds, isNew, l)}</div>`).join("")}
     ${speed}
     ${updTable}`;
 }
@@ -205,10 +223,10 @@ function perf(P) {
   const mb = (v) => v == null ? "-" : Math.round(v) + " MB";
   const hrs = (m) => !m ? "0 h" : m < 120 ? m + " min" : (m / 60).toFixed(m < 6000 ? 1 : 0) + " h";
   const table = (title, rows) => `<div class="wrap" style="margin-top:10px"><table>
-    <tr><th>${title}</th><th class="n">PCs</th><th class="n">Recording CPU</th><th class="n">Recording memory</th><th class="n">CPU overall</th><th class="n">Memory overall</th><th class="n">Peak memory</th><th class="n">Measured</th></tr>
+    <tr><th>${title}</th><th class="n">PCs</th><th class="n">Recording CPU</th><th class="n">Recording memory</th><th class="n">CPU overall</th><th class="n">Memory overall</th><th class="n">Peak memory</th><th class="n">VRAM</th><th class="n">VRAM peak</th><th class="n">Measured</th></tr>
     ${rows && rows.length ? rows.map((r) => `<tr><td>${esc(r.k || "unknown")}</td><td class="n">${r.pcs}</td><td class="n">${pc(r.rcpu)}</td><td class="n">${mb(r.rmem)}</td>
-      <td class="n">${pc(r.cpu)}</td><td class="n">${mb(r.mem)}</td><td class="n">${mb(r.mem_peak)}</td><td class="n">${hrs(r.mins)}</td></tr>`).join("")
-      : `<tr><td colspan="8" class="sub">No reports yet</td></tr>`}</table></div>`;
+      <td class="n">${pc(r.cpu)}</td><td class="n">${mb(r.mem)}</td><td class="n">${mb(r.mem_peak)}</td><td class="n">${mb(r.vram)}</td><td class="n">${mb(r.vram_peak)}</td><td class="n">${hrs(r.mins)}</td></tr>`).join("")
+      : `<tr><td colspan="10" class="sub">No reports yet</td></tr>`}</table></div>`;
   // tiles + the six tables for one state (or all of them)
   const block = (st, X) => { const t = X.total || {};
     return `<div class="pst" data-st="${st}"${st === "all" ? "" : ' style="display:none"'}>
@@ -217,6 +235,7 @@ function perf(P) {
       ${tile("Memory while recording", mb(t.rmem), "average")}
       ${tile("CPU overall", pc(t.cpu), `peak ${t.cpu_peak == null ? "-" : t.cpu_peak + " %"}`)}
       ${tile("Memory overall", mb(t.mem), `peak ${mb(t.mem_peak)}`)}
+      ${tile("VRAM (graphics memory)", mb(t.vram), `peak ${mb(t.vram_peak)} · Windows, Echo 2.0.7+`)}
       ${tile("Measured", hrs(t.mins), `${t.pcs || 0} PC-days · ${esc(PSTATE[st][1])}`)}
     </div>
     ${table("Graphics card", X.gpu)}${table("Processor", X.cpu)}${table("System memory", X.ram)}${table("Recording at", X.res)}${table("Windows / Linux", X.os)}${table("Echo version", X.ver)}</div>`; };
@@ -225,21 +244,24 @@ function perf(P) {
   const srows = states.map((s) => { const t = S[s].total || {};
     return `<tr><td><b>${esc(PSTATE[s] ? PSTATE[s][0] : s)}</b><div class="sub">${esc(PSTATE[s] ? PSTATE[s][1] : "")}</div></td><td class="n">${t.pcs || 0}</td>
       <td class="n">${hrs(t.mins)}<div class="sub">${T.mins ? Math.round((t.mins || 0) * 100 / T.mins) + " %" : ""}</div></td>
-      <td class="n">${mb(t.mem)}</td><td class="n">${pc(t.cpu)}</td><td class="n">${t.rmins ? mb(t.rmem) : "-"}</td><td class="n">${t.rmins ? pc(t.rcpu) : "-"}</td><td class="n">${mb(t.mem_peak)}</td></tr>`; }).join("");
+      <td class="n">${mb(t.mem)}</td><td class="n">${pc(t.cpu)}</td><td class="n">${t.rmins ? mb(t.rmem) : "-"}</td><td class="n">${t.rmins ? pc(t.rcpu) : "-"}</td><td class="n">${mb(t.mem_peak)}</td>
+      <td class="n">${mb(t.vram)}</td><td class="n">${mb(t.vram_peak)}</td></tr>`; }).join("");
   const picker = ["all", ...states].map((s) => `<button class="pstb" data-st="${s}"${s === "all" ? ' style="border-color:var(--accent)"' : ""}>${esc(PSTATE[s] ? PSTATE[s][0] : s)}</button>`).join(" ");
   const recent = (P.recent || []).map((r) => `<tr><td class="sub">${ago(r.at)}</td><td>${esc(PSTATE[r.state] ? PSTATE[r.state][0] : r.state || "Mixed (older Echo)")}</td><td>${esc(r.ver)} · ${esc(r.osname || r.os)}${r.cc ? " · " + flag(r.cc) : ""}</td>
       <td>${esc(r.cpu || "?")}${r.cores ? ` <span class="sub">(${r.cores} threads)</span>` : ""}<div class="sub">${esc(r.gpu || "?")} · ${r.ram ? r.ram + " GB" : "?"}</div></td>
       <td class="sub">${esc(r.res || "?")}${r.fps ? " @ " + r.fps : ""}${r.enc ? "<br>" + esc(r.enc) : ""}</td>
-      <td class="n">${r.rn ? pc(r.rc / 10) : "-"}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td><td class="n">${hrs(r.n)}</td></tr>`).join("");
-  return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · Echo ${P.min_ver || "2.0.5"}+ · ${T.pcs || 0} PC-days</span></summary>
+      <td class="n">${r.rn ? pc(r.rc / 10) : "-"}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td>
+      <td class="n">${mb(r.g)}${r.gp != null ? `<div class="sub">peak ${mb(r.gp)}</div>` : ""}</td><td class="n">${hrs(r.n)}</td></tr>`).join("");
+  return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · Echo ${P.min_ver || "2.0.6"}+ · ${T.pcs || 0} PC-days</span></summary>
     <p class="sub" style="margin:10px 0 10px">Echo + its encoder, measured once a minute on each PC (CPU = share of the whole PC, like Task Manager). Sent with the update check, anonymous: numbers and hardware names only. "Recording" = only the minutes Echo was recording.
-      Each minute counts under what Echo was doing then (the state it was in most of that minute).</p>
-    <div class="wrap"><table><tr><th>What Echo was doing</th><th class="n">PCs</th><th class="n">Measured</th><th class="n">Memory</th><th class="n">CPU</th><th class="n">Rec memory</th><th class="n">Rec CPU</th><th class="n">Peak memory</th></tr>
-      ${srows || `<tr><td colspan="8" class="sub">No reports yet</td></tr>`}</table></div>
+      Each minute counts under what Echo was doing then (the state it was in most of that minute).
+      VRAM = Echo's share of the graphics card's own memory (what a game next to it can't use), Windows only, from Echo 2.0.7 - "-" = not measured.</p>
+    <div class="wrap"><table><tr><th>What Echo was doing</th><th class="n">PCs</th><th class="n">Measured</th><th class="n">Memory</th><th class="n">CPU</th><th class="n">Rec memory</th><th class="n">Rec CPU</th><th class="n">Peak memory</th><th class="n">VRAM</th><th class="n">VRAM peak</th></tr>
+      ${srows || `<tr><td colspan="10" class="sub">No reports yet</td></tr>`}</table></div>
     <div id="pstpick" style="margin:12px 0 10px;display:flex;flex-wrap:wrap;gap:6px">${picker}</div>
     ${block("all", P)}${states.map((s) => block(s, S[s])).join("")}
-    <div class="wrap" style="margin-top:10px"><table><tr><th>When</th><th>State</th><th>Echo · system</th><th>Hardware</th><th>Recording at</th><th class="n">Rec CPU</th><th class="n">Rec memory</th><th class="n">CPU</th><th class="n">Memory</th><th class="n">Measured</th></tr>
-      ${recent || `<tr><td colspan="10" class="sub">No reports yet - they start once a version with this is out and the server is deployed</td></tr>`}</table></div></details>`;
+    <div class="wrap" style="margin-top:10px"><table><tr><th>When</th><th>State</th><th>Echo · system</th><th>Hardware</th><th>Recording at</th><th class="n">Rec CPU</th><th class="n">Rec memory</th><th class="n">CPU</th><th class="n">Memory</th><th class="n">VRAM</th><th class="n">Measured</th></tr>
+      ${recent || `<tr><td colspan="11" class="sub">No reports yet - they start once a version with this is out and the server is deployed</td></tr>`}</table></div></details>`;
 }
 // the state buttons above the tiles: show that state's tiles + tables
 function perfPick() {

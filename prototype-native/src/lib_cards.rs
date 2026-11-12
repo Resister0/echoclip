@@ -393,7 +393,19 @@ fn snap_hook(app: &AppWindow) {
         if let Ok(m) = std::fs::read_to_string(dir.join("move.txt")) {
             let _ = std::fs::remove_file(dir.join("move.txt"));
             let v: Vec<f32> = m.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            if let [x, y] = v[..] {
+            // 12 Nov 2026: "click x y" / "rclick x y" / "wheel x y dy" too (menus + scrolling without real input)
+            let verb = m.split_whitespace().next().unwrap_or("");
+            if let ("click" | "rclick", [x, y]) = (verb, &v[..]) {
+                use slint::platform::{PointerEventButton as B, WindowEvent as E};
+                let (position, button) = (slint::LogicalPosition::new(*x, *y), if verb == "click" { B::Left } else { B::Right });
+                win.dispatch_event(E::PointerMoved { position });
+                win.dispatch_event(E::PointerPressed { position, button });
+                win.dispatch_event(E::PointerReleased { position, button });
+            } else if let ("wheel", [x, y, dy]) = (verb, &v[..]) {
+                let position = slint::LogicalPosition::new(*x, *y);
+                win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+                win.dispatch_event(slint::platform::WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y: *dy });
+            } else if let [x, y] = v[..] {
                 win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(x, y) });
             } else if m.trim() == "leave" {
                 win.dispatch_event(slint::platform::WindowEvent::PointerExited);

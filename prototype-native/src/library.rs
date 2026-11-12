@@ -175,6 +175,19 @@ fn make_clip(p: &Path, rel: &str, thumbs: &Path, md: &std::fs::Metadata) -> Opti
     })
 }
 
+/// cloud-games (12 Nov 2026): the game of a cloud clip "Valorant/x.mp4" like cloud_clip() works it out (its folder,
+/// else the name before the date; "" = no game)
+pub fn game_of_rel(rel: &str) -> String {
+    if let Some((folder, _)) = rel.rsplit_once('/') {
+        return folder.to_string();
+    }
+    let stem = Path::new(rel).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    match date_at(&stem) {
+        Some(i) if !matches!(&stem[..i], "Clip" | "Montage" | "Recording") => stem[..i].to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Chat B: a cloud-only clip (Echo's cloud.json entry that isn't on this PC)
 pub fn cloud_clip(root: &Path, rel: &str, size: u64, modified: u64) -> Option<Clip> {
     let p = root.join(rel);
@@ -2167,15 +2180,26 @@ impl LibModel {
         self.nav_items().iter().filter(|n| !n.folder.is_empty()).map(|n| (n.folder.to_string(), n.depth as usize)).collect()
     }
 
-    /// Echo's game icon for a top folder (the old sidebar's gameIcons): <Echo's data folder>/icons/<safe name>.png
-    /// of the folder's own name, else of a game whose new clips go to this folder (settings.json folder_alias)
-    fn game_icon(&self, folder: &str, alias: &BTreeMap<String, String>) -> Option<Image> {
-        let dir = crate::settings::path().parent()?.join("icons");
+    /// this PC's own icon files for a top folder: <Echo's data folder>/icons/<safe name>.png of the folder's own name,
+    /// then of games whose new clips go to this folder (settings.json folder_alias)
+    fn local_icon_files(folder: &str, alias: &BTreeMap<String, String>) -> Vec<PathBuf> {
+        let Some(dir) = crate::settings::path().parent().map(|p| p.join("icons")) else { return vec![] };
         let safe = |s: &str| s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect::<String>();
         let mut names = vec![folder.to_string()];
         names.extend(alias.iter().filter(|(_, v)| v.eq_ignore_ascii_case(folder)).map(|(k, _)| k.clone()));
-        for n in names {
-            let p = dir.join(format!("{}.png", safe(&n)));
+        names.into_iter().map(|n| dir.join(format!("{}.png", safe(&n)))).collect()
+    }
+    /// cloud-games: the first of local_icon_files that exists (the one Echo sends to the account)
+    pub fn local_icon_file(folder: &str, alias: &BTreeMap<String, String>) -> Option<PathBuf> {
+        Self::local_icon_files(folder, alias).into_iter().find(|p| p.is_file())
+    }
+
+    /// Echo's game icon for a top folder (the old sidebar's gameIcons): this PC's own (local_icon_files), else the
+    /// Echo Cloud account's icon of that game (cloud-games, 12 Nov 2026: a game played on another PC - game_sync.rs)
+    fn game_icon(&self, folder: &str, alias: &BTreeMap<String, String>) -> Option<Image> {
+        let mut paths = Self::local_icon_files(folder, alias);
+        paths.push(crate::game_sync::icon_file(folder));
+        for p in paths {
             let Ok(t) = std::fs::metadata(&p).and_then(|m| m.modified()) else { continue };
             let mut cache = self.icon_cache.borrow_mut();
             if let Some((t0, img)) = cache.get(&p) {

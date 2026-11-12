@@ -29,10 +29,14 @@ struct Agg {
     rn: u32,
     rmem_sum: f64,
     rcpu_sum: f64,
+    // 12 Nov 2026: graphics-card memory (gpumem.rs) - minutes it could be read, sum, peak (Linux: never)
+    gn: u32,
+    vram_sum: f64,
+    vram_peak: f64,
 }
 
 impl Agg {
-    fn add(&mut self, mem: f64, cpu: f64, rec: bool) {
+    fn add(&mut self, mem: f64, cpu: f64, vram: Option<f64>, rec: bool) {
         self.n += 1;
         self.mem_sum += mem;
         self.mem_peak = self.mem_peak.max(mem);
@@ -42,6 +46,11 @@ impl Agg {
             self.rn += 1;
             self.rmem_sum += mem;
             self.rcpu_sum += cpu;
+        }
+        if let Some(v) = vram {
+            self.gn += 1;
+            self.vram_sum += v;
+            self.vram_peak = self.vram_peak.max(v);
         }
     }
     fn merge(&mut self, o: &Agg) {
@@ -53,6 +62,13 @@ impl Agg {
         self.rn += o.rn;
         self.rmem_sum += o.rmem_sum;
         self.rcpu_sum += o.rcpu_sum;
+        self.gn += o.gn;
+        self.vram_sum += o.vram_sum;
+        self.vram_peak = self.vram_peak.max(o.vram_peak);
+    }
+    /// (avg VRAM MB, peak VRAM MB) over the minutes it was read; None = never read (Linux, old Windows)
+    fn vram(&self) -> Option<(f64, f64)> {
+        (self.gn > 0).then(|| (self.vram_sum / self.gn as f64, self.vram_peak))
     }
     /// [avg MB, peak MB, avg CPU x10, peak CPU x10, rec avg MB, rec avg CPU x10] (recording ones 0 without recording)
     fn avgs(&self) -> [f64; 6] {
@@ -124,9 +140,9 @@ fn take_ticks() -> [u32; 4] {
 
 static AGG: Mutex<Option<[Agg; 4]>> = Mutex::new(None);
 
-fn record(state: State, mem: f64, cpu: f64, rec: bool) {
+fn record(state: State, mem: f64, cpu: f64, vram: Option<f64>, rec: bool) {
     let mut g = AGG.lock().unwrap();
-    g.get_or_insert_with(Default::default)[state as usize].add(mem, cpu, rec);
+    g.get_or_insert_with(Default::default)[state as usize].add(mem, cpu, vram, rec);
 }
 
 /// start the sampler (once, at startup)
@@ -138,7 +154,7 @@ pub fn start() {
             let mut last: Option<(Instant, f64)> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(60));
-                let Some((mem, cpu_s)) = sample() else {
+                let Some((mem, cpu_s, pids)) = sample() else {
                     take_ticks();
                     continue;
                 };
@@ -148,7 +164,21 @@ pub fn start() {
                     // processes that ended in between (an encoder restart) lose their time: never below 0
                     let cpu = ((cpu_s - c0).max(0.0) / (wall * cores) * 100.0).min(100.0);
                     let rec = crate::rec_core::rec().is_some_and(|r| r.is_recording());
-                    record(dominant(take_ticks()), mem, cpu, rec);
+                    // the same processes' graphics-card memory (Echo + the recorder's ffmpeg, like Task Manager's group)
+                    let t = Instant::now();
+                    let vram = crate::gpumem::vram_mb(&pids);
+                    let state = dominant(take_ticks());
+                    // ECHO_PERF_LOG=1 (testing): each minute's sample in the log, with what the VRAM read cost
+                    if std::env::var_os("ECHO_PERF_LOG").is_some() {
+                        echo_core::recorder::log_line(&format!(
+                            "perf: {} - memory {mem:.0} MB, CPU {cpu:.2} %, VRAM {} ({} processes, read in {} us)",
+                            NAMES[state as usize],
+                            vram.map_or("-".into(), |v| format!("{v:.0} MB")),
+                            pids.len(),
+                            t.elapsed().as_micros()
+                        ));
+                    }
+                    record(state, mem, cpu, vram, rec);
                 } else {
                     take_ticks(); // the first minute isn't measured: its ticks don't count either
                 }
@@ -180,12 +210,13 @@ pub fn set(key: &str, val: &str) -> bool {
     true
 }
 
-/// "?m=..&mp=..&c=..&cp=..&rm=..&rc=..&n=..&rn=..&k=..&sv=1&s_tray=..&s_active=..&cpu=..&gpu=..&ram=..&os=..&res=..&fps=..&enc=.."
+/// "?m=..&mp=..&c=..&cp=..&rm=..&rc=..&n=..&rn=..[&g=..&gp=..]&k=..&sv=1&s_tray=..&s_active=..&cpu=..&gpu=..&ram=..&os=..&res=..&fps=..&enc=.."
 /// for the update check ("" = nothing measured yet, or the switch is off); resets.
-/// m / mp / rm = MB, c / cp / rc = CPU % x10 (one decimal), n / rn = minutes measured / of those recording, k = cores
+/// m / mp / rm = MB, c / cp / rc = CPU % x10 (one decimal), n / rn = minutes measured / of those recording, k = cores,
+/// g / gp = graphics-card memory MB, average / peak (12 Nov 2026; left out when it couldn't be read - Linux)
 /// - these first ones are all states together (what servers before perf-states read).
 /// sv=1 = per-state fields follow: s_<tray|idle|active|player>=n,rn,m,mp,c,cp,rm,rc (same units; only states that
-/// had minutes). The rest = this PC's hardware model names + recording settings (specs.rs)
+/// had minutes) + v_<state>=g,gp when VRAM was read. The rest = this PC's hardware + recording settings (specs.rs)
 pub fn query() -> String {
     // taken either way: numbers from while the switch was off are never sent later
     let Some(st) = AGG.lock().ok().and_then(|mut g| g.take()) else { return String::new() };
@@ -208,7 +239,8 @@ fn fields(st: &[Agg; 4]) -> String {
         return String::new();
     }
     let [m, mp, c, cp, rm, rc] = a.avgs();
-    format!("?m={m:.0}&mp={mp:.0}&c={c:.0}&cp={cp:.0}&rm={rm:.0}&rc={rc:.0}&n={}&rn={}", a.n, a.rn)
+    let g = a.vram().map(|(g, gp)| format!("&g={g:.0}&gp={gp:.0}")).unwrap_or_default();
+    format!("?m={m:.0}&mp={mp:.0}&c={c:.0}&cp={cp:.0}&rm={rm:.0}&rc={rc:.0}&n={}&rn={}{g}", a.n, a.rn)
 }
 
 /// "&s_tray=n,rn,m,mp,c,cp,rm,rc..." for each state with minutes
@@ -221,13 +253,17 @@ fn per_state(st: &[Agg; 4]) -> String {
         }
         let [m, mp, c, cp, rm, rc] = a.avgs();
         o += &format!("&s_{}={},{},{m:.0},{mp:.0},{c:.0},{cp:.0},{rm:.0},{rc:.0}", NAMES[s as usize], a.n, a.rn);
+        // VRAM in a field of its own: servers before it want exactly 8 numbers in s_<state> and would drop the state
+        if let Some((g, gp)) = a.vram() {
+            o += &format!("&v_{}={g:.0},{gp:.0}", NAMES[s as usize]);
+        }
     }
     o
 }
 
-/// (private memory MB, CPU seconds used so far) of this process + its children
+/// (private memory MB, CPU seconds used so far, the process ids) of this process + its children
 #[cfg(windows)]
-fn sample() -> Option<(f64, f64)> {
+fn sample() -> Option<(f64, f64, Vec<u32>)> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2};
@@ -250,6 +286,7 @@ fn sample() -> Option<(f64, f64)> {
     unsafe {
         let me = GetCurrentProcessId();
         let (mut mem, mut cpu) = one(me)?;
+        let mut pids = vec![me];
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap != INVALID_HANDLE_VALUE {
             let mut e: PROCESSENTRY32W = std::mem::zeroed();
@@ -260,6 +297,7 @@ fn sample() -> Option<(f64, f64)> {
                         if let Some((m, c)) = one(e.th32ProcessID) {
                             mem += m;
                             cpu += c;
+                            pids.push(e.th32ProcessID);
                         }
                     }
                     if Process32NextW(snap, &mut e) == 0 {
@@ -269,7 +307,7 @@ fn sample() -> Option<(f64, f64)> {
             }
             CloseHandle(snap);
         }
-        Some((mem, cpu))
+        Some((mem, cpu, pids))
     }
 }
 
@@ -290,7 +328,7 @@ fn private_kb(rollup: &str) -> Option<f64> {
 }
 
 #[cfg(not(windows))]
-fn sample() -> Option<(f64, f64)> {
+fn sample() -> Option<(f64, f64, Vec<u32>)> {
     fn one(pid: &str) -> Option<(f64, f64)> {
         let st = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let rest = &st[st.rfind(')')? + 2..];
@@ -304,6 +342,7 @@ fn sample() -> Option<(f64, f64)> {
     }
     let me = std::process::id().to_string();
     let (mut mem, mut cpu) = one(&me)?;
+    let mut pids = vec![std::process::id()];
     for e in std::fs::read_dir("/proc").ok()?.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         if name == me || !name.chars().all(|c| c.is_ascii_digit()) {
@@ -314,10 +353,11 @@ fn sample() -> Option<(f64, f64)> {
             if let Some((m, c)) = one(&name) {
                 mem += m;
                 cpu += c;
+                pids.extend(name.parse::<u32>().ok());
             }
         }
     }
-    Some((mem, cpu))
+    Some((mem, cpu, pids))
 }
 
 #[cfg(test)]
@@ -325,7 +365,7 @@ mod tests {
     use super::*;
 
     fn agg(n: u32, mem_sum: f64, mem_peak: f64, cpu_sum: f64, cpu_peak: f64, rn: u32, rmem_sum: f64, rcpu_sum: f64) -> Agg {
-        Agg { n, mem_sum, mem_peak, cpu_sum, cpu_peak, rn, rmem_sum, rcpu_sum }
+        Agg { n, mem_sum, mem_peak, cpu_sum, cpu_peak, rn, rmem_sum, rcpu_sum, ..Default::default() }
     }
     #[cfg(not(windows))]
     #[test]
@@ -402,9 +442,9 @@ mod tests {
     #[test]
     fn aggregate_per_state() {
         let mut st = [Agg::default(); 4];
-        st[State::Idle as usize].add(100.0, 1.0, false);
-        st[State::Idle as usize].add(300.0, 3.0, true);
-        st[State::Player as usize].add(200.0, 5.0, false);
+        st[State::Idle as usize].add(100.0, 1.0, None, false);
+        st[State::Idle as usize].add(300.0, 3.0, None, true);
+        st[State::Player as usize].add(200.0, 5.0, None, false);
         let i = st[State::Idle as usize];
         assert_eq!((i.n, i.rn, i.mem_peak, i.cpu_peak), (2, 1, 300.0, 3.0));
         assert_eq!(i.avgs(), [200.0, 300.0, 20.0, 30.0, 300.0, 30.0]);
@@ -412,5 +452,35 @@ mod tests {
         assert_eq!(per_state(&st), "&s_idle=2,1,200,300,20,30,300,30&s_player=1,0,200,200,50,50,0,0");
         assert_eq!(fields(&st), "?m=200&mp=300&c=30&cp=50&rm=300&rc=30&n=3&rn=1");
         assert_eq!(fields(&[Agg::default(); 4]), "");
+    }
+
+    /// graphics-card memory: averaged over the minutes it was read, peak kept, sent only when read at all
+    #[test]
+    fn vram_per_state() {
+        let mut st = [Agg::default(); 4];
+        st[State::Tray as usize].add(20.0, 0.2, Some(200.0), true);
+        st[State::Tray as usize].add(20.0, 0.2, None, true); // a minute it couldn't be read: not counted as 0
+        st[State::Tray as usize].add(20.0, 0.2, Some(220.0), true);
+        st[State::Player as usize].add(250.0, 4.0, Some(310.0), false);
+        assert_eq!(st[State::Tray as usize].vram(), Some((210.0, 220.0)));
+        assert_eq!(per_state(&st), "&s_tray=3,3,20,20,2,2,20,2&v_tray=210,220&s_player=1,0,250,250,40,40,0,0&v_player=310,310");
+        assert_eq!(fields(&st), "?m=78&mp=250&c=12&cp=40&rm=20&rc=2&n=4&rn=3&g=243&gp=310");
+        // Linux / never read: exactly the old fields, no v_ / g / gp at all
+        let mut l = [Agg::default(); 4];
+        l[State::Idle as usize].add(100.0, 1.0, None, false);
+        assert_eq!(per_state(&l), "&s_idle=1,0,100,100,10,10,0,0");
+        assert!(!fields(&l).contains("&g="));
+    }
+
+    /// this PC: the reader finds the GPU memory of a process that drew something (a plain process may hold none)
+    #[cfg(windows)]
+    #[test]
+    fn vram_reader_runs() {
+        let me = std::process::id();
+        // never panics; on a PC with a GPU the answer is a sane number or None for "this process never used it"
+        if let Some(v) = crate::gpumem::vram_mb(&[me]) {
+            assert!((0.0..100_000.0).contains(&v), "{v}");
+        }
+        assert_eq!(crate::gpumem::vram_mb(&[]), None);
     }
 }

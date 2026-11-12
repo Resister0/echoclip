@@ -3,6 +3,13 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.7 - 12 Nov
+- Echo opens maximized every time: first start, from Start or search, a second launch and the tray. Un-maximize it if you like; next time it opens maximized again
+- Echo Cloud: a game you have cloud clips from shows in Folders with its icon on every PC you sign in on, even where the game isn't installed
+- Clips that are only in Echo Cloud show their real picture instead of a black card, and Home shows it sharp
+- Home: the player always stays below the top bar, and the side panel lines up with it at the top and bottom
+- Anonymous performance reports now include Echo's graphics memory (Windows)
+
 ## 2.0.6 - 11 Nov
 - New Echo logo
 - Home has the player built in: the clip waits loaded and sharp in the page, ready the moment you open Home, with the player's keys (S cuts, then Save) and a smaller, calmer play button. In fullscreen on Home, ← / → at the very start or end of a clip go to the previous / next clip
