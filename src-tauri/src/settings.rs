@@ -134,8 +134,12 @@ pub struct Settings {
     pub ec_api: String,
     /// which clips upload by themselves: "off", "favs" (favourites) or "all" (every new clip + favourites)
     pub cloud_upload: String,
-    /// download clips that other PCs (Windows / Linux) uploaded
+    /// download clips that other PCs (Windows / Linux) uploaded. OFF by default (12 Nov 2026): a clip from another
+    /// PC stays in the cloud and streams when it's played; it only lands on this PC when the user asks
     pub cloud_download: bool,
+    /// 0 = file from when cloud_download was on by default (switched off once in load())
+    #[serde(default)]
+    pub dl_v: u32,
     /// unix time the cloud was connected: "all" only uploads clips newer than this, sync only downloads newer ones
     pub cloud_since: u64,
     /// what players hear (track 1): "all" = everything on the PC, "apps" = only the apps ticked below (+ mic)
@@ -197,7 +201,7 @@ pub struct Settings {
     pub pad_buttons: u16,
     pub pad_seconds: u32,
     /// animated watermark on exports, Discord-size copies, montages and GIFs (recorded clips stay clean):
-    /// "kimbo" = Echo + "By Kimbo", "echo" = just Echo, "off"
+    /// "link" (default since 12 Nov 2026) = Echo + "echoclip.link", "kimbo" = Echo + "By Kimbo", "echo" = just Echo, "off"
     pub watermark_style: String,
     /// colour theme (Settings > Appearance): "" = Violet, "ocean", "ember", …, "custom" = theme_accent + theme_bg
     pub theme: String,
@@ -284,7 +288,7 @@ impl Default for Settings {
             rclone_pass: String::new(),
             pad_buttons: 0,
             pad_seconds: 0,
-            watermark_style: "kimbo".into(),
+            watermark_style: "link".into(),
             // chat 30: Linux follows the desktop's light/dark setting by default (AppImageHub); Windows stays Violet
             theme: if cfg!(target_os = "linux") { "system".into() } else { String::new() },
             theme_accent: String::new(),
@@ -312,7 +316,8 @@ impl Default for Settings {
             ec_email: String::new(),
             ec_api: String::new(),
             cloud_upload: "favs".into(),
-            cloud_download: true,
+            cloud_download: false,
+            dl_v: 1,
             cloud_since: 0,
             capture: "screen".into(),
             codec: "h264".into(),
@@ -375,6 +380,14 @@ impl Settings {
         if s.link_v < 1 {
             s.auto_copy_link = false;
             s.link_v = 1;
+            let _ = s.save();
+        }
+        // "Get clips from my other PCs" was on by default: every new clip from another PC was downloaded here by
+        // itself, while the user wanted it to stay in the cloud and stream (12 Nov 2026) - off once for everyone
+        // (switch it on again in Settings › Cloud › Sync)
+        if s.dl_v < 1 {
+            s.cloud_download = false;
+            s.dl_v = 1;
             let _ = s.save();
         }
         if s.shot_key_v < 1 {

@@ -26,6 +26,33 @@ pub fn early() {
     desktop_entry();
 }
 
+/// 12 Nov 2026: call right before Echo starts a new Echo (Restart now, after an update) and quits.
+/// The AppImage runtime that mounted this run (an "Echo.AppImage" process, ~17 MB) only ends when no process holds
+/// its keep-alive pipe any more - and every program Echo starts inherits that pipe (and the mount folder handle,
+/// fd 1023): a plain pipe, not close-on-exec. So the new Echo kept the old runtime alive for as long as it ran: one
+/// more "Echo.AppImage" process per update / restart (the replaced file shows as "(deleted)").
+/// Fix: every inherited descriptor from 3 up closes when the new program starts. Safe: this Echo quits right after.
+pub fn no_inherit_fds() {
+    extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    const F_GETFD: i32 = 1;
+    const F_SETFD: i32 = 2;
+    const FD_CLOEXEC: i32 = 1;
+    let fds: Vec<i32> = std::fs::read_dir("/proc/self/fd")
+        .map(|rd| rd.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).filter(|&fd| fd > 2).collect())
+        .unwrap_or_default();
+    for fd in fds {
+        // SAFETY: fcntl only reads / sets this descriptor's flags; one that is gone by now just returns -1
+        unsafe {
+            let f = fcntl(fd, F_GETFD);
+            if f >= 0 && f & FD_CLOEXEC == 0 {
+                fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+            }
+        }
+    }
+}
+
 /// Port of src-tauri main.rs linux_desktop_entry(): the app menu entry + icon in the user's own folders,
 /// rewritten only when they change. The old Tauri app wrote StartupWMClass=link.echoclip.Echo; the native window's
 /// id is "echo" (popup.rs), so after the auto-update from Tauri KDE showed a generic taskbar icon. Same file name

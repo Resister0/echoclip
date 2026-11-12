@@ -913,10 +913,10 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         // Echo's .chk-l: the clip length (15s … 20m)
-                        Rectangle {
+                        lrect := Rectangle {
                             width: chlen.preferred-width;
                             border-radius: 6px;
-                            background: lta.has-hover ? T.panel2 : transparent;
+                            background: lta.has-hover || (SDrop.open && SDrop.key == "hk_secs:" + h.idx) ? T.panel2 : transparent;
                             chlen := HorizontalLayout {
                                 padding-left: 2px;
                                 padding-right: 2px;
@@ -936,42 +936,36 @@ export component AppWindow inherits Window {
                                     stroke: lta.has-hover ? T.text : T.muted;
                                 }
                             }
+                            // 12 Nov 2026 (Linux bug: picking 10m on the right chip changed / swapped the wrong keys): the
+                            // list was a PopupWindow - Slint can close one on the PRESS of a row (counted as outside) and
+                            // the click lands on what's under it (Settings' key buttons / length selects). Now the shared
+                            // SDrop list (SDropLayer: its own layer, a click outside is swallowed), like Settings.
                             lta := TouchArea {
                                 mouse-cursor: pointer;
-                                clicked => { lenpop.show(); }
+                                clicked => {
+                                    SDrop.opts = [
+                                        { value: "15", label: "15s" },
+                                        { value: "30", label: "30s" },
+                                        { value: "60", label: "1m" },
+                                        { value: "120", label: "2m" },
+                                        { value: "180", label: "3m" },
+                                        { value: "300", label: "5m" },
+                                        { value: "600", label: "10m" },
+                                        { value: "900", label: "15m" },
+                                        { value: "1200", label: "20m" },
+                                    ];
+                                    SDrop.value = "" + h.secs;
+                                    SDrop.key = "hk_secs:" + h.idx;
+                                    SDrop.bx = lrect.absolute-position.x;
+                                    SDrop.by = lrect.absolute-position.y;
+                                    SDrop.bw = lrect.width;
+                                    SDrop.bh = lrect.height + 4px;
+                                    SDrop.open = true;
+                                }
                             }
                             TipArea {
                                 text: "Clip length";
                                 hover: lta.has-hover;
-                            }
-                            lenpop := PopupWindow {
-                                x: 0;
-                                y: parent.height + 8px;
-                                width: 130px;
-                                height: lpl.preferred-height;
-                                close-policy: close-on-click-outside;
-                                Rectangle {
-                                    background: T.panel;
-                                    border-radius: 12px;
-                                    border-width: 1px;
-                                    border-color: T.line;
-                                    drop-shadow-blur: 40px;
-                                    drop-shadow-offset-y: 14px;
-                                    drop-shadow-color: #000000aa;
-                                    lpl := VerticalLayout {
-                                        padding: 6px;
-                                        for s in [15, 30, 60, 120, 180, 300, 600, 900, 1200]: MenuRow {
-                                            height: 32px;
-                                            text: s < 60 ? s + "s" : (s / 60) + "m";
-                                            tick-room: true;
-                                            on: h.secs == s;
-                                            clicked => {
-                                                lenpop.close();
-                                                S.set("hk_secs:" + h.idx, s);
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
                     }

@@ -3,6 +3,12 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.8 - 12 Nov
+- Clips from your other PCs stream from Echo Cloud instead of downloading by themselves ("Get clips from my other PCs" is now off; turn it on in Settings if you want copies on every PC), and the cloud loading bar moves smoothly
+- New Echo logo in the watermark, the installer and the Echo Cloud sign-in page. New installs use the "echoclip.link" watermark
+- Linux: changing a clip length in the top bar no longer swaps or changes the other hotkey, and updates and restarts no longer leave old Echo copies running in the background
+- Echo Cloud: renaming a clip right after sharing it no longer breaks the link's preview in Discord
+
 ## 2.0.7 - 12 Nov
 - Echo opens maximized every time: first start, from Start or search, a second launch and the tray. Un-maximize it if you like; next time it opens maximized again
 - Echo Cloud: a game you have cloud clips from shows in Folders with its icon on every PC you sign in on, even where the game isn't installed

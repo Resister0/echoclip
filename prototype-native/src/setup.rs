@@ -774,6 +774,9 @@ pub fn install(a: &AppWindow) {
                     {
                         // AppImage: the file was swapped on the worker (swap_appimage): start the new one
                         let target = f;
+                        // 12 Nov 2026: else the new Echo keeps the old AppImage runtime alive (linux.rs)
+                        #[cfg(target_os = "linux")]
+                        crate::linux::no_inherit_fds();
                         if std::process::Command::new(&target).spawn().is_ok() {
                             let _ = slint::quit_event_loop();
                             std::process::exit(0);

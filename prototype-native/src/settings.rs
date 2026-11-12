@@ -36,11 +36,11 @@ fn defaults() -> Value {
         "sound_files": {}, "session_key": "", "mic_mute_key": "", "show_key": "", "push_to_talk": false, "ptt_key": "",
         "mic_denoise": true, "cleanup_days": 0, "lib_view": "grid",
         "shrink_old": false, "shrink_days": 30, "shrink_av1": true, "smart_bitrate": true, "capture_cursor": true,
-        "share_watermark": true, "smart_quality": 72, "pad_buttons": 0, "pad_seconds": 0, "watermark_style": "kimbo",
+        "share_watermark": true, "smart_quality": 72, "pad_buttons": 0, "pad_seconds": 0, "watermark_style": "link",
         "theme": if cfg!(target_os = "linux") { "system" } else { "" }, "theme_accent": "", "theme_bg": "", "theme_hi": "",
         "monitor": "", "mix_mode": "all", "vol_game": 1.0, "vol_discord": 1.0, "vol_browser": 1.0, "vol_music": 1.0,
         "mix_game": true, "mix_discord": true, "mix_browser": false, "mix_music": false, "mic_mono": false,
-        "cloud_free_after": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": true,
+        "cloud_free_after": false, "link_days": 0, "auto_copy_link": false, "cloud_upload": "favs", "cloud_download": false, "dl_v": 1,
         "capture": "screen", "codec": "h264", "ec_email": "", "cloud_accounts": [], "cloud_target": ""
     })
 }
@@ -90,6 +90,13 @@ impl Store {
         let raw = read_file(&file);
         let found = raw.is_some();
         let mut v = raw.unwrap_or_default();
+        // echo-core's Settings::load does the same once (dl_v): "Get clips from my other PCs" was on by default and
+        // downloaded every clip from another PC by itself - off once, a clip from another PC streams (12 Nov 2026).
+        // Here too, so a Store read before echo-core's load can't save the old "on" back.
+        if found && v.get("dl_v").and_then(|x| x.as_u64()).unwrap_or(0) < 1 {
+            v.insert("cloud_download".into(), Value::Bool(false));
+            v.insert("dl_v".into(), Value::from(1));
+        }
         if let Value::Object(d) = defaults() {
             for (k, dv) in d {
                 v.entry(k).or_insert(dv);
@@ -1079,7 +1086,7 @@ impl Store {
                         "watermark_style",
                         "Watermark",
                         "An animated Echo logo in the bottom-right corner of editor exports, Discord-size copies, montages and GIFs, and on share link pages. Your recorded clips and full-size copies stay clean.",
-                        vec![opt("kimbo", "Echo · By Kimbo"), opt("link", "Echo · echoclip.link"), opt("echo", "Echo"), opt("off", "Off")],
+                        vec![opt("link", "Echo · echoclip.link"), opt("kimbo", "Echo · By Kimbo"), opt("echo", "Echo"), opt("off", "Off")],
                     ),
                     limits,
                     R { kind: "button", label: "Currently used".into(), vtext: crate::library::fmt_size(self.total), ..Default::default() },
@@ -1260,7 +1267,7 @@ impl Store {
                         "The share page shows the Echo logo over the video, and it's on the preview picture in Discord (style under Clips & Storage). The clip itself is uploaded as it is, so links are quick.",
                     ),
                     self.sw("auto_copy_link", "Copy the link after uploading", "When you upload a clip yourself, its share link lands on your clipboard"),
-                    self.sw("cloud_download", "Get clips from my other PCs", "New clips uploaded by Echo on another PC (or Linux) download here by themselves"),
+                    self.sw("cloud_download", "Get clips from my other PCs", "New clips uploaded by Echo on another PC (or Linux) download here by themselves. Off: they stay in the cloud and play from there"),
                     self.button("Sync now", "Syncs every 5 minutes and right after you save a clip", "Sync now", "syncnow"),
                 ]);
                 (

@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.8" date="2026-11-12">
+      <description>
+        <p>Echo 2.0.8: cloud clips stream instead of downloading, the new logo in the watermark, and Linux hotkey and background-copy fixes.</p>
+      </description>
+    </release>
     <release version="2.0.7" date="2026-11-12">
       <description>
         <p>Echo 2.0.7: opens maximized every time, cloud game folders with icons on every PC, real pictures for cloud-only clips, and the Home player stays below the top bar.</p>

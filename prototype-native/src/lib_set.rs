@@ -359,9 +359,23 @@ fn restart_offer(a: &AppWindow) {
     });
 }
 
+/// 12 Nov 2026: the file that starts the new Echo on a restart. Inside an AppImage that's the AppImage itself
+/// ($APPIMAGE): the program file (current_exe) lives in THIS run's /tmp/.mount_Echo… folder, so the restarted Echo
+/// ran from the old mount and kept the old AppImage runtime alive (Linux: an extra "Echo.AppImage" process).
+/// The Flatpak keeps its own program file.
+fn echo_to_start(appimage: Option<std::ffi::OsString>, flatpak: bool, exe: Option<PathBuf>) -> Option<PathBuf> {
+    appimage.filter(|p| !p.is_empty() && !flatpak).map(PathBuf::from).or(exe)
+}
+
 pub fn restart_app() {
-    if let Ok(exe) = std::env::current_exe() {
+    #[cfg(target_os = "linux")]
+    let (appimage, flatpak) = (std::env::var_os("APPIMAGE"), echo_core::linuxutil::in_flatpak());
+    #[cfg(not(target_os = "linux"))]
+    let (appimage, flatpak) = (None, false);
+    if let Some(exe) = echo_to_start(appimage, flatpak, std::env::current_exe().ok()) {
         let args: Vec<String> = std::env::args().skip(1).collect();
+        #[cfg(target_os = "linux")]
+        crate::linux::no_inherit_fds(); // the new Echo doesn't keep this run's AppImage runtime alive
         if std::process::Command::new(exe).args(args).spawn().is_ok() {
             let _ = slint::quit_event_loop();
             std::process::exit(0);
@@ -760,5 +774,22 @@ fn self_test_done(run: u64, res: Result<Vec<(String, bool, String)>, String>) {
     SELFTEST.with(|s| *s.borrow_mut() = (false, Some(res)));
     if let Some(r) = SELFTEST_REFRESH.with(|x| x.borrow().clone()) {
         r();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::echo_to_start;
+    use std::path::PathBuf;
+
+    // 12 Nov 2026: a restart inside the AppImage starts the AppImage file, never the program in the old mount
+    #[test]
+    fn restart_starts_the_appimage() {
+        let exe = Some(PathBuf::from("/tmp/.mount_EchoAb12/usr/bin/echo-clips"));
+        assert_eq!(echo_to_start(Some("/home/u/Applications/Echo.AppImage".into()), false, exe.clone()), Some(PathBuf::from("/home/u/Applications/Echo.AppImage")));
+        assert_eq!(echo_to_start(Some("".into()), false, exe.clone()), exe);
+        assert_eq!(echo_to_start(None, false, exe.clone()), exe);
+        // the Flatpak keeps its own program
+        assert_eq!(echo_to_start(Some("/x/Echo.AppImage".into()), true, exe.clone()), exe);
     }
 }

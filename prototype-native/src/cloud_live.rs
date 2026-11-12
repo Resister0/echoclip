@@ -40,6 +40,8 @@ struct Stream {
     seen: bool,
     done: bool,
     fallback: bool,
+    /// the buffering bar so far: it never goes back (mpv's cache end moves back a little when it drops old data)
+    best: f32,
 }
 
 #[derive(Default)]
@@ -138,7 +140,7 @@ pub fn player_tick(a: &AppWindow, m: Option<&crate::mpv::Mpv>, open: Option<usiz
             return;
         }
         let url = crate::cloud::play_path(&c.path).to_string_lossy().to_string();
-        PS.with(|s| *s.borrow_mut() = Some(Stream { idx, t0: Instant::now(), url, seen: false, done: false, fallback: false }));
+        PS.with(|s| *s.borrow_mut() = Some(Stream { idx, t0: Instant::now(), url, seen: false, done: false, fallback: false, best: 0.0 }));
     }
     let (done, fallback) = PS.with(|s| s.borrow().as_ref().map(|x| (x.done, x.fallback)).unwrap_or((true, true)));
     if done || fallback {
@@ -193,7 +195,11 @@ pub fn player_tick(a: &AppWindow, m: Option<&crate::mpv::Mpv>, open: Option<usiz
             let pos = m.get_f64("time-pos").unwrap_or(0.0);
             let end = m.get_f64("demuxer-cache-time").unwrap_or(pos);
             let need = d.min(pos + 3.0).max(0.1);
-            overlay(&pl, "Loading from the cloud…", &format!("{} clip · buffering", crate::library::fmt_size(c.size)), (end / need).clamp(0.0, 1.0) as f32);
+            let f = PS.with(|s| s.borrow_mut().as_mut().map_or(0.0, |x| {
+                x.best = x.best.max((end / need).clamp(0.0, 1.0) as f32);
+                x.best
+            }));
+            overlay(&pl, "Loading from the cloud…", &format!("{} clip · buffering", crate::library::fmt_size(c.size)), f);
         }
         None => overlay(&pl, "Loading from the cloud…", "Starting the stream…", -1.0),
     }

@@ -1177,7 +1177,10 @@ export component PlayerView inherits Rectangle {
                     property <float> run;
                     x: Play.cl-pct < 0 ? (self.run * 1.3 - 0.3) * parent.width : 0;
                     width: Play.cl-pct < 0 ? parent.width * 0.3 : parent.width * min(1, Play.cl-pct);
-                    animate width { duration: 100ms; easing: linear; } // 2x the 50 ms tick (cloud.rs fetch, smoothed bytes - dl_smooth.rs): one steady motion
+                    // one steady motion: the buffering bar gets a new value 4x a second (cloud_live.rs player_tick) - with
+                    // 100 ms it moved 100 ms, then stood 150 ms ("laggy", 12 Nov 2026); downloads (50 ms tick, smoothed
+                    // bytes - dl_smooth.rs) glide the same way, about a quarter second behind
+                    animate width { duration: 250ms; easing: linear; }
                     background: T.accent;
                     // .ind: a 30 % piece sliding along while nothing is known
                     Timer {

@@ -654,8 +654,10 @@ async function move(req, user, env) {
   const put = env.BUCKET.put(to, readable, { httpMetadata: o.httpMetadata, customMetadata: o.customMetadata });
   await o.body.pipeTo(writable);
   await put;
-  await env.BUCKET.delete(from);
+  // share links follow BEFORE the old file goes (12 Nov 2026): the other way round, a link opened (or a Discord preview
+  // fetched - Discord keeps a failed one) in between got "clip removed"
   await env.DB.prepare("UPDATE shares SET key = ? WHERE key = ? AND user_id = ?").bind(to, from, user.id).run();
+  await env.BUCKET.delete(from);
   // its hash / share-only mark / reads move with it
   await env.DB.batch([
     env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(to),
