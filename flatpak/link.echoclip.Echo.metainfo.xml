@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.10" date="2026-11-13">
+      <description>
+        <p>Echo uses much less graphics memory in the tray, and Home shows every clip right away, cloud clips too.</p>
+      </description>
+    </release>
     <release version="2.0.9" date="2026-11-13">
       <description>
         <p>Night and dark scenes keep much more detail, four new themes (Coral, Plum, Mono, Sand), all hotkeys work again while Echo is in front, and old error messages stay gone.</p>

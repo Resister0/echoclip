@@ -256,6 +256,8 @@ struct Player {
     /// Windows window mode: the new clip's first frame is on screen (the video window stays hidden until then -
     /// otherwise it flashed black with a piece of the previous clip)
     first_frame: bool,
+    /// 13 Nov 2026: mpv really drew THIS clip's picture (texture / software mode) - the poster stays until then
+    real_frame: bool,
     /// Windows flip model: the video window was already showing a clip when the next one was loaded (prev/next) -
     /// it stays, and the new clip's first picture simply replaces the old one
     swap: bool,
@@ -685,6 +687,11 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
                         }
                     });
                     if let (true, Some(a)) = (still_latest, w.upgrade()) {
+                        // 13 Nov 2026: Home's paused player shows it too while it waits for mpv's picture (was the card picture)
+                        let ps = a.global::<Play>();
+                        if ps.get_inline() && a.get_player_open() && ps.get_poster_on() {
+                            ps.set_poster(img.clone());
+                        }
                         a.global::<HomeState>().set_hero(img);
                     }
                 });
@@ -1928,6 +1935,7 @@ fn main() {
         loaded_at: None,
         vo_checked: false,
         first_frame: false,
+        real_frame: false,
         swap: false,
         fail: None,
         switch_to: None,
@@ -1996,7 +2004,10 @@ fn main() {
             };
             let thumb = sharp.clone().or_else(|| lib.thumb_img(idx));
             p.poster_px = thumb.as_ref().and_then(|i| i.to_rgb8());
-            pl.set_poster(if sharp.is_some() || std::env::var("ECHO_POSTER").is_ok() { thumb.unwrap_or_default() } else { slint::Image::default() });
+            // 13 Nov 2026: Home's picture keeps showing its still (or the card picture while the sharp one is made)
+            // until the video's first frame - not black (William, Linux: arrowing through Home's clips showed black)
+            let keep_still = sharp.is_some() || pl.get_inline() || std::env::var("ECHO_POSTER").is_ok(); // (the sharp still replaces the card picture when it's made: home_fill)
+            pl.set_poster(if keep_still { thumb.unwrap_or_default() } else { slint::Image::default() });
             pl.set_poster_on(true);
             pl.set_snap(true);
             pl.set_progress(0.0);
@@ -2125,19 +2136,24 @@ fn main() {
                 use slint::winit_030::WinitWindowAccessor;
                 a.window().with_winit_window(|w| w.is_minimized() == Some(true)).unwrap_or(false)
             };
-            let want = a.get_view() == "home"
+            let shown = a.get_view() == "home"
                 && a.window().is_visible()
                 && !minimized // minimized: let mpv go (nothing drawn, nothing kept)
                 && !ed.get_open()
                 && !ed.get_opening()
-                && !a.global::<Dlg>().get_open()
-                && idx.is_some_and(|i| lib.clip(i).path.is_file());
+                && !a.global::<Dlg>().get_open();
+            // 13 Nov 2026 (William): a cloud-only clip gets Home's player too (paused, it streams from the cloud copy)
+            let local = idx.is_some_and(|i| { let c = lib.clip(i); c.path.is_file() || c.cloud.is_some() });
             let (open, clip) = {
                 let pb = p.borrow();
                 (pb.open, pb.clip)
             };
+            // 13 Nov 2026 (William, Linux: cloud clips on Home "don't trigger the full player"): only a local file is
+            // pre-loaded paused, but a cloud-only clip started with Home's play (it streams) must stay - this check
+            // closed it again 400 ms after it opened
+            let want = shown && (local || (open && clip == idx && ps.get_inline_active()));
             if !open {
-                if want {
+                if shown && local {
                     hl(&a, false);
                 }
             } else if ps.get_inline() {
@@ -3120,6 +3136,7 @@ fn main() {
                         m.set("volume", &format!("{:.0}", (ps.get_volume() * 100.0).clamp(0.0, 100.0)));
                         m.set("mute", if ps.get_muted() { "yes" } else { "no" });
                         pl.loaded_at = Some(Instant::now());
+                        pl.real_frame = false;
                         pl.first_frame = false;
                         // until the first picture of THIS clip is on screen: its thumbnail instead of black / the old clip.
                         // Windows window mode: a GDI child window over mpv's (Slint can't draw over mpv's window, and
@@ -3180,7 +3197,9 @@ fn main() {
                             a.window().request_redraw(); // look again next frame
                         }
                     }
-                    if just_shown {
+                    // texture / software mode (Linux): a clip loaded PAUSED (Home's picture) may never draw - its still
+                    // stays over the video until mpv really draws a picture (13 Nov 2026, was a black box until Space)
+                    if just_shown && pl.mode == Mode::Window {
                         a.global::<Play>().set_poster_on(false);
                     }
                     // can the controls go over the video? Windows window mode only via mpv-drawn controls (osd.rs);
@@ -3267,6 +3286,12 @@ fn main() {
                             let sf = a.window().scale_factor();
                             let want = (((a.get_video_w() * sf).round() as i32).max(16), ((a.get_video_h() * sf).round() as i32).max(16));
                             let new_tex = unsafe { ensure_tex(gl, &mut pl.gpu, want) };
+                            // 13 Nov 2026 (William, Linux: Home's paused clip stayed black until Space): a clip loaded
+                            // PAUSED may never flag a new frame - draw mpv's current picture when the first one is
+                            // reported, and ask mpv to show it again (like Windows' window mode above)
+                            if just_shown && m.get("pause").as_deref() == Some("yes") {
+                                m.command(&["seek", "0", "relative+exact"]);
+                            }
                             if new_tex || flags & mpv::UPDATE_FRAME != 0 {
                                 let ms = unsafe { draw_mpv(gl, m, &pl.gpu, want) };
                                 if ms > pl.render_ms_max {
@@ -3276,6 +3301,11 @@ fn main() {
                                 // same texture, new content: Slint can't see that, so flip a property to repaint it
                                 let ps = a.global::<Play>();
                                 ps.set_tick(!ps.get_tick());
+                                // a picture mpv made for THIS clip is in the texture: the poster can go
+                                if flags & mpv::UPDATE_FRAME != 0 && pl.first_frame && !pl.real_frame {
+                                    pl.real_frame = true;
+                                    ps.set_poster_on(false);
+                                }
                             }
                             // also when the texture was kept but the player cleared its picture (closed + reopened)
                             if new_tex || a.global::<Play>().get_frame().size().width == 0 {
@@ -3300,6 +3330,10 @@ fn main() {
                                     }
                                     a.global::<Play>().set_frame(slint::Image::from_rgba8(buf));
                                     pl.frames += 1;
+                                    if pl.first_frame && !pl.real_frame {
+                                        pl.real_frame = true;
+                                        a.global::<Play>().set_poster_on(false);
+                                    }
                                 }
                                 let ms = t.elapsed().as_secs_f64() * 1000.0;
                                 if ms > pl.render_ms_max {
@@ -3470,6 +3504,7 @@ fn main() {
         let root = clips_dir.clone();
         let mut tick = 0u32;
         let mut hidden_since: Option<Instant> = None;
+        let mut open_hidden_since: Option<Instant> = None;
         let mut idle_since: Option<Instant> = None;
         timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
             let Some(a) = w.upgrade() else { return };
@@ -3500,6 +3535,24 @@ fn main() {
             } else {
                 idle_since = None;
                 idle::wake();
+            }
+            // 13 Nov 2026: hidden for 5 min with a clip still open in the player: close it like its X button (stops
+            // the clip, keeps the note) so the steps below free its memory too - before, mpv + the clip's pictures
+            // stayed in graphics memory the whole time Echo sat in the tray. Not while editing (the editor keeps its
+            // work in memory). Reopening = clicking the clip again.
+            if hidden && p.open && !a.global::<Ed>().get_open() {
+                if open_hidden_since.get_or_insert_with(Instant::now).elapsed() > Duration::from_secs(300) {
+                    open_hidden_since = None;
+                    log(&mut p, "player: hidden 5 min with a clip open - closed it to free memory".into());
+                    let w2 = a.as_weak();
+                    slint::Timer::single_shot(Duration::from_millis(0), move || {
+                        if let Some(a) = w2.upgrade() {
+                            a.global::<Play>().invoke_close();
+                        }
+                    });
+                }
+            } else {
+                open_hidden_since = None;
             }
             // minimized for 20 s (and no clip open): let go of thumbnails + seek sheets, trim memory (like Echo's
             // low-memory mode in the tray). Everything comes back when the window is shown again.
@@ -3545,9 +3598,21 @@ fn main() {
             }
             // mpv unused for 60 s: shut it down (the render hook does it, with the GL context current)
             if !p.open && p.mpv.is_some() && p.closed_at.is_some_and(|t| t.elapsed() > idle_after) {
-                p.kill = true;
                 p.closed_at = None;
-                a.window().request_redraw();
+                // 13 Nov 2026: a hidden window (tray) never renders, so the render hook never shut mpv down and it
+                // kept its graphics memory (~130 MB+, more on AMD) for the whole gaming session. Without an OpenGL
+                // render context (Windows' own-window mode) mpv needs no GL context to stop: do it right here.
+                let hidden = a.window().is_minimized() || !a.window().is_visible();
+                let no_gl = p.gpu.tex.is_none() && p.gpu.fbo.is_none() && p.mpv.as_ref().is_some_and(|m| !m.has_render_context());
+                if hidden && no_gl {
+                    p.mpv = None;
+                    p.mpv_error = "stopped - starts again with the next clip".into();
+                    let t = memtrim::trim();
+                    log(&mut p, format!("player: mpv shut down while hidden (player closed and not used for a while), memory trimmed{t}"));
+                } else {
+                    p.kill = true;
+                    a.window().request_redraw();
+                }
             }
             if !p.open {
                 return;

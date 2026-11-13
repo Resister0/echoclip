@@ -591,7 +591,7 @@ impl Mpv {
         unsafe { (self.api.rc_render)(self.rc, params.as_mut_ptr()) >= 0 }
     }
 
-    #[allow(dead_code)]
+    /// true = mpv draws into an OpenGL texture (texture mode): dropping it needs the window's GL context current
     pub fn has_render_context(&self) -> bool {
         !self.rc.is_null()
     }

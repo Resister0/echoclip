@@ -6,8 +6,8 @@
 <meta name="robots" content="noindex, nofollow">
 <title>Echo stats</title>
 <style>
-  :root { --bg:#0e0f12; --card:#16181d; --line:#262a31; --text:#eceef2; --muted:#9097a3; --faint:#5e6570; --good:#3fb27f; --bad:#e5534b; --accent:#8b7cf6; }
-  @media (prefers-color-scheme: light) { :root { --bg:#f6f7f9; --card:#fff; --line:#e3e6eb; --text:#16181d; --muted:#5b6270; --faint:#8a919c; --good:#1f8a5b; --bad:#c93a32; --accent:#6d5ce8; } }
+  :root { --bg:#0e0f12; --card:#16181d; --line:#262a31; --text:#eceef2; --muted:#9097a3; --faint:#5e6570; --good:#3fb27f; --bad:#e5534b; --accent:#8b7cf6; color-scheme:dark; }
+  @media (prefers-color-scheme: light) { :root { color-scheme:light; --bg:#f6f7f9; --card:#fff; --line:#e3e6eb; --text:#16181d; --muted:#5b6270; --faint:#8a919c; --good:#1f8a5b; --bad:#c93a32; --accent:#6d5ce8; } }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,Segoe UI,Arial,sans-serif; }
   main { max-width:1080px; margin:0 auto; padding:28px 16px 60px; }
@@ -28,7 +28,7 @@
   th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
   th { color:var(--muted); font-weight:600; font-size:12px; } tr:last-child td { border-bottom:0; }
   td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
-  .wrap { overflow-x:auto; border-radius:12px; }
+  .wrap { overflow-x:auto; border-radius:12px; scrollbar-width:thin; scrollbar-color:var(--faint) transparent; }
   .bar { height:6px; border-radius:3px; background:var(--line); width:90px; display:inline-block; vertical-align:middle; margin-left:8px; }
   .bar i { display:block; height:100%; border-radius:3px; background:var(--accent); }
   .bar i.full { background:var(--bad); }

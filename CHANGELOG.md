@@ -3,6 +3,12 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.10 - 13 Nov
+- Echo gives graphics memory back while it sits in the tray: the video player now shuts down a minute after you close a clip, even when Echo is hidden (before, it stayed loaded the whole time you played)
+- Echo hidden for 5 minutes with a clip still open closes the player, so that memory is freed too (not while you're editing a clip)
+- Linux: Home's picture shows each clip sharp right away with its bar and filmstrip when you move between clips (it was a black box until you pressed play)
+- Home: clips that are only in Echo Cloud get the same player in Home's picture and keep playing when you press play (they closed again at once)
+
 ## 2.0.9 - 13 Nov
 - Settings > Appearance: theme cards fill whole rows at any window size, and four new themes: Coral, Plum, Mono (all greys) and Sand
 - Night and dark scenes keep much more detail: while most of the picture is dark, Echo gives it more of the bitrate (AMD on Windows first). Copy for Discord and Echo Cloud copies of dark clips look better too
