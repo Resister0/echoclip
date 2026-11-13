@@ -48,6 +48,15 @@ pub fn select_backend() {
                     let a = WindowAttributesExtWayland::with_name(attrs, "link.echoclip.Echo", "echo");
                     WindowAttributesExtX11::with_name(a, "link.echoclip.Echo", "echo")
                 };
+                // test hook (13 Nov 2026): ECHO_OFFSCREEN=<w>x<h> = the window opens far off screen, inactive and
+                // without a taskbar button (snapshots via ECHO_CARD_SNAP while a game runs; size: rec_core::run)
+                #[cfg(windows)]
+                let attrs = if std::env::var_os("ECHO_OFFSCREEN").is_some() {
+                    use slint::winit_030::winit::{dpi::PhysicalPosition, platform::windows::WindowAttributesExtWindows};
+                    attrs.with_active(false).with_skip_taskbar(true).with_position(PhysicalPosition::new(-20000, -20000))
+                } else {
+                    attrs
+                };
                 attrs
             }
         })

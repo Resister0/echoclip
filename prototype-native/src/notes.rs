@@ -41,6 +41,8 @@ struct NoteState {
     rates: HashMap<i32, Rate>,
     /// a box that just finished (prog_done): a message shown right after it, in the same go, takes its place
     morph: Option<i32>,
+    /// error messages on screen -> when they were (last) shown (retire_errors)
+    errs: HashMap<i32, Instant>,
 }
 thread_local! {
     static NOTES: RefCell<NoteState> = RefCell::new(NoteState {
@@ -53,7 +55,37 @@ thread_local! {
         keys: Default::default(),
         rates: Default::default(),
         morph: None,
+        errs: Default::default(),
     });
+}
+
+/// an error stays until it's clicked - but only while it's the latest thing: 2.0.7 (12 Nov 2026, the user): "old
+/// error notifications come back up after trying to do normal things with other clips, like cutting". An error
+/// with no timer sat in the stack for good (also unseen: behind the player's video, under another page) and showed up
+/// again next to the next job's box. Now a new job / message puts older errors away: at once once they've been up
+/// ERR_READ, else when they reach it (time to read one that came a moment before). The mouse on one still holds it.
+const ERR_READ: Duration = Duration::from_millis(5000);
+
+fn retire_errors(keep: Option<i32>) {
+    let (now, later) = NOTES.with(|n| {
+        let n = n.borrow();
+        let (mut now, mut later) = (vec![], vec![]);
+        for (&id, at) in n.errs.iter().filter(|(id, _)| Some(**id) != keep && n.hov != Some(**id)) {
+            match ERR_READ.checked_sub(at.elapsed()) {
+                Some(left) if !left.is_zero() => later.push((id, left.as_millis() as u64)),
+                _ => now.push(id),
+            }
+        }
+        (now, later)
+    });
+    for id in now {
+        note_out(id);
+    }
+    for (id, ms) in later {
+        // a timer from here on, like any message (hover holds it, leaving gives a moment to finish reading)
+        NOTES.with(|n| n.borrow_mut().hide.insert(id, ms.max(1500)));
+        arm(id, ms.max(1500));
+    }
 }
 
 pub fn notes_init(a: &AppWindow) {
@@ -118,6 +150,7 @@ pub fn note_out(id: i32) {
             n.btns.remove(&id);
             n.hide.remove(&id);
             n.rates.remove(&id);
+            n.errs.remove(&id);
             n.keys.retain(|_, (k, _)| *k != id);
             if n.hov == Some(id) {
                 n.hov = None;
@@ -221,6 +254,11 @@ fn put(kind: Kind, s: SharedString, btn: Option<(&str, Box<dyn Fn()>)>) -> i32 {
             Some(ms) => n.hide.insert(id, ms),
             None => n.hide.remove(&id),
         };
+        if kind == Kind::Err {
+            n.errs.insert(id, Instant::now());
+        } else {
+            n.errs.remove(&id); // a box / message that was an error before
+        }
         // more than 3 messages: the oldest goes
         let msgs: Vec<i32> = (0..n.model.row_count()).filter_map(|i| n.model.row_data(i)).filter(|r| !r.prog && !r.out).map(|r| r.id).collect();
         (id, (msgs.len() > 3).then(|| msgs[0]))
@@ -228,6 +266,7 @@ fn put(kind: Kind, s: SharedString, btn: Option<(&str, Box<dyn Fn()>)>) -> i32 {
     if let Some(e) = extra {
         note_out(e);
     }
+    retire_errors(Some(id));
     match stay {
         Some(ms) => arm(id, ms),
         None => NOTES.with(|n| *n.borrow_mut().gens.entry(id).or_insert(0) += 1), // was timed before: not any more
@@ -275,7 +314,13 @@ pub fn merge(key: &str, kind: Kind, add: usize, text: impl Fn(usize) -> String, 
                 if let Some(ms) = stay_ms(kind, &s, has) {
                     n.hide.insert(id, ms);
                 }
+                if kind == Kind::Err {
+                    n.errs.insert(id, Instant::now());
+                } else {
+                    n.errs.remove(&id);
+                }
             });
+            retire_errors(Some(id));
             if let Some(ms) = NOTES.with(|n| n.borrow().hide.get(&id).copied()) {
                 arm(id, ms);
             }
@@ -289,6 +334,7 @@ pub fn merge(key: &str, kind: Kind, add: usize, text: impl Fn(usize) -> String, 
 
 /// Echo's progBox(): its own box per job. Returns the id for prog_set / prog_btn / prog_done / prog_finish.
 pub fn prog_box(title: &str) -> i32 {
+    retire_errors(None); // a new job: earlier errors are put away (they never show up again next to its box)
     NOTES.with(|n| {
         let mut n = n.borrow_mut();
         let id = n.next;

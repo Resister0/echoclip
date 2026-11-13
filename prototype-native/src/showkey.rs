@@ -1,6 +1,7 @@
 //! 2.0.2: the Show / hide Echo hotkey (Settings > Hotkeys, `show_key`, off by default).
 //! One key toggles: Echo hidden in the tray / minimized / behind other windows -> shown, raised and focused;
 //! Echo already in front -> back to the tray (like the window's close button with "close to tray").
+//! "In front" (Windows) = Echo has the keyboard OR nothing covers its window (13 Nov 2026, see state()).
 //! - showing goes through rec_core::show_window (the tray's Open does the same), so the low-memory tray mode
 //!   comes back the same way (main.rs's tick resumes the library once the window is visible)
 //! - shown with no clip / editor open: Echo opens on Home, which shows the newest clip big
@@ -32,30 +33,67 @@ pub fn pressed() {
 }
 
 /// What the key does now (pure, for the tests): true = hide, false = show.
-fn wants_hide(visible: bool, minimized: bool, focused: bool) -> bool {
-    visible && !minimized && focused
+/// `has_keys` = Echo (or one of its own windows) has the keyboard; `on_top` = Echo's window is what the user sees
+/// in the middle of it (nothing else covers it).
+fn wants_hide(visible: bool, minimized: bool, has_keys: bool, on_top: bool) -> bool {
+    visible && !minimized && (has_keys || on_top)
 }
 
 fn toggle(a: &AppWindow, tok: Option<String>) {
-    let w = a.window();
-    if wants_hide(w.is_visible(), w.is_minimized(), focused(a)) {
+    let (visible, minimized, has_keys, on_top) = state(a);
+    let hide_it = wants_hide(visible, minimized, has_keys, on_top);
+    echo_core::recorder::log_line(&format!(
+        "show key: visible {visible}, minimized {minimized}, keyboard {has_keys}, on top {on_top} -> {}",
+        if hide_it { "hide" } else { "show" }
+    ));
+    if hide_it {
         hide(a);
     } else {
         show(a, tok);
     }
 }
 
-/// Echo's window has the keyboard (= the user looks at it)
-fn focused(a: &AppWindow) -> bool {
-    #[cfg(windows)]
-    {
-        hwnd(a).is_some_and(|h| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } == h)
+/// (visible, minimized, has the keyboard, on top). 13 Nov 2026 (2.0.8 report "it only shows, never hides"): the
+/// key used to hide only when Echo's window was THE foreground window. Since every opening is maximized (d019451)
+/// Echo can sit maximized over a game without Windows giving it the keyboard (Windows' foreground lock: the game
+/// keeps it), so the key took "behind the game -> show" every time. Now Windows' own state decides: visible +
+/// not minimized + (Echo has the keyboard, or nothing covers the middle of Echo's window).
+#[cfg(windows)]
+fn state(a: &AppWindow) -> (bool, bool, bool, bool) {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, WindowFromPoint, GA_ROOT, GA_ROOTOWNER,
+    };
+    // never made yet (started into the tray): hidden
+    let Some(h) = hwnd(a) else { return (false, false, false, false) };
+    unsafe {
+        let visible = a.window().is_visible() && IsWindowVisible(h) != 0;
+        let minimized = IsIconic(h) != 0;
+        let fg = GetForegroundWindow();
+        let has_keys = !fg.is_null() && {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg, &mut pid);
+            // Echo's window, or one of Echo's own (popup, menu, video window)
+            GetAncestor(fg, GA_ROOTOWNER) == h || pid == GetCurrentProcessId()
+        };
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let on_top = GetWindowRect(h, &mut r) != 0 && r.right > r.left && r.bottom > r.top && {
+            // click-through overlays (Discord, Steam, Echo's own popups) aren't hit; a game in front is
+            let w = WindowFromPoint(POINT { x: r.left + (r.right - r.left) / 2, y: r.top + (r.bottom - r.top) / 2 });
+            !w.is_null() && GetAncestor(w, GA_ROOT) == h
+        };
+        (visible, minimized, has_keys, on_top)
     }
-    #[cfg(not(windows))]
-    {
-        use slint::winit_030::WinitWindowAccessor;
-        a.window().with_winit_window(|w| w.has_focus()).unwrap_or(false)
-    }
+}
+
+/// Linux: Echo's window has the keyboard (Wayland gives no z-order to check)
+#[cfg(not(windows))]
+fn state(a: &AppWindow) -> (bool, bool, bool, bool) {
+    use slint::winit_030::WinitWindowAccessor;
+    let w = a.window();
+    let has_keys = w.with_winit_window(|w| w.has_focus()).unwrap_or(false);
+    (w.is_visible(), w.is_minimized(), has_keys, false)
 }
 
 fn hide(a: &AppWindow) {
@@ -219,10 +257,22 @@ mod tests {
 
     #[test]
     fn toggles() {
-        assert!(wants_hide(true, false, true)); // in front -> tray
-        assert!(!wants_hide(false, false, false)); // in the tray -> show
-        assert!(!wants_hide(true, true, false)); // minimized -> show
-        assert!(!wants_hide(true, false, false)); // behind the game -> show
+        assert!(wants_hide(true, false, true, true)); // in front with the keyboard -> tray
+        assert!(!wants_hide(false, false, false, false)); // in the tray -> show
+        assert!(!wants_hide(true, true, false, false)); // minimized -> show
+        assert!(!wants_hide(true, false, false, false)); // behind the game -> show
+    }
+
+    #[test]
+    fn hides_when_seen_without_keyboard() {
+        // 13 Nov 2026: maximized over the game, the game kept the keyboard -> still hides (was: show, every time)
+        assert!(wants_hide(true, false, false, true));
+        // has the keyboard but something small covers the middle (a dialog of Echo's own counts as Echo) -> hides
+        assert!(wants_hide(true, false, true, false));
+        // hidden in the tray: Windows' stale "on top" / keyboard never makes it hide
+        assert!(!wants_hide(false, false, true, true));
+        // minimized wins
+        assert!(!wants_hide(true, true, true, true));
     }
 
     #[test]

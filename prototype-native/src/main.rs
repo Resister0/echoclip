@@ -66,6 +66,7 @@ mod bgwork; // r2-threads: PORT_LEFTOVERS L3-L55, blocking work moved off the UI
 // Chat A: Echo's real recorder (echo-core), in-game popup, tray
 mod rec_core;
 mod showkey; // 2.0.2: Show / hide Echo hotkey (tray <-> in front, over a game)
+mod ownkeys; // 13 Nov 2026: hotkeys pressed inside Echo's own window (the keyboard hook misses those)
 mod titlebar;
 mod pl_zoom;
 mod popup;
@@ -1397,7 +1398,7 @@ fn main() {
             s.set_qmin(qmin.into());
             s.set_qclip(qclip.into());
             s.set_qcliplbl(lbl.into());
-            s.set_themes(settings::theme_lines(&st.s("theme"), &st.s("theme_accent"), &st.s("theme_bg"), &st.s("theme_hi")));
+            s.set_themes(settings::theme_cards(&st.s("theme"), &st.s("theme_accent"), &st.s("theme_bg"), &st.s("theme_hi")));
             settings::apply(&m, &mut inner.borrow_mut(), boxes);
             setup::refresh(&a, &st);
             // the header pills follow the hotkeys
@@ -2651,6 +2652,29 @@ fn main() {
                     toast(&a, "Download the clip first to rename it");
                     return;
                 }
+                // 12 Nov 2026: its share link / upload is sending the file right now: renamed once that's done
+                let rel = cloud::rel_of(&c);
+                if cloud::clip_busy(&rel) {
+                    let (what, p, lib) = (what.to_string(), p.clone(), lib.clone());
+                    let msg = format!("Renaming \"{}\" once its upload is done - the share link keeps working", c.shown);
+                    cloud::when_free(&a, vec![rel], &msg, move |a| {
+                        if a.get_player_open() && p.borrow().clip == Some(idx) {
+                            a.global::<Play>().invoke_act(what.as_str().into()); // still open: the player's rename
+                        } else {
+                            let w = a.as_weak();
+                            lib.clone().rename_clip_bg(idx, &v, move |res| {
+                                let Some(a) = w.upgrade() else { return };
+                                match res {
+                                    Ok(_) => toast(&a, "Renamed"),
+                                    Err(e) => toast(&a, e),
+                                }
+                                lib.refresh();
+                                a.invoke_pick_filter(a.get_filter());
+                            });
+                        }
+                    });
+                    return;
+                }
                 let (at, paused) = match p.borrow().mpv.as_ref() {
                     Some(m) => {
                         let at = m.get_f64("time-pos").unwrap_or(0.0);
@@ -3703,6 +3727,7 @@ fn main() {
         let wk = app.as_weak();
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
+            ownkeys::winit_event(ev); // Echo's hotkeys while its own window has the keyboard
             if let Some(r) = uiscale::main_event(win, ev) {
                 return r; // Echo's own size on top of the system's scale (uiscale.rs)
             }

@@ -32,6 +32,16 @@ const Q_QSV: &str = "24";
 /// saves too little is dropped anyway (MIN_SAVING).
 const Q_VAAPI: &str = "23";
 const Q_X264: &str = "23";
+/// Dark clips (night scenes, recorder::clip_is_dark), 12 Nov 2026: constant QP smears dark low-contrast detail into
+/// blocks - a FiveM night clip's copy was 0.33 Mbps. 2 steps finer (half of what was measured, to keep Echo Cloud
+/// storage down). AMF on an RX 9070 XT, night 12 s clip: 0.49 -> 0.62 MB (XPSNR 35.6 -> 36.9 dB; 22/24/26 gave 0.80 MB,
+/// 38.3); dusk 10 s: 1.98 -> 2.60 MB (33.8 -> 34.8; 22/24/26: 3.52 MB, 35.7). Bright clips unchanged.
+/// ⚠ the other encoders also 2 steps finer, not measured (no NVIDIA / Intel here; VA-API not tried on Nobara).
+const QP_AMF_DARK: [&str; 3] = ["24", "26", "28"];
+const Q_NVENC_DARK: &str = "22";
+const Q_QSV_DARK: &str = "22";
+const Q_VAAPI_DARK: &str = "21";
+const Q_X264_DARK: &str = "21";
 /// cap for very busy scenes (the recorder's peak is about 20 Mbps)
 const MAX_RATE: &str = "16M";
 const BUF: &str = "32M";
@@ -176,19 +186,22 @@ impl Recorder {
         // ⚠ NVENC / QSV GPU decoding: not tried on a real NVIDIA / Intel PC (this PC is AMD only)
         let nv_hw: (&[&str], String) = (&["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-extra_hw_frames", "24"], format!("scale_cuda={w1080}:1080:interp_algo=bicubic"));
         let qsv_hw: (&[&str], String) = (&["-hwaccel", "qsv", "-hwaccel_output_format", "qsv", "-extra_hw_frames", "24"], format!("scale_qsv=w={w1080}:h=1080:mode=hq"));
-        let amf = ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", QP_AMF[0], "-qp_p", QP_AMF[1], "-qp_b", QP_AMF[2]];
+        let dark = clip_is_dark(&ffmpeg, &src);
+        if dark { log_line(&format!("echo cloud: {rel} is mostly dark - its smaller copy keeps more detail")); }
+        let (qa, qn, qq, qv, qx) = if dark { (QP_AMF_DARK, Q_NVENC_DARK, Q_QSV_DARK, Q_VAAPI_DARK, Q_X264_DARK) } else { (QP_AMF, Q_NVENC, Q_QSV, Q_VAAPI, Q_X264) };
+        let amf = ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", qa[0], "-qp_p", qa[1], "-qp_b", qa[2]];
         // ⚠ p4 (was p5): a bit faster, about the same size at the same -cq - not measured (no NVIDIA here)
-        let nv = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", Q_NVENC, "-b:v", "0", "-maxrate", MAX_RATE, "-bufsize", BUF];
+        let nv = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", qn, "-b:v", "0", "-maxrate", MAX_RATE, "-bufsize", BUF];
         let nv_cpu = [&nv[..], &["-pix_fmt", "yuv420p"]].concat();
-        let qsv = ["-c:v", "h264_qsv", "-global_quality", Q_QSV, "-maxrate", MAX_RATE, "-bufsize", BUF];
+        let qsv = ["-c:v", "h264_qsv", "-global_quality", qq, "-maxrate", MAX_RATE, "-bufsize", BUF];
         // each GPU path falls back to its CPU-decoding one (old drivers, odd formats, a GPU that can't decode it);
         // the recorder may be using the GPU encoder at the same moment: AMF then sometimes fails at once - so AMF
         // gets two more tries
         let ok = (gpu_dec && run(&amf, false, Some(amf_hw))) || run(&amf, false, None) || run(&amf, false, None)
             || (gpu_dec && run(&nv, false, Some(nv_hw))) || run(&nv_cpu, false, None)
             || (gpu_dec && run(&qsv, false, Some(qsv_hw))) || run(&qsv, false, None)
-            || (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", Q_VAAPI], true, None))
-            || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", Q_X264, "-maxrate", MAX_RATE, "-bufsize", BUF, "-pix_fmt", "yuv420p"], false, None);
+            || (cfg!(target_os = "linux") && run(&["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", qv], true, None))
+            || run(&["-c:v", "libx264", "-preset", "veryfast", "-crf", qx, "-maxrate", MAX_RATE, "-bufsize", BUF, "-pix_fmt", "yuv420p"], false, None);
         if cancel() {
             let _ = fs::remove_file(&tmp);
             return Err("Upload cancelled".into());

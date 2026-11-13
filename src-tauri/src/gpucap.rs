@@ -1022,11 +1022,242 @@ impl Capture {
     }
 }
 
+// ---- Dark scenes (12 Nov 2026) ----
+// Smart bitrate = peak-limited VBR with an average below the ceiling. The AMD encoder keeps that average over a long
+// window: busy scenes go above it and calm scenes pay the debt back. Night scenes look "calm" to it, so they fell to
+// ~1 Mbps at QP ~22 (FiveM night drive: smeared road, blocky sky) while dark low-contrast detail needs a FINER
+// quantizer than bright detail. Fix: ~4x a second, read a few thin stripes of the frame back from the GPU; while most
+// of the picture is dark AND the encoder spends less than half its average, lower the encoder's maximum QP one step at
+// a time (24 -> 16). Busy dark scenes (city lights) already get their bits and are left alone; bright scenes untouched.
+// Offline with the same AMD encoder (day footage, then a dark scene): dark parts +1.3-1.9 dB, ~2-4 instead of ~1-2 Mbps.
+
+const PROBE_STRIPES: u32 = 16;
+const PROBE_ROWS: u32 = 8;
+/// how often (in frames) the brightness is sampled and the cap revised: ~4x a second at 60 fps
+const DARK_EVERY: u64 = 15;
+
+/// Copies 16 thin stripes (8 rows each) of the NV12 frame into a small CPU-readable texture. It is read one sample
+/// later (DARK_EVERY frames), so the GPU has long finished and nothing waits.
+struct DarkProbe {
+    tex: ID3D11Texture2D,
+    w: u32,
+    h: u32,
+    pending: bool,
+}
+
+impl DarkProbe {
+    unsafe fn new(device: &ID3D11Device, w: u32, h: u32) -> Option<Self> {
+        let (w, h) = (w & !1, h & !1);
+        if w < 64 || h < PROBE_STRIPES * PROBE_ROWS * 2 {
+            return None;
+        }
+        let td = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: PROBE_STRIPES * PROBE_ROWS,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut t = None;
+        device.CreateTexture2D(&td, None, Some(&mut t)).ok()?;
+        Some(DarkProbe { tex: t?, w, h, pending: false })
+    }
+
+    unsafe fn sample(&mut self, ctx: &ID3D11DeviceContext, frame: &ID3D11Texture2D) {
+        for s in 0..PROBE_STRIPES {
+            let top = ((2 * s + 1) * self.h / (2 * PROBE_STRIPES)) & !1;
+            let b = D3D11_BOX { left: 0, top, front: 0, right: self.w, bottom: top + PROBE_ROWS, back: 1 };
+            ctx.CopySubresourceRegion(&self.tex, 0, 0, s * PROBE_ROWS, 0, frame, 0, Some(&b));
+        }
+        self.pending = true;
+    }
+
+    /// Dark share (0-100) of the previous sample; None if there is none or it can't be read.
+    unsafe fn read(&mut self, ctx: &ID3D11DeviceContext) -> Option<u32> {
+        if !std::mem::take(&mut self.pending) {
+            return None;
+        }
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        ctx.Map(&self.tex, 0, D3D11_MAP_READ, 0, Some(&mut m)).ok()?;
+        let rows: Vec<&[u8]> = (0..(PROBE_STRIPES * PROBE_ROWS) as usize)
+            .map(|y| std::slice::from_raw_parts((m.pData as *const u8).add(y * m.RowPitch as usize), self.w as usize))
+            .collect();
+        let r = dark_share(&rows);
+        ctx.Unmap(&self.tex, 0);
+        r
+    }
+}
+
+/// Share (0-100) of 64-pixel cells darker than luma 48 (TV range, ~15 % grey) in PROBE_ROWS-row stripes.
+/// None when it reads as all zero: TV-range luma is never below 16, so the copy didn't happen.
+fn dark_share(rows: &[&[u8]]) -> Option<u32> {
+    let cells_x = rows.first()?.len() / 64;
+    let (mut dark, mut cells, mut sum, mut count) = (0u32, 0u32, 0u64, 0u64);
+    for stripe in rows.chunks(PROBE_ROWS as usize) {
+        for cx in 0..cells_x {
+            let (mut s, mut n) = (0u64, 0u64);
+            for row in stripe {
+                for x in (cx * 64..cx * 64 + 64).step_by(4) {
+                    s += row[x] as u64;
+                    n += 1;
+                }
+            }
+            dark += (s < 48 * n) as u32;
+            cells += 1;
+            sum += s;
+            count += n;
+        }
+    }
+    if cells == 0 || sum < 8 * count {
+        return None;
+    }
+    Some(dark * 100 / cells)
+}
+
+/// The encoder's maximum QP for dark scenes; 51 = no cap.
+struct DarkCap {
+    cap: u32,
+    floor: u32,
+    /// lowest cap allowed in this dark stretch: raised above a cap that pushed the output to the ceiling, so a busy
+    /// night scene doesn't pump (cap on -> over the ceiling -> off -> starved -> on ...; seen at a 6 Mbps max)
+    low: u32,
+    /// the average bitrate the encoder aims for and its ceiling (bits/s)
+    mean: u64,
+    peak: u64,
+}
+
+impl DarkCap {
+    fn new(mean: u32, peak: u32, quality: u32) -> Self {
+        let floor = if quality <= 72 { 16 } else if quality <= 82 { 15 } else { 14 };
+        DarkCap { cap: 51, floor, low: floor, mean: mean as u64, peak: peak as u64 }
+    }
+
+    /// Revise the cap from the dark share and the encoder's output over the last second; Some(new cap) on a change.
+    fn step(&mut self, dark_pct: Option<u32>, rate_bps: u64) -> Option<u32> {
+        let old = self.cap;
+        self.cap = if dark_pct.map_or(true, |p| p < 60) {
+            self.low = self.floor;
+            51
+        } else if rate_bps * 5 > self.peak * 4 {
+            // close to the ceiling: busy enough without help - and never this low again in this dark stretch
+            if self.cap < 51 { self.low = self.low.max(self.cap + 2); }
+            51
+        } else if rate_bps * 2 < self.mean {
+            if self.low >= 28 { 51 } else if self.cap > 24 { 24.max(self.low) } else { (self.cap - 1).max(self.low) }
+        } else if rate_bps > self.mean {
+            if self.cap >= 28 { 51 } else { self.cap + 2 }
+        } else {
+            self.cap
+        };
+        (self.cap != old).then_some(self.cap)
+    }
+}
+
+#[cfg(test)]
+mod dark_tests {
+    use super::*;
+
+    /// A busy night scene whose output grows as the cap goes down: the cap must settle, not pump on and off.
+    #[test]
+    fn busy_dark_scene_settles() {
+        let (mean, peak) = (3_600_000u32, 6_000_000u32);
+        let mut d = DarkCap::new(mean, peak, 72);
+        // output of this scene at a cap: 1 Mbps uncapped, +0.6 Mbps per step below 24
+        let rate = |cap: u32| if cap >= 24 { 1_000_000u64 } else { 1_000_000 + (24 - cap as u64) * 600_000 };
+        let mut offs = 0;
+        for _ in 0..200 {
+            let r = rate(d.cap);
+            if let Some(51) = d.step(Some(95), r) { offs += 1; }
+        }
+        assert!(offs <= 2, "cap switched off {offs} times");
+        assert!(d.cap < 24 && rate(d.cap) * 5 <= peak as u64 * 4, "settled at {} ({} bps)", d.cap, rate(d.cap));
+        // the scene turns bright: no cap, and the next dark stretch starts from the normal floor again
+        assert_eq!(d.step(Some(10), 1_000_000), Some(51));
+        assert_eq!(d.low, d.floor);
+    }
+
+    /// A starved dark scene that stays cheap goes down to the floor and stays there.
+    #[test]
+    fn starved_dark_scene_reaches_floor() {
+        let mut d = DarkCap::new(12_000_000, 20_000_000, 72);
+        for _ in 0..40 { d.step(Some(95), 2_000_000); }
+        assert_eq!(d.cap, 16);
+    }
+
+    #[test]
+    fn dark_share_counts_dark_cells_and_rejects_zeros() {
+        let dark = vec![20u8; 128];
+        let bright = vec![120u8; 128];
+        let rows: Vec<&[u8]> = (0..PROBE_ROWS).map(|_| &dark[..]).chain((0..PROBE_ROWS).map(|_| &bright[..])).collect();
+        assert_eq!(dark_share(&rows), Some(50));
+        let zeros = vec![0u8; 128];
+        let z: Vec<&[u8]> = (0..PROBE_ROWS).map(|_| &zeros[..]).collect();
+        assert_eq!(dark_share(&z), None);
+    }
+}
+
+/// Encoder output of the last 4 x DARK_EVERY frames, as bits per second.
+struct RateWin {
+    buckets: [u64; 4],
+    i: usize,
+}
+
+impl RateWin {
+    fn add(&mut self, bytes: usize) {
+        self.buckets[self.i] += bytes as u64;
+    }
+    /// close the current bucket; returns the rate over the window
+    fn roll(&mut self, fps: u32) -> u64 {
+        let total: u64 = self.buckets.iter().sum();
+        self.i = (self.i + 1) % self.buckets.len();
+        self.buckets[self.i] = 0;
+        total * 8 * fps as u64 / (self.buckets.len() as u64 * DARK_EVERY)
+    }
+}
+
+/// Where the encoder's NV12 frames come from: the screen (Capture), or decoded test frames (encode_test).
+trait FrameSrc {
+    fn device(&self) -> &ID3D11Device;
+    fn ctx(&self) -> &ID3D11DeviceContext;
+    fn luid(&self) -> LUID;
+    fn vendor(&self) -> u32;
+    fn out_w(&self) -> u32;
+    fn out_h(&self) -> u32;
+    /// take the newest frame
+    fn grab(&mut self);
+    /// that frame as NV12 in pool slot `i`
+    fn convert(&self, i: usize) -> Result<&ID3D11Texture2D, String>;
+}
+
+impl FrameSrc for Capture {
+    fn device(&self) -> &ID3D11Device { &self.device }
+    fn ctx(&self) -> &ID3D11DeviceContext { &self.ctx }
+    fn luid(&self) -> LUID { self.luid }
+    fn vendor(&self) -> u32 { self.vendor }
+    fn out_w(&self) -> u32 { self.out_w }
+    fn out_h(&self) -> u32 { self.out_h }
+    fn grab(&mut self) { Capture::grab(self) }
+    fn convert(&self, i: usize) -> Result<&ID3D11Texture2D, String> { Capture::convert(self, i) }
+}
+
+/// Test hook: the encoder "refuses" every max QP below 51 (the dark-scene boost must switch itself off)
+#[doc(hidden)]
+pub static TEST_REFUSE_MAX_QP: AtomicBool = AtomicBool::new(false);
+
 struct Encoder {
     mft: IMFTransform,
     api: Option<ICodecAPI>,
     events: IMFMediaEventGenerator,
     _mgr: IMFDXGIDeviceManager,
+    /// the average bitrate it aims for (bits/s)
+    mean_bps: u32,
+    /// the encoder takes a maximum QP (CODECAPI_AVEncVideoMaxQP) - the dark-scene cap needs it
+    max_qp: bool,
 }
 
 unsafe fn set_codec(api: &ICodecAPI, key: &GUID, v: u32) {
@@ -1040,7 +1271,7 @@ unsafe fn try_rate_mode(api: &ICodecAPI, m: eAVEncCommonRateControlMode) -> bool
 }
 
 impl Encoder {
-    fn new(cap: &Capture, fps: u32, bitrate: u32, gop: u32, codec: &str, smart: bool, quality: u32, log: Log) -> Result<Self, String> {
+    fn new(cap: &impl FrameSrc, fps: u32, bitrate: u32, gop: u32, codec: &str, smart: bool, quality: u32, log: Log) -> Result<Self, String> {
         unsafe {
             let (subtype, cname) = match codec {
                 "hevc" => (MFVideoFormat_HEVC, "HEVC"),
@@ -1051,7 +1282,7 @@ impl Encoder {
             let mut acts: *mut Option<IMFActivate> = std::ptr::null_mut();
             let mut count = 0u32;
             // 1) the encoder on the same GPU as the capture (needed with two GPUs, e.g. NVIDIA + Intel/AMD)
-            let luid = [cap.luid.LowPart.to_le_bytes(), (cap.luid.HighPart as u32).to_le_bytes()].concat();
+            let luid = [cap.luid().LowPart.to_le_bytes(), (cap.luid().HighPart as u32).to_le_bytes()].concat();
             let mut attrs = None;
             if MFCreateAttributes(&mut attrs, 1).is_ok() {
                 if let Some(a) = &attrs {
@@ -1072,7 +1303,7 @@ impl Encoder {
             }
             let list = std::slice::from_raw_parts_mut(acts, count as usize);
             // prefer the capture GPU's vendor (VEN_1002 AMD, VEN_10DE NVIDIA, VEN_8086 Intel), else the first
-            let want = format!("VEN_{:04X}", cap.vendor);
+            let want = format!("VEN_{:04X}", cap.vendor());
             let vendor_of = |a: &IMFActivate| {
                 let mut buf = [0u16; 64];
                 let mut n = 0u32;
@@ -1099,7 +1330,7 @@ impl Encoder {
             let mut mgr = None;
             MFCreateDXGIDeviceManager(&mut token, &mut mgr).map_err(e("DXGIDeviceManager"))?;
             let mgr = mgr.ok_or("no device manager")?;
-            mgr.ResetDevice(&cap.device, token).map_err(e("ResetDevice"))?;
+            mgr.ResetDevice(cap.device(), token).map_err(e("ResetDevice"))?;
             mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize)
                 .map_err(e("SET_D3D_MANAGER"))?;
 
@@ -1129,7 +1360,7 @@ impl Encoder {
                 set_codec(&api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
             }
 
-            let size = ((cap.out_w as u64) << 32) | cap.out_h as u64;
+            let size = ((cap.out_w() as u64) << 32) | cap.out_h() as u64;
             let rate = ((fps as u64) << 32) | 1;
             let ot = MFCreateMediaType().map_err(e("MFCreateMediaType"))?;
             ot.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(e("out major"))?;
@@ -1175,8 +1406,17 @@ impl Encoder {
             let events: IMFMediaEventGenerator = mft.cast().map_err(e("event generator"))?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0).map_err(e("BEGIN_STREAMING"))?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).map_err(e("START_OF_STREAM"))?;
-            Ok(Encoder { mft, api, events, _mgr: mgr })
+            let max_qp = api.as_ref().map_or(false, |a| a.IsSupported(&CODECAPI_AVEncVideoMaxQP).is_ok());
+            Ok(Encoder { mft, api, events, _mgr: mgr, mean_bps: avg_target, max_qp })
         }
+    }
+
+    /// Change the maximum QP while encoding (dark scenes); false if the encoder refused it.
+    fn set_max_qp(&self, qp: u32) -> bool {
+        if qp != 51 && TEST_REFUSE_MAX_QP.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.api.as_ref().map_or(false, |a| unsafe { a.SetValue(&CODECAPI_AVEncVideoMaxQP, &VARIANT::from(qp)).is_ok() })
     }
 
     /// Ask for an IDR frame (segments can only be cut on keyframes).
@@ -1251,55 +1491,9 @@ pub fn run(pipe: Pipe, stop: Arc<AtomicBool>, o: Opts, log: Log) {
             MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(e("MFStartup"))?;
         }
         let pool = 8;
-        let fps = o.fps;
-        let gop = o.gop;
         let mut cap = Capture::new(pool, &o, log)?;
-        log(&format!("gpu: capturing {}x{} -> {}x{} @{}fps (zero-copy)", cap.width, cap.height, cap.out_w, cap.out_h, fps));
-        let enc = Encoder::new(&cap, fps, o.bitrate_mbps * 1_000_000, gop, &o.codec, o.smart_bitrate, o.smart_quality, log)?;
-
-        unsafe {
-            if let Err(err) = ConnectNamedPipe(pipe, None) {
-                if err.code() != ERROR_PIPE_CONNECTED.to_hresult() {
-                    return Err(format!("ConnectNamedPipe: {err}"));
-                }
-            }
-        }
-        log("gpu: ffmpeg connected, encoding");
-
-        let frame = Duration::from_secs_f64(1.0 / fps as f64);
-        let dur = 10_000_000i64 / fps as i64;
-        let start = Instant::now();
-        let mut n: u64 = 0;
-        let mut out = Vec::with_capacity(1 << 20);
-        while !stop.load(Ordering::Relaxed) {
-            let ev = unsafe { enc.events.GetEvent(MF_EVENT_FLAG_NONE) }.map_err(e("GetEvent"))?;
-            let kind = unsafe { ev.GetType() }.map_err(e("GetType"))?;
-            if kind == METransformNeedInput.0 as u32 {
-                // pace to real time
-                let due = start + frame * n as u32;
-                let now = Instant::now();
-                if due > now {
-                    std::thread::sleep(due - now);
-                } else if now - due > frame * 2 {
-                    LATE.fetch_add(1, Ordering::Relaxed);
-                }
-                FRAMES.fetch_add(1, Ordering::Relaxed);
-                cap.grab();
-                let tex = cap.convert((n as usize) % pool)?;
-                if n % gop as u64 == 0 {
-                    enc.force_key();
-                }
-                enc.feed(tex, n as i64 * dur, dur)?;
-                n += 1;
-            } else if kind == METransformHaveOutput.0 as u32 {
-                out.clear();
-                enc.drain(&mut out)?;
-                if !out.is_empty() && !write_all(pipe, &out) {
-                    return Ok(()); // ffmpeg exited
-                }
-            }
-        }
-        Ok(())
+        log(&format!("gpu: capturing {}x{} -> {}x{} @{}fps (zero-copy)", cap.width, cap.height, cap.out_w, cap.out_h, o.fps));
+        encode(&mut cap, pool, pipe, &stop, &o, log)
     })();
     if let Err(err) = res {
         log(&format!("gpu: failed: {err}"));
@@ -1307,4 +1501,204 @@ pub fn run(pipe: Pipe, stop: Arc<AtomicBool>, o: Opts, log: Log) {
     unsafe {
         let _ = CloseHandle(pipe);
     }
+}
+
+/// The encoder loop: frames from `cap` -> hardware encoder -> `pipe`, paced to real time, until `stop` or the reader
+/// (ffmpeg) goes away.
+fn encode(cap: &mut impl FrameSrc, pool: usize, pipe: HANDLE, stop: &AtomicBool, o: &Opts, log: Log) -> Result<(), String> {
+    let fps = o.fps;
+    let gop = o.gop;
+    let enc = Encoder::new(cap, fps, o.bitrate_mbps * 1_000_000, gop, &o.codec, o.smart_bitrate, o.smart_quality, log)?;
+    // dark scenes get a lower max QP while the encoder starves them (see DarkProbe)
+    let mut probe = if enc.max_qp { unsafe { DarkProbe::new(cap.device(), cap.out_w(), cap.out_h()) } } else { None };
+    if probe.is_none() {
+        log(if enc.max_qp { "gpu: dark-scene boost off (no frame probe)" } else { "gpu: dark-scene boost off (encoder has no max QP)" });
+    }
+    let mut dark = DarkCap::new(enc.mean_bps, o.bitrate_mbps * 1_000_000, o.smart_quality);
+    let mut win = RateWin { buckets: [0; 4], i: 0 };
+    let (mut dark_logs, mut unread) = (0u32, 0u32);
+    // what the dark-scene checks cost (CPU time on this thread), logged when recording stops
+    let (mut checks, mut check_time) = (0u32, Duration::ZERO);
+
+    unsafe {
+        if let Err(err) = ConnectNamedPipe(pipe, None) {
+            if err.code() != ERROR_PIPE_CONNECTED.to_hresult() {
+                return Err(format!("ConnectNamedPipe: {err}"));
+            }
+        }
+    }
+    log("gpu: ffmpeg connected, encoding");
+
+    let frame = Duration::from_secs_f64(1.0 / fps as f64);
+    let dur = 10_000_000i64 / fps as i64;
+    let start = Instant::now();
+    let mut n: u64 = 0;
+    let mut out = Vec::with_capacity(1 << 20);
+    while !stop.load(Ordering::Relaxed) {
+        let ev = unsafe { enc.events.GetEvent(MF_EVENT_FLAG_NONE) }.map_err(e("GetEvent"))?;
+        let kind = unsafe { ev.GetType() }.map_err(e("GetType"))?;
+        if kind == METransformNeedInput.0 as u32 {
+            // pace to real time
+            let due = start + frame * n as u32;
+            let now = Instant::now();
+            if due > now {
+                std::thread::sleep(due - now);
+            } else if now - due > frame * 2 {
+                LATE.fetch_add(1, Ordering::Relaxed);
+            }
+            FRAMES.fetch_add(1, Ordering::Relaxed);
+            cap.grab();
+            let tex = cap.convert((n as usize) % pool)?;
+            if n % DARK_EVERY == 0 {
+                let mut off = None;
+                if let Some(p) = probe.as_mut() {
+                    let t0 = Instant::now();
+                    let share = unsafe { p.read(cap.ctx()) };
+                    unsafe { p.sample(cap.ctx(), tex) };
+                    let rate = win.roll(fps);
+                    // a driver that can't copy parts of an NV12 frame reads as all zero: stop after 2 s of that
+                    unread = if share.is_some() || n == 0 { 0 } else { unread + 1 };
+                    if unread >= 8 {
+                        off = Some("frames can't be read back".to_string());
+                    }
+                    if let Some(q) = dark.step(share, rate) {
+                        let ok = enc.set_max_qp(q);
+                        if !ok {
+                            off = Some(format!("encoder refused max QP {q}"));
+                        } else if dark_logs < 20 && (q == 24 || q == 51) {
+                            // the start and end of a dark stretch (the steps in between would fill the log)
+                            dark_logs += 1;
+                            log(&format!("gpu: dark scene {}%, {:.1} Mbps -> max QP {q}", share.unwrap_or(0), rate as f64 / 1e6));
+                        }
+                    }
+                    checks += 1;
+                    check_time += t0.elapsed();
+                }
+                if let Some(why) = off {
+                    log(&format!("gpu: dark-scene boost off ({why})"));
+                    let _ = enc.set_max_qp(51);
+                    probe = None;
+                }
+            }
+            if n % gop as u64 == 0 {
+                enc.force_key();
+            }
+            enc.feed(tex, n as i64 * dur, dur)?;
+            n += 1;
+        } else if kind == METransformHaveOutput.0 as u32 {
+            out.clear();
+            enc.drain(&mut out)?;
+            win.add(out.len());
+            if !out.is_empty() && !write_all(pipe, &out) {
+                break; // ffmpeg exited
+            }
+        }
+    }
+    if checks > 0 {
+        log(&format!("gpu: {n} frames; dark-scene checks: {checks}, {:.0} us each (CPU)",
+            check_time.as_secs_f64() * 1e6 / checks as f64));
+    }
+    Ok(())
+}
+
+/// Test hook: raw NV12 frames (w x h, read from `frames`) uploaded to GPU textures, standing in for the screen.
+struct TestFrames {
+    device: ID3D11Device,
+    ctx: ID3D11DeviceContext,
+    luid: LUID,
+    vendor: u32,
+    w: u32,
+    h: u32,
+    pool: Vec<ID3D11Texture2D>,
+    staging: ID3D11Texture2D,
+    frames: Box<dyn std::io::Read + Send>,
+    buf: Vec<u8>,
+    /// set when the frames run out
+    done: Arc<AtomicBool>,
+}
+
+impl FrameSrc for TestFrames {
+    fn device(&self) -> &ID3D11Device { &self.device }
+    fn ctx(&self) -> &ID3D11DeviceContext { &self.ctx }
+    fn luid(&self) -> LUID { self.luid }
+    fn vendor(&self) -> u32 { self.vendor }
+    fn out_w(&self) -> u32 { self.w }
+    fn out_h(&self) -> u32 { self.h }
+    fn grab(&mut self) {
+        if self.frames.read_exact(&mut self.buf).is_err() {
+            self.done.store(true, Ordering::Relaxed);
+        }
+    }
+    fn convert(&self, i: usize) -> Result<&ID3D11Texture2D, String> {
+        unsafe {
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            self.ctx.Map(&self.staging, 0, D3D11_MAP_WRITE, 0, Some(&mut m)).map_err(e("Map staging"))?;
+            let w = self.w as usize;
+            for y in 0..self.h as usize * 3 / 2 {
+                std::ptr::copy_nonoverlapping(self.buf.as_ptr().add(y * w), (m.pData as *mut u8).add(y * m.RowPitch as usize), w);
+            }
+            self.ctx.Unmap(&self.staging, 0);
+            let t = &self.pool[i % self.pool.len()];
+            self.ctx.CopyResource(t, &self.staging);
+            Ok(t)
+        }
+    }
+}
+
+/// Test hook (headless end-to-end test, echo-core example `gpucap_test`): the recorder's real encoder loop (`encode`)
+/// fed with raw NV12 frames (w x h) from `frames` instead of the screen, on the GPU with the most video memory.
+/// Writes the encoded stream into `pipe` (the caller reads it); returns when the frames run out.
+#[doc(hidden)]
+pub fn encode_test(frames: Box<dyn std::io::Read + Send>, w: u32, h: u32, pipe: Pipe, o: Opts, log: Log) -> Result<(), String> {
+    let pipe = HANDLE(pipe.0 as _);
+    let r = (|| -> Result<(), String> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).map_err(e("MFStartup"))?;
+            let fac: IDXGIFactory1 = CreateDXGIFactory1().map_err(e("DXGIFactory"))?;
+            let mut best: Option<(IDXGIAdapter1, DXGI_ADAPTER_DESC1)> = None;
+            let mut i = 0;
+            while let Ok(a) = fac.EnumAdapters1(i) {
+                let d = a.GetDesc1().map_err(e("GetDesc1"))?;
+                if best.as_ref().map_or(true, |(_, b)| d.DedicatedVideoMemory > b.DedicatedVideoMemory) {
+                    best = Some((a, d));
+                }
+                i += 1;
+            }
+            let (adapter, desc) = best.ok_or("no GPU")?;
+            let (mut dev, mut ctx) = (None, None);
+            D3D11CreateDevice(&adapter, D3D_DRIVER_TYPE_UNKNOWN, HMODULE::default(),
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION,
+                Some(&mut dev), None, Some(&mut ctx)).map_err(e("D3D11CreateDevice"))?;
+            let (device, ctx): (ID3D11Device, ID3D11DeviceContext) = (dev.ok_or("no device")?, ctx.ok_or("no context")?);
+            if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+                let _ = mt.SetMultithreadProtected(true);
+            }
+            let td = D3D11_TEXTURE2D_DESC {
+                Width: w, Height: h, MipLevels: 1, ArraySize: 1, Format: DXGI_FORMAT_NV12,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32, CPUAccessFlags: 0, MiscFlags: 0,
+            };
+            let mut pool = Vec::new();
+            for _ in 0..8 {
+                let mut t = None;
+                device.CreateTexture2D(&td, None, Some(&mut t)).map_err(e("CreateTexture2D"))?;
+                pool.push(t.ok_or("no texture")?);
+            }
+            let sd = D3D11_TEXTURE2D_DESC { Usage: D3D11_USAGE_STAGING, BindFlags: 0, CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32, ..td };
+            let mut st = None;
+            device.CreateTexture2D(&sd, None, Some(&mut st)).map_err(e("CreateTexture2D staging"))?;
+            let done = Arc::new(AtomicBool::new(false));
+            let mut src = TestFrames {
+                device, ctx, luid: desc.AdapterLuid, vendor: desc.VendorId, w, h, pool, staging: st.ok_or("no staging")?,
+                frames, buf: vec![0; (w * h * 3 / 2) as usize], done: done.clone(),
+            };
+            log(&format!("gpu: TEST frames {w}x{h} @{}fps", o.fps));
+            encode(&mut src, 8, pipe, &done, &o, log)
+        }
+    })();
+    unsafe {
+        let _ = CloseHandle(pipe);
+    }
+    r
 }

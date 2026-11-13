@@ -81,10 +81,6 @@ export struct ThemeCard {
     text: color,
 }
 
-export struct ThemeLine {
-    items: [ThemeCard],
-}
-
 export global S {
     in property <[SNav]> nav;
     in property <string> sec: "hotkeys";
@@ -98,7 +94,7 @@ export global S {
     in property <string> qmin;
     in property <string> qclip;
     in property <string> qcliplbl;
-    in property <[ThemeLine]> themes;
+    in property <[ThemeCard]> themes;
     in property <bool> listening;
     in-out property <string> query;
     callback pick(string);
@@ -514,8 +510,8 @@ export component RowView inherits Rectangle {
     in property <bool> wide;
     in property <length> tw: 200px;
     property <length> desc-max: root.wide ? 640px : 100000px;
-    // theme cards on a wide page: how much the 4 cards per line grow (1 = today's 200 px card)
-    property <float> ts: root.wide ? max(1, (root.width - 36px) / 800px) : 1;
+    // theme cards (13 Nov 2026, William's idea 1): a fixed height, the mini preview 1.2x the old 200 px card's
+    property <float> ts: 1.2;
     property <bool> plain: r.kind != "ecplans" && r.kind != "seg" && r.kind != "presets" && r.kind != "themes" && r.kind != "usage" && r.kind != "game" && r.kind != "path" && r.kind != "info";
     property <[color]> pal: [T.accent, #3ddc97, #4fb8f0, #f0a93a, #e0609e, #8a96a8, #f07a1a, #6a6ff0];
     lay := VerticalLayout {
@@ -1014,75 +1010,75 @@ export component RowView inherits Rectangle {
                 }
             }
         }
-        // .themegrid: 4 cards per line
-        if root.r.kind == "themes": VerticalLayout {
-            spacing: 12px;
-            for line in S.themes: HorizontalLayout {
-                spacing: 12px;
-                for c in line.items: Rectangle {
-                    horizontal-stretch: 1;
-                    max-width: root.wide ? 100000px : 200px; // D natural: wide page -> the 4 cards fill the line, the preview grows evenly (ts)
-                    height: 70px * root.ts + 34px; // 104 px at ts 1
-                    border-radius: 12px;
-                    border-width: c.on ? 2px : 1px;
-                    border-color: c.on ? T.accent : tca.has-hover ? T.hover : T.line;
-                    background: T.bg;
-                    // tiny preview of the app in this theme
+        // .themegrid (13 Nov 2026, William's idea 1 + full rows): fit = how many 175 px cards + 12 px gaps fit; the
+        // columns are the largest of 12 / 8 / 6 / 4 that fits (below 4: fit), so the 24 cards always make full rows -
+        // never 5 or 7. The cards widen to fill the row; rows fill left to right. Same rule as Aimdot's ThemeGrid.
+        if root.r.kind == "themes": Rectangle {
+            property <length> gap: 12px;
+            property <int> fit: max(1, floor((self.width + self.gap) / (175px + self.gap)));
+            property <int> cols: self.fit >= 12 ? 12 : self.fit >= 8 ? 8 : self.fit >= 6 ? 6 : self.fit >= 4 ? 4 : self.fit;
+            property <length> cw: (self.width - (self.cols - 1) * self.gap) / self.cols;
+            property <length> ch: 70px * root.ts + 34px;
+            height: ceil(S.themes.length / self.cols) * (self.ch + self.gap) - self.gap;
+            for c[i] in S.themes: Rectangle {
+                x: mod(i, parent.cols) * (parent.cw + parent.gap);
+                y: floor(i / parent.cols) * (parent.ch + parent.gap);
+                width: parent.cw;
+                height: parent.ch;
+                border-radius: 12px;
+                border-width: c.on ? 2px : 1px;
+                border-color: c.on ? T.accent : tca.has-hover ? T.hover : T.line;
+                background: T.bg;
+                // tiny preview of the app in this theme
+                Rectangle {
+                    x: 8px * root.ts;
+                    y: 8px * root.ts;
+                    width: parent.width - 16px * root.ts;
+                    height: 62px * root.ts;
+                    border-radius: 7px * root.ts;
+                    background: c.bg;
+                    clip: true;
                     Rectangle {
-                        x: 8px * root.ts;
-                        y: 8px * root.ts;
-                        width: parent.width - 16px * root.ts;
-                        height: 62px * root.ts;
-                        border-radius: 7px * root.ts;
-                        background: c.bg;
-                        clip: true;
+                        x: 0;
+                        width: parent.width * 0.26;
+                        background: c.rail;
+                        for i in 3: Rectangle {
+                            x: 5px * root.ts;
+                            y: (8px + i * 10px) * root.ts;
+                            width: parent.width - 10px * root.ts;
+                            height: 5px * root.ts;
+                            border-radius: 2px;
+                            background: i == 0 ? c.accent : c.panel;
+                        }
+                    }
+                    for i in 2: Rectangle {
+                        x: parent.width * 0.26 + 8px * root.ts + i * (parent.width * 0.74 - 16px * root.ts) / 2;
+                        y: 12px * root.ts;
+                        width: (parent.width * 0.74 - 24px * root.ts) / 2;
+                        height: 40px * root.ts;
+                        border-radius: 4px * root.ts;
+                        background: c.panel;
                         Rectangle {
-                            x: 0;
-                            width: parent.width * 0.26;
-                            background: c.rail;
-                            for i in 3: Rectangle {
-                                x: 5px * root.ts;
-                                y: (8px + i * 10px) * root.ts;
-                                width: parent.width - 10px * root.ts;
-                                height: 5px * root.ts;
-                                border-radius: 2px;
-                                background: i == 0 ? c.accent : c.panel;
-                            }
+                            x: 5px * root.ts;
+                            y: parent.height - 10px * root.ts;
+                            width: parent.width * 0.5;
+                            height: 4px * root.ts;
+                            border-radius: 2px;
+                            background: i == 0 ? c.accent : c.text.with-alpha(0.3);
                         }
-                        for i in 2: Rectangle {
-                            x: parent.width * 0.26 + 8px * root.ts + i * (parent.width * 0.74 - 16px * root.ts) / 2;
-                            y: 12px * root.ts;
-                            width: (parent.width * 0.74 - 24px * root.ts) / 2;
-                            height: 40px * root.ts;
-                            border-radius: 4px * root.ts;
-                            background: c.panel;
-                            Rectangle {
-                                x: 5px * root.ts;
-                                y: parent.height - 10px * root.ts;
-                                width: parent.width * 0.5;
-                                height: 4px * root.ts;
-                                border-radius: 2px;
-                                background: i == 0 ? c.accent : c.text.with-alpha(0.3);
-                            }
-                        }
-                    }
-                    Text {
-                        x: 10px;
-                        y: 70px * root.ts + 6px;
-                        text: c.name;
-                        font-size: 12.5px;
-                        font-weight: (c.on ? 600 : 500) + T.fw;
-                        color: c.on ? T.text : T.muted;
-                    }
-                    tca := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { S.set("theme", c.id); }
                     }
                 }
-                // fill a short last line so cards keep their width
-                for i in (4 - line.items.length): Rectangle {
-                    horizontal-stretch: 1;
-                    max-width: root.wide ? 100000px : 200px;
+                Text {
+                    x: 10px;
+                    y: 70px * root.ts + 6px;
+                    text: c.name;
+                    font-size: 12.5px;
+                    font-weight: (c.on ? 600 : 500) + T.fw;
+                    color: c.on ? T.text : T.muted;
+                }
+                tca := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { S.set("theme", c.id); }
                 }
             }
         }

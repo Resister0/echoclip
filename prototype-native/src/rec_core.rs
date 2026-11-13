@@ -446,6 +446,8 @@ pub fn quit() {
         r.shutdown();
     }
     crate::tray::stop();
+    // the anonymous numbers since the last update check (setup.rs, 3 s at most)
+    crate::setup::report_on_quit();
     let _ = slint::quit_event_loop();
 }
 
@@ -468,7 +470,12 @@ pub fn run(app: &AppWindow) {
     app.window().on_close_requested(move || match w.upgrade() { Some(a) => close_requested(&a), None => slint::CloseRequestResponse::HideWindow });
     let autostarted = std::env::args().any(|a| a == "--autostart");
     let tray_start = autostarted && crate::tray::exists() && rec().is_some_and(|r| { let c = r.settings(); c.start_minimized || c.close_to_tray });
-    if !tray_start {
+    // test hook ECHO_OFFSCREEN=<w>x<h> (popup.rs): that size, never maximized (it would land on a real screen)
+    let off = std::env::var("ECHO_OFFSCREEN").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))));
+    if let Some((w, h)) = off {
+        app.window().set_size(slint::PhysicalSize::new(w, h));
+        let _ = app.show();
+    } else if !tray_start {
         let _ = app.show();
         open_maximized(app);
     }

@@ -1388,6 +1388,30 @@ pub const FIT_ENCS: [&[&str]; 4] = [
     &["-c:v", "libx264", "-preset", "veryfast"],
 ];
 
+/// Night / dark clips (12 Nov 2026): 70 % of the picture darker than luma 48 (~15 % grey) on the clip's keyframes
+/// (FiveM night clips 80-92 %, a dusk drive 65 %, daytime 15-35 %).
+/// Small copies smear dark low-contrast detail into blocks first, so their shrinks spend a bit more there (AQ, a
+/// finer QP). Decodes only keyframes at 32x18: ~0.3 s for a short clip, ~2 s for a 3-minute one. False when unsure.
+pub fn clip_is_dark(ff: &dyn Fn() -> Command, src: &Path) -> bool {
+    let o = ff().args(["-hide_banner", "-loglevel", "error", "-nostdin", "-skip_frame", "nokey", "-i"]).arg(src)
+        .args(["-map", "0:v:0", "-vf", "scale=32:18:flags=area,format=gray", "-fps_mode", "passthrough", "-frames:v", "150",
+               "-f", "rawvideo", "-"])
+        .stdin(Stdio::null()).stderr(Stdio::null()).output();
+    let px = o.map(|o| o.stdout).unwrap_or_default();
+    px.len() >= 32 * 18 && px.iter().filter(|&&v| v < 48).count() * 100 >= px.len() * 70
+}
+
+/// Extra encoder options for a dark clip's shrunk copy: adaptive quantization, which gives flat dark areas more bits
+/// (AMF VBAQ: measured on an RX 9070 XT, 720p Discord copies: dark +0.2-0.8 dB XPSNR, bright -0.2 dB - so dark clips
+/// only). Ignored in constant-QP mode. ⚠ NVENC spatial AQ not tried (no NVIDIA here); callers retry without it.
+pub fn dark_aq(venc: &[&str]) -> &'static [&'static str] {
+    match venc.get(1).copied() {
+        Some(e) if e.ends_with("_amf") => &["-vbaq", "1"],
+        Some(e) if e.ends_with("_nvenc") => &["-spatial-aq", "1"],
+        _ => &[],
+    }
+}
+
 /// a clip's length in seconds, from the file itself
 pub fn probe_len(clip: &Path) -> Option<f64> {
     let o = hidden("ffprobe").args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(clip).output().ok()?;
@@ -1405,6 +1429,7 @@ pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path,
     let mb = limit as f64 / 1e6;
     let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let aim = limit as f64 * FIT_AIM;
+    let dark = clip_is_dark(ff, src);
     let mut dur = dur;
     let (mut scale, mut enc, mut best, mut passes, mut prev) = (1.0f64, None::<usize>, 0u64, 0usize, None::<(f64, u64)>);
     let t0 = Instant::now();
@@ -1429,7 +1454,7 @@ pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path,
         vf.push(TV_YUV.into());
         let ek = v_kbps * fit_under();
         let (b, buf, ab) = (format!("{}k", ek as u64), format!("{}k", (ek * 2.0) as u64), format!("{}k", a_kbps as u64));
-        let run = |venc: &[&str]| -> Result<bool, String> {
+        let run = |venc: &[&str], aq: &[&str]| -> Result<bool, String> {
             if skip_enc(venc) { return Ok(false); }
             let mut c = ff();
             c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(src).args(["-map", "0:v:0", "-map", "0:a:0?"]);
@@ -1437,7 +1462,7 @@ pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path,
                 Some(w) => { c.args(["-vf", &format!("[in]{}[v0];{w}", vf.join(","))]); }
                 None => { c.args(["-vf", &vf.join(",")]); }
             }
-            c.args(venc).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
+            c.args(venc).args(aq).args(["-b:v", &b, "-maxrate", &b, "-bufsize", &buf, "-pix_fmt", "yuv420p"]).args(TV_TAGS);
             if audio { c.args(["-c:a", "aac", "-b:a", &ab, "-ac", "2"]); }
             let mut child = c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(tmp)
                 .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(err)?;
@@ -1458,7 +1483,9 @@ pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path,
         let order: Vec<usize> = enc.into_iter().chain((0..encs.len()).filter(|i| Some(*i) != enc)).collect();
         let mut ok = false;
         for i in order {
-            if run(encs[i])? {
+            // a dark clip tries the encoder with AQ first, then without (a driver that doesn't take the option)
+            let aq = if dark { dark_aq(encs[i]) } else { &[] };
+            if (!aq.is_empty() && run(encs[i], aq)?) || run(encs[i], &[])? {
                 enc = Some(i);
                 ok = true;
                 break;
@@ -1472,8 +1499,8 @@ pub fn fit_to_size(ff: &dyn Fn() -> Command, src: &Path, tmp: &Path, out: &Path,
         let got = fs::metadata(tmp).map(|m| m.len()).unwrap_or(u64::MAX);
         // the copy's own length: when the clip's length was read wrong, every bitrate above was off by as much
         let real = probe_len(tmp).filter(|r| (r / dur - 1.0).abs() > 0.05);
-        log_line(&format!("shrink: {name} -> {:.1} MB ({:.0} % of {mb} MB, {v_kbps:.0} kbps, {th}p, {}, pass {passes}{}) in {:.1}s",
-            got as f64 / 1e6, got as f64 * 100.0 / limit as f64, enc.map_or("?", |i| encs[i][1]),
+        log_line(&format!("shrink: {name} -> {:.1} MB ({:.0} % of {mb} MB, {v_kbps:.0} kbps, {th}p, {}{}, pass {passes}{}) in {:.1}s",
+            got as f64 / 1e6, got as f64 * 100.0 / limit as f64, enc.map_or("?", |i| encs[i][1]), if dark { ", dark clip" } else { "" },
             real.map_or(String::new(), |r| format!(", length {dur:.1}s was wrong: {r:.1}s")), t0.elapsed().as_secs_f32()));
         if got <= limit && got > best {
             let _ = fs::remove_file(out);

@@ -169,6 +169,16 @@ pub fn wire(app: &AppWindow, store: Rc<RefCell<Store>>, r: Refresh) {
             }
         }
     });
+    // stats-early (13 Nov 2026): the 30 s check has no minutes measured yet, so a session shorter than the 2 h repeat
+    // never sent its numbers; one more check after 10 minutes (report_on_quit covers the quit)
+    slint::Timer::single_shot(Duration::from_secs(10 * 60), {
+        let w = w.clone();
+        move || {
+            if let Some(a) = w.upgrade() {
+                check_updates(&a, false);
+            }
+        }
+    });
     let t = slint::Timer::default();
     t.start(slint::TimerMode::Repeated, Duration::from_secs(2 * 3600), move || {
         if let Some(a) = w.upgrade() {
@@ -563,6 +573,26 @@ fn whats_new(a: &AppWindow) {
         let older: Vec<(String, String)> = list.into_iter().filter(|(v, _)| *v != top.0).collect();
         fill_older(&a, &older, true);
     });
+}
+
+/// stats-on-quit (13 Nov 2026): the anonymous numbers normally ride along with the update check, so the minutes since
+/// the last check were lost when Echo quit. Quitting sends them in one request (same fields as the check, 3 s at most,
+/// the answer is ignored). Nothing when switched off or nothing was measured; dev builds (0.1.0) never report.
+pub fn report_on_quit() {
+    let cur = version();
+    if cur == "0.1.0" {
+        return;
+    }
+    let q = crate::perf::query();
+    if q.is_empty() {
+        return;
+    }
+    let os = if cfg!(windows) { "windows" } else { "linux" };
+    let url = format!("{}/update/{os}/x86_64/{cur}{q}", crate::lib_net::ec_api());
+    match crate::lib_net::request("GET", &url, vec![], None, 3) {
+        Ok((code, _)) => echo_core::recorder::log_line(&format!("stats: sent on quit ({code})")),
+        Err(e) => echo_core::recorder::log_line(&format!("stats: not sent on quit ({e})")),
+    }
 }
 
 pub fn check_updates(a: &AppWindow, by_hand: bool) {

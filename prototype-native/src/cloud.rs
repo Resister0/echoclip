@@ -197,6 +197,50 @@ fn busy_end(rel: &str) {
     BUSY.with(|b| b.borrow_mut().remove(&rel.to_lowercase()));
 }
 
+/// 12 Nov 2026: Echo itself has the clip's file open right now - a share link / upload is sending it (or making its
+/// smaller / H.264 copy first), or it's coming down from the cloud. Windows refuses to rename or move an open file,
+/// which showed "The clip is open in another program (a video player or editor)" after ~4 s of retrying.
+pub fn clip_busy(rel: &str) -> bool {
+    let k = rel.to_lowercase();
+    LINKING.with(|s| s.borrow().contains(&k))
+        || LOCAL_JOBS.with(|j| j.borrow().contains_key(&k))
+        || echo_core::recorder::UP_PROGRESS.lock().is_ok_and(|p| !p.rel.is_empty() && p.rel.eq_ignore_ascii_case(rel))
+}
+
+/// rename / move a clip Echo is uploading: done once the upload (and its link) is finished instead of failing. A
+/// renamed or moved clip keeps its share link (the server's /move points the link at the new name, af26f1e).
+/// `f` runs at once when none of `rels` is busy; else `msg` says it waits, and `f` runs when they're free.
+pub fn when_free(a: &AppWindow, rels: Vec<String>, msg: &str, f: impl FnOnce(&AppWindow) + 'static) {
+    if !rels.iter().any(|r| clip_busy(r)) {
+        return f(a);
+    }
+    crate::notes::say(crate::notes::Kind::Info, msg);
+    let w = a.as_weak();
+    let f = RefCell::new(Some(f));
+    let t = Rc::new(slint::Timer::default());
+    let t2 = Rc::downgrade(&t);
+    let started = std::time::Instant::now();
+    t.start(slint::TimerMode::Repeated, Duration::from_millis(400), move || {
+        // (half an hour at most: then it's tried anyway and says why it can't)
+        if rels.iter().any(|r| clip_busy(r)) && started.elapsed() < Duration::from_secs(1800) {
+            return;
+        }
+        if let Some(t) = t2.upgrade() {
+            t.stop();
+        }
+        WAITS.with(|v| v.borrow_mut().retain(|x| !x.running()));
+        if let (Some(a), Some(f)) = (w.upgrade(), f.borrow_mut().take()) {
+            f(&a);
+        }
+    });
+    WAITS.with(|v| v.borrow_mut().push(t));
+}
+
+thread_local! {
+    /// when_free's timers (kept alive until their clip is free)
+    static WAITS: RefCell<Vec<Rc<slint::Timer>>> = const { RefCell::new(vec![]) };
+}
+
 /// Echo's wmHint (once ever): after the first share link, say the small Echo logo can be switched off
 pub fn wm_hint(a: &AppWindow, kind: &str) {
     let c = cfg();

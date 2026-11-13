@@ -27,18 +27,24 @@ fn first_fire() -> bool {
     true
 }
 /// A save key pressed while Echo's own window is in front (sent by the window, keys as in the settings).
+/// 13 Nov 2026: the native Echo sends every key pressed in its window (ownkeys.rs), not only save keys: the hook
+/// never fired while Echo was the foreground window. Every hotkey id goes through (Show / hide, bookmark, ...).
 pub fn ui_press(keys: &str) {
     if paused() { return; }
-    let want = parse(keys, 0);
-    let secs = COMBOS.lock().ok().and_then(|c| c.iter()
-        .find(|c| c.vk == want.vk && c.ctrl == want.ctrl && c.alt == want.alt && c.shift == want.shift && c.win == want.win)
-        .map(|c| c.seconds));
-    if let Some(secs) = secs {
+    if let Some(secs) = find(keys) {
         if first_fire() {
             crate::recorder::log_line(&format!("hotkey: {keys} pressed in Echo's window"));
             std::thread::spawn(move || if let Some(cb) = CB.get() { cb(secs) });
         }
     }
+}
+/// The registered hotkey (its id / seconds) for a combo text as Settings saves it ("Alt+F12"), if any.
+pub fn find(keys: &str) -> Option<u32> {
+    let want = parse(keys, 0);
+    if want.vk == 0 { return None; }
+    COMBOS.lock().ok().and_then(|c| c.iter()
+        .find(|c| c.vk == want.vk && c.ctrl == want.ctrl && c.alt == want.alt && c.shift == want.shift && c.win == want.win)
+        .map(|c| c.seconds))
 }
 fn parse(keys: &str, seconds: u32) -> Combo {
     let mut c = Combo { ctrl: false, alt: false, shift: false, win: false, vk: 0, seconds };

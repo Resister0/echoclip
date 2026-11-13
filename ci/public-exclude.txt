@@ -29,3 +29,4 @@
 /src-tauri/gen/
 # 9 Nov 2026: prototype-native IS published now - the Windows installer is built from it (ci/public-build.yml)
 /prototype-native/target/
+/discord-bot/

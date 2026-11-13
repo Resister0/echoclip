@@ -3,6 +3,15 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.9 - 13 Nov
+- Settings > Appearance: theme cards fill whole rows at any window size, and four new themes: Coral, Plum, Mono (all greys) and Sand
+- Night and dark scenes keep much more detail: while most of the picture is dark, Echo gives it more of the bitrate (AMD on Windows first). Copy for Discord and Echo Cloud copies of dark clips look better too
+- Old error messages no longer pop up again next to a new job
+- Renaming or moving a clip while its share link is being made now waits until the upload is done instead of failing
+- Anonymous performance numbers are also sent after 10 minutes and when Echo quits, so short sessions count
+- The Show / hide Echo key hides Echo again when it's on screen (since 2.0.7 it only showed it, e.g. over a game)
+- All of Echo's keys (save clip, screenshot, bookmark, Show / hide, ...) work again while Echo's own window is in front
+
 ## 2.0.8 - 12 Nov
 - Clips from your other PCs stream from Echo Cloud instead of downloading by themselves ("Get clips from my other PCs" is now off; turn it on in Settings if you want copies on every PC), and the cloud loading bar moves smoothly
 - New Echo logo in the watermark, the installer and the Echo Cloud sign-in page. New installs use the "echoclip.link" watermark

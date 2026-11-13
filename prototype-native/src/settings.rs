@@ -9,7 +9,7 @@
 //! The page itself is one table (`section()`), mirroring ui/index.html's #page-settings: titles, texts, options and
 //! hints are copied from there. Slint draws whatever rows the table returns, so search, dimmed rows and live
 //! values all come from this one place.
-use crate::{SBox, SNav, SOpt, SRow, ThemeCard, ThemeLine};
+use crate::{SBox, SNav, SOpt, SRow, ThemeCard};
 use serde_json::{json, Map, Value};
 use slint::{Color, ModelRc, SharedString, VecModel};
 use std::path::PathBuf;
@@ -1655,7 +1655,7 @@ pub fn on_colour(fill: &str) -> &'static str {
     }
 }
 
-const THEMES: [(&str, &str, &str, &str, [&str; 3], &str); 19] = [
+const THEMES: [(&str, &str, &str, &str, [&str; 3], &str); 23] = [
     ("", "Violet", "#7c5cff", "#9d85ff", ["#8b6cff", "#6a4cf5", "#4f7bff"], "#0d0d10"),
     ("ocean", "Ocean", "#2fa8e0", "#7cc9f0", ["#4cc3f0", "#2f8fe0", "#3b5cf0"], "#0b0e12"),
     ("ember", "Ember", "#f07a1a", "#ffa154", ["#ffa154", "#f07a1a", "#e0484a"], "#100d0b"),
@@ -1668,6 +1668,13 @@ const THEMES: [(&str, &str, &str, &str, [&str; 3], &str); 19] = [
     ("lime", "Lime", "#8fcf3c", "#b8e57e", ["#c5ef8a", "#8fcf3c", "#2fae6f"], "#0c0f0a"),
     ("gold", "Gold", "#e0a93a", "#f0cb7a", ["#f5d68a", "#e0a93a", "#c06a2a"], "#100e0a"),
     ("midnight", "Midnight", "#6a6ff0", "#a3a6fa", ["#a3a6fa", "#6a6ff0", "#3a3fb8"], "#08080f"),
+    // 13 Nov 2026: four more everyday themes = the same 24 cards as Aimdot. Coral = Aimdot's own look (its exact values,
+    // Aimdot settings/src/theme.rs). Text on the accent (on_colour): Coral white (3.1:1, like Aimdot), Plum white
+    // (4.2:1), Mono near-black on the light grey (15:1, all greys - only the yellow highlight stays), Sand near-black (9.8:1)
+    ("coral", "Coral", "#ef6a4c", "#f49782", ["#ff8f6b", "#ef6a4c", "#e0485e"], "#0d0d10"),
+    ("plum", "Plum", "#c13fd6", "#dc8ae9", ["#d77ae6", "#c13fd6", "#7f2fc0"], "#140d16"),
+    ("mono", "Mono", "#e4e4e7", "#f4f4f5", ["#ffffff", "#e4e4e7", "#a1a1aa"], "#0b0b0c"),
+    ("sand", "Sand", "#d2b48c", "#e6d2b4", ["#ecdcc0", "#d2b48c", "#a0805a"], "#14120e"),
     ("christmas", "Christmas", "#e0484a", "#f08a8a", ["#f08a8a", "#e0484a", "#2f9e5a"], "#0a100c"),
     ("autumn", "Autumn", "#e07a2a", "#f0a868", ["#f5c27a", "#e07a2a", "#a8402a"], "#110d09"),
     ("halloween", "Halloween", "#f08a1a", "#ffb15a", ["#ffb15a", "#f08a1a", "#8a3ae0"], "#0e0a12"),
@@ -1825,8 +1832,8 @@ pub fn theme_vars(id: &str, accent: &str, bg: &str, hi_c: &str) -> Palette {
     }
 }
 
-/// the theme cards, 4 per line (Echo's .themegrid)
-pub fn theme_lines(cur: &str, accent: &str, bg: &str, hi: &str) -> ModelRc<ThemeLine> {
+/// the theme cards (Echo's .themegrid); settings.slint lays them out as many per row as fit (13 Nov 2026)
+pub fn theme_cards(cur: &str, accent: &str, bg: &str, hi: &str) -> ModelRc<ThemeCard> {
     let mut all: Vec<(&str, &str)> = THEMES.iter().map(|t| (t.0, t.1)).collect();
     all.push(("custom", "Custom"));
     let cards: Vec<ThemeCard> = all
@@ -1836,8 +1843,7 @@ pub fn theme_lines(cur: &str, accent: &str, bg: &str, hi: &str) -> ModelRc<Theme
             ThemeCard { id: (*id).into(), name: (*name).into(), on: *id == cur, bg: p.bg, rail: p.rail, panel: p.panel, accent: p.accent, text: p.text }
         })
         .collect();
-    let lines: Vec<ThemeLine> = cards.chunks(4).map(|c| ThemeLine { items: ModelRc::new(VecModel::from(c.to_vec())) }).collect();
-    ModelRc::new(VecModel::from(lines))
+    ModelRc::new(VecModel::from(cards))
 }
 
 // ---------- keys ----------

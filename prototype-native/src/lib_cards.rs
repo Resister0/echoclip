@@ -355,6 +355,15 @@ pub fn move_ui(a: &AppWindow, lib: &Rc<LibModel>, ids: Vec<usize>, folder: Strin
         crate::toast(a, "Already in that folder");
         return;
     }
+    // 12 Nov 2026: one of them is being uploaded for a share link right now (Windows won't move an open file): moved
+    // once that's done (move_ui again then: the checks above run fresh)
+    let busy: Vec<String> = todo.iter().map(|&i| crate::cloud::rel_of(&lib.clip(i))).filter(|r| crate::cloud::clip_busy(r)).collect();
+    if !busy.is_empty() {
+        let msg = if todo.len() == 1 { "Moving it once its upload is done - the share link keeps working" } else { "Moving them once the upload is done - share links keep working" };
+        let lib = lib.clone();
+        crate::cloud::when_free(a, busy, msg, move |a| move_ui(a, &lib, todo, folder, sync));
+        return;
+    }
     // the hover flipbook doesn't hold the file, but the player (mpv) does: let go of it first
     a.global::<Flip>().set_row(-1);
     let wait = if a.get_player_open() && !a.global::<crate::Ed>().get_open() {
@@ -401,6 +410,9 @@ fn snap_hook(app: &AppWindow) {
                 win.dispatch_event(E::PointerMoved { position });
                 win.dispatch_event(E::PointerPressed { position, button });
                 win.dispatch_event(E::PointerReleased { position, button });
+            } else if let ("size", [w, h]) = (verb, &v[..]) {
+                // 13 Nov 2026: "size w h" = window size in physical px (ECHO_OFFSCREEN test copies)
+                win.set_size(slint::PhysicalSize::new(*w as u32, *h as u32));
             } else if let ("wheel", [x, y, dy]) = (verb, &v[..]) {
                 let position = slint::LogicalPosition::new(*x, *y);
                 win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
@@ -551,27 +563,33 @@ pub fn wire(app: &AppWindow, lib: Rc<LibModel>, sync: Rc<dyn Fn(bool)>) {
             if v.is_empty() || v == c.name || v == c.shown {
                 return;
             }
-            // the player / editor holds the file: close the player first (not the editor - it has its own project)
-            if a.get_player_open() && a.global::<crate::Ed>().get_open() {
-                crate::toast(&a, "Close the editor first, then rename the clip");
-                return;
-            }
-            let reopen = a.get_player_open();
-            if reopen {
-                a.global::<Play>().invoke_close();
-            }
-            let (w, lib, sync, v) = (a.as_weak(), lib.clone(), sync.clone(), v.to_string());
-            // r2-threads (L13): the file rename (it waits up to ~4 s on a locked file) runs on a worker
-            let l2 = lib.clone();
-            slint::Timer::single_shot(Duration::from_millis(if reopen { 250 } else { 0 }), move || l2.rename_clip_bg(idx, &v, move |res| {
-                let Some(a) = w.upgrade() else { return };
-                match res {
-                    Ok(_) => crate::toast(&a, "Renamed"),
-                    Err(e) => crate::toast(&a, e),
+            // 12 Nov 2026: a share link / upload is sending this clip right now (Windows won't rename an open file):
+            // renamed once it's done - the link keeps working
+            let (lib, sync, v) = (lib.clone(), sync.clone(), v.to_string());
+            let msg = format!("Renaming \"{}\" once its upload is done - the share link keeps working", c.shown);
+            crate::cloud::when_free(&a, vec![crate::cloud::rel_of(&c)], &msg, move |a| {
+                // the player / editor holds the file: close the player first (not the editor - it has its own project)
+                if a.get_player_open() && a.global::<crate::Ed>().get_open() {
+                    crate::toast(a, "Close the editor first, then rename the clip");
+                    return;
                 }
-                lib.refresh();
-                sync(false);
-            }));
+                let reopen = a.get_player_open();
+                if reopen {
+                    a.global::<Play>().invoke_close();
+                }
+                let w = a.as_weak();
+                // r2-threads (L13): the file rename (it waits up to ~4 s on a locked file) runs on a worker
+                let l2 = lib.clone();
+                slint::Timer::single_shot(Duration::from_millis(if reopen { 250 } else { 0 }), move || l2.rename_clip_bg(idx, &v, move |res| {
+                    let Some(a) = w.upgrade() else { return };
+                    match res {
+                        Ok(_) => crate::toast(&a, "Renamed"),
+                        Err(e) => crate::toast(&a, e),
+                    }
+                    lib.refresh();
+                    sync(false);
+                }));
+            });
         });
     }
 }
