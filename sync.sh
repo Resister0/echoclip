@@ -9,11 +9,14 @@ if [ -d ../.git ]; then
     git -C .. pull -q --rebase --autostash && git -C .. push -q && echo "Sonela master: synced"; } ||
     echo "(Sonela master: sync failed - the app sync goes on)"
 fi
-git switch -q main 2>/dev/null || true
-git pull -q --rebase --autostash origin main
+# 17 Nov 2026: syncs the branch you're on (main, or beta / dev for the update channels)
+BR=$(git rev-parse --abbrev-ref HEAD); [ "$BR" != HEAD ] || { git switch -q main 2>/dev/null || true; BR=main; }
+if git ls-remote --exit-code --heads origin "$BR" >/dev/null 2>&1; then
+  git pull -q --rebase --autostash origin "$BR"
+fi
 mkdir -p .github/workflows && cp ci/build.yml .github/workflows/build.yml
 git add -A
 git add -f "Claude outputs" 2>/dev/null || true
 git commit -q -m "Sync (Linux)" || echo "(nothing new to save)"
-git push -q origin HEAD:main
+git push -q origin "HEAD:$BR"
 echo "Saved to GitHub - no release. On Windows: sync.cmd (or publish.cmd to release)."

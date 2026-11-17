@@ -1229,10 +1229,12 @@ async function countPerf(req, env, url, os, version) {
       }
     }
     if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp")]);
-    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const at = now(), base = [at, utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc")];
-    await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st)));
+    // ce / rce are for all states together: each state row carries them (averages weigh by minutes, so it adds up)
+    const own = [q.has("ce") ? int("ce", 1000) : null, q.has("rce") ? int("rce", 1000) : null, str("encn")];
+    await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st, ...own)));
   } catch (e) { console.log("perf report error", e && e.message); }
 }
 
@@ -1267,20 +1269,35 @@ async function perfStats(env) {
       ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10, 2) AS cpu, ROUND(SUM(m * n) * 1.0 / NULLIF(SUM(n), 0)) AS mem,
       ROUND(SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10, 2) AS rcpu, ROUND(SUM(rm * rn) * 1.0 / NULLIF(SUM(rn), 0)) AS rmem,
       ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak,
-      ROUND(SUM(g * n) * 1.0 / NULLIF(SUM(CASE WHEN g IS NOT NULL THEN n END), 0)) AS vram, MAX(gp) AS vram_peak`;
+      ROUND(SUM(g * n) * 1.0 / NULLIF(SUM(CASE WHEN g IS NOT NULL THEN n END), 0)) AS vram, MAX(gp) AS vram_peak,
+      ROUND(SUM(ce * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_self,
+      ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_split,
+      ROUND(SUM(rce * rn) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_self,
+      ROUND(SUM(CASE WHEN rce IS NOT NULL THEN rc * rn END) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_split`;
     const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
     const cols = { gpu: "gpu", cpu: "cpu", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
+    // 17 Nov 2026: PCs whose recorder fell back to ffmpeg's CPU copy (specs.rs adds "(CPU copy)" to the encoder name)
+    // cost far more CPU and diluted the zero-copy numbers. Every table + tile below is the GPU path only; the
+    // "Capture path" table (all rows) shows both side by side.
+    const GPU = "AND (enc IS NULL OR enc NOT LIKE '%(CPU copy)%')";
+    const pathCol = "CASE WHEN enc LIKE '%(CPU copy)%' THEN 'CPU copy fallback' WHEN enc IS NULL OR enc = '' THEN 'Not recording / unknown' ELSE 'Zero-copy GPU' END";
     // one round trip: per table the all-states rows + the per-state rows, then the totals
     const qs = [];
     for (const col of Object.values(cols)) {
-      qs.push(env.DB.prepare(`SELECT ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY ${col} ORDER BY pcs DESC, mins DESC LIMIT 20`).bind(from));
-      qs.push(env.DB.prepare(`SELECT state AS st, ${col} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY state, ${col}`).bind(from));
+      qs.push(env.DB.prepare(`SELECT ${col} AS k, ${agg} FROM perf WHERE day >= ? ${GPU} GROUP BY ${col} ORDER BY pcs DESC, mins DESC LIMIT 20`).bind(from));
+      qs.push(env.DB.prepare(`SELECT state AS st, ${col} AS k, ${agg} FROM perf WHERE day >= ? ${GPU} GROUP BY state, ${col}`).bind(from));
     }
-    qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ?`).bind(from));
-    qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? GROUP BY state`).bind(from));
-    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state FROM perf ORDER BY at DESC, rowid LIMIT 40"));
+    qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ? ${GPU}`).bind(from));
+    qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? ${GPU} GROUP BY state`).bind(from));
+    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn FROM perf ORDER BY at DESC, rowid LIMIT 40"));
+    // [15] the capture paths side by side (every row), [16] each GPU-path PC-day's CPU for the typical-PC median
+    qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY k ORDER BY pcs DESC`).bind(from));
+    qs.push(env.DB.prepare(`SELECT SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10 AS cpu, SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10 AS rcpu FROM perf WHERE day >= ? ${GPU} GROUP BY day || h`).bind(from));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
-    const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14] };
+    const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); if (!v.length) return null;
+      const m = v.length >> 1; return Math.round((v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2) * 100) / 100; };
+    const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14],
+      path: res[15], median_cpu: median(res[16].map((r) => r.cpu)), median_rcpu: median(res[16].map((r) => r.rcpu)) };
     for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
     Object.keys(cols).forEach((name, i) => {
       out[name] = res[i * 2];
@@ -1764,6 +1781,9 @@ async function migrate(env) {
   if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
   // VRAM (12 Nov 2026): graphics-card memory MB, average / peak; NULL = not measured (Linux, Echo before 2.0.7)
   for (const c of ["g", "gp"]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} INTEGER`).run();
+  // 17 Nov 2026 (Echo 2.0.11+): Echo's own process CPU % x10 (all / recording minutes; the rest is its ffmpeg) and the
+  // exact encoder of the zero-copy pipeline (Windows). NULL = older Echo
+  for (const [c, type] of [["ce", "INTEGER"], ["rce", "INTEGER"], ["encn", "TEXT"]]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} ${type}`).run();
   // faster-share-links: what kind of file Echo uploaded (upload(): small / orig / keep; NULL = older Echo, unknown)
   const ocols = new Set(((await env.DB.prepare("PRAGMA table_info(objects)").all()).results || []).map((c) => c.name));
   if (!ocols.has("fmt")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN fmt TEXT").run();
@@ -2129,6 +2149,37 @@ const ghFetch = (env, url, accept, auth = true) => fetch(url, {
 });
 const publicRepo = (env) => env.PUBLIC_REPO || "Resister0/echoclip";
 const privateRepo = (env) => env.GITHUB_REPO || "Resister0/echo";
+// ----- update channels (17 Nov 2026): stable (default) / beta / dev -----
+// stable = the release "latest" exactly as before. beta / dev = their own GitHub releases (tags "beta" / "dev",
+// built from the public repo's beta / dev branches) that the release job pushes here with {channel}. Echo asks
+// /update/...?ch=beta|dev; dev also needs the header x-echo-code = secret DEV_CODE. A wrong / missing code, an
+// unknown channel or no DEV_CODE set = stable, so nothing changes for anyone who doesn't opt in.
+const CHANNELS = ["stable", "beta", "dev"];
+const CHANNEL_ROW = { stable: 1, beta: 2, dev: 3 };   // pushedrel.id (stable keeps id 1 = the old row)
+const CHANNEL_TAG = { stable: "latest", beta: "beta", dev: "dev" };
+function sameSecret(got, want) {
+  got = String(got || ""); want = String(want || "");
+  if (want.length < 6 || got.length !== want.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ got.charCodeAt(i);
+  return diff === 0;
+}
+/// the channel this request may use: "beta" for anyone who asks, "dev" only with the right code, else "stable"
+function channelOf(req, url, env) {
+  const ch = String(url.searchParams.get("ch") || "").toLowerCase();
+  if (ch === "beta") return "beta";
+  if (ch === "dev" && sameSecret(req.headers.get("x-echo-code"), env.DEV_CODE)) return "dev";
+  return "stable";
+}
+/// the channels whose builds a channel is offered: each channel + every more stable one (nobody gets stuck behind)
+const channelsFor = (ch) => ch === "dev" ? ["dev", "beta"] : ch === "beta" ? ["beta"] : [];
+/// POST /channel/check {code} -> {ok} (Settings > Update channel checks the dev code before saving it)
+async function channelCheck(req, env) {
+  if (!(await allow(env, `chcheck:${ipOf(req)}`, 10, 3600))) return fail("Too many tries - wait an hour", 429);
+  const b = await body(req);
+  return json({ ok: sameSecret(String(b.code || "").trim(), env.DEV_CODE) });
+}
+
 /// the GitHub release "latest" of one repo (cached 2 min), or null
 async function releaseOf(env, repo, isPublic) {
   // the public build tells us about each release itself (POST /release/push) - no GitHub lookup needed
@@ -2213,15 +2264,17 @@ async function releaseFromWeb(repo) {
 const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
 /// the release the public build pushed last (D1 table pushedrel, cached 30 s per Worker copy), or null.
 /// While a new build is replacing "latest" its files are briefly gone - the push only arrives once they're up.
-let pushedCache = { at: 0, rel: null };
-async function pushedRelease(env) {
-  if (now() - pushedCache.at < 30) return pushedCache.rel;
+// one entry per channel ("stable" = pushedrel id 1, the row it always used)
+const pushedCache = new Map();
+async function pushedRelease(env, channel = "stable") {
+  const c = pushedCache.get(channel);
+  if (c && now() - c.at < 30) return c.rel;
   let rel = null;
   try {
-    const row = await env.DB.prepare("SELECT rel FROM pushedrel WHERE id = 1").first();
+    const row = await env.DB.prepare("SELECT rel FROM pushedrel WHERE id = ?").bind(CHANNEL_ROW[channel] || 1).first();
     if (row) rel = JSON.parse(row.rel);
   } catch { /* table not there yet = never pushed */ }
-  pushedCache = { at: now(), rel };
+  pushedCache.set(channel, { at: now(), rel });
   return rel;
 }
 /// POST /release/push from the public repo's release job, header x-release-key = secret RELEASE_KEY
@@ -2235,29 +2288,40 @@ async function releasePush(req, env) {
   const b = await req.json().catch(() => null);
   const v = b && String(b.version || "");
   if (!/^\d+\.\d+\.\d+$/.test(v) || !Array.isArray(b.files)) return fail("bad release", 400);
-  const repo = publicRepo(env), sigs = b.sigs || {};
+  // update channels (17 Nov 2026): no channel = stable = exactly the old behaviour
+  const channel = b.channel === undefined || b.channel === "" ? "stable" : String(b.channel);
+  if (!CHANNELS.includes(channel)) return fail("bad channel", 400);
+  const repo = publicRepo(env), sigs = b.sigs || {}, tag = CHANNEL_TAG[channel];
   const notes = String(b.notes || "").split("\n")[0].trim().slice(0, 600);
   const assets = b.files.map(String).filter((n) => /^[A-Za-z0-9._-]{1,80}$/.test(n)).map((n) => ({
-    id: `push:${v}:${n}`, name: n, sig_text: typeof sigs[n] === "string" ? sigs[n].trim().slice(0, 4000) : undefined,
-    browser_download_url: `https://github.com/${repo}/releases/download/latest/${encodeURIComponent(n)}` }));
+    id: `push:${channel}:${v}:${n}`, name: n, sig_text: typeof sigs[n] === "string" ? sigs[n].trim().slice(0, 4000) : undefined,
+    browser_download_url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(n)}` }));
+  if (channel === "stable") for (const a of assets) a.id = `push:${v}:${a.name}`;   // same ids as before
   const at = now();
   const rel = { name: `Echo ${v}`, body: `Built from: ${notes}`, published_at: new Date(at * 1000).toISOString(),
-    created_at: new Date(at * 1000).toISOString(), public: true, pushed: true, assets };
+    created_at: new Date(at * 1000).toISOString(), public: true, pushed: true, channel, assets };
   await env.DB.prepare("CREATE TABLE IF NOT EXISTS pushedrel (id INTEGER PRIMARY KEY, rel TEXT NOT NULL, at INTEGER NOT NULL)").run();
-  await env.DB.prepare("INSERT OR REPLACE INTO pushedrel (id, rel, at) VALUES (1, ?, ?)").bind(JSON.stringify(rel), at).run();
+  await env.DB.prepare("INSERT OR REPLACE INTO pushedrel (id, rel, at) VALUES (?, ?, ?)").bind(CHANNEL_ROW[channel], JSON.stringify(rel), at).run();
+  pushedCache.set(channel, { at: now(), rel });
+  // beta / dev builds stay out of the changelog, What's new and the admin's "newest version"
+  if (channel !== "stable") {
+    console.log("release: pushed", channel, v, assets.length, "files");
+    return json({ ok: true, version: v, files: assets.length, channel });
+  }
   try {
     await env.DB.prepare("CREATE TABLE IF NOT EXISTS releases (version TEXT PRIMARY KEY, notes TEXT NOT NULL, at INTEGER NOT NULL, sha TEXT)").run();
     if (notes) await env.DB.prepare("INSERT OR IGNORE INTO releases (version, notes, at, sha) VALUES (?, ?, ?, NULL)").bind(v, notes, at).run();
   } catch {}
-  pushedCache = { at: now(), rel };
   console.log("release: pushed", v, assets.length, "files");
   return json({ ok: true, version: v, files: assets.length });
 }
 /// newest release that has `file` (and its .sig when `withSig`); "private" = only the private repo
-async function release(env, file, withSig, only) {
+async function release(env, file, withSig, only, channel = "stable") {
   const rels = [];
   if (only !== "private") rels.push(await releaseOf(env, publicRepo(env), true));
   rels.push(await releaseOf(env, privateRepo(env), false));
+  // beta / dev: their own builds compete with stable's - the newest one wins (stable newer = back on stable)
+  for (const ch of channelsFor(channel)) rels.push(await pushedRelease(env, ch));
   const has = (rel, n) => (rel.assets || []).some((a) => a.name === n);
   let best = null;
   for (const rel of rels) {
@@ -2367,7 +2431,7 @@ function newer(a, b) {
   return false;
 }
 const sigCache = new Map();
-async function update(env, target, current) {
+async function update(env, target, current, channel = "stable") {
   const what = UPDATE_FILES[target];
   // 9 Nov 2026: 2.0.72 was an internal test build (downloadable for a few hours) before the real 2.0.0 - the
   // numbering restarted at 2.0.0, so treat that one build as older or it would never be offered 2.0.x
@@ -2377,8 +2441,16 @@ async function update(env, target, current) {
   const none = (why) => new Response(null, { status: 204, headers: { "x-echo-why": why || "current" } });
   if (!what) return none("unknown-os");
   const file = DOWNLOADS[what];
-  const rel = await release(env, file, true);   // still building / unsigned build -> not offered
+  const rel = await release(env, file, true, undefined, channel);   // still building / unsigned build -> not offered
   const version = relVersion(rel);
+  // a beta / dev build: offered as it is (the changelog table, pause / hide and "#" internal texts are stable's)
+  if (rel && rel.channel && rel.channel !== "stable" && newer(version, current)) {
+    const sig = rel.assets.find((a) => a.name === `${file}.sig`);
+    if (!sig || !sig.sig_text) return none("no-signature");
+    const notes = ((rel.body || "").match(/Built from: (.*)/) || [])[1] || "";
+    const url = rel.assets.find((a) => a.name === file).browser_download_url;
+    return json({ version, notes: notes.replace(/^#\s*/, ""), pub_date: rel.published_at || rel.created_at, url, signature: sig.sig_text.trim(), channel: rel.channel });
+  }
   if (!version || !newer(version, current)) {
     // is there a newer real release in the changelog table than what GitHub's lookup gave us? = stale answer
     let why = !version ? "no-release" : "current";
@@ -2611,7 +2683,7 @@ export default {
         if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
         if (url.searchParams.has("m")) { const p = countPerf(req, env, url, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         if (url.searchParams.get("first") === "1") { const p = countInstall(req, env, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
-        const res = await update(env, um[1], um[3]);
+        const res = await update(env, um[1], um[3], channelOf(req, url, env));
         const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
         if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         return res;
@@ -2626,6 +2698,7 @@ export default {
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
       if (route === "POST /release/push") return await releasePush(req, env);
+      if (route === "POST /channel/check") return await channelCheck(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
       if (route === "POST /admin/release") return await adminRelease(req, env);
       if (route === "POST /admin/profile-takedown") return await profileTakedown(req, env);

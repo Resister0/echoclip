@@ -115,6 +115,49 @@ pub fn act(a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, act: &str) ->
         }
         "feedback" => feedback(a, &store.borrow().s("ec_email")),
         "sendlog" => send_log(a, &store.borrow()),
+        // update channels (17 Nov 2026): Stable / Beta / Dev (dev = testers, the code is checked by the server first)
+        "channel" => {
+            let (store, r) = (store.clone(), r.clone());
+            let save = move |a: &AppWindow, store: &Rc<RefCell<Store>>, r: &Refresh, ch: &str, pass: &str| {
+                // the write's borrow must end before r() reads the store again (RefCell)
+                let res = store.borrow_mut().write(&[("update_channel", json!(if ch == "stable" { "" } else { ch })), ("channel_pass", json!(pass))]);
+                match res {
+                    Ok(()) => {
+                        crate::toast(a, format!("Update channel: {}", crate::setup::channel_label(ch)));
+                        r();
+                        crate::setup::check_updates(a, true);
+                    }
+                    Err(e) => crate::toast(a, e),
+                }
+            };
+            crate::ask(
+                a,
+                "Update channel",
+                "Stable is the normal Echo. Beta gets new versions a little earlier. Dev is for testers and needs a code from the developer.\n\nGoing back to Stable: you keep the version you have until Stable gets a newer one.",
+                &[("Cancel", "", ""), ("Stable", "stable", ""), ("Beta", "beta", ""), ("Dev…", "dev", "primary")],
+                None,
+                "",
+                move |a, v, _| match v.as_str() {
+                    "stable" | "beta" => save(a, &store, &r, &v, ""),
+                    "dev" => {
+                        crate::ask(a, "Dev code", "Type the code you got from the developer.", &[("Cancel", "", ""), ("OK", "ok", "primary")], Some("code"), "ok", move |a, v, code| {
+                            let code = code.trim().to_string();
+                            if v != "ok" || code.is_empty() {
+                                return;
+                            }
+                            crate::toast(a, "Checking the code…");
+                            let c2 = code.clone();
+                            crate::lib_net::call_ui(a, "POST", "/channel/check", String::new(), Some(json!({ "code": code })), move |a, res| match res {
+                                Ok(j) if j["ok"].as_bool() == Some(true) => save(a, &store, &r, "dev", &c2),
+                                Ok(_) => crate::toast(a, "That code isn't right - ask the developer for it again"),
+                                Err(e) => crate::toast(a, format!("Couldn't check the code: {e}")),
+                            });
+                        });
+                    }
+                    _ => {}
+                },
+            );
+        }
         "selftest" => self_test(a, r),
         // gaps-settings: Echo's themeReset - back to the normal theme, own colours cleared (quietly, like Echo)
         "themereset" => {

@@ -209,6 +209,10 @@ pub struct Settings {
     pub theme_bg: String,
     /// small highlight colour (progress bars, trim handles…), custom theme only; "" = yellow
     pub theme_hi: String,
+    /// update channel (17 Nov 2026): "" = stable (everyone), "beta", "dev" (testers, needs channel_pass)
+    pub update_channel: String,
+    /// the shared dev-channel code the server checks (sent as x-echo-code). "pass" in the name = left out of Send log
+    pub channel_pass: String,
 }
 
 impl Default for Settings {
@@ -321,6 +325,8 @@ impl Default for Settings {
             cloud_since: 0,
             capture: "screen".into(),
             codec: "h264".into(),
+            update_channel: String::new(),
+            channel_pass: String::new(),
         }
     }
 }

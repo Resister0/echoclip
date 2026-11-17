@@ -50,6 +50,10 @@ pub fn create_pipe(name: &str) -> Result<Pipe, String> {
     Ok(Pipe(h.0 as isize))
 }
 
+/// 17 Nov 2026: the Media Foundation encoder the zero-copy pipeline runs on ("Intel® Quick Sync Video H.264 Encoder
+/// MFT", ...), for the anonymous performance numbers (specs.rs): which driver's encoder a PC with high CPU really uses.
+pub static ENCODER_NAME: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 /// Live counters for the health check: frames sent to the encoder, and frames that were late
 /// (the capture loop fell more than 2 frames behind real time, i.e. the GPU / game was too busy).
 pub static FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1315,7 +1319,11 @@ impl Encoder {
             let mut name_buf = [0u16; 256];
             let mut name_len = 0u32;
             let _ = act.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
-            log(&format!("gpu: {cname} encoder '{}' ({})", String::from_utf16_lossy(&name_buf[..name_len as usize]), vendor_of(&act)));
+            let ename = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+            log(&format!("gpu: {cname} encoder '{ename}' ({})", vendor_of(&act)));
+            if let Ok(mut n) = ENCODER_NAME.lock() {
+                *n = ename.trim().to_string();
+            }
             let mft: IMFTransform = act.ActivateObject().map_err(e("ActivateObject"))?;
             for a in list.iter_mut() {
                 drop(a.take());

@@ -1342,8 +1342,21 @@ impl Store {
             _ => {
                 // gaps-settings: Echo's #updstate under the version ("Checking…", "You have the newest version.", …)
                 let (upd_sub, upd_btn) = crate::setup::upd_state();
+                // update channels (17 Nov 2026): the version line says which channel, the row below changes it
+                let ch = match self.s("update_channel").as_str() { "beta" => "beta", "dev" => "dev", _ => "stable" };
+                let ver = if ch == "stable" { format!("Echo {}", crate::lib_set::app_version()) } else { format!("Echo {} · {}", crate::lib_set::app_version(), crate::setup::channel_label(ch)) };
                 let about = vec![
-                    self.button(&format!("Echo {}", crate::lib_set::app_version()), &upd_sub, &upd_btn, "updates"),
+                    self.button(&ver, &upd_sub, &upd_btn, "updates"),
+                    self.button(
+                        "Update channel",
+                        match ch {
+                            "beta" => "Beta - new versions a little earlier than everyone else.",
+                            "dev" => "Dev - test builds for testers. Can be less stable.",
+                            _ => "Stable - the normal Echo everyone gets.",
+                        },
+                        crate::setup::channel_label(ch),
+                        "channel",
+                    ),
                     // r2-perf: lives in native_ui.json (perf.rs), not settings.json
                     R {
                         kind: "switch",

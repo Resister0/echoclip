@@ -33,10 +33,23 @@ struct Agg {
     gn: u32,
     vram_sum: f64,
     vram_peak: f64,
+    // 17 Nov 2026: Echo's own process only (Windows: the zero-copy capture + encoder thread live in it; the rest is
+    // ffmpeg = audio, noise filter, muxing) - all minutes / recording minutes. Tells where the CPU goes on PCs that use a lot.
+    self_sum: f64,
+    rself_sum: f64,
 }
 
 impl Agg {
+    /// a minute where all the CPU counts as Echo's own (tests)
+    #[cfg(test)]
     fn add(&mut self, mem: f64, cpu: f64, vram: Option<f64>, rec: bool) {
+        self.add_split(mem, cpu, cpu, vram, rec);
+    }
+    fn add_split(&mut self, mem: f64, cpu: f64, cpu_self: f64, vram: Option<f64>, rec: bool) {
+        self.self_sum += cpu_self;
+        if rec {
+            self.rself_sum += cpu_self;
+        }
         self.n += 1;
         self.mem_sum += mem;
         self.mem_peak = self.mem_peak.max(mem);
@@ -65,6 +78,8 @@ impl Agg {
         self.gn += o.gn;
         self.vram_sum += o.vram_sum;
         self.vram_peak = self.vram_peak.max(o.vram_peak);
+        self.self_sum += o.self_sum;
+        self.rself_sum += o.rself_sum;
     }
     /// (avg VRAM MB, peak VRAM MB) over the minutes it was read; None = never read (Linux, old Windows)
     fn vram(&self) -> Option<(f64, f64)> {
@@ -140,9 +155,9 @@ fn take_ticks() -> [u32; 4] {
 
 static AGG: Mutex<Option<[Agg; 4]>> = Mutex::new(None);
 
-fn record(state: State, mem: f64, cpu: f64, vram: Option<f64>, rec: bool) {
+fn record(state: State, mem: f64, cpu: f64, cpu_self: f64, vram: Option<f64>, rec: bool) {
     let mut g = AGG.lock().unwrap();
-    g.get_or_insert_with(Default::default)[state as usize].add(mem, cpu, vram, rec);
+    g.get_or_insert_with(Default::default)[state as usize].add_split(mem, cpu, cpu_self, vram, rec);
 }
 
 /// start the sampler (once, at startup)
@@ -151,18 +166,19 @@ pub fn start() {
         .name("perf".into())
         .spawn(|| {
             let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
-            let mut last: Option<(Instant, f64)> = None;
+            let mut last: Option<(Instant, f64, f64)> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(60));
-                let Some((mem, cpu_s, pids)) = sample() else {
+                let Some((mem, cpu_s, self_s, pids)) = sample() else {
                     take_ticks();
                     continue;
                 };
                 let now = Instant::now();
-                if let Some((t0, c0)) = last {
+                if let Some((t0, c0, s0)) = last {
                     let wall = now.duration_since(t0).as_secs_f64();
                     // processes that ended in between (an encoder restart) lose their time: never below 0
                     let cpu = ((cpu_s - c0).max(0.0) / (wall * cores) * 100.0).min(100.0);
+                    let cpu_self = ((self_s - s0).max(0.0) / (wall * cores) * 100.0).min(cpu);
                     let rec = crate::rec_core::rec().is_some_and(|r| r.is_recording());
                     // the same processes' graphics-card memory (Echo + the recorder's ffmpeg, like Task Manager's group)
                     let t = Instant::now();
@@ -178,11 +194,11 @@ pub fn start() {
                             t.elapsed().as_micros()
                         ));
                     }
-                    record(state, mem, cpu, vram, rec);
+                    record(state, mem, cpu, cpu_self, vram, rec);
                 } else {
                     take_ticks(); // the first minute isn't measured: its ticks don't count either
                 }
-                last = Some((now, cpu_s));
+                last = Some((now, cpu_s, self_s));
             }
         })
         .ok();
@@ -228,7 +244,22 @@ pub fn query() -> String {
         return q;
     }
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    format!("{q}&k={cores}&sv=1{}", per_state(&st)) + &crate::specs::q()
+    format!("{q}&k={cores}&sv=1{}", per_state(&st)) + &crate::specs::q() + &self_fields(&st)
+}
+
+/// 17 Nov 2026: "&ce=..&rce=.." = Echo's own process CPU % x10, all minutes / recording minutes (the rest of c / rc is its
+/// ffmpeg). Last in the query: servers before it ignore fields they don't know.
+fn self_fields(st: &[Agg; 4]) -> String {
+    let mut a = Agg::default();
+    st.iter().for_each(|s| a.merge(s));
+    if a.n == 0 {
+        return String::new();
+    }
+    let mut o = format!("&ce={:.0}", a.self_sum / a.n as f64 * 10.0);
+    if a.rn > 0 {
+        o += &format!("&rce={:.0}", a.rself_sum / a.rn as f64 * 10.0);
+    }
+    o
 }
 
 /// the all-states fields "?m=..&n=..&rn=.." ("" = no minutes)
@@ -261,9 +292,9 @@ fn per_state(st: &[Agg; 4]) -> String {
     o
 }
 
-/// (private memory MB, CPU seconds used so far, the process ids) of this process + its children
+/// (private memory MB, CPU seconds used so far, of those Echo's own process, the process ids) of this process + its children
 #[cfg(windows)]
-fn sample() -> Option<(f64, f64, Vec<u32>)> {
+fn sample() -> Option<(f64, f64, f64, Vec<u32>)> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
     use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX2};
@@ -286,6 +317,7 @@ fn sample() -> Option<(f64, f64, Vec<u32>)> {
     unsafe {
         let me = GetCurrentProcessId();
         let (mut mem, mut cpu) = one(me)?;
+        let own = cpu;
         let mut pids = vec![me];
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap != INVALID_HANDLE_VALUE {
@@ -307,7 +339,7 @@ fn sample() -> Option<(f64, f64, Vec<u32>)> {
             }
             CloseHandle(snap);
         }
-        Some((mem, cpu, pids))
+        Some((mem, cpu, own, pids))
     }
 }
 
@@ -328,7 +360,7 @@ fn private_kb(rollup: &str) -> Option<f64> {
 }
 
 #[cfg(not(windows))]
-fn sample() -> Option<(f64, f64, Vec<u32>)> {
+fn sample() -> Option<(f64, f64, f64, Vec<u32>)> {
     fn one(pid: &str) -> Option<(f64, f64)> {
         let st = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let rest = &st[st.rfind(')')? + 2..];
@@ -342,6 +374,7 @@ fn sample() -> Option<(f64, f64, Vec<u32>)> {
     }
     let me = std::process::id().to_string();
     let (mut mem, mut cpu) = one(&me)?;
+    let own = cpu;
     let mut pids = vec![std::process::id()];
     for e in std::fs::read_dir("/proc").ok()?.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
@@ -357,7 +390,7 @@ fn sample() -> Option<(f64, f64, Vec<u32>)> {
             }
         }
     }
-    Some((mem, cpu, pids))
+    Some((mem, cpu, own, pids))
 }
 
 #[cfg(test)]
@@ -409,6 +442,20 @@ mod tests {
         put();
         assert!(query().starts_with("?m="));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 17 Nov 2026: Echo's own CPU next to the total (the rest = ffmpeg), all minutes and recording minutes
+    #[test]
+    fn own_process_cpu_fields() {
+        let mut st = [Agg::default(); 4];
+        st[State::Tray as usize].add_split(100.0, 4.0, 3.0, None, true);
+        st[State::Tray as usize].add_split(100.0, 2.0, 1.0, None, false);
+        assert_eq!(self_fields(&st), "&ce=20&rce=30");
+        assert_eq!(self_fields(&[Agg::default(); 4]), "");
+        // the old add() counts everything as Echo's own (nothing split)
+        let mut a = Agg::default();
+        a.add(50.0, 1.5, None, false);
+        assert_eq!(a.self_sum, 1.5);
     }
 
     #[test]

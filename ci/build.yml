@@ -27,8 +27,19 @@ jobs:
         run: |
           if [ -z "$PUBLIC_TOKEN" ]; then echo "PUBLIC_REPO_TOKEN not set - skipping"; exit 0; fi
           msg=$(git log -1 --pretty=%s)
+          # update channels (17 Nov 2026): the tag says which - publish-<commit> = stable (main, as always),
+          # publish-beta-<commit> / publish-dev-<commit> = the public repo's beta / dev branch (their own pre-release)
+          case "$GITHUB_REF_NAME" in
+            publish-beta-*) BR=beta ;;
+            publish-dev-*) BR=dev ;;
+            *) BR=main ;;
+          esac
+          echo "channel branch: $BR"
           git clone -q "https://x-access-token:${PUBLIC_TOKEN}@github.com/Resister0/echoclip.git" /tmp/pub
-          cd /tmp/pub && git checkout -q -B main && cd -
+          cd /tmp/pub
+          if [ "$BR" = main ]; then git checkout -q -B main
+          else git fetch -q origin "$BR" 2>/dev/null && git checkout -q -B "$BR" FETCH_HEAD || git checkout -q -B "$BR"; fi
+          cd -
           # the public copy of the Flatpak metainfo holds the release history (see ci/metainfo-release.py)
           cp /tmp/pub/flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml 2>/dev/null || true
           rsync -a --delete --exclude-from=ci/public-exclude.txt ./ /tmp/pub/
@@ -46,7 +57,7 @@ jobs:
           VER="2.0.$(( ${{ github.run_number }} - 73 ))"
           echo "$VER" > ci/version.txt
           # this publish as a <release> in the Flatpak metainfo (Flathub's "What's new"); never stops the publish
-          python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "$VER" "$msg" \
+          [ "$BR" != main ] || python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "$VER" "$msg" \
             || echo "::warning::Couldn't add the release to the Flatpak metainfo"
           mkdir -p .github/workflows
           cp ci/public-build.yml .github/workflows/build.yml
@@ -55,7 +66,7 @@ jobs:
           git add -A
           if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
           git commit -q -m "$msg"
-          if git push -q origin HEAD:main; then
+          if git push -q origin "HEAD:$BR"; then
             echo "Public repo updated: https://github.com/Resister0/echoclip"
           else
             # the token may not be allowed to change workflows (fine-grained token without "Workflows: Read and write"):
@@ -67,6 +78,6 @@ jobs:
             git clean -fdq .github 2>/dev/null || true
             if git diff --cached --quiet; then echo "nothing else changed"; exit 0; fi
             git commit -q -m "$msg"
-            git push -q origin HEAD:main
+            git push -q origin "HEAD:$BR"
             echo "Public repo updated (code only): https://github.com/Resister0/echoclip"
           fi

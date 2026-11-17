@@ -41,6 +41,12 @@ fn q_with(rec: Option<(&Settings, &str)>) -> String {
     add("res", &res);
     add("fps", &if fps > 0 { fps.to_string() } else { String::new() });
     add("enc", &encoder);
+    // 17 Nov 2026: the exact Media Foundation encoder of the zero-copy pipeline (Windows, while it runs)
+    #[cfg(windows)]
+    if rec.is_some_and(|(_, mode)| mode == "gpu") {
+        let name = echo_core::gpucap::ENCODER_NAME.lock().map(|n| n.clone()).unwrap_or_default();
+        add("encn", &name);
+    }
     out
 }
 

@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.11" date="2026-11-17">
+      <description>
+        <p>New: Settings &gt; App Settings &gt; Update channel, for testers.</p>
+      </description>
+    </release>
     <release version="2.0.10" date="2026-11-13">
       <description>
         <p>Echo uses much less graphics memory in the tray, and Home shows every clip right away, cloud clips too.</p>

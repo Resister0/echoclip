@@ -595,6 +595,27 @@ pub fn report_on_quit() {
     }
 }
 
+/// Settings > App Settings > Update channel (17 Nov 2026): ("stable" | "beta" | "dev", the dev code)
+pub fn channel() -> (String, String) {
+    let cfg = crate::library::echo_settings();
+    let get = |k: &str| cfg.as_ref().and_then(|c| c.get(k)).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let ch = match get("update_channel").as_str() {
+        "beta" => "beta",
+        "dev" => "dev",
+        _ => "stable",
+    };
+    (ch.to_string(), get("channel_pass"))
+}
+
+/// what the channel row in Settings shows
+pub fn channel_label(ch: &str) -> &'static str {
+    match ch {
+        "beta" => "Beta",
+        "dev" => "Dev",
+        _ => "Stable",
+    }
+}
+
 pub fn check_updates(a: &AppWindow, by_hand: bool) {
     let cur = version();
     if cur == "0.1.0" {
@@ -630,7 +651,18 @@ pub fn check_updates(a: &AppWindow, by_hand: bool) {
             if first {
                 url.push_str(if url.contains('?') { "&first=1" } else { "?first=1" });
             }
-            let (code, body) = crate::lib_net::request("GET", &url, vec![], None, 30)?;
+            // update channels (17 Nov 2026): beta / dev ask for their builds; dev sends the tester code (the server
+            // answers stable for a wrong code). Stable = no parameter = exactly the old request.
+            let (ch, pass) = channel();
+            let mut headers = vec![];
+            if ch != "stable" {
+                url.push_str(if url.contains('?') { "&ch=" } else { "?ch=" });
+                url.push_str(&ch);
+                if ch == "dev" {
+                    headers.push(("x-echo-code".to_string(), pass));
+                }
+            }
+            let (code, body) = crate::lib_net::request("GET", &url, headers, None, 30)?;
             if first && (code == 200 || code == 204) {
                 let _ = std::fs::write(&counted, b"1");
             }

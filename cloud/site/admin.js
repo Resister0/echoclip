@@ -48,7 +48,7 @@ function tile(k, v, s, cls) { return `<div class="tile ${cls || ""}"><div class=
 // ----- website (counted without cookies; days are UTC) -----
 const CLICK_NAMES = { "click:plans": "See plans / Pricing", "click:storage": "Storage (menu)", "click:features": "Features (menu)",
   "click:download": "Download (jump to buttons)", "click:discord": "Discord", "click:changelog": "Changelog", "click:github": "GitHub",
-  "dl:windows": "Download: Windows installer", "dl:windows-portable": "Download: EchoClip.exe (no install)", "dl:linux": "Download: Linux AppImage", "dl:linux-tar": "Download: Linux tar.gz", "dl:flatpak": "Download: Linux Flatpak" };
+  "dl:windows": "Download: Windows installer", "dl:windows-portable": "Download: Windows portable zip (no install)", "dl:linux": "Download: Linux AppImage", "dl:linux-tar": "Download: Linux tar.gz", "dl:flatpak": "Download: Linux Flatpak" };
 // crashes: logs people sent with "Send log", and how many of them contain an Echo crash (last 30 days)
 function crashes(k) {
   const vers = {};
@@ -59,7 +59,8 @@ function crashes(k) {
   }
   const list = Object.keys(vers).sort((a, b) => vcmp(b, a));
   const rows = list.length ? list.map((v) => { const r = vers[v];
-      return `<tr><td>${esc(v)}</td><td>${[...r.os].join(", ")}</td><td class="n">${r.logs}</td><td class="n">${r.crash ? `<span class="pill bad">${r.crash}</span>` : 0}</td></tr>`; }).join("")
+      // 0.1.0 = a copy built by hand (build.sh / build.cmd), not a release
+      return `<tr><td>${esc(v)}${v === "0.1.0" ? ' <span class="sub">(own build)</span>' : ""}</td><td>${[...r.os].join(", ")}</td><td class="n">${r.logs}</td><td class="n">${r.crash ? `<span class="pill bad">${r.crash}</span>` : 0}</td></tr>`; }).join("")
     : `<tr><td colspan="4" class="sub">No logs sent yet (counting started 6 Nov)</td></tr>`;
   return `<h2>Sent logs and crashes</h2>
     <p class="sub" style="margin:-6px 0 10px">Logs sent with "Send log" in the last 30 days, and how many contain an Echo crash ("APP CRASH").</p>
@@ -70,7 +71,8 @@ function website(s) {
   const k = s.keys || {}, g = (n) => k[n] || [0, 0, 0];
   const sum = (pre) => Object.keys(k).filter((x) => x.startsWith(pre)).reduce((a, x) => a.map((v, i) => v + k[x][i]), [0, 0, 0]);
   const vis = g("visitors"), views = sum("view:"), dls = sum("dl:");
-  const list = (pre, names) => Object.keys(k).filter((x) => x.startsWith(pre)).sort((a, b) => k[b][2] - k[a][2])
+  // 17 Nov 2026: the developer's own local test pages (127.0.0.1 / localhost) aren't visitors from another site
+  const list = (pre, names) => Object.keys(k).filter((x) => x.startsWith(pre) && !/^ref:(127\.|localhost|\[::1\])/.test(x)).sort((a, b) => k[b][2] - k[a][2])
     .map((x) => `<tr><td>${esc(names ? names(x) : x.slice(pre.length))}</td><td class="n">${k[x][0]}</td><td class="n">${k[x][1]}</td><td class="n">${k[x][2]}</td></tr>`).join("")
     || `<tr><td colspan="4" class="sub">Nothing yet</td></tr>`;
   const head = (n) => `<tr><th>${n}</th><th class="n">Today</th><th class="n">7 days</th><th class="n">30 days</th></tr>`;
@@ -222,15 +224,18 @@ function perf(P) {
   const pc = (v) => v == null ? "-" : (+v).toFixed(v < 10 ? 2 : 1) + " %";
   const mb = (v) => v == null ? "-" : Math.round(v) + " MB";
   const hrs = (m) => !m ? "0 h" : m < 120 ? m + " min" : (m / 60).toFixed(m < 6000 ? 1 : 0) + " h";
+  // 2.0.11+: how much of the CPU is Echo itself (capture + encoder on Windows) and how much its ffmpeg (audio, muxing)
+  const split = (own, tot) => own == null || tot == null ? "" : `<div class="sub">Echo ${pc(own)} · ffmpeg ${pc(Math.max(0, tot - own))}</div>`;
   const table = (title, rows) => `<div class="wrap" style="margin-top:10px"><table>
     <tr><th>${title}</th><th class="n">PCs</th><th class="n">Recording CPU</th><th class="n">Recording memory</th><th class="n">CPU overall</th><th class="n">Memory overall</th><th class="n">Peak memory</th><th class="n">VRAM</th><th class="n">VRAM peak</th><th class="n">Measured</th></tr>
-    ${rows && rows.length ? rows.map((r) => `<tr><td>${esc(r.k || "unknown")}</td><td class="n">${r.pcs}</td><td class="n">${pc(r.rcpu)}</td><td class="n">${mb(r.rmem)}</td>
-      <td class="n">${pc(r.cpu)}</td><td class="n">${mb(r.mem)}</td><td class="n">${mb(r.mem_peak)}</td><td class="n">${mb(r.vram)}</td><td class="n">${mb(r.vram_peak)}</td><td class="n">${hrs(r.mins)}</td></tr>`).join("")
+    ${rows && rows.length ? rows.map((r) => `<tr><td>${esc(r.k || "unknown")}</td><td class="n">${r.pcs}</td><td class="n">${pc(r.rcpu)}${split(r.rcpu_self, r.rcpu_split)}</td><td class="n">${mb(r.rmem)}</td>
+      <td class="n">${pc(r.cpu)}${split(r.cpu_self, r.cpu_split)}</td><td class="n">${mb(r.mem)}</td><td class="n">${mb(r.mem_peak)}</td><td class="n">${mb(r.vram)}</td><td class="n">${mb(r.vram_peak)}</td><td class="n">${hrs(r.mins)}</td></tr>`).join("")
       : `<tr><td colspan="10" class="sub">No reports yet</td></tr>`}</table></div>`;
   // tiles + the six tables for one state (or all of them)
   const block = (st, X) => { const t = X.total || {};
     return `<div class="pst" data-st="${st}"${st === "all" ? "" : ' style="display:none"'}>
     <div class="grid">
+      ${st === "all" && P.median_rcpu != null ? tile("CPU while recording, typical PC", pc(P.median_rcpu), `median of each PC-day · CPU overall ${pc(P.median_cpu)}`) : ""}
       ${tile("CPU while recording", pc(t.rcpu), `average · ${hrs(t.rmins)} recorded`)}
       ${tile("Memory while recording", mb(t.rmem), "average")}
       ${tile("CPU overall", pc(t.cpu), `peak ${t.cpu_peak == null ? "-" : t.cpu_peak + " %"}`)}
@@ -238,7 +243,7 @@ function perf(P) {
       ${tile("VRAM (graphics memory)", mb(t.vram), `peak ${mb(t.vram_peak)} · Windows, Echo 2.0.7+`)}
       ${tile("Measured", hrs(t.mins), `${t.pcs || 0} PC-days · ${esc(PSTATE[st][1])}`)}
     </div>
-    ${table("Graphics card", X.gpu)}${table("Processor", X.cpu)}${table("System memory", X.ram)}${table("Recording at", X.res)}${table("Windows / Linux", X.os)}${table("Echo version", X.ver)}</div>`; };
+    ${st === "all" ? table("Capture path (every PC)", P.path) : ""}${table("Graphics card", X.gpu)}${table("Processor", X.cpu)}${table("System memory", X.ram)}${table("Recording at", X.res)}${table("Windows / Linux", X.os)}${table("Echo version", X.ver)}</div>`; };
   const states = (P.states || []).filter((s) => S[s]);
   // one compact row per state: where the minutes went, and what each costs
   const srows = states.map((s) => { const t = S[s].total || {};
@@ -249,13 +254,14 @@ function perf(P) {
   const picker = ["all", ...states].map((s) => `<button class="pstb" data-st="${s}"${s === "all" ? ' style="border-color:var(--accent)"' : ""}>${esc(PSTATE[s] ? PSTATE[s][0] : s)}</button>`).join(" ");
   const recent = (P.recent || []).map((r) => `<tr><td class="sub">${ago(r.at)}</td><td>${esc(PSTATE[r.state] ? PSTATE[r.state][0] : r.state || "Mixed (older Echo)")}</td><td>${esc(r.ver)} · ${esc(r.osname || r.os)}${r.cc ? " · " + flag(r.cc) : ""}</td>
       <td>${esc(r.cpu || "?")}${r.cores ? ` <span class="sub">(${r.cores} threads)</span>` : ""}<div class="sub">${esc(r.gpu || "?")} · ${r.ram ? r.ram + " GB" : "?"}</div></td>
-      <td class="sub">${esc(r.res || "?")}${r.fps ? " @ " + r.fps : ""}${r.enc ? "<br>" + esc(r.enc) : ""}</td>
-      <td class="n">${r.rn ? pc(r.rc / 10) : "-"}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td>
+      <td class="sub">${esc(r.res || "?")}${r.fps ? " @ " + r.fps : ""}${r.enc ? "<br>" + esc(r.enc) : ""}${r.encn ? "<br>" + esc(r.encn) : ""}</td>
+      <td class="n">${r.rn ? pc(r.rc / 10) : "-"}${r.rn && r.rce != null ? split(r.rce / 10, r.rc / 10) : ""}</td><td class="n">${r.rn ? mb(r.rm) : "-"}</td><td class="n">${pc(r.c / 10)}</td><td class="n">${mb(r.m)}</td>
       <td class="n">${mb(r.g)}${r.gp != null ? `<div class="sub">peak ${mb(r.gp)}</div>` : ""}</td><td class="n">${hrs(r.n)}</td></tr>`).join("");
   return `<details class="sec" open><summary><h2>Performance on people's PCs</h2><span class="sub">last 30 days · Echo ${P.min_ver || "2.0.6"}+ · ${T.pcs || 0} PC-days</span></summary>
     <p class="sub" style="margin:10px 0 10px">Echo + its encoder, measured once a minute on each PC (CPU = share of the whole PC, like Task Manager). Sent with the update check, anonymous: numbers and hardware names only. "Recording" = only the minutes Echo was recording.
       Each minute counts under what Echo was doing then (the state it was in most of that minute).
-      VRAM = Echo's share of the graphics card's own memory (what a game next to it can't use), Windows only, from Echo 2.0.7 - "-" = not measured.</p>
+      VRAM = Echo's share of the graphics card's own memory (what a game next to it can't use), Windows only, from Echo 2.0.7 - "-" = not measured.
+      Everything here is the zero-copy GPU path only: PCs whose recorder fell back to the CPU copy are left out (they're in "Capture path"), so they don't pull the GPU numbers up. "Typical PC" = the median PC-day; the averages lean towards the PCs that ran the longest.</p>
     <div class="wrap"><table><tr><th>What Echo was doing</th><th class="n">PCs</th><th class="n">Measured</th><th class="n">Memory</th><th class="n">CPU</th><th class="n">Rec memory</th><th class="n">Rec CPU</th><th class="n">Peak memory</th><th class="n">VRAM</th><th class="n">VRAM peak</th></tr>
       ${srows || `<tr><td colspan="10" class="sub">No reports yet</td></tr>`}</table></div>
     <div id="pstpick" style="margin:12px 0 10px;display:flex;flex-wrap:wrap;gap:6px">${picker}</div>
