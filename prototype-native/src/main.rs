@@ -894,21 +894,51 @@ fn main() {
                 })
             });
         };
-        while let Ok((idx, path, clip)) = rx.recv() {
-            // 9 Nov: sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
-            // 1440p screen. A 720 px still of the SAME moment (Echo's .thumbt, else 0.5 s) is made once per clip as
-            // <name>.card720.jpg next to it (remade when Echo's picture changes, e.g. Use as thumbnail).
-            let hi = library::card_hi_path(&path);
-            if library::card_hi_fresh(&path, &hi) {
-                if let Some(px) = library::decode(&hi) {
-                    send(idx, px);
-                    continue;
+        // 17 Nov 2026 (library froze + went black far down a big library, then needed a restart): requests were
+        // handled strictly in order, each one possibly running ffmpeg for its 720 px picture - scrolling fast queued
+        // every card passed, and the cards on screen waited behind all of them. Now: the NEWEST request first (= the
+        // cards on screen now), every quick picture before any slow 720 px one, and only the newest slow ones kept.
+        type Job = (usize, PathBuf, Option<PathBuf>);
+        const SLOW_MAX: usize = 60;
+        let mut quick: Vec<Job> = Vec::new();
+        let mut slow: std::collections::VecDeque<(usize, PathBuf, PathBuf, PathBuf)> = Default::default();
+        loop {
+            if quick.is_empty() && slow.is_empty() {
+                match rx.recv() {
+                    Ok(j) => quick.push(j),
+                    Err(_) => break,
                 }
             }
-            if let Some(px) = library::decode(&path) {
-                send(idx, px);
+            while let Ok(j) = rx.try_recv() {
+                quick.push(j);
             }
-            if let Some(clip) = clip {
+            if let Some((idx, path, clip)) = quick.pop() {
+                // an older request for the same card is the same work
+                quick.retain(|j| j.0 != idx);
+                // 9 Nov: sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
+                // 1440p screen. A 720 px still of the SAME moment (Echo's .thumbt, else 0.5 s) is made once per clip
+                // as <name>.card720.jpg next to it (remade when Echo's picture changes, e.g. Use as thumbnail).
+                let hi = library::card_hi_path(&path);
+                if library::card_hi_fresh(&path, &hi) {
+                    if let Some(px) = library::decode(&hi) {
+                        send(idx, px);
+                        continue;
+                    }
+                }
+                if let Some(px) = library::decode(&path) {
+                    send(idx, px);
+                }
+                if let Some(clip) = clip {
+                    slow.retain(|j| j.0 != idx);
+                    slow.push_back((idx, path, hi, clip));
+                    while slow.len() > SLOW_MAX {
+                        // a card scrolled past long ago: made the next time it's shown
+                        slow.pop_front();
+                    }
+                }
+                continue;
+            }
+            if let Some((idx, path, hi, clip)) = slow.pop_back() {
                 if library::make_card_hi(&clip, &path, &hi) {
                     if let Some(px) = library::decode(&hi) {
                         send(idx, px);

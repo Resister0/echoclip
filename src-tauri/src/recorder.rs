@@ -1620,6 +1620,9 @@ pub fn serve_token_pub() -> &'static str { serve_token() }
 pub fn sys_cmd(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(program);
+    // 17 Nov 2026: never the terminal's input (a caller that feeds the program sets stdin(piped) after this). Started
+    // from a terminal, an ffmpeg that inherited it could be stopped by the shell (state "T") and Echo looked frozen.
+    c.stdin(Stdio::null());
     #[cfg(target_os = "linux")]
     for (k, v) in appimage_env_fixes() { match v { Some(v) => { c.env(k, v); } None => { c.env_remove(k); } } }
     c
@@ -1667,7 +1670,10 @@ fn hidden(program: &str) -> Command {
 }
 
 fn ffmpeg() -> Command {
-    hidden("ffmpeg")
+    // -nostdin: no keyboard controls ("q" to stop...) - ffmpeg never touches a terminal it was started from
+    let mut c = hidden("ffmpeg");
+    c.arg("-nostdin");
+    c
 }
 
 /// Unpack a .zip into `dir` inside Echo (paths that would escape `dir` are skipped).
@@ -1701,6 +1707,7 @@ pub fn unzip_to(zip_path: &Path, dir: &Path) -> Result<(), String> {
 fn ffmpeg_save() -> Command {
     #[allow(unused_mut)]
     let mut c = sys_cmd("ffmpeg");
+    c.arg("-nostdin");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -3344,6 +3351,11 @@ impl Recorder {
         };
         let mut segs = list()?;
         if segs.is_empty() {
+            // 17 Nov 2026: in the Flatpak the usual cause is the screen-share dialog, often hidden behind Echo
+            #[cfg(target_os = "linux")]
+            if crate::linuxutil::in_flatpak() {
+                return Err("Buffer is empty - recording hasn't started. Look for the \"share your screen\" dialog (it can be behind Echo's window), pick a screen and press Share.".into());
+            }
             return Err("Buffer is empty - recording isn't running. Check the ffmpeg log.".into());
         }
         // The newest segment is still being written (ffmpeg holds back its last second or so).
