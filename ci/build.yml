@@ -38,7 +38,7 @@ jobs:
           git clone -q "https://x-access-token:${PUBLIC_TOKEN}@github.com/Resister0/echoclip.git" /tmp/pub
           cd /tmp/pub
           if [ "$BR" = main ]; then git checkout -q -B main
-          else git fetch -q origin "$BR" 2>/dev/null && git checkout -q -B "$BR" FETCH_HEAD || git checkout -q -B "$BR"; fi
+          else git fetch -q origin "refs/heads/$BR" 2>/dev/null && git checkout -q -B "$BR" FETCH_HEAD || git checkout -q -B "$BR"; fi
           cd -
           # the public copy of the Flatpak metainfo holds the release history (see ci/metainfo-release.py)
           cp /tmp/pub/flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml 2>/dev/null || true
@@ -66,7 +66,7 @@ jobs:
           git add -A
           if git diff --cached --quiet; then echo "nothing changed"; exit 0; fi
           git commit -q -m "$msg"
-          if git push -q origin "HEAD:$BR"; then
+          if git push -q origin "HEAD:refs/heads/$BR"; then
             echo "Public repo updated: https://github.com/Resister0/echoclip"
           else
             # the token may not be allowed to change workflows (fine-grained token without "Workflows: Read and write"):
@@ -78,6 +78,6 @@ jobs:
             git clean -fdq .github 2>/dev/null || true
             if git diff --cached --quiet; then echo "nothing else changed"; exit 0; fi
             git commit -q -m "$msg"
-            git push -q origin "HEAD:$BR"
+            git push -q origin "HEAD:refs/heads/$BR"
             echo "Public repo updated (code only): https://github.com/Resister0/echoclip"
           fi

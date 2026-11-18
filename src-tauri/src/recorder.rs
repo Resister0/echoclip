@@ -2286,6 +2286,7 @@ const MUSIC_EXES: &[&str] = &["spotify.exe", "applemusic.exe", "itunes.exe", "ti
 fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     std::thread::spawn(move || {
         let mut game: Option<u32> = None;
+        let mut tick = 0u32;
         let mut failed: std::collections::HashSet<u32> = Default::default();
         while !stop.load(Ordering::Relaxed) {
             let procs = crate::winutil::processes();
@@ -2311,6 +2312,41 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
             // a music app that is also the game in front (unlikely) stays on the Game track only
             let g0 = want[0].clone();
             want[3].retain(|p| !g0.contains(p));
+            // which output device each app plays to: one look at the audio sessions every ~6 s (every 2 s until
+            // each running app was heard once). Only while it plays - a quiet app keeps its last answer.
+            tick = tick.wrapping_add(1);
+            let unknown = (0..4).any(|k| !want[k].is_empty() && OFF_AT[k].load(Ordering::Relaxed) == 0 && ON_AT[k].load(Ordering::Relaxed) == 0);
+            if (unknown || tick % 3 == 0) && want.iter().any(|w| !w.is_empty()) {
+                if let Some(seen) = crate::winutil::audio_sessions() {
+                    let now = now_ms();
+                    for (k, roots) in want.iter().enumerate() {
+                        if roots.is_empty() {
+                            continue;
+                        }
+                        // the app's whole process tree (Discord plays from a child process)
+                        let mut tree: Vec<u32> = roots.clone();
+                        let mut i = 0;
+                        while i < tree.len() {
+                            let p = tree[i];
+                            tree.extend(procs.iter().filter(|q| q.1 == p && q.0 != p).map(|q| q.0));
+                            i += 1;
+                            if tree.len() > 500 { break; }
+                        }
+                        let on = seen.iter().any(|&(pid, def)| def && tree.contains(&pid));
+                        let off = !on && seen.iter().any(|&(pid, def)| !def && tree.contains(&pid));
+                        if !on && !off {
+                            continue;
+                        }
+                        let was = OFF_AT[k].load(Ordering::Relaxed) > ON_AT[k].load(Ordering::Relaxed);
+                        (if off { &OFF_AT[k] } else { &ON_AT[k] }).store(now, Ordering::Relaxed);
+                        if was != off {
+                            log_line(&format!("audio: {} plays to {} - {}", APP_TRACKS[k],
+                                if off { "another output device than the recorded default" } else { "the recorded default device" },
+                                if off { "saved clips mix its track in" } else { "the mix has it already" }));
+                        }
+                    }
+                }
+            }
             for (k, g) in groups.iter().enumerate() {
                 let mut list = g.lock().unwrap();
                 list.retain(|s| {
@@ -2608,6 +2644,19 @@ static APP_VOL: [AtomicU32; 4] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x
 static MIX_APPS: AtomicBool = AtomicBool::new(false);
 static MIX_INC: [AtomicBool; 4] = [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false), AtomicBool::new(false)];
 static MIC_MONO: AtomicBool = AtomicBool::new(false);
+/// 18 Nov 2026: when each app (Game/Discord/Browser/Music) was last heard on ANOTHER output device than the
+/// recorded default one / on the recorded one (now_ms, 0 = never; app_supervisor, Windows). Latest says "another"
+/// = the "everything" mix doesn't have it, so saving a clip mixes its own track into the mix (join) - for the
+/// WHOLE clip, and the recording itself does no extra work.
+static OFF_AT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static ON_AT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+/// clip track numbers (a:3 game .. a:6 music) of the apps playing to another device than the recorded one
+fn off_device_tracks() -> Vec<u32> {
+    if MIX_APPS.load(Ordering::Relaxed) {
+        return vec![]; // "only these apps" mixes from the app tracks already
+    }
+    (0..4).filter(|&k| OFF_AT[k].load(Ordering::Relaxed) > ON_AT[k].load(Ordering::Relaxed)).map(|k| 3 + k as u32).collect()
+}
 /// the mic is added to the mix by ffmpeg (after the noise filter), not here
 static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
 /// names the user said are not games (Settings > Games > remove)
@@ -3443,18 +3492,42 @@ impl Recorder {
         let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
         let body = concat_list(&paths);
         fs::write(&list, body).map_err(err)?;
-        // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had
-        let status = ffmpeg_save()
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
-            .arg(&list)
-            .args(["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
-            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
-            .args(["-f", "mp4"])
-            .arg(out)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(err)?;
+        let cfg = self.settings();
+        // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had.
+        // 18 Nov 2026: apps that play to another output device than the recorded one (off_device_tracks) are mixed
+        // into the mix track here, for the whole clip - the audio gets encoded here anyway, so it costs next to nothing
+        let off: Vec<u32> = if cfg.app_tracks { off_device_tracks() } else { vec![] };
+        let run = |off: &[u32]| {
+            let mut c = ffmpeg_save();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list);
+            if off.is_empty() {
+                c.args(["-map", "0:v", "-map", "0:a"]);
+            } else {
+                let ins: String = off.iter().map(|t| format!("[0:a:{t}]")).collect();
+                c.args(["-filter_complex".to_string(), format!("[0:a:0]{ins}amix=inputs={}:normalize=0:duration=first[mix]", off.len() + 1)]);
+                c.args(["-map", "0:v", "-map", "[mix]"]);
+                for t in 1..7 {
+                    c.args(["-map".to_string(), format!("0:a:{t}")]);
+                }
+            }
+            c.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
+                .args(if cfg.codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+                .args(["-f", "mp4"])
+                .arg(out)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+        };
+        let mut status = run(&off).map_err(err)?;
+        if !off.is_empty() {
+            if status.status.success() {
+                let names: Vec<&str> = off.iter().map(|&t| APP_TRACKS[(t - 3) as usize]).collect();
+                log_line(&format!("save: {} plays to another output device - mixed into the clip's main track", names.join(", ")));
+            } else {
+                log_line(&format!("save: mixing the other-device app tracks in failed ({}) - saved without", String::from_utf8_lossy(&status.stderr).trim().lines().next().unwrap_or("")));
+                status = run(&[]).map_err(err)?;
+            }
+        }
         let msg = String::from_utf8_lossy(&status.stderr);
         if !msg.trim().is_empty() {
             log_line(&format!("save: ffmpeg: {}", msg.trim().lines().take(5).collect::<Vec<_>>().join(" | ")));

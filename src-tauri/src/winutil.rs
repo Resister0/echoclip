@@ -335,6 +335,49 @@ pub fn app_loopback(pid: u32, rate: u32, ch: u16, stop: std::sync::Arc<std::sync
     Ok(())
 }
 
+/// 18 Nov 2026: every audio session PLAYING right now on any output device: (process id, on the default output
+/// device = the one Echo records as "desktop"). None = COM failed. One pass over the devices, no per-app work.
+/// Sebas: Discord set to his headset while Windows' default was FxSound - Discord was on its own track but
+/// missing from the mix the player plays.
+pub fn audio_sessions() -> Option<Vec<(u32, bool)>> {
+    use windows::core::Interface;
+    use windows::Win32::Media::Audio::{
+        eConsole, eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
+        MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    };
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let id_of = |d: &IMMDevice| -> Option<String> {
+            let p = d.GetId().ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const _));
+            s
+        };
+        let def = id_of(&en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?)?;
+        let coll = en.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE).ok()?;
+        let mut v = Vec::new();
+        for i in 0..coll.GetCount().unwrap_or(0) {
+            let Ok(dev) = coll.Item(i) else { continue };
+            let Some(id) = id_of(&dev) else { continue };
+            let Ok(mgr) = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { continue };
+            let Ok(list) = mgr.GetSessionEnumerator() else { continue };
+            for j in 0..list.GetCount().unwrap_or(0) {
+                let Ok(ctl) = list.GetSession(j) else { continue };
+                if ctl.GetState().ok() != Some(AudioSessionStateActive) {
+                    continue;
+                }
+                let Ok(c2) = ctl.cast::<IAudioSessionControl2>() else { continue };
+                if let Ok(pid) = c2.GetProcessId() {
+                    v.push((pid, id == def));
+                }
+            }
+        }
+        Some(v)
+    }
+}
+
 /// Full exe path of a process.
 pub fn exe_path(pid: u32) -> Option<String> {
     unsafe {
