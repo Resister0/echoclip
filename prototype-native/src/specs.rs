@@ -194,6 +194,8 @@ fn recording(cfg: &Settings, mode: &str) -> (String, u32, String) {
         "cpu" => format!("AMD AMF {codec} (CPU copy)"),
         "cpu-nvenc" => format!("NVIDIA NVENC {codec} (CPU copy)"),
         "cpu-qsv" => format!("Intel Quick Sync {codec} (CPU copy)"),
+        // 18 Nov 2026: the last resort, always H.264 (recorder.rs SOFTWARE_MODE); "(CPU copy)" keeps it out of the GPU numbers
+        "cpu-x264" => "Software x264 H.264 (CPU copy)".to_string(),
         _ => String::new(),
     };
     (res, cfg.fps, enc)

@@ -249,6 +249,8 @@ pub fn query() -> String {
 
 /// 17 Nov 2026: "&ce=..&rce=.." = Echo's own process CPU % x10, all minutes / recording minutes (the rest of c / rc is its
 /// ffmpeg). Last in the query: servers before it ignore fields they don't know.
+/// 18 Nov 2026: + "&e_<state>=ce,rce" per state with minutes (rce 0 without recording minutes), so the admin page's
+/// per-state split is that state's own (it used to put the all-states share under every state).
 fn self_fields(st: &[Agg; 4]) -> String {
     let mut a = Agg::default();
     st.iter().for_each(|s| a.merge(s));
@@ -258,6 +260,14 @@ fn self_fields(st: &[Agg; 4]) -> String {
     let mut o = format!("&ce={:.0}", a.self_sum / a.n as f64 * 10.0);
     if a.rn > 0 {
         o += &format!("&rce={:.0}", a.rself_sum / a.rn as f64 * 10.0);
+    }
+    for s in STATES {
+        let x = &st[s as usize];
+        if x.n == 0 {
+            continue;
+        }
+        let rce = if x.rn > 0 { x.rself_sum / x.rn as f64 * 10.0 } else { 0.0 };
+        o += &format!("&e_{}={:.0},{rce:.0}", NAMES[s as usize], x.self_sum / x.n as f64 * 10.0);
     }
     o
 }
@@ -450,7 +460,10 @@ mod tests {
         let mut st = [Agg::default(); 4];
         st[State::Tray as usize].add_split(100.0, 4.0, 3.0, None, true);
         st[State::Tray as usize].add_split(100.0, 2.0, 1.0, None, false);
-        assert_eq!(self_fields(&st), "&ce=20&rce=30");
+        assert_eq!(self_fields(&st), "&ce=20&rce=30&e_tray=20,30");
+        // 18 Nov 2026: each state gets its own share too (no recording minutes = rce 0)
+        st[State::Idle as usize].add_split(100.0, 5.0, 5.0, None, false);
+        assert_eq!(self_fields(&st), "&ce=30&rce=30&e_tray=20,30&e_idle=50,0");
         assert_eq!(self_fields(&[Agg::default(); 4]), "");
         // the old add() counts everything as Echo's own (nothing split)
         let mut a = Agg::default();

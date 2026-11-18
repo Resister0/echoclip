@@ -423,6 +423,14 @@ impl Seg {
     pub fn freeze(&self) -> bool {
         self.extra.get("freeze").and_then(|x| x.as_bool()) == Some(true)
     }
+    /// 18 Nov 2026: the picture was deleted, the sound stays on its separated audio rows (black in preview + export).
+    /// The piece itself stays as the time base the audio rows play against.
+    pub fn vhide(&self) -> bool {
+        self.extra.get("vhide").and_then(|x| x.as_bool()) == Some(true)
+    }
+    pub fn amute(&self) -> bool {
+        self.extra.get("amute").and_then(|x| x.as_bool()) == Some(true)
+    }
     pub fn num(&self, k: &str, d: f64) -> f64 {
         self.extra.get(k).and_then(|v| v.as_f64()).unwrap_or(d)
     }
@@ -1051,9 +1059,16 @@ impl Editor {
             return Ok(if kept { "Deleted - the last piece stays" } else { "" });
         }
         match self.sel {
+            // 18 Nov 2026: its audio is separated (U) - Delete takes away only the picture, the sound rows keep playing
+            // (a sound-only edit: Export > Sound only). Delete again removes the piece like before.
+            Some(Sel::Seg(i)) if i < self.p.segs.len() && self.p.segs[i].amute() && !self.p.segs[i].vhide() && !self.p.segs[i].freeze() => {
+                self.push_hist();
+                self.p.segs[i].extra.insert("vhide".into(), json!(true));
+                Ok("Video removed - its sound stays (Export > Sound only saves an MP3 / WAV)")
+            }
             Some(Sel::Seg(i)) if i < self.p.segs.len() => {
                 if self.p.segs.len() < 2 {
-                    return Err("Can't delete the last piece");
+                    return Err(if self.p.segs[i].vhide() { "That's the last piece - its sound is still used" } else { "Can't delete the last piece - press U first to keep only its sound" });
                 }
                 self.push_hist();
                 self.delete_seg(i, ripple);

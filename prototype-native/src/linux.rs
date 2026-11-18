@@ -82,7 +82,25 @@ fn desktop_entry() {
     let entry = format!(
         "[Desktop Entry]\nType=Application\nName=Echo\nComment=Game clips and instant replays\nExec=\"{exe}\"\nIcon=link.echoclip.Echo\nStartupWMClass=link.echoclip.Echo\nCategories=AudioVideo;Video;Game;\nTerminal=false\n"
     );
-    let f = data.join("applications/link.echoclip.Echo.desktop");
+    // 17 Nov 2026: with the Flatpak Echo also installed, our file of the same name hid the Flatpak's own entry
+    // (the menu started the AppImage). Then this copy gets its own file + name; KWin still finds the icon
+    // through the Flatpak's exported link.echoclip.Echo.desktop (same app_id/WM class)
+    let flatpak = [home.join(".local/share/flatpak/app/link.echoclip.Echo"), PathBuf::from("/var/lib/flatpak/app/link.echoclip.Echo")]
+        .iter()
+        .any(|p| p.exists());
+    let (f, entry) = if flatpak {
+        let shared = data.join("applications/link.echoclip.Echo.desktop");
+        // our own old entry in front of the Flatpak's: take it away (only when it starts THIS copy)
+        if std::fs::read_to_string(&shared).is_ok_and(|s| s.lines().any(|l| l.strip_prefix("Exec=").is_some_and(|e| e.trim().trim_matches('"') == exe))) {
+            match std::fs::remove_file(&shared) {
+                Ok(()) => log_line("linux: Flatpak Echo installed - removed this copy's link.echoclip.Echo.desktop so the menu starts the Flatpak"),
+                Err(e) => log_line(&format!("linux: couldn't remove the old menu entry: {e}")),
+            }
+        }
+        (data.join("applications/echoclip-local.desktop"), entry.replacen("Name=Echo\n", "Name=Echo (AppImage)\n", 1))
+    } else {
+        (data.join("applications/link.echoclip.Echo.desktop"), entry)
+    };
     // 10 Nov 2026: leave an entry alone that starts ANOTHER Echo which still exists (a dev build in the repo took
     // over the user's own AppImage entry, like autostart in rec_core.rs) - the window still gets the icon from it
     let other = std::fs::read_to_string(&f).ok().and_then(|s| {
