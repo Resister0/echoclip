@@ -258,9 +258,10 @@
             <tr class="us"><td>Echo 2.0</td><td>~150 MB</td><td>~0.6 %</td></tr>
             <tr><td>Medal</td><td>~470 MB</td><td>~1.2 %</td></tr>
           </table>
-          <p class="ec-claim">Echo uses 50% less CPU than Medal while recording, and 70% less memory.</p>
+          <p class="ec-claim">On the same test PC, Echo used half of Medal's CPU while recording, and 70% less memory.</p>
           <p class="ec-vslink"><a href="/vs-medal">Full comparison: Echo vs Medal</a></p>
           <p class="ec-how">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory is Task Manager's private working set of all the app's processes, encoder included. Your numbers will differ.</p>
+          <p class="ec-how">On players' PCs (Echo 2.0.11+, last 30 days): about 1 % CPU on gaming PCs with their own graphics card, about 3-4 % on laptops with built-in graphics, about 100 MB of memory.</p>
         </div>
       </div>
     </div>
@@ -352,6 +353,7 @@
           <div class="faq span-6">
             <details open><summary>Is Echo free?</summary><p>Yes. The app is free, and so is an Echo Cloud account with 10 GB. You only pay if you want more cloud space.</p></details>
             <details open><summary>Does it slow my games down?</summary><p>Echo records with your graphics card's video encoder (NVIDIA, AMD or Intel; on Linux through gpu-screen-recorder), which is built for this, so the effect on your frame rate is very small.</p></details>
+            <details open><summary>Why does Echo use more CPU on my laptop?</summary><p>On laptops and PCs without their own graphics card, the screen capture and the video encoder share the processor's built-in graphics, so Echo needs a bit more there: about 3-4 % of the CPU while recording, against about 1 % on gaming PCs with their own graphics card. Your game keeps its frames either way, and we're working on making Echo lighter on built-in graphics.</p></details>
             <details open><summary>Can I bring my clips from Medal or another app?</summary><p>Yes. In Echo, open Settings → Clips &amp; Storage → <b>Bring in clips from other apps</b>. Echo finds Medal, SteelSeries Moments and Outplayed folders by itself; for anything else, like NVIDIA or OBS recordings, you pick the folder. It copies the clips over with their original dates and game folders. Your old app's files stay where they are.</p></details>
           </div>
           <div class="faq span-6">

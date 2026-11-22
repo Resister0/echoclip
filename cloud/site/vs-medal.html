@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Echo vs Medal - a lighter, free game clip recorder</title>
+<title>EchoClip vs Medal - a lighter, free game clip recorder</title>
 <meta name="description" content="Echo and Medal both save the last minutes of your game with one key. Echo uses about a third of the memory, shows no ads and runs on Windows and Linux.">
 <meta name="theme-color" content="#7c5cff">
 <!-- seo: managed by cloud/site-src/seo.py, edit there -->
 <link rel="canonical" href="https://echoclip.link/vs-medal">
 <meta property="og:url" content="https://echoclip.link/vs-medal">
-<meta property="og:title" content="Echo vs Medal - a lighter, free game clip recorder">
+<meta property="og:title" content="EchoClip vs Medal - a lighter, free game clip recorder">
 <meta property="og:description" content="Echo and Medal both save the last minutes of your game with one key. Echo uses about a third of the memory, shows no ads and runs on Windows and Linux.">
 <meta property="og:site_name" content="Echo">
 <meta property="og:type" content="website">
@@ -17,13 +17,13 @@
 <meta property="og:image" content="https://echoclip.link/og.png?v=5">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Echo - incredibly lightweight clipper for Windows and Linux. About 150 MB of RAM while recording, Copy for Discord shrinks clips to fit the limit, no ads and no account.">
+<meta property="og:image:alt" content="EchoClip - incredibly lightweight clipper for Windows and Linux. About 150 MB of RAM while recording, Copy for Discord shrinks clips to fit the limit, no ads and no account.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.ico?v=2" sizes="48x48">
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
 <link rel="manifest" href="/site.webmanifest">
-<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebPage","@id":"https://echoclip.link/vs-medal#page","url":"https://echoclip.link/vs-medal","name":"Echo vs Medal - a lighter, free game clip recorder","description":"Echo and Medal both save the last minutes of your game with one key. Echo uses about a third of the memory, shows no ads and runs on Windows and Linux.","isPartOf":{"@id":"https://echoclip.link/#site"},"about":{"@id":"https://echoclip.link/#app"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Echo","item":"https://echoclip.link/"},{"@type":"ListItem","position":2,"name":"Echo vs Medal","item":"https://echoclip.link/vs-medal"}]}]}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebPage","@id":"https://echoclip.link/vs-medal#page","url":"https://echoclip.link/vs-medal","name":"EchoClip vs Medal - a lighter, free game clip recorder","description":"Echo and Medal both save the last minutes of your game with one key. Echo uses about a third of the memory, shows no ads and runs on Windows and Linux.","isPartOf":{"@id":"https://echoclip.link/#site"},"about":{"@id":"https://echoclip.link/#app"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Echo","item":"https://echoclip.link/"},{"@type":"ListItem","position":2,"name":"Echo vs Medal","item":"https://echoclip.link/vs-medal"}]}]}</script>
 <!-- /seo -->
 <meta name="site-kind" content="software">
 <meta name="page-type" content="software">
@@ -98,7 +98,7 @@
     <div class="ec-cmp ec-cmp--vs" role="table" aria-label="Echo compared with Medal">
       <div class="ec-cmp__row ec-cmp__head" role="row"><span role="columnheader"><span class="sr-only">What you get</span></span><div role="columnheader" class="ec-cmp__col ec-cmp__col--own"><b>Echo</b><small>Free, open source</small></div><div role="columnheader" class="ec-cmp__col"><b>Medal</b><small>Free plan</small></div></div>
       <div class="ec-cmp__row" role="row"><span role="rowheader">Memory while recording</span><span role="cell">~150 MB</span><span role="cell">~470 MB</span></div>
-      <div class="ec-cmp__row" role="row"><span role="rowheader">CPU while recording</span><span role="cell">~0.6 %</span><span role="cell">~1.2 %</span></div>
+      <div class="ec-cmp__row" role="row"><span role="rowheader">CPU while recording (same test PC)</span><span role="cell">~0.6 %</span><span role="cell">~1.2 %</span></div>
       <div class="ec-cmp__row" role="row"><span role="rowheader">Ads</span><span role="cell">None</span><span role="cell">Shown on the free plan, removed with Premium</span></div>
       <div class="ec-cmp__row" role="row"><span role="rowheader">Watermark on your clips</span><span role="cell">A small logo you can switch off, free</span><span role="cell">Watermark and outro on downloads, removed with Premium</span></div>
       <div class="ec-cmp__row" role="row"><span role="rowheader">Windows 10 and 11</span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span><span role="cell"><span class="ec-yes" aria-label="Yes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span></span></div>
@@ -121,6 +121,7 @@
         <tr><td>Medal</td><td>~470 MB</td><td>~1.2 %</td></tr>
       </table>
       <p class="fine">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Memory is Task Manager's private working set of all the app's processes, encoder included; CPU is the share of the whole processor. Medal's encoder runs as its own process (MedalEncoder.exe), so Medal's own row in Task Manager can show 0 %. Your numbers will differ with your PC and settings.</p>
+      <p class="fine">On players' PCs (Echo 2.0.11+, last 30 days): about 1 % CPU while recording on gaming PCs with their own graphics card, about 3-4 % on laptops with built-in graphics (the capture and the encoder share the processor's graphics there), and about 100 MB of memory.</p>
     </div>
   </div>
 </section>
@@ -152,13 +153,13 @@
     <div class="closing__links">
       <div class="grid">
         <div class="span-4 stack-4">
-          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 64 64" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>Echo</a>
+          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 64 64" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>EchoClip</a>
           <p class="footer__lede">A free, open-source game clip recorder for Windows and Linux.</p>
         </div>
         <div class="span-2 footer__col"><h3>Echo</h3><ul><li><a href="/#features">Features</a></li><li><a href="/#extras">Small extras</a></li><li><a href="/pricing">Echo Cloud</a></li><li><a href="/changelog">Changelog</a></li><li><a href="/vs-medal">Echo vs Medal</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="https://discord.gg/JPVewEfUQs">Discord</a></li><li><a href="mailto:support@echoclip.link">Email support</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Source</h3><ul><li><a href="https://github.com/Resister0/echoclip">GitHub</a></li><li><a href="/code-signing">Code signing policy</a></li></ul></div>
-        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li><li><a href="/status">Status</a></li></ul></div>
       </div>
       <div class="ec-more" aria-label="More from Sonela">
         <a class="ec-more__brand" href="https://sonela.app/"><img src="/icons/sonela.svg" alt="" width="32" height="32" loading="lazy"><span><b>More from Sonela</b><small>Echo is part of Sonela: small, free apps for PC gamers</small></span></a>
@@ -167,8 +168,8 @@
         <a class="ec-more__link" href="https://sonela.app/">sonela.app</a>
       </div>
       <div class="footer__legal">
-        <span>&copy; 2026 Echo · Open source (GPL-3.0)</span>
-        <span>Discord, Medal, Windows and other product names belong to their owners. Echo isn't connected to them.</span>
+        <span>&copy; 2026 EchoClip · "Echo" for short · Open source (GPL-3.0)</span>
+        <span>Discord, Medal, Windows and other product names belong to their owners. EchoClip isn't connected to them.</span>
       </div>
     </div>
   </div>
