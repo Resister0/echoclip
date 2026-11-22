@@ -47,7 +47,23 @@ fn q_with(rec: Option<(&Settings, &str)>) -> String {
         let name = echo_core::gpucap::ENCODER_NAME.lock().map(|n| n.clone()).unwrap_or_default();
         add("encn", &name);
     }
+    // 22 Nov 2026: the recorder ffmpeg's audio work (rate, channels, tracks, mic filter) - its CPU on some PCs
+    if rec.is_some_and(|(_, mode)| !mode.is_empty()) {
+        add("aud", &echo_core::recorder::AUDIO_SETUP.lock().map(|a| a.clone()).unwrap_or_default());
+    }
+    // 21 Nov 2026: how the player decoded the last clip it opened (main.rs)
+    add("pdec", &PLAYER_DECODE.lock().map(|d| d.clone()).unwrap_or_default());
     out
+}
+
+/// 21 Nov 2026: how the player decoded the last clip it opened: mpv's hwdec-current + the codec, "d3d11va h264", or
+/// "no hevc" = on the processor. Playing clips cost about one core on Intel HD / UHD PCs (admin page, 21 Nov 2026);
+/// this tells whether their graphics chip decoded them.
+pub static PLAYER_DECODE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+pub fn set_player_decode(hwdec: &str, codec: &str) {
+    if let Ok(mut d) = PLAYER_DECODE.lock() {
+        *d = format!("{} {codec}", if hwdec.is_empty() { "no" } else { hwdec });
+    }
 }
 
 /// percent-encoding for a query value (RFC 3986 unreserved characters stay)
@@ -194,6 +210,8 @@ fn recording(cfg: &Settings, mode: &str) -> (String, u32, String) {
         "cpu" => format!("AMD AMF {codec} (CPU copy)"),
         "cpu-nvenc" => format!("NVIDIA NVENC {codec} (CPU copy)"),
         "cpu-qsv" => format!("Intel Quick Sync {codec} (CPU copy)"),
+        // 18 Nov 2026: the last resort, always H.264 (recorder.rs SOFTWARE_MODE); "(CPU copy)" keeps it out of the GPU numbers
+        "cpu-x264" => "Software x264 H.264 (CPU copy)".to_string(),
         _ => String::new(),
     };
     (res, cfg.fps, enc)
@@ -343,6 +361,16 @@ mod tests {
         assert_eq!(out_size(3440, 1440, "1080"), "2580x1080");
         assert_eq!(out_size(1920, 1080, "native"), "1920x1080");
         assert_eq!(tidy("Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz  "), "Intel Core i7-9700K CPU @ 3.60GHz");
+    }
+
+    /// the recorder's audio setup goes along while it records (22 Nov 2026), not before it started
+    #[test]
+    fn audio_setup_while_recording() {
+        *echo_core::recorder::AUDIO_SETUP.lock().unwrap() = "48000 Hz, 2 ch, 3 tracks, RNNoise mic filter".into();
+        let cfg = Settings::default();
+        assert!(q_with(Some((&cfg, "gpu"))).contains("&aud=48000%20Hz%2C%202%20ch%2C%203%20tracks%2C%20RNNoise%20mic%20filter"));
+        assert!(!q_with(Some((&cfg, ""))).contains("&aud="));
+        assert!(!q_with(None).contains("&aud="));
     }
 
     /// prints the whole update-check URL this PC would send, with its real settings.json (read only) and the recorder

@@ -72,6 +72,31 @@ fn game_of_name(name: &str) -> Option<String> {
     None
 }
 
+/// 18 Nov 2026: the recorder's last-resort mode (Windows): ffmpeg's software H.264 encoder, used only when every
+/// graphics-card encoder failed. rec_core.rs warns about it; specs.rs reports it as "(CPU copy)".
+pub const SOFTWARE_MODE: &str = "cpu-x264";
+
+/// 21 Nov 2026 (anonymous performance numbers, prototype-native perf.rs): who uses the CPU. Process ids of the
+/// recorder's own helper processes [ffmpeg, gpu-screen-recorder] (0 = none) - any other child process of Echo is a
+/// job (clip save, upload copy, thumbnails...). OS thread ids of the recorder's busy threads inside Echo's process
+/// [capture + hardware encoder (Windows zero-copy), audio mixer] - the rest of Echo's own CPU is the window, the
+/// player and the graphics driver's / encoder's own threads.
+pub static PERF_PIDS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+pub static PERF_TIDS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// the calling thread's OS id (Windows thread id / Linux tid), for PERF_TIDS; 0 if unknown
+pub fn os_thread_id() -> u32 {
+    #[cfg(windows)]
+    {
+        unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
+    }
+    #[cfg(not(windows))]
+    {
+        // "/proc/thread-self" -> "<pid>/task/<tid>"
+        fs::read_link("/proc/thread-self").ok().and_then(|p| p.file_name().and_then(|f| f.to_str()).and_then(|s| s.parse().ok())).unwrap_or(0)
+    }
+}
+
 pub struct Recorder {
     child: Mutex<Option<Child>>,
     audio_stop: Mutex<Arc<AtomicBool>>,
@@ -2659,6 +2684,10 @@ fn off_device_tracks() -> Vec<u32> {
 }
 /// the mic is added to the mix by ffmpeg (after the noise filter), not here
 static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
+/// The recorder ffmpeg's audio work, for the perf numbers (prototype specs.rs "aud"): "48000 Hz, 2 ch, 3 tracks, no
+/// mic filter". 22 Nov 2026: one PC (RTX 4070 SUPER) had ~10 % CPU + ~500 MB in this ffmpeg, while copying the video
+/// costs almost nothing - its audio graph (mic filter per sample, 7 tracks, a 7.1 / 192 kHz device) is the suspect.
+pub static AUDIO_SETUP: Mutex<String> = Mutex::new(String::new());
 /// names the user said are not games (Settings > Games > remove)
 static NOT_GAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 fn set_mixer(c: &Settings) {
@@ -2691,6 +2720,7 @@ fn denoise_model() -> Option<PathBuf> {
 
 fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, start: Instant,
                 desktop: bool, mic: bool, mic_name: String, vols: Arc<[AtomicU32; 2]>, apps: bool) {
+    PERF_TIDS[1].store(os_thread_id(), Ordering::Relaxed);
     let bd: Buf = Arc::new(Mutex::new(VecDeque::new()));
     let bm: Buf = Arc::new(Mutex::new(VecDeque::new()));
     if desktop {
@@ -2946,6 +2976,7 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
             return None;
         }
     };
+    PERF_PIDS[1].store(child.id(), Ordering::Relaxed);
     let (s, n2) = (stop.clone(), name.clone());
     std::thread::spawn(move || {
         loop {
@@ -3163,8 +3194,11 @@ impl Recorder {
         // Mode "gpu": own zero-copy pipeline (gpucap.rs). Mode "cpu": ffmpeg ddagrab + CPU copy + AMF.
         // ffmpeg-only zero-copy routes all fail on this PC (scale_d3d11, AMF hwmap/vpp_amf, h264_mf).
         // CPU fallback tries each vendor's encoder: AMD, NVIDIA, Intel.
+        // 18 Nov 2026: then the software encoder (libx264) as the very last resort - a PC whose graphics drivers' encoders
+        // all fail (a user's log: Intel MFT "ActivateObject: Unspecified error", QSV "MFX session -9", no nvEncodeAPI64.dll)
+        // recorded NOTHING. Costs far more CPU, so it's never moved up the list and Echo says so (rec_core.rs).
         #[cfg(windows)]
-        let all = ["gpu", "cpu", "cpu-nvenc", "cpu-qsv"];
+        let all = ["gpu", "cpu", "cpu-nvenc", "cpu-qsv", SOFTWARE_MODE];
         #[cfg(not(windows))]
         let all = ["gpu"];
         let mode_file = std::env::temp_dir().join("clipper_mode_v7.txt");
@@ -3180,7 +3214,7 @@ impl Recorder {
                 order.insert(1, f);
             }
         }
-        if last > 0 && last < all.len() {
+        if last > 0 && last < all.len() && all[last] != SOFTWARE_MODE {
             order.retain(|&i| i != last);
             order.insert(1, last);
         }
@@ -3204,6 +3238,9 @@ impl Recorder {
                 let peak = format!("{}M", cfg.bitrate_mbps);
                 let buf = format!("{}M", cfg.bitrate_mbps * 2);
                 let rc: Vec<&str> = match (mode, cfg.smart_bitrate) {
+                    // libx264: constant quality under the ceiling (crf wins over -b:v), or the bitrate with the same ceiling
+                    (SOFTWARE_MODE, true) => vec!["-crf", "21", "-maxrate", &peak, "-bufsize", &buf],
+                    (SOFTWARE_MODE, false) => vec!["-maxrate", &peak, "-bufsize", &buf],
                     ("cpu-nvenc", true) => vec!["-rc", "vbr", "-maxrate", &peak, "-bufsize", &buf],
                     ("cpu-qsv", true) => vec!["-maxrate", &peak, "-bufsize", &buf],
                     (_, true) => vec!["-rc", "vbr_peak", "-maxrate", &peak],
@@ -3213,6 +3250,8 @@ impl Recorder {
                 let mut enc: Vec<String> = match mode {
                     "cpu-nvenc" => vec!["-c:v".into(), format!("{c}_nvenc"), "-preset".into(), "p3".into(), "-tune".into(), "ll".into()],
                     "cpu-qsv" => vec!["-c:v".into(), format!("{c}_qsv"), "-preset".into(), "veryfast".into()],
+                    // always H.264, whatever the codec setting (x265 / AV1 in software are far too slow live); the fastest preset
+                    SOFTWARE_MODE => ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"].map(String::from).to_vec(),
                     _ => vec!["-c:v".into(), format!("{c}_amf"), "-quality".into(), "speed".into()],
                 };
                 enc.extend(rc.iter().map(|x| x.to_string()));
@@ -3249,6 +3288,10 @@ impl Recorder {
                 format!("{f},aeval=exprs='{e}'")
             });
             MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
+            if let Ok(mut a) = AUDIO_SETUP.lock() {
+                let filt = match &nr { Some(f) if f.starts_with("arnndn") => "RNNoise mic filter", Some(_) => "FFT mic filter", None => "no mic filter" };
+                *a = format!("{rate} Hz, {ch} ch, {tracks} tracks, {filt}");
+            }
             let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
             if let Some(stdin) = child.stdin.take() {
                 let (s, v) = (stop.clone(), self.volumes.clone());
@@ -3257,6 +3300,7 @@ impl Recorder {
             }
             std::thread::sleep(Duration::from_secs(3));
             if matches!(child.try_wait(), Ok(None)) {
+                PERF_PIDS[0].store(child.id(), Ordering::Relaxed);
                 *self.child.lock().unwrap() = Some(child);
                 *self.audio_stop.lock().unwrap() = stop;
                 *self.mode.lock().unwrap() = mode.into();
@@ -3264,7 +3308,7 @@ impl Recorder {
                 REC_LOG_POS.store(fs::metadata(log_path()).map(|m| m.len()).unwrap_or(0), Ordering::Relaxed);
                 REC_STARTED_MS.store(now_ms(), Ordering::Relaxed);
                 log_line(&format!("recording: {} ({} Hz, {} ch)",
-                    if mode == "gpu" { "ZERO-COPY gpu pipeline" } else { "cpu copy fallback" }, rate, ch));
+                    match mode { "gpu" => "ZERO-COPY gpu pipeline", SOFTWARE_MODE => "SOFTWARE encoder x264 - no graphics encoder worked", _ => "cpu copy fallback" }, rate, ch));
                 return Ok(());
             }
             stop.store(true, Ordering::Relaxed);
@@ -3274,7 +3318,7 @@ impl Recorder {
             }
             log_line(&format!("--- {mode} mode failed, trying next ---"));
         }
-        Err("Recorder failed to start - see the ffmpeg log".into())
+        Err("Recorder failed to start: no video encoder worked on this PC - update your graphics drivers (NVIDIA / AMD / Intel) and restart the PC".into())
     }
 
     fn spawn(&self, video: Vec<String>, audio_offset: Option<f64>, rate: u32, ch: u16, buffer_secs: u32, tracks: usize,
@@ -3487,6 +3531,11 @@ impl Recorder {
         Ok(out)
     }
 
+    /// HEVC clips get the "hvc1" tag (plays on Apple / in browsers). Not when the software fallback recorded H.264 anyway.
+    fn hevc_tag(&self) -> bool {
+        self.settings().codec == "hevc" && self.mode.lock().map_or(true, |m| m.as_str() != SOFTWARE_MODE)
+    }
+
     fn join(&self, segs: &[(SystemTime, PathBuf)], out: &PathBuf) -> Result<bool, String> {
         let list = self.buf_dir.join(format!("list_{}.txt", std::process::id()));
         let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
@@ -3511,7 +3560,7 @@ impl Recorder {
                 }
             }
             c.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
-                .args(if cfg.codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+                .args(if self.hevc_tag() { &["-tag:v", "hvc1"][..] } else { &[][..] })
                 .args(["-f", "mp4"])
                 .arg(out)
                 .stdout(Stdio::null())
@@ -3570,7 +3619,7 @@ impl Recorder {
             if c == 0 { cmd.args([format!("-b:a:{i}"), "32k".into()]); }
         }
         cmd.args(["-shortest", "-movflags", "+faststart"])
-            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+            .args(if self.hevc_tag() { &["-tag:v", "hvc1"][..] } else { &[][..] })
             .args(["-f", "mp4"]).arg(out)
             .stdout(Stdio::null()).stderr(Stdio::piped());
         let o = cmd.output().map_err(err)?;
@@ -3683,6 +3732,7 @@ impl Recorder {
         }
         r.push(("Recorder running".into(), true, match mode.as_str() {
             "gpu" => "Zero-copy GPU capture".into(),
+            SOFTWARE_MODE => "Software encoder (x264) - no graphics encoder worked: update your graphics drivers. Costs a lot more CPU".into(),
             m => format!("CPU fallback ({m}) - works, but costs more performance"),
         }));
         log_line("selftest: recording 6 s");

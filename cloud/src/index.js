@@ -1150,9 +1150,12 @@ async function countDownload(req, env, what) {
 // updates through flatpak) asks /update/<os>/<arch>/<version> every few hours. Counted once per computer per day:
 // a scrambled code of day + IP + OS goes into uv (kept 2 days, like the website's), never the IP itself.
 // Keys: app:<os> (copies that checked in that day) and appv:<os>:<version>.
-async function countApp(req, env, os, version) {
+// 18 Nov 2026: channel = the update channel this check was answered for (channelOf: stable / beta / dev), kept with the
+// 15-day "different PCs" code so the admin page can show how many PCs use each channel
+async function countApp(req, env, os, version, channel = "stable") {
   try {
     if (!UPDATE_FILES[os] || !/^\d{1,3}\.\d{1,3}\.\d{1,4}$/.test(version)) return;
+    await migrate(env);
     const h = "a" + (await sha256(`${utcDay()}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) {
@@ -1172,7 +1175,11 @@ async function countApp(req, env, os, version) {
     const vk = "v" + (await sha256(`${utcDay()}|${ipOf(req)}|appv:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 22) + ":";
     const prev = await env.DB.prepare("SELECT h FROM uv WHERE day = ? AND h LIKE ?").bind(utcDay(), vk + "%").first();
     const asOld = (v) => (v === "2.0.72" ? "1.99.0" : v); // the 2.0.72 test build is older than 2.0.0
+    // the 15-day code for "different PCs" (upc): same IP + OS = same code on every day
+    const pc = "p" + (await sha256(`${ipOf(req)}|pc:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const pcRow = () => env.DB.prepare("INSERT OR REPLACE INTO upc (day, h, os, ver, cc, ch) VALUES (?, ?, ?, ?, ?, ?)").bind(utcDay(), pc, os, version, cc, channel).run();
     if (!prev) {
+      await pcRow();
       await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), `${vk}${version}|${cc}`).run();
       await bump(env, `appv:${os}:${version}`);
       if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
@@ -1184,8 +1191,11 @@ async function countApp(req, env, os, version) {
         // the old version's row (and its country) goes down by one - and is removed at 0, so "Where" doesn't keep
         // showing a country nobody is on any more (11 Nov 2026: 2.0.1 showed 0 / 0 but "DK · US")
         await unbump(env, `appv:${os}:${pv}`); await bump(env, `appv:${os}:${version}`);
+        await pcRow();
         if (pc) await unbump(env, `appc:${os}:${pv}:${pc}`);
         if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
+      } else if (pv === version) {
+        await pcRow(); // same version again: keeps the channel current (switched in Settings without updating yet)
       }
     }
   } catch (e) { console.log("app count error", e && e.message); }
@@ -1199,7 +1209,13 @@ const PERF_STATES = ["tray", "idle", "active", "player"];
 // Fresh start (the user, 11 Nov 2026): only reports from this version on count - older ones carried fixed problems
 // (RGB theme CPU in the window, untrimmed tray memory) and made Echo look worse than it is. The old rows were deleted
 // by hand (Claude outputs/echo-perf-reset.md). Dev builds (0.1.0) and the 2.0.72 test build never count.
-const PERF_MIN_VER = "2.0.6"; // 12 Nov 2026: raised from 2.0.5 - 2.0.6 has the player's RAM + VRAM fixes
+// 18 Nov 2026 (the user): raised from 2.0.6 to 2.0.11 - older reports mixed into every average (Iris Xe tray CPU 11.3 %
+// where 2.0.11 alone was 1.88 %) and can't tell Echo's own CPU from ffmpeg's. The admin page also skips rows stored before
+// (perfStats: "ce IS NOT NULL" = sent by 2.0.11+); they age out after 180 days.
+const PERF_MIN_VER = "2.0.11";
+// 18 Nov 2026: some PCs send the encoder name with a stray "Â" before ® / © ("IntelÂ® Quick Sync ...", UTF-8 read as
+// Latin-1 somewhere) - the same encoder must not show up twice
+const cleanEnc = (s) => (s ? s.replace(/\u00c2(?=[\u00a9\u00ae])/g, "") : s);
 async function countPerf(req, env, url, os, version) {
   try {
     const q = url.searchParams;
@@ -1225,16 +1241,21 @@ async function countPerf(req, env, url, os, version) {
         const v = String(q.get("s_" + st) || "").split(",").map((x, i) => { const y = Math.round(Number(x)); return Number.isFinite(y) && y >= 0 ? Math.min(y, lim[i] ?? 0) : null; });
         if (v.length !== 8 || v.some((x) => x == null) || !v[0]) continue;
         const [sn, srn, m, mp, c, cp, rm, rc] = v;
-        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn), ...pair("v_" + st)]);
+        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn), ...pair("v_" + st), ...pair("e_" + st)]);
       }
     }
-    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp")]);
+    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp"), null, null]);
     const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const at = now(), base = [at, utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc")];
-    // ce / rce are for all states together: each state row carries them (averages weigh by minutes, so it adds up)
-    const own = [q.has("ce") ? int("ce", 1000) : null, q.has("rce") ? int("rce", 1000) : null, str("encn")];
-    await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st, ...own)));
+    // ce / rce (2.0.11+) are for all states together. 18 Nov 2026: newer Echo also sends e_<state>=ce,rce per state, so
+    // a state's split is its own; without it each state row carries the all-states numbers (right for "All" only)
+    const ce = q.has("ce") ? int("ce", 1000) : null, rce = q.has("rce") ? int("rce", 1000) : null;
+    const encn = cleanEnc(str("encn"));
+    await env.DB.batch(rows.map(([st, m, mp, c, cp, rm, rc, sn, srn, g, gp, se, sre]) => {
+      const own = se != null ? [Math.min(se, 1000), srn ? Math.min(sre, 1000) : null] : [ce, rce];
+      return ins.bind(...base, m, mp, c, cp, rm, rc, sn, srn, g, gp, /^[A-Z]{2}$/.test(cc) ? cc : null, st, ...own, encn);
+    }));
   } catch (e) { console.log("perf report error", e && e.message); }
 }
 
@@ -1261,7 +1282,10 @@ async function installStats(env) {
 
 // admin page: Echo's CPU / memory on real PCs, last 30 days. Averages are weighted by minutes measured.
 // perf-states: the same totals + tables per state too (by_state.tray / idle / active / player / mixed = older Echo).
-async function perfStats(env) {
+// 18 Nov 2026: Echo 2.0.11+ only (rows with ce), and split by encoder: path "gpu" = the graphics card's own encoder
+// (zero-copy, plus minutes with no recording), "cpu" = the recorder's CPU fallbacks (ffmpeg's CPU copy into a vendor
+// encoder, or the software x264 encoder) - both have "(CPU copy)" in enc (specs.rs).
+async function perfStats(env, path = "gpu") {
   try {
     await migrate(env);
     const from = utcDay(now() - 29 * 86400);
@@ -1271,15 +1295,15 @@ async function perfStats(env) {
       ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak,
       ROUND(SUM(g * n) * 1.0 / NULLIF(SUM(CASE WHEN g IS NOT NULL THEN n END), 0)) AS vram, MAX(gp) AS vram_peak,
       ROUND(SUM(ce * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_self,
-      ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_split,
+      ROUND(SUM(CASE WHEN ce IS NOT NULL THEN c * n END) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_split,
       ROUND(SUM(rce * rn) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_self,
       ROUND(SUM(CASE WHEN rce IS NOT NULL THEN rc * rn END) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_split`;
     const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
-    const cols = { gpu: "gpu", cpu: "cpu", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
+    const cols = { gpu: "gpu", cpu: "cpu", enc: "enc", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
     // 17 Nov 2026: PCs whose recorder fell back to ffmpeg's CPU copy (specs.rs adds "(CPU copy)" to the encoder name)
-    // cost far more CPU and diluted the zero-copy numbers. Every table + tile below is the GPU path only; the
-    // "Capture path" table (all rows) shows both side by side.
-    const GPU = "AND (enc IS NULL OR enc NOT LIKE '%(CPU copy)%')";
+    // cost far more CPU - kept apart from the zero-copy numbers; the "Capture path" table shows both side by side.
+    const NEW = " AND ce IS NOT NULL";
+    const GPU = (path === "cpu" ? "AND enc LIKE '%(CPU copy)%'" : "AND (enc IS NULL OR enc NOT LIKE '%(CPU copy)%')") + NEW;
     const pathCol = "CASE WHEN enc LIKE '%(CPU copy)%' THEN 'CPU copy fallback' WHEN enc IS NULL OR enc = '' THEN 'Not recording / unknown' ELSE 'Zero-copy GPU' END";
     // one round trip: per table the all-states rows + the per-state rows, then the totals
     const qs = [];
@@ -1289,16 +1313,17 @@ async function perfStats(env) {
     }
     qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ? ${GPU}`).bind(from));
     qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? ${GPU} GROUP BY state`).bind(from));
-    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn FROM perf ORDER BY at DESC, rowid LIMIT 40"));
-    // [15] the capture paths side by side (every row), [16] each GPU-path PC-day's CPU for the typical-PC median
-    qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY k ORDER BY pcs DESC`).bind(from));
+    qs.push(env.DB.prepare(`SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn FROM perf WHERE 1 ${GPU} ORDER BY at DESC, rowid LIMIT 40`));
+    // then the capture paths side by side (every 2.0.11+ row), then each PC-day's CPU (this path) for the typical-PC median
+    qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ?${NEW} GROUP BY k ORDER BY pcs DESC`).bind(from));
     qs.push(env.DB.prepare(`SELECT SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10 AS cpu, SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10 AS rcpu FROM perf WHERE day >= ? ${GPU} GROUP BY day || h`).bind(from));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
     const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); if (!v.length) return null;
       const m = v.length >> 1; return Math.round((v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2) * 100) / 100; };
-    const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14],
-      path: res[15], median_cpu: median(res[16].map((r) => r.cpu)), median_rcpu: median(res[16].map((r) => r.rcpu)) };
-    for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
+    const b = Object.keys(cols).length * 2; // the totals etc. come after the per-column tables
+    const out = { total: res[b][0] || {}, from, min_ver: PERF_MIN_VER, enc_path: path, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[b + 2],
+      path: res[b + 3], median_cpu: median(res[b + 4].map((r) => r.cpu)), median_rcpu: median(res[b + 4].map((r) => r.rcpu)) };
+    for (const t of res[b + 1]) out.by_state[t.st || "mixed"] = { total: t };
     Object.keys(cols).forEach((name, i) => {
       out[name] = res[i * 2];
       for (const r of res[i * 2 + 1]) {
@@ -1322,6 +1347,7 @@ async function countUpdAnswer(req, env, os, why) {
 }
 async function cleanupStats(env) {
   await env.DB.prepare("DELETE FROM uv WHERE day < ?").bind(utcDay(now() - 2 * 86400)).run();
+  await env.DB.prepare("DELETE FROM upc WHERE day < ?").bind(utcDay(now() - 15 * 86400)).run().catch(() => { });
   // pins of share links that were removed or expired
   await env.DB.prepare("DELETE FROM pins WHERE share_id NOT IN (SELECT id FROM shares WHERE expires = 0 OR expires > ?)").bind(now()).run();
 }
@@ -1329,7 +1355,8 @@ async function siteStats(env) {
   const days = [...Array(30)].map((_, i) => utcDay(now() - (29 - i) * 86400)); // oldest .. today
   const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ?").bind(days[0]).all()).results) || [];
   const keys = {}; // key -> [today, 7 days, 30 days]
-  const daily = days.map((day) => ({ day, visitors: 0, views: 0, downloads: 0 }));
+  // 18 Nov 2026: downloads per platform too (dlw = Windows installer + zip, dll = Linux AppImage / tar.gz / Flatpak) for the admin chart
+  const daily = days.map((day) => ({ day, visitors: 0, views: 0, downloads: 0, dlw: 0, dll: 0 }));
   for (const r of rows) {
     const i = days.indexOf(r.day);
     if (i < 0) continue;
@@ -1339,7 +1366,7 @@ async function siteStats(env) {
     a[2] += r.n;
     if (r.k === "visitors") daily[i].visitors += r.n;
     else if (r.k.startsWith("view:")) daily[i].views += r.n;
-    else if (r.k.startsWith("dl:")) daily[i].downloads += r.n;
+    else if (r.k.startsWith("dl:")) { daily[i].downloads += r.n; daily[i][r.k.startsWith("dl:windows") ? "dlw" : "dll"] += r.n; }
   }
   return { keys, daily };
 }
@@ -1613,7 +1640,8 @@ async function adminStats(req, env) {
     profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0, list: profList },
     site: await siteStats(env),
     apps: await appStats(env),
-    perf: await perfStats(env),
+    perf: await perfStats(env, "gpu"),
+    perf_cpu: await perfStats(env, "cpu"),
     installs: await installStats(env),
     releases: await releaseList(env),
   });
@@ -1747,6 +1775,10 @@ async function migrate(env) {
     // @names the admin removed and blocked (can't be taken again)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS banned_handles (handle TEXT PRIMARY KEY, at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
+    // different PCs per version over 7 / 14 days (18 Nov 2026): one row per computer per day with its newest version
+    // that day. h = a scrambled code from the IP address that stays the same across days, so a computer is counted
+    // once over a week; rows are deleted after 15 days (privacy page says so). No IP address is stored.
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS upc (day TEXT NOT NULL, h TEXT NOT NULL, os TEXT NOT NULL, ver TEXT NOT NULL, cc TEXT, PRIMARY KEY (day, h))"),
     // Echo's own CPU / memory on real PCs + the PC's specs (10 Nov 2026, perf.rs / specs.rs): one row per report
     // (sent with the update check). h = that day's scrambled code (like uv), so one PC can be told apart within a
     // day but never followed across days. m/mp/rm = MB, c/cp/rc = CPU % of the whole PC x10, n/rn = minutes.
@@ -1779,11 +1811,16 @@ async function migrate(env) {
   // perf-states (10 Nov 2026): what Echo was doing in those minutes; rows from before = "mixed"
   const pcols = new Set(((await env.DB.prepare("PRAGMA table_info(perf)").all()).results || []).map((c) => c.name));
   if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
+  // 18 Nov 2026: update channel per PC (countApp); NULL = counted before this
+  const ucols = new Set(((await env.DB.prepare("PRAGMA table_info(upc)").all()).results || []).map((c) => c.name));
+  if (!ucols.has("ch")) await env.DB.prepare("ALTER TABLE upc ADD COLUMN ch TEXT").run();
   // VRAM (12 Nov 2026): graphics-card memory MB, average / peak; NULL = not measured (Linux, Echo before 2.0.7)
   for (const c of ["g", "gp"]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} INTEGER`).run();
   // 17 Nov 2026 (Echo 2.0.11+): Echo's own process CPU % x10 (all / recording minutes; the rest is its ffmpeg) and the
   // exact encoder of the zero-copy pipeline (Windows). NULL = older Echo
   for (const [c, type] of [["ce", "INTEGER"], ["rce", "INTEGER"], ["encn", "TEXT"]]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} ${type}`).run();
+  // 18 Nov 2026: encoder names stored with a stray "\u00c2" before the (R) sign (see cleanEnc) - once per Worker start, cheap
+  await env.DB.prepare("UPDATE perf SET encn = REPLACE(encn, ?, ?) WHERE encn LIKE ?").bind("\u00c2\u00ae", "\u00ae", "%\u00c2\u00ae%").run().catch(() => { });
   // faster-share-links: what kind of file Echo uploaded (upload(): small / orig / keep; NULL = older Echo, unknown)
   const ocols = new Set(((await env.DB.prepare("PRAGMA table_info(objects)").all()).results || []).map((c) => c.name));
   if (!ocols.has("fmt")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN fmt TEXT").run();
@@ -2417,7 +2454,34 @@ async function appStats(env) {
     const real = r.find((x) => offered(x) && (!out || !newer(String(x.version).replace(/[^0-9.]/g, ""), out)));
     latest = real ? String(real.version).replace(/[^0-9.]/g, "") : null;
   } catch { /* table not there yet */ }
-  return { rows, latest, today: utcDay() };
+  // different PCs per version (upc): each computer once, under the newest version it used in the range
+  let uniq = null;
+  try {
+    const pcs = ((await env.DB.prepare("SELECT day, h, os, ver, cc, ch FROM upc WHERE day >= ?").bind(from).all()).results) || [];
+    const asOld = (v) => (v === "2.0.72" ? "1.99.0" : v);
+    const today = utcDay(), yest = utcDay(now() - 86400), d7 = utcDay(now() - 6 * 86400);
+    const ranges = { [today]: (d) => d === today, [yest]: (d) => d === yest, "7": (d) => d >= d7, "14": () => true };
+    uniq = { since: pcs.reduce((a, r) => (!a || r.day < a ? r.day : a), null) };
+    for (const [key, inRange] of Object.entries(ranges)) {
+      const best = new Map();
+      for (const r of pcs) {
+        if (!inRange(r.day)) continue;
+        const b = best.get(r.h);
+        if (!b || newer(asOld(r.ver), asOld(b.ver)) || (r.ver === b.ver && r.day > b.day)) best.set(r.h, r);
+      }
+      const v = {};
+      for (const r of best.values()) {
+        const x = (v[r.ver] = v[r.ver] || { windows: 0, linux: 0, c: {} });
+        x[r.os === "linux" ? "linux" : "windows"]++;
+        if (r.cc) x.c[r.cc] = (x.c[r.cc] || 0) + 1;
+      }
+      // 18 Nov 2026: the same PCs by update channel (the channel of their newest row; "" = counted before channels were kept)
+      const ch = {};
+      for (const r of best.values()) { const y = (ch[r.ch || ""] = ch[r.ch || ""] || { windows: 0, linux: 0 }); y[r.os === "linux" ? "linux" : "windows"]++; }
+      uniq[key] = { v, ch, total: best.size };
+    }
+  } catch { /* table not there yet */ }
+  return { rows, latest, today: utcDay(), uniq };
 }
 
 // ----- updates for Echo (Tauri updater): GET /update/<windows|linux>/<arch>/<current version> -----
@@ -2680,10 +2744,11 @@ export default {
       if (om && req.method === "GET") return await shareOembed(req, env, om[1]);
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") {
-        if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
+        const ch = channelOf(req, url, env);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3], ch)); else await countApp(req, env, um[1], um[3], ch);
         if (url.searchParams.has("m")) { const p = countPerf(req, env, url, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         if (url.searchParams.get("first") === "1") { const p = countInstall(req, env, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
-        const res = await update(env, um[1], um[3], channelOf(req, url, env));
+        const res = await update(env, um[1], um[3], ch);
         const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
         if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         return res;

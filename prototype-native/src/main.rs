@@ -3688,6 +3688,7 @@ fn main() {
             let vfps = m.get_f64("container-fps").unwrap_or(0.0);
             if !p.info_done && !vw.is_empty() {
                 p.info_done = true;
+                crate::specs::set_player_decode(&hw, &codec);
                 if let Some(idx) = p.clip {
                     let c = lib.clip(idx);
                     pl.set_info(info_text(&c, Some(format!("{vw}×{vh} · {codec} · {vfps:.0} fps"))).into());

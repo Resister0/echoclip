@@ -25,7 +25,17 @@ fn start_rec(r: &Recorder) {
     if !e.is_empty() {
         recorder::log_line(&e);
     }
+    // 18 Nov 2026: no graphics encoder worked, the software one records instead - say so once per run (it costs a lot
+    // more CPU, so games can lag); the status card says it too (draw_status)
+    if e.is_empty() && is_software(r) && !SOFT_WARNED.swap(true, Ordering::Relaxed) {
+        toast("Recording with your processor", "Your graphics card's video encoder didn't start - update your graphics drivers, or games may lag", false);
+    }
     *START_ERR.lock().unwrap_or_else(|x| x.into_inner()) = e;
+}
+static SOFT_WARNED: AtomicBool = AtomicBool::new(false);
+/// the recorder runs on the software encoder (recorder.rs SOFTWARE_MODE): no graphics encoder worked
+fn is_software(r: &Recorder) -> bool {
+    r.mode.lock().map_or(false, |m| m.as_str() == recorder::SOFTWARE_MODE)
 }
 /// Echo's FPS_TESTING: the watch loop leaves the recorder alone while the FPS test pauses it
 pub static FPS_TESTING: AtomicBool = AtomicBool::new(false);
@@ -524,6 +534,7 @@ fn draw_status(a: &AppWindow) {
     a.set_rec_tip(match mode.as_str() {
         _ if !err.is_empty() && !on => format!("{err} - double-click the status to try again").into(),
         "gpu" => "Your last moments are always ready · GPU".into(),
+        recorder::SOFTWARE_MODE => "Recording with your processor - no graphics encoder worked. Update your graphics drivers".into(),
         "" => "Settings → App → Restart recorder".into(),
         _ => "Your last moments are always ready · CPU fallback".into(),
     });
@@ -537,7 +548,8 @@ fn draw_status(a: &AppWindow) {
         _ => "Recorder stopped".to_string(),
     }.into());
     a.set_rail_mode(if on {
-        format!("Your last {} is always ready · {}", fmt_len(cfg.buffer_seconds()), if mode == "gpu" { "GPU" } else { "CPU fallback" })
+        format!("Your last {} is always ready · {}", fmt_len(cfg.buffer_seconds()),
+            match mode.as_str() { "gpu" => "GPU", recorder::SOFTWARE_MODE => "processor only - update your graphics drivers", _ => "CPU fallback" })
     } else if !err.is_empty() {
         format!("{err} - double-click the status to try again")
     } else {

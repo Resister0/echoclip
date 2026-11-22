@@ -1315,20 +1315,39 @@ impl Encoder {
                 String::from_utf16_lossy(&buf[..n as usize])
             };
             let idx = list.iter().position(|a| a.as_ref().map_or(false, |a| vendor_of(a).eq_ignore_ascii_case(&want))).unwrap_or(0);
-            let act = list[idx].clone().ok_or("null activate")?;
-            let mut name_buf = [0u16; 256];
-            let mut name_len = 0u32;
-            let _ = act.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
-            let ename = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-            log(&format!("gpu: {cname} encoder '{ename}' ({})", vendor_of(&act)));
-            if let Ok(mut n) = ENCODER_NAME.lock() {
-                *n = ename.trim().to_string();
+            // 18 Nov 2026: the preferred encoder first, then the others on the list - a user's Intel Quick Sync MFT failed
+            // with "ActivateObject: Unspecified error" and Echo gave up on zero-copy without trying anything else
+            let mut order: Vec<usize> = vec![idx];
+            order.extend((0..list.len()).filter(|&i| i != idx));
+            let mut picked: Option<IMFTransform> = None;
+            let mut last_err = String::new();
+            for i in order {
+                let Some(act) = list[i].clone() else { continue };
+                let mut name_buf = [0u16; 256];
+                let mut name_len = 0u32;
+                let _ = act.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
+                let ename = String::from_utf16_lossy(&name_buf[..(name_len as usize).min(name_buf.len())]);
+                log(&format!("gpu: {cname} encoder '{ename}' ({})", vendor_of(&act)));
+                match act.ActivateObject::<IMFTransform>() {
+                    Ok(m) => {
+                        if let Ok(mut n) = ENCODER_NAME.lock() {
+                            *n = ename.trim().to_string();
+                        }
+                        picked = Some(m);
+                        break;
+                    }
+                    Err(x) => {
+                        last_err = format!("ActivateObject: {x}");
+                        log(&format!("gpu: encoder '{}' didn't start ({last_err}) - trying the next one", ename.trim()));
+                    }
+                }
             }
-            let mft: IMFTransform = act.ActivateObject().map_err(e("ActivateObject"))?;
+            // free the list either way (it leaked when the encoder didn't start)
             for a in list.iter_mut() {
                 drop(a.take());
             }
             CoTaskMemFree(Some(acts as *const _));
+            let mft = picked.ok_or(if last_err.is_empty() { "null activate".to_string() } else { last_err })?;
 
             let attrs = mft.GetAttributes().map_err(e("GetAttributes"))?;
             attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1).map_err(e("ASYNC_UNLOCK"))?;
@@ -1493,6 +1512,8 @@ fn write_all(pipe: HANDLE, mut data: &[u8]) -> bool {
 /// Runs until `stop` is set or ffmpeg goes away. Call on its own thread.
 pub fn run(pipe: Pipe, stop: Arc<AtomicBool>, o: Opts, log: Log) {
     let pipe = HANDLE(pipe.0 as _);
+    // 21 Nov 2026: this thread = capture + encoder feeding, kept apart in the performance numbers (recorder.rs PERF_TIDS)
+    crate::recorder::PERF_TIDS[0].store(crate::recorder::os_thread_id(), Ordering::Relaxed);
     let res = (|| -> Result<(), String> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
