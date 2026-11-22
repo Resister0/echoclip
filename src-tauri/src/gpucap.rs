@@ -620,7 +620,16 @@ struct Capture {
     /// mouse pointer drawn on top (whole-monitor capture only; window capture lets Windows draw it)
     cursor: Option<CursorDraw>,
     log: Log,
+    /// whole-monitor capture: when the screen last gave a new picture, and how often the duplication was made
+    /// again because none came (stuck-picture guard, see grab())
+    last_new: std::time::Instant,
+    stale_redups: u32,
 }
+
+/// No new picture from the whole-monitor capture for this long = make the duplication again (cheap; a fresh one
+/// hands over the current screen at once). 22 Nov 2026: a user's clips showed the Windows lock screen from the day
+/// before - the capture stayed stuck on that frame after unlocking until Echo restarted.
+const STALE_REDUP: std::time::Duration = std::time::Duration::from_secs(5);
 
 unsafe fn bgra_tex(device: &ID3D11Device, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
     let td = D3D11_TEXTURE2D_DESC {
@@ -810,6 +819,7 @@ impl Capture {
             let mut c = Capture {
                 device, ctx, src, luid: adesc.AdapterLuid, vendor: adesc.VendorId, hdr, width, height, out_w, out_h, bgra,
                 vdev, vctx, venum, vproc, in_view: in_v, nv12, cursor, log,
+                last_new: std::time::Instant::now(), stale_redups: 0,
             };
             if let Source::Dup { .. } = c.src {
                 c.reduplicate();
@@ -906,6 +916,7 @@ impl Capture {
                 match d.AcquireNextFrame(0, &mut info, &mut res) {
                     Ok(()) => {
                         if info.LastPresentTime != 0 {
+                            self.last_new = std::time::Instant::now();
                             if let Some(tex) = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                                 // the screen changed resolution (a game's own / stretched mode): new input size,
                                 // scaled to the recording size (before: only the top-left part was copied)
@@ -923,7 +934,23 @@ impl Capture {
                         }
                         let _ = d.ReleaseFrame();
                     }
-                    Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
+                    Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                        // nothing new for a while: a still desktop - or a duplication that silently stopped (seen
+                        // after the lock screen). Making it again costs a few ms and gives the current screen, so a
+                        // stuck picture lasts 5 s at most instead of until Echo restarts.
+                        if self.last_new.elapsed() >= STALE_REDUP {
+                            self.last_new = std::time::Instant::now();
+                            self.stale_redups += 1;
+                            if matches!(self.stale_redups, 1 | 10 | 100 | 1000) {
+                                (self.log)(&format!("gpu: no new screen picture for 5 s - capture made again ({} times)", self.stale_redups));
+                            }
+                            drop(d); // the old duplication must be gone before a new one of the same screen
+                            if let Source::Dup { dup, .. } = &mut self.src {
+                                *dup = None;
+                            }
+                            self.reduplicate();
+                        }
+                    }
                     Err(_) => {
                         // access lost (resolution change, UAC, fullscreen switch...) - recreate
                         if let Source::Dup { dup, .. } = &mut self.src {

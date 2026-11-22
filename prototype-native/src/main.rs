@@ -293,10 +293,10 @@ fn log(p: &mut Player, line: String) {
 /// same as log(), for code that holds mpv borrowed from the Player (only the log list is borrowed here)
 fn log_to(list: &mut Vec<String>, line: String) {
     eprintln!("{line}");
-    // the prototype's log: proto.log next to the exe
-    if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("proto.log"))) {
+    // the prototype's log: proto.log next to the exe (or the temp folder when that's read-only - lib_net::log_path)
+    {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(lib_net::log_path()) {
             let _ = writeln!(f, "{} {line}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
         }
     }
@@ -3824,6 +3824,25 @@ fn main() {
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
             ownkeys::winit_event(ev); // Echo's hotkeys while its own window has the keyboard
+            // 22 Nov 2026 (William on KDE Wayland, 2.0.17: "can't scroll"): Wayland never tells a window it isn't
+            // minimized any more (winit's is_minimized() = None there), so after Echo's own minimize button Slint kept
+            // "minimized" for good - every wheel turn was dropped (below), the idle mode never woke, the disk check
+            // stopped. Any sign the window is in use again clears it.
+            if win.is_minimized()
+                && matches!(
+                    ev,
+                    winit::event::WindowEvent::Focused(true)
+                        | winit::event::WindowEvent::CursorEntered { .. }
+                        | winit::event::WindowEvent::CursorMoved { .. }
+                        | winit::event::WindowEvent::MouseInput { .. }
+                        | winit::event::WindowEvent::MouseWheel { .. }
+                        | winit::event::WindowEvent::KeyboardInput { .. }
+                )
+                && win.with_winit_window(|w| w.is_minimized().is_none()).unwrap_or(false)
+            {
+                win.set_minimized(false);
+                echo_core::recorder::log_line("ui: window in use again - no longer minimized (Wayland doesn't say)");
+            }
             if let Some(r) = uiscale::main_event(win, ev) {
                 return r; // Echo's own size on top of the system's scale (uiscale.rs)
             }

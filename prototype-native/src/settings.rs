@@ -413,6 +413,12 @@ const PRESETS: [(&str, &str, &str, u32, u32, &str); 4] = [
 ];
 const LENGTHS: [u64; 9] = [15, 30, 60, 120, 180, 300, 600, 900, 1200];
 
+/// The bitrate the Quality page suggests: `at60` Mbps at 60 fps, more at higher fps but not in proportion (frames
+/// that close together look alike). Even numbers, never above what the slider can reach.
+fn rec_mbps(at60: f64, fps: f64, top: f64) -> u32 {
+    ((at60 * (fps.max(15.0) + 30.0) / 180.0).round() * 2.0).min(top) as u32
+}
+
 pub const NAV: [(&str, &str, &str, &str); 9] = [
     ("hotkeys", "Capture Hotkeys", "RECORDING", "M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"),
     ("quality", "Quality", "", "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0 M14 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z M8 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z M16 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0z"),
@@ -793,12 +799,14 @@ impl Store {
                     ..Default::default()
                 };
                 let res = self.s("resolution");
+                let top = (80.0 * pct).floor();
+                let fps = self.n("fps");
+                let mbps = |at60| rec_mbps(at60, fps, top);
                 let rec = match res.as_str() {
-                    "720" => "6-8",
-                    "1080" => "12",
-                    "1440" => "20",
-                    "native" => "20 (1440p) or 40 (4K)",
-                    _ => "20",
+                    "720" => mbps(8.0).to_string(),
+                    "1080" => mbps(12.0).to_string(),
+                    "native" => format!("{} (1440p) or {} (4K)", mbps(20.0), mbps(40.0)),
+                    _ => mbps(20.0).to_string(),
                 };
                 let rec_txt = format!(
                     "About {rec} Mbps {}is plenty for {} at {} fps.",
@@ -814,7 +822,7 @@ impl Store {
                     sub: if smart { format!("Average. Busy moments can use up to {br} Mbps. {rec_txt}") } else { rec_txt },
                     num: avg,
                     min: 4.0,
-                    max: (80.0 * pct).floor() as f32,
+                    max: top as f32,
                     step: 1.0,
                     vtext: format!("{avg} Mbps"),
                     ..Default::default()
@@ -1945,6 +1953,16 @@ pub fn monitors() -> Vec<(String, String)> {
 #[cfg(test)]
 mod show_key_tests {
     use super::*;
+
+    #[test]
+    fn suggested_bitrate_follows_fps() {
+        let at = |base| [30.0, 60.0, 120.0, 144.0].map(|f| rec_mbps(base, f, 80.0));
+        assert_eq!(at(8.0), [6, 8, 14, 16]); // 720p
+        assert_eq!(at(12.0), [8, 12, 20, 24]); // 1080p
+        assert_eq!(at(20.0), [14, 20, 34, 38]); // 1440p
+        assert_eq!(at(40.0), [26, 40, 66, 78]); // 4K
+        assert_eq!(rec_mbps(40.0, 144.0, 48.0), 48); // never above the slider's end
+    }
 
     fn store(name: &str) -> Store {
         let file = std::env::temp_dir().join(format!("echo-showkey-test-{}-{name}.json", std::process::id()));
