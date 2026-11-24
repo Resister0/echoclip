@@ -721,10 +721,38 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
         std::thread::spawn(move || {
             let lv = crate::edrender::track_levels(&ff, &clip, tracks);
             let _ = slint::invoke_from_event_loop(move || {
-                let _ = &w;
+                let Some(a) = w.upgrade() else { return };
+                let mut note = None;
                 with_ed(|e| {
                     if e.clip == clip {
                         e.levels = lv;
+                        // U was pressed while this was measuring: now it makes the right lanes
+                        if std::mem::take(&mut e.sep_wait) {
+                            let (tr, lv) = (e.tracks, e.levels.clone());
+                            note = Some(e.detach_audio(tr, &lv).unwrap_or_else(|x| x));
+                            push(&a, e);
+                        }
+                    }
+                });
+                if let Some(m) = note {
+                    toast(&a, m);
+                }
+            });
+        });
+    }
+    // the clip's frame rate: the Export menu offers it and lower ones, never higher
+    if let Some(ff) = ff.clone() {
+        let (clip, w) = (c.path.clone(), a.as_weak());
+        std::thread::spawn(move || {
+            let fps = crate::edrender::probe_fps(&ff, &clip);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(a) = w.upgrade() else { return };
+                with_ed(|e| {
+                    if e.clip == clip {
+                        e.src_fps = fps;
+                        let g = a.global::<Ed>();
+                        g.set_out_fps(fps as i32);
+                        g.set_fps_opts(ModelRc::new(VecModel::from(crate::editor::fps_choices(fps))));
                     }
                 });
             });
@@ -761,6 +789,8 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
     g.set_busy(false);
     g.set_listening(false);
     g.set_export_menu(false);
+    g.set_out_fps(0);
+    g.set_fps_opts(ModelRc::default());
     g.set_pick_open(false);
     g.set_export_pct(0.0);
     // Echo's export menu: "One export that fits under 10 MB, copied for pasting"
@@ -1312,6 +1342,12 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
         return;
     }
     if let Some(preset) = cmd.strip_prefix("export:") {
+        // (a sound-only export has its own "no sound to save" message)
+        if !matches!(preset, "mp3" | "wav") && with_ed(|e| e.export_is_silent()) == Some(true) {
+            let (p2, preset, root) = (p.clone(), preset.to_string(), root.to_path_buf());
+            confirm_box(a, "Export without sound?", "Every lane with sound is muted or deleted, so this video will be silent. Unmute a lane to keep its sound.", "Export anyway", move |a| export(a, &p2, &preset, &root));
+            return;
+        }
         export(a, p, preset, root);
         return;
     }
@@ -1486,11 +1522,17 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 }
             }
             "audio-sep" => {
-                let (tr, lv) = (e.tracks, e.levels.clone());
-                msg = Some(match e.detach_audio(tr, &lv) {
-                    Ok(x) => x,
-                    Err(x) => x,
-                });
+                // pressed before the tracks were measured: it used to show silent lanes too, and later only the real ones
+                if e.tracks >= 2 && e.levels.is_empty() && sheets::ffmpeg().is_some() {
+                    e.sep_wait = true;
+                    msg = Some("Checking which tracks have sound…".into());
+                } else {
+                    let (tr, lv) = (e.tracks, e.levels.clone());
+                    msg = Some(match e.detach_audio(tr, &lv) {
+                        Ok(x) => x,
+                        Err(x) => x,
+                    });
+                }
                 reseek = false;
             }
             // Echo: I = from the playhead to the end (or takes the highlight away); O = up to the playhead, keeping
@@ -1888,6 +1930,7 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
                 e.normalize = val == "1";
                 crate::lib_fx::ui_set("ed_normalize", serde_json::json!(e.normalize)); // remembered (Echo)
             }
+            "out-fps" => e.out_fps = num as u32,
             "bri-live" | "bri" | "con-live" | "con" | "sat-live" | "sat" => {
                 if let Some(i) = e.sel_seg() {
                     live(e);

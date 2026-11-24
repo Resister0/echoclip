@@ -373,6 +373,11 @@ pub struct Editor {
     /// the clip's audio tracks + their mean volume (dB, measured in the background - empty until then)
     pub tracks: u32,
     pub levels: Vec<f64>,
+    /// U was pressed before the levels were measured: it runs as soon as they arrive (same lanes every time)
+    pub sep_wait: bool,
+    /// the clip's frame rate (0 = not known yet) + the one picked in the Export menu (0 = same as the clip)
+    pub src_fps: u32,
+    pub out_fps: u32,
     /// separated-audio mix last handed to mpv (lavfi-complex)
     pub last_af: String,
     /// multi-selection (Echo's ed.msel): Ctrl/Shift+click toggles, Ctrl+drag on empty timeline = box, Ctrl+A = all.
@@ -630,6 +635,9 @@ impl Editor {
             hw_copied: false,
             tracks: 1,
             levels: vec![],
+            sep_wait: false,
+            src_fps: 0,
+            out_fps: 0,
             last_af: String::new(),
             msel: vec![],
             layer_msg: None,
@@ -649,8 +657,33 @@ impl Editor {
         e.cap_hl_color = self.cap_hl_color.clone();
         e.normalize = self.normalize;
         e.tracks = self.tracks;
+        e.levels = self.levels.clone();
+        e.src_fps = self.src_fps;
+        e.out_fps = self.out_fps;
         e.srcs = self.srcs.clone();
         e
+    }
+
+    /// the export's frame rate: the picked one, never above the clip's; the YouTube / TikTok / Discord presets stop
+    /// at 60. Clip's rate unknown = 60, as it always was.
+    pub fn export_fps(&self, preset: &str) -> u32 {
+        let clip = if self.src_fps > 0 { self.src_fps } else { 60 };
+        let f = if self.out_fps > 0 { self.out_fps.min(clip) } else { clip };
+        if matches!(preset, "yt" | "tt" | "dc") { f.min(60) } else { f }
+    }
+
+    /// nothing audible would be in the export: every lane with sound is muted or deleted (the clip's mute button is
+    /// a clear choice, so no question then; levels not measured yet = can't tell = false)
+    pub fn export_is_silent(&self) -> bool {
+        if self.p.mute || self.tracks == 0 || self.levels.is_empty() || !self.p.over.is_empty() {
+            return false;
+        }
+        let loud = |t: u32| self.levels.get(t as usize).map_or(true, |&l| l > -70.0);
+        let piece = self.p.segs.iter().any(|s| {
+            !s.freeze() && s.end - s.start >= 0.05 && s.extra.get("amute").and_then(|x| x.as_bool()) != Some(true) && (s.src().is_some() || loud(0))
+        });
+        let row = self.p.audio.iter().any(|a| !a.mute && a.end - a.start >= 0.05 && (a.other_file() || loud(a.track)));
+        !piece && !row
     }
 
     pub fn set_rng(&mut self, a: f64, b: f64) {
@@ -2414,4 +2447,84 @@ impl Editor {
 
 pub fn project_path(dir: &Path, clip: &Path) -> PathBuf {
     dir.join(format!("{}.project.json", clip.file_stem().unwrap_or_default().to_string_lossy()))
+}
+
+/// the frame rates the Export menu offers: the clip's own, then the usual lower ones (never higher)
+pub fn fps_choices(clip: u32) -> Vec<i32> {
+    if clip == 0 {
+        return vec![];
+    }
+    std::iter::once(clip as i32).chain([120, 60, 30].into_iter().filter(|&f| f < clip as i32)).collect()
+}
+
+#[cfg(test)]
+mod export_choice_tests {
+    use super::*;
+
+    fn ed() -> Editor {
+        Editor::new(PathBuf::from("clip.mp4"), "clip".into(), 10.0, 1920, 1080)
+    }
+
+    #[test]
+    fn frame_rate_never_goes_above_the_clip() {
+        assert_eq!(fps_choices(144), vec![144, 120, 60, 30]);
+        assert_eq!(fps_choices(120), vec![120, 60, 30]);
+        assert_eq!(fps_choices(30), vec![30]);
+        assert!(fps_choices(0).is_empty());
+        let mut e = ed();
+        assert_eq!(e.export_fps(""), 60); // unknown clip rate: as before
+        e.src_fps = 120;
+        assert_eq!(e.export_fps(""), 120);
+        assert_eq!(e.export_fps("yt"), 60);
+        e.out_fps = 240;
+        assert_eq!(e.export_fps(""), 120);
+        e.out_fps = 30;
+        assert_eq!(e.export_fps(""), 30);
+        assert_eq!(e.export_fps("dc"), 30);
+        e.src_fps = 30;
+        e.out_fps = 0;
+        assert_eq!(e.export_fps("tt"), 30);
+    }
+
+    #[test]
+    fn silent_export_is_noticed() {
+        let mut e = ed();
+        e.tracks = 7;
+        e.levels = vec![-24.0, -24.0, -91.0, -91.0, -91.0, -27.0, -91.0];
+        assert!(!e.export_is_silent(), "the untouched clip has sound");
+        e.sel = Some(Sel::Seg(0));
+        e.detach_audio(7, &e.levels.clone()).unwrap();
+        assert!(!e.export_is_silent(), "the Browser lane has sound");
+        e.p.audio.retain(|a| a.track != 5); // the Browser lane deleted, All desktop sound is muted
+        assert!(e.export_is_silent());
+        e.p.audio.iter_mut().for_each(|a| a.mute = false);
+        assert!(!e.export_is_silent(), "All desktop sound unmuted");
+    }
+
+    /// a real ffmpeg export of a small 120 fps clip: the file has the picked frame rate
+    #[test]
+    fn export_writes_the_picked_frame_rate() {
+        let dir = std::env::temp_dir().join(format!("echo-fps-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("clip.mp4");
+        let ff = Path::new("ffmpeg");
+        let ok = std::process::Command::new(ff)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=120:d=1", "-f", "lavfi", "-i", "sine=f=440:d=1", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let fps = crate::edrender::probe_fps(ff, &clip);
+        assert_eq!(fps, 120);
+        for (picked, preset, want) in [(0, "", 120), (60, "", 60), (30, "", 30), (0, "yt", 60)] {
+            let mut e = Editor::new(clip.clone(), "clip".into(), 1.0, 320, 180);
+            e.src_fps = fps;
+            e.out_fps = picked;
+            let plan = e.export_plan(ff, preset).unwrap();
+            let out = crate::edrender::run_export(&plan, &|_| {}, &|l| eprintln!("{l}")).unwrap();
+            assert_eq!(crate::edrender::probe_fps(ff, &out), want, "picked {picked}, preset {preset:?}");
+            std::fs::remove_file(out).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

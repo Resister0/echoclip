@@ -168,6 +168,9 @@ export global Ed {
     in-out property <float> export-pct;     // the Export button fills (Echo)
     in-out property <string> dc-text: "One export that fits your Discord size";
     in-out property <bool> normalize;
+    // Export menu: the clip's frame rate and the lower ones (empty = nothing to pick), and the picked one
+    in-out property <[int]> fps-opts;
+    in-out property <int> out-fps;
     in-out property <float> volume: 1;      // the edit's volume (0..2) + mute (Clip panel)
     in-out property <bool> mute;
     in-out property <float> zoom-frac: 0.3; // timeline zoom slider 0..1
@@ -2009,7 +2012,7 @@ export component EditorView inherits Rectangle {
             spacing: 2px;
             for p in [
                 { k: "", n: "Export", d: "Same size as the clip" },
-                { k: "yt", n: "YouTube", d: "1080p, 60 FPS" },
+                { k: "yt", n: "YouTube", d: "1080p, up to 60 FPS" },
                 { k: "tt", n: "TikTok / Shorts / Reels", d: Ed.vertical ? "Vertical 1080×1920" : "Vertical 1080×1920 (centre crop - use 9:16 to place it)" },
                 { k: "dc", n: "Discord", d: Ed.dc-text },
                 { k: "mp3", n: "Sound only - MP3", d: "Just the audio, into the Audio folder" },
@@ -2031,6 +2034,46 @@ export component EditorView inherits Rectangle {
                     spacing: 2px;
                     Text { text: p.n; font-size: 13.5px; font-weight: 600 + T.fw; color: T.text; }
                     Text { text: p.d; font-size: 11.5px; color: T.muted; }
+                }
+            }
+            if Ed.fps-opts.length > 1: Rectangle {
+                height: 56px;
+                Rectangle { y: 0; height: 1px; background: T.line; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text { text: "Frame rate"; font-size: 13px; color: T.text; }
+                        Text { text: "Presets stop at 60 FPS"; font-size: 11px; color: T.dim; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            for f in Ed.fps-opts: Rectangle {
+                                width: 38px;
+                                height: 28px;
+                                border-radius: 6px;
+                                background: Ed.out-fps == f ? T.accent : fa.has-hover ? T.hover : T.panel2;
+                                fa := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        Ed.out-fps = f;
+                                        Ed.set("out-fps", "\{f}");
+                                    }
+                                }
+                                Text {
+                                    text: "\{f}";
+                                    font-size: 12px;
+                                    font-weight: 600 + T.fw;
+                                    color: Ed.out-fps == f ? T.on-accent : T.text;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Rectangle {

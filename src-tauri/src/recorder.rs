@@ -2443,10 +2443,13 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
             }
             let streams = streams.unwrap_or_default();
             // the game and everything it started (Wine / Proton games play sound from their own process)
-            let game_pids: Vec<u32> = match linux_game() { Some((_, pid, _)) => linux_process_tree(pid), None => Vec::new() };
+            let game = linux_game();
+            let game_pids: Vec<u32> = match &game { Some((_, pid, _)) => linux_process_tree(*pid), None => Vec::new() };
+            // a Java game in a Flatpak launcher reports its sandbox pid (or none), so the pid can't match: go by "java"
+            let java_game = game.as_ref().is_some_and(|(n, _, exe)| linux_is_java_game(n, exe));
             let mut want: [Vec<u32>; 4] = Default::default();
             for s in &streams {
-                let k = if s.pid.is_some_and(|p| game_pids.contains(&p)) { 0 } else if let Some(k) = linux_app_group(&s.binary, &s.name) { k } else { continue };
+                let k = if s.pid.is_some_and(|p| game_pids.contains(&p)) || (java_game && s.is_java()) { 0 } else if let Some(k) = linux_app_group(&s.binary, &s.name) { k } else { continue };
                 want[k].push(s.index);
                 if logged.insert(s.index) {
                     log_line(&format!("audio: {} track <- {} (stream {}{})", APP_TRACKS[k], if s.binary.is_empty() { &s.name } else { &s.binary }, s.index,
@@ -2483,7 +2486,21 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
 fn app_supervisor(_: [Group; 4], _: Arc<AtomicBool>, _: u32, _: u16) {}
 
 #[cfg(target_os = "linux")]
-struct LinuxStream { index: u32, pid: Option<u32>, binary: String, name: String }
+struct LinuxStream { index: u32, pid: Option<u32>, binary: String, name: String, node: String }
+
+#[cfg(target_os = "linux")]
+impl LinuxStream {
+    fn is_java(&self) -> bool {
+        [&self.binary, &self.node].iter().any(|x| x.eq_ignore_ascii_case("java") || x.eq_ignore_ascii_case("javaw"))
+    }
+}
+
+/// The game in front is Minecraft or another Java game (its sound streams are then named "java").
+#[cfg(target_os = "linux")]
+fn linux_is_java_game(name: &str, exe: &str) -> bool {
+    let stem = Path::new(exe).file_stem().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    name.eq_ignore_ascii_case("minecraft") || stem == "java" || stem == "javaw"
+}
 
 /// Playback streams from `pactl list sink-inputs` (text output: works with PulseAudio and pipewire-pulse,
 /// old and new pactl). None = pactl missing / no sound server.
@@ -2504,13 +2521,14 @@ fn parse_sink_inputs(text: &str) -> Vec<LinuxStream> {
     };
     for l in text.lines() {
         if let Some(n) = l.trim().strip_prefix("Sink Input #") {
-            if let Ok(index) = n.trim().parse() { out.push(LinuxStream { index, pid: None, binary: String::new(), name: String::new() }); }
+            if let Ok(index) = n.trim().parse() { out.push(LinuxStream { index, pid: None, binary: String::new(), name: String::new(), node: String::new() }); }
             continue;
         }
         let Some(s) = out.last_mut() else { continue };
         if let Some(v) = prop(l, "application.process.id") { s.pid = v.parse().ok(); }
         else if let Some(v) = prop(l, "application.process.binary") { s.binary = v; }
         else if let Some(v) = prop(l, "application.name") { s.name = v; }
+        else if let Some(v) = prop(l, "node.name") { s.node = v; }
     }
     // Echo's own sounds (save / bookmark beeps) and capture helpers are never an app track
     out.retain(|s| !matches!(s.binary.as_str(), "echo" | "echo-clips" | "parec" | "pw-play" | "paplay"));

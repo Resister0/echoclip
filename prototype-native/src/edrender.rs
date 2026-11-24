@@ -970,7 +970,9 @@ impl Editor {
         // stickers: inputs after the other files (looping pictures / GIFs - Echo's render_edit)
         let sticks: Vec<&BoxFx> = self.sticker_boxes();
         let fit = |k: usize| if k == 0 { String::new() } else { format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,") };
-        const VF: &str = "fps=60,setsar=1,format=yuv420p";
+        let out_fps = self.export_fps(preset);
+        #[allow(non_snake_case)]
+        let VF = format!("fps={out_fps},setsar=1,format=yuv420p");
         const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
         let audio = has_audio && !self.p.mute;
         // reversed pieces: files made before the export (run_export), inputs after the stickers (Echo's reverse_piece)
@@ -1096,7 +1098,7 @@ impl Editor {
                 cx += &format!("+{:.4}*{ramp}", b.x.clamp(0.0, 1.0) - 0.5);
                 cy += &format!("+{:.4}*{ramp}", b.y.clamp(0.0, 1.0) - 0.5);
             }
-            g.push(format!("[vc]zoompan=z='{z}':x='clip(({cx})*iw-iw/zoom/2\\,0\\,iw-iw/zoom)':y='clip(({cy})*ih-ih/zoom/2\\,0\\,ih-ih/zoom)':d=1:s={w}x{h}:fps=60,setsar=1[vz]"));
+            g.push(format!("[vc]zoompan=z='{z}':x='clip(({cx})*iw-iw/zoom/2\\,0\\,iw-iw/zoom)':y='clip(({cy})*ih-ih/zoom/2\\,0\\,ih-ih/zoom)':d=1:s={w}x{h}:fps={out_fps},setsar=1[vz]"));
             last = "vz".into();
         }
         // video layers (Echo's overlay graph): each piece timed to its spot, scaled to `scale` of the width, centred
@@ -1321,6 +1323,31 @@ pub fn probe(ff: &Path, clip: &Path) -> (u32, u32, bool, u32) {
         }
     }
     r
+}
+
+/// the frame rate from ffprobe's "r_frame_rate,avg_frame_rate" line, rounded: the average first (the "r" rate of a
+/// variable-rate file can be a huge number). 0 = can't tell.
+pub fn parse_fps(line: &str) -> u32 {
+    let rate = |x: &str| -> u32 {
+        let mut p = x.trim().split('/');
+        let n: f64 = p.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let d: f64 = p.next().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        let f = if d > 0.0 { (n / d).round() } else { 0.0 };
+        if (1.0..=1000.0).contains(&f) { f as u32 } else { 0 }
+    };
+    let mut parts = line.trim().trim_end_matches(',').split(',');
+    let (r, avg) = (parts.next().map_or(0, rate), parts.next().map_or(0, rate));
+    if avg > 0 { avg } else { r }
+}
+
+/// frame rate of the clip's picture (0 = can't tell)
+pub fn probe_fps(ff: &Path, clip: &Path) -> u32 {
+    hidden_cmd(&ffprobe(ff))
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "csv=p=0"])
+        .arg(clip)
+        .stdin(Stdio::null())
+        .output()
+        .map_or(0, |o| parse_fps(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("")))
 }
 
 pub struct ExportPlan {
