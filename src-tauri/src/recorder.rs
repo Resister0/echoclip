@@ -72,6 +72,31 @@ fn game_of_name(name: &str) -> Option<String> {
     None
 }
 
+/// 18 Nov 2026: the recorder's last-resort mode (Windows): ffmpeg's software H.264 encoder, used only when every
+/// graphics-card encoder failed. rec_core.rs warns about it; specs.rs reports it as "(CPU copy)".
+pub const SOFTWARE_MODE: &str = "cpu-x264";
+
+/// 21 Nov 2026 (anonymous performance numbers, prototype-native perf.rs): who uses the CPU. Process ids of the
+/// recorder's own helper processes [ffmpeg, gpu-screen-recorder] (0 = none) - any other child process of Echo is a
+/// job (clip save, upload copy, thumbnails...). OS thread ids of the recorder's busy threads inside Echo's process
+/// [capture + hardware encoder (Windows zero-copy), audio mixer] - the rest of Echo's own CPU is the window, the
+/// player and the graphics driver's / encoder's own threads.
+pub static PERF_PIDS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+pub static PERF_TIDS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// the calling thread's OS id (Windows thread id / Linux tid), for PERF_TIDS; 0 if unknown
+pub fn os_thread_id() -> u32 {
+    #[cfg(windows)]
+    {
+        unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
+    }
+    #[cfg(not(windows))]
+    {
+        // "/proc/thread-self" -> "<pid>/task/<tid>"
+        fs::read_link("/proc/thread-self").ok().and_then(|p| p.file_name().and_then(|f| f.to_str()).and_then(|s| s.parse().ok())).unwrap_or(0)
+    }
+}
+
 pub struct Recorder {
     child: Mutex<Option<Child>>,
     audio_stop: Mutex<Arc<AtomicBool>>,
@@ -763,7 +788,7 @@ fn max_key_gap(clip: &str) -> f64 {
 
 pub fn app_dir_pub() -> PathBuf { app_dir() }
 fn app_dir() -> PathBuf {
-    std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
+    crate::settings::data_dir()
 }
 
 /// games.json (game name -> exe) without entries that are Echo itself. QA E19 (11 Nov 2026): a maximised test copy of
@@ -931,6 +956,9 @@ fn game_name_raw(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
         "wt", "notepad", "textinputhost", "systemsettings", "battle.net", "riotclientux", "riotclientservices", "eadesktop",
         "ubisoftconnect", "upc", "galaxyclient", "vlc", "mpc-hc64", "photos", "whatsapp", "telegram", "teams", "ms-teams",
         "echo", "echoclip", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
+        // Sonela's own apps (24 Nov 2026: Lasso's frozen screen covers the monitor -> Echo took it for a game and recorded
+        // only Lasso's window; Aimdot's overlay is a full-monitor window too)
+        "lasso", "aimdot", "aimdot-settings",
         "sharex", "greenshot", "nvidia app", "radeonsoftware", "amdrsserv", "msiafterburner", "rtss", "outlook", "winword",
         "excel", "powerpnt", "onenote", "slack", "zoom", "notion", "obsidian", "signal", "thunderbird", "mspaint", "notepad++",
         // Linux desktop programs that showed up as "games" (chat 30: xalia = KDE's gamepad accessibility helper)
@@ -990,8 +1018,7 @@ pub struct Word {
 }
 
 fn whisper_dir() -> PathBuf {
-    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-    base.join("Clipper").join("whisper")
+    crate::settings::data_dir().join("whisper")
 }
 
 /// Tools shipped with the installer (Echo-Setup.exe puts ffmpeg / rclone in "tools" next to EchoClip.exe):
@@ -1620,6 +1647,9 @@ pub fn serve_token_pub() -> &'static str { serve_token() }
 pub fn sys_cmd(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(program);
+    // 17 Nov 2026: never the terminal's input (a caller that feeds the program sets stdin(piped) after this). Started
+    // from a terminal, an ffmpeg that inherited it could be stopped by the shell (state "T") and Echo looked frozen.
+    c.stdin(Stdio::null());
     #[cfg(target_os = "linux")]
     for (k, v) in appimage_env_fixes() { match v { Some(v) => { c.env(k, v); } None => { c.env_remove(k); } } }
     c
@@ -1667,7 +1697,10 @@ fn hidden(program: &str) -> Command {
 }
 
 fn ffmpeg() -> Command {
-    hidden("ffmpeg")
+    // -nostdin: no keyboard controls ("q" to stop...) - ffmpeg never touches a terminal it was started from
+    let mut c = hidden("ffmpeg");
+    c.arg("-nostdin");
+    c
 }
 
 /// Unpack a .zip into `dir` inside Echo (paths that would escape `dir` are skipped).
@@ -1701,6 +1734,7 @@ pub fn unzip_to(zip_path: &Path, dir: &Path) -> Result<(), String> {
 fn ffmpeg_save() -> Command {
     #[allow(unused_mut)]
     let mut c = sys_cmd("ffmpeg");
+    c.arg("-nostdin");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -2146,8 +2180,11 @@ fn concat_list(segs: &[std::path::PathBuf]) -> String {
         // (s302m) audio of every 2 s segment made a save ~5x slower (9 Nov 2026: 2.0 -> 0.43 s per 24 s of clip).
         // "option" lines need ffmpeg 5+: the Linux AppImage uses the system's ffmpeg (Ubuntu 22.04 = 4.4 would
         // fail every save with them), so only when this PC's ffmpeg is new enough
+        // skip_estimate_duration_from_pts: ffmpeg otherwise reads the END of each segment to guess its length, and a
+        // frame from there could come out first on the real read. Every later frame of that segment then got squashed
+        // behind it = a ~1.9 s freeze at some joins, in 120/144 fps clips (24 Nov 2026). The "duration" lines cover it.
         if ffmpeg_major() >= 5 {
-            body += "option analyzeduration 0\noption probesize 65536\n";
+            body += "option analyzeduration 0\noption probesize 65536\noption skip_estimate_duration_from_pts 1\n";
         }
         if all && k + 1 < segs.len() {
             let (lead, vdur) = t[k].unwrap();
@@ -2158,6 +2195,11 @@ fn concat_list(segs: &[std::path::PathBuf]) -> String {
         }
     }
     body
+}
+
+/// The fallback list (24 Nov 2026): only "file" lines - no option lines, no exact joins. Works with any ffmpeg.
+fn concat_list_plain(segs: &[std::path::PathBuf]) -> String {
+    segs.iter().map(|p| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"))).collect()
 }
 
 /// Device each capture is using right now: [desktop, mic] ("" = none / not started). health() compares them
@@ -2279,6 +2321,7 @@ const MUSIC_EXES: &[&str] = &["spotify.exe", "applemusic.exe", "itunes.exe", "ti
 fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16) {
     std::thread::spawn(move || {
         let mut game: Option<u32> = None;
+        let mut tick = 0u32;
         let mut failed: std::collections::HashSet<u32> = Default::default();
         while !stop.load(Ordering::Relaxed) {
             let procs = crate::winutil::processes();
@@ -2304,6 +2347,41 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
             // a music app that is also the game in front (unlikely) stays on the Game track only
             let g0 = want[0].clone();
             want[3].retain(|p| !g0.contains(p));
+            // which output device each app plays to: one look at the audio sessions every ~6 s (every 2 s until
+            // each running app was heard once). Only while it plays - a quiet app keeps its last answer.
+            tick = tick.wrapping_add(1);
+            let unknown = (0..4).any(|k| !want[k].is_empty() && OFF_AT[k].load(Ordering::Relaxed) == 0 && ON_AT[k].load(Ordering::Relaxed) == 0);
+            if (unknown || tick % 3 == 0) && want.iter().any(|w| !w.is_empty()) {
+                if let Some(seen) = crate::winutil::audio_sessions() {
+                    let now = now_ms();
+                    for (k, roots) in want.iter().enumerate() {
+                        if roots.is_empty() {
+                            continue;
+                        }
+                        // the app's whole process tree (Discord plays from a child process)
+                        let mut tree: Vec<u32> = roots.clone();
+                        let mut i = 0;
+                        while i < tree.len() {
+                            let p = tree[i];
+                            tree.extend(procs.iter().filter(|q| q.1 == p && q.0 != p).map(|q| q.0));
+                            i += 1;
+                            if tree.len() > 500 { break; }
+                        }
+                        let on = seen.iter().any(|&(pid, def)| def && tree.contains(&pid));
+                        let off = !on && seen.iter().any(|&(pid, def)| !def && tree.contains(&pid));
+                        if !on && !off {
+                            continue;
+                        }
+                        let was = OFF_AT[k].load(Ordering::Relaxed) > ON_AT[k].load(Ordering::Relaxed);
+                        (if off { &OFF_AT[k] } else { &ON_AT[k] }).store(now, Ordering::Relaxed);
+                        if was != off {
+                            log_line(&format!("audio: {} plays to {} - {}", APP_TRACKS[k],
+                                if off { "another output device than the recorded default" } else { "the recorded default device" },
+                                if off { "saved clips mix its track in" } else { "the mix has it already" }));
+                        }
+                    }
+                }
+            }
             for (k, g) in groups.iter().enumerate() {
                 let mut list = g.lock().unwrap();
                 list.retain(|s| {
@@ -2372,10 +2450,13 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
             }
             let streams = streams.unwrap_or_default();
             // the game and everything it started (Wine / Proton games play sound from their own process)
-            let game_pids: Vec<u32> = match linux_game() { Some((_, pid, _)) => linux_process_tree(pid), None => Vec::new() };
+            let game = linux_game();
+            let game_pids: Vec<u32> = match &game { Some((_, pid, _)) => linux_process_tree(*pid), None => Vec::new() };
+            // a Java game in a Flatpak launcher reports its sandbox pid (or none), so the pid can't match: go by "java"
+            let java_game = game.as_ref().is_some_and(|(n, _, exe)| linux_is_java_game(n, exe));
             let mut want: [Vec<u32>; 4] = Default::default();
             for s in &streams {
-                let k = if s.pid.is_some_and(|p| game_pids.contains(&p)) { 0 } else if let Some(k) = linux_app_group(&s.binary, &s.name) { k } else { continue };
+                let k = if s.pid.is_some_and(|p| game_pids.contains(&p)) || (java_game && s.is_java()) { 0 } else if let Some(k) = linux_app_group(&s.binary, &s.name) { k } else { continue };
                 want[k].push(s.index);
                 if logged.insert(s.index) {
                     log_line(&format!("audio: {} track <- {} (stream {}{})", APP_TRACKS[k], if s.binary.is_empty() { &s.name } else { &s.binary }, s.index,
@@ -2412,7 +2493,21 @@ fn app_supervisor(groups: [Group; 4], stop: Arc<AtomicBool>, rate: u32, ch: u16)
 fn app_supervisor(_: [Group; 4], _: Arc<AtomicBool>, _: u32, _: u16) {}
 
 #[cfg(target_os = "linux")]
-struct LinuxStream { index: u32, pid: Option<u32>, binary: String, name: String }
+struct LinuxStream { index: u32, pid: Option<u32>, binary: String, name: String, node: String }
+
+#[cfg(target_os = "linux")]
+impl LinuxStream {
+    fn is_java(&self) -> bool {
+        [&self.binary, &self.node].iter().any(|x| x.eq_ignore_ascii_case("java") || x.eq_ignore_ascii_case("javaw"))
+    }
+}
+
+/// The game in front is Minecraft or another Java game (its sound streams are then named "java").
+#[cfg(target_os = "linux")]
+fn linux_is_java_game(name: &str, exe: &str) -> bool {
+    let stem = Path::new(exe).file_stem().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    name.eq_ignore_ascii_case("minecraft") || stem == "java" || stem == "javaw"
+}
 
 /// Playback streams from `pactl list sink-inputs` (text output: works with PulseAudio and pipewire-pulse,
 /// old and new pactl). None = pactl missing / no sound server.
@@ -2433,13 +2528,14 @@ fn parse_sink_inputs(text: &str) -> Vec<LinuxStream> {
     };
     for l in text.lines() {
         if let Some(n) = l.trim().strip_prefix("Sink Input #") {
-            if let Ok(index) = n.trim().parse() { out.push(LinuxStream { index, pid: None, binary: String::new(), name: String::new() }); }
+            if let Ok(index) = n.trim().parse() { out.push(LinuxStream { index, pid: None, binary: String::new(), name: String::new(), node: String::new() }); }
             continue;
         }
         let Some(s) = out.last_mut() else { continue };
         if let Some(v) = prop(l, "application.process.id") { s.pid = v.parse().ok(); }
         else if let Some(v) = prop(l, "application.process.binary") { s.binary = v; }
         else if let Some(v) = prop(l, "application.name") { s.name = v; }
+        else if let Some(v) = prop(l, "node.name") { s.node = v; }
     }
     // Echo's own sounds (save / bookmark beeps) and capture helpers are never an app track
     out.retain(|s| !matches!(s.binary.as_str(), "echo" | "echo-clips" | "parec" | "pw-play" | "paplay"));
@@ -2601,8 +2697,25 @@ static APP_VOL: [AtomicU32; 4] = [AtomicU32::new(0x3f80_0000), AtomicU32::new(0x
 static MIX_APPS: AtomicBool = AtomicBool::new(false);
 static MIX_INC: [AtomicBool; 4] = [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false), AtomicBool::new(false)];
 static MIC_MONO: AtomicBool = AtomicBool::new(false);
+/// 18 Nov 2026: when each app (Game/Discord/Browser/Music) was last heard on ANOTHER output device than the
+/// recorded default one / on the recorded one (now_ms, 0 = never; app_supervisor, Windows). Latest says "another"
+/// = the "everything" mix doesn't have it, so saving a clip mixes its own track into the mix (join) - for the
+/// WHOLE clip, and the recording itself does no extra work.
+static OFF_AT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static ON_AT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+/// clip track numbers (a:3 game .. a:6 music) of the apps playing to another device than the recorded one
+fn off_device_tracks() -> Vec<u32> {
+    if MIX_APPS.load(Ordering::Relaxed) {
+        return vec![]; // "only these apps" mixes from the app tracks already
+    }
+    (0..4).filter(|&k| OFF_AT[k].load(Ordering::Relaxed) > ON_AT[k].load(Ordering::Relaxed)).map(|k| 3 + k as u32).collect()
+}
 /// the mic is added to the mix by ffmpeg (after the noise filter), not here
 static MIX_NO_MIC: AtomicBool = AtomicBool::new(false);
+/// The recorder ffmpeg's audio work, for the perf numbers (prototype specs.rs "aud"): "48000 Hz, 2 ch, 3 tracks, no
+/// mic filter". 22 Nov 2026: one PC (RTX 4070 SUPER) had ~10 % CPU + ~500 MB in this ffmpeg, while copying the video
+/// costs almost nothing - its audio graph (mic filter per sample, 7 tracks, a 7.1 / 192 kHz device) is the suspect.
+pub static AUDIO_SETUP: Mutex<String> = Mutex::new(String::new());
 /// names the user said are not games (Settings > Games > remove)
 static NOT_GAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 fn set_mixer(c: &Settings) {
@@ -2635,6 +2748,7 @@ fn denoise_model() -> Option<PathBuf> {
 
 fn audio_thread(mut out: ChildStdin, stop: Arc<AtomicBool>, rate: u32, ch: u16, start: Instant,
                 desktop: bool, mic: bool, mic_name: String, vols: Arc<[AtomicU32; 2]>, apps: bool) {
+    PERF_TIDS[1].store(os_thread_id(), Ordering::Relaxed);
     let bd: Buf = Arc::new(Mutex::new(VecDeque::new()));
     let bm: Buf = Arc::new(Mutex::new(VecDeque::new()));
     if desktop {
@@ -2890,6 +3004,7 @@ fn gpu_input(i: usize, stop: &Arc<AtomicBool>, cfg: &Settings, _window: isize) -
             return None;
         }
     };
+    PERF_PIDS[1].store(child.id(), Ordering::Relaxed);
     let (s, n2) = (stop.clone(), name.clone());
     std::thread::spawn(move || {
         loop {
@@ -3107,8 +3222,11 @@ impl Recorder {
         // Mode "gpu": own zero-copy pipeline (gpucap.rs). Mode "cpu": ffmpeg ddagrab + CPU copy + AMF.
         // ffmpeg-only zero-copy routes all fail on this PC (scale_d3d11, AMF hwmap/vpp_amf, h264_mf).
         // CPU fallback tries each vendor's encoder: AMD, NVIDIA, Intel.
+        // 18 Nov 2026: then the software encoder (libx264) as the very last resort - a PC whose graphics drivers' encoders
+        // all fail (a user's log: Intel MFT "ActivateObject: Unspecified error", QSV "MFX session -9", no nvEncodeAPI64.dll)
+        // recorded NOTHING. Costs far more CPU, so it's never moved up the list and Echo says so (rec_core.rs).
         #[cfg(windows)]
-        let all = ["gpu", "cpu", "cpu-nvenc", "cpu-qsv"];
+        let all = ["gpu", "cpu", "cpu-nvenc", "cpu-qsv", SOFTWARE_MODE];
         #[cfg(not(windows))]
         let all = ["gpu"];
         let mode_file = std::env::temp_dir().join("clipper_mode_v7.txt");
@@ -3124,7 +3242,7 @@ impl Recorder {
                 order.insert(1, f);
             }
         }
-        if last > 0 && last < all.len() {
+        if last > 0 && last < all.len() && all[last] != SOFTWARE_MODE {
             order.retain(|&i| i != last);
             order.insert(1, last);
         }
@@ -3148,6 +3266,9 @@ impl Recorder {
                 let peak = format!("{}M", cfg.bitrate_mbps);
                 let buf = format!("{}M", cfg.bitrate_mbps * 2);
                 let rc: Vec<&str> = match (mode, cfg.smart_bitrate) {
+                    // libx264: constant quality under the ceiling (crf wins over -b:v), or the bitrate with the same ceiling
+                    (SOFTWARE_MODE, true) => vec!["-crf", "21", "-maxrate", &peak, "-bufsize", &buf],
+                    (SOFTWARE_MODE, false) => vec!["-maxrate", &peak, "-bufsize", &buf],
                     ("cpu-nvenc", true) => vec!["-rc", "vbr", "-maxrate", &peak, "-bufsize", &buf],
                     ("cpu-qsv", true) => vec!["-maxrate", &peak, "-bufsize", &buf],
                     (_, true) => vec!["-rc", "vbr_peak", "-maxrate", &peak],
@@ -3157,6 +3278,8 @@ impl Recorder {
                 let mut enc: Vec<String> = match mode {
                     "cpu-nvenc" => vec!["-c:v".into(), format!("{c}_nvenc"), "-preset".into(), "p3".into(), "-tune".into(), "ll".into()],
                     "cpu-qsv" => vec!["-c:v".into(), format!("{c}_qsv"), "-preset".into(), "veryfast".into()],
+                    // always H.264, whatever the codec setting (x265 / AV1 in software are far too slow live); the fastest preset
+                    SOFTWARE_MODE => ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"].map(String::from).to_vec(),
                     _ => vec!["-c:v".into(), format!("{c}_amf"), "-quality".into(), "speed".into()],
                 };
                 enc.extend(rc.iter().map(|x| x.to_string()));
@@ -3193,6 +3316,10 @@ impl Recorder {
                 format!("{f},aeval=exprs='{e}'")
             });
             MIX_NO_MIC.store(nr.is_some(), Ordering::Relaxed);
+            if let Ok(mut a) = AUDIO_SETUP.lock() {
+                let filt = match &nr { Some(f) if f.starts_with("arnndn") => "RNNoise mic filter", Some(_) => "FFT mic filter", None => "no mic filter" };
+                *a = format!("{rate} Hz, {ch} ch, {tracks} tracks, {filt}");
+            }
             let mut child = self.spawn(video, offset, rate, ch, cfg.buffer_seconds(), tracks, nr)?;
             if let Some(stdin) = child.stdin.take() {
                 let (s, v) = (stop.clone(), self.volumes.clone());
@@ -3201,6 +3328,7 @@ impl Recorder {
             }
             std::thread::sleep(Duration::from_secs(3));
             if matches!(child.try_wait(), Ok(None)) {
+                PERF_PIDS[0].store(child.id(), Ordering::Relaxed);
                 *self.child.lock().unwrap() = Some(child);
                 *self.audio_stop.lock().unwrap() = stop;
                 *self.mode.lock().unwrap() = mode.into();
@@ -3208,7 +3336,7 @@ impl Recorder {
                 REC_LOG_POS.store(fs::metadata(log_path()).map(|m| m.len()).unwrap_or(0), Ordering::Relaxed);
                 REC_STARTED_MS.store(now_ms(), Ordering::Relaxed);
                 log_line(&format!("recording: {} ({} Hz, {} ch)",
-                    if mode == "gpu" { "ZERO-COPY gpu pipeline" } else { "cpu copy fallback" }, rate, ch));
+                    match mode { "gpu" => "ZERO-COPY gpu pipeline", SOFTWARE_MODE => "SOFTWARE encoder x264 - no graphics encoder worked", _ => "cpu copy fallback" }, rate, ch));
                 return Ok(());
             }
             stop.store(true, Ordering::Relaxed);
@@ -3218,7 +3346,7 @@ impl Recorder {
             }
             log_line(&format!("--- {mode} mode failed, trying next ---"));
         }
-        Err("Recorder failed to start - see the ffmpeg log".into())
+        Err("Recorder failed to start: no video encoder worked on this PC - update your graphics drivers (NVIDIA / AMD / Intel) and restart the PC".into())
     }
 
     fn spawn(&self, video: Vec<String>, audio_offset: Option<f64>, rate: u32, ch: u16, buffer_secs: u32, tracks: usize,
@@ -3344,6 +3472,11 @@ impl Recorder {
         };
         let mut segs = list()?;
         if segs.is_empty() {
+            // 17 Nov 2026: in the Flatpak the usual cause is the screen-share dialog, often hidden behind Echo
+            #[cfg(target_os = "linux")]
+            if crate::linuxutil::in_flatpak() {
+                return Err("Buffer is empty - recording hasn't started. Look for the \"share your screen\" dialog (it can be behind Echo's window), pick a screen and press Share.".into());
+            }
             return Err("Buffer is empty - recording isn't running. Check the ffmpeg log.".into());
         }
         // The newest segment is still being written (ffmpeg holds back its last second or so).
@@ -3426,23 +3559,52 @@ impl Recorder {
         Ok(out)
     }
 
+    /// HEVC clips get the "hvc1" tag (plays on Apple / in browsers). Not when the software fallback recorded H.264 anyway.
+    fn hevc_tag(&self) -> bool {
+        self.settings().codec == "hevc" && self.mode.lock().map_or(true, |m| m.as_str() != SOFTWARE_MODE)
+    }
+
     fn join(&self, segs: &[(SystemTime, PathBuf)], out: &PathBuf) -> Result<bool, String> {
         let list = self.buf_dir.join(format!("list_{}.txt", std::process::id()));
         let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
         let body = concat_list(&paths);
-        fs::write(&list, body).map_err(err)?;
-        // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had
-        let status = ffmpeg_save()
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
-            .arg(&list)
-            .args(["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
-            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
-            .args(["-f", "mp4"])
-            .arg(out)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(err)?;
+        fs::write(&list, &body).map_err(err)?;
+        let cfg = self.settings();
+        // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had.
+        // 18 Nov 2026: apps that play to another output device than the recorded one (off_device_tracks) are mixed
+        // into the mix track here, for the whole clip - the audio gets encoded here anyway, so it costs next to nothing
+        let off: Vec<u32> = if cfg.app_tracks { off_device_tracks() } else { vec![] };
+        let run = |off: &[u32]| {
+            let mut c = ffmpeg_save();
+            c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list);
+            if off.is_empty() {
+                c.args(["-map", "0:v", "-map", "0:a"]);
+            } else {
+                let ins: String = off.iter().map(|t| format!("[0:a:{t}]")).collect();
+                c.args(["-filter_complex".to_string(), format!("[0:a:0]{ins}amix=inputs={}:normalize=0:duration=first[mix]", off.len() + 1)]);
+                c.args(["-map", "0:v", "-map", "[mix]"]);
+                for t in 1..7 {
+                    c.args(["-map".to_string(), format!("0:a:{t}")]);
+                }
+            }
+            c.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"])
+                .args(if self.hevc_tag() { &["-tag:v", "hvc1"][..] } else { &[][..] })
+                .args(["-f", "mp4"])
+                .arg(out)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+        };
+        let mut status = run(&off).map_err(err)?;
+        if !off.is_empty() {
+            if status.status.success() {
+                let names: Vec<&str> = off.iter().map(|&t| APP_TRACKS[(t - 3) as usize]).collect();
+                log_line(&format!("save: {} plays to another output device - mixed into the clip's main track", names.join(", ")));
+            } else {
+                log_line(&format!("save: mixing the other-device app tracks in failed ({}) - saved without", String::from_utf8_lossy(&status.stderr).trim().lines().next().unwrap_or("")));
+                status = run(&[]).map_err(err)?;
+            }
+        }
         let msg = String::from_utf8_lossy(&status.stderr);
         if !msg.trim().is_empty() {
             log_line(&format!("save: ffmpeg: {}", msg.trim().lines().take(5).collect::<Vec<_>>().join(" | ")));
@@ -3453,6 +3615,21 @@ impl Recorder {
         // clip still saves with all its tracks, and log which track was empty.
         if !ok && msg.contains("sample rate not set") {
             ok = self.join_with_silence(&list, segs.len(), out).unwrap_or(false);
+        }
+        // 24 Nov 2026 (the user: "ensure it works no matter what"): the list's newer lines ("option ..." for ffmpeg 5+,
+        // exact "duration" joins) are what keep 120/144 fps clips from freezing at joins - but an ffmpeg that chokes on
+        // them must never cost the clip. Still failing = once more with only "file" lines (how every save worked before
+        // 2.0.6) and nothing mixed in: a clip that may stutter at a join beats no clip.
+        let plain = concat_list_plain(&paths);
+        if !ok && plain != body && fs::write(&list, &plain).is_ok() {
+            let st = run(&[]).map_err(err)?;
+            let m2 = String::from_utf8_lossy(&st.stderr).to_string();
+            ok = st.status.success();
+            if !ok && m2.contains("sample rate not set") {
+                ok = self.join_with_silence(&list, segs.len(), out).unwrap_or(false);
+            }
+            log_line(&format!("save: failed with the exact joins - plain list {} ({})", if ok { "worked" } else { "failed too" },
+                m2.trim().lines().next().unwrap_or("no error text")));
         }
         let _ = fs::remove_file(&list);
         Ok(ok)
@@ -3485,7 +3662,7 @@ impl Recorder {
             if c == 0 { cmd.args([format!("-b:a:{i}"), "32k".into()]); }
         }
         cmd.args(["-shortest", "-movflags", "+faststart"])
-            .args(if self.settings().codec == "hevc" { &["-tag:v", "hvc1"][..] } else { &[][..] })
+            .args(if self.hevc_tag() { &["-tag:v", "hvc1"][..] } else { &[][..] })
             .args(["-f", "mp4"]).arg(out)
             .stdout(Stdio::null()).stderr(Stdio::piped());
         let o = cmd.output().map_err(err)?;
@@ -3598,6 +3775,7 @@ impl Recorder {
         }
         r.push(("Recorder running".into(), true, match mode.as_str() {
             "gpu" => "Zero-copy GPU capture".into(),
+            SOFTWARE_MODE => "Software encoder (x264) - no graphics encoder worked: update your graphics drivers. Costs a lot more CPU".into(),
             m => format!("CPU fallback ({m}) - works, but costs more performance"),
         }));
         log_line("selftest: recording 6 s");
@@ -3848,7 +4026,7 @@ impl Recorder {
     pub fn move_clip(&self, path: &str, folder: &str) -> Result<String, String> {
         let p = PathBuf::from(path);
         if !self.is_clip(&p) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let folder = clean_folder(folder);
         if folder_reserved(&folder) {
@@ -4374,7 +4552,7 @@ impl Recorder {
         let p = PathBuf::from(path);
         let shot = p.parent() == Some(self.clips_dir().join("Screenshots").as_path());
         if !self.is_clip(&p) && !shot {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         #[cfg(windows)]
         {
@@ -4963,7 +5141,7 @@ impl Recorder {
     pub fn trim_clip(&self, path: &str, start: f64, end: f64, exact: bool, replace: bool) -> Result<String, String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let len = end - start;
         if !(start >= 0.0 && len >= 0.3) {
@@ -5148,7 +5326,7 @@ impl Recorder {
     pub fn compress_clip(&self, path: &str, factor: f64, av1: bool, progress: &dyn Fn(f64)) -> Result<(u64, u64), String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         // AV1 already: converting again gains nothing, and H.264 at half its bitrate would look much worse
         if is_av1(path) {
@@ -6013,7 +6191,7 @@ impl Recorder {
     pub fn render_edit(&self, path: &str, e: &Edit) -> Result<String, String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let out_dir = src.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.clips_dir());
         let mut segs: Vec<&Seg> = e.segments.iter().filter(|s| s.end - s.start >= 0.05).collect();
@@ -9600,5 +9778,59 @@ mod fit_size_tests {
             }
         }
         assert!(bad.is_empty(), "outside 85-100 %: {bad:?}");
+    }
+}
+
+#[cfg(test)]
+mod save_list_tests {
+    use super::*;
+
+    /// 24 Nov 2026 ("ensure it works no matter what"): a save that fails with the exact-joins list is tried again with
+    /// the plain one. Real ffmpeg (skipped without one): three 2 s buffer-like segments (H.264 + s302m audio in TS)
+    /// saved with the full list, the plain list, and a list with a broken line - the plain list must always save.
+    #[test]
+    fn plain_list_saves_when_the_exact_one_cannot() {
+        let ff = std::env::var("ECHO_TEST_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        if Command::new(&ff).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| !s.success()).unwrap_or(true) {
+            eprintln!("no ffmpeg here - skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("echo-save-list-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let mut segs = vec![];
+        for i in 0..3 {
+            let p = dir.join(format!("seg_{i}.ts"));
+            let ok = Command::new(&ff)
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x240:r=120:d=2",
+                    "-f", "lavfi", "-i", "sine=f=440:d=2:r=48000", "-c:v", "libx264", "-g", "240", "-c:a", "s302m", "-strict", "-2", "-ac", "2",
+                    "-output_ts_offset", &format!("{}", i * 2), "-f", "mpegts"])
+                .arg(&p).output();
+            let ok = match &ok { Ok(o) if o.status.success() => true, Ok(o) => { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); false } Err(e) => { eprintln!("{e}"); false } };
+            if !ok {
+                eprintln!("this ffmpeg can't make test segments - skipped");
+                return;
+            }
+            segs.push(p);
+        }
+        let save = |list: &str, name: &str| {
+            let l = dir.join(format!("{name}.txt"));
+            fs::write(&l, list).unwrap();
+            let out = dir.join(format!("{name}.mp4"));
+            let st = Command::new(&ff).args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&l)
+                .args(["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-f", "mp4"]).arg(&out)
+                .output().unwrap();
+            (st.status.success() && fs::metadata(&out).map(|m| m.len() > 1000).unwrap_or(false), String::from_utf8_lossy(&st.stderr).to_string())
+        };
+        let plain = concat_list_plain(&segs);
+        assert!(plain.lines().all(|l| l.starts_with("file '")), "{plain}");
+        assert!(save(&plain, "plain").0, "the plain list must save with any ffmpeg");
+        let full = concat_list(&segs);
+        let (ok_full, e_full) = save(&full, "full");
+        eprintln!("exact list: {} {}", if ok_full { "saved" } else { "FAILED" }, e_full.trim());
+        // a line this ffmpeg can't take: the first try may fail, the plain list is what join() then uses
+        let broken = full.replacen("file '", "option no_such_option_here 1\nfile '", 1).replace("duration ", "duraton ");
+        let (ok_broken, e_broken) = save(&broken, "broken");
+        eprintln!("broken list: {} {}", if ok_broken { "saved anyway" } else { "failed (plain list takes over)" }, e_broken.trim().lines().next().unwrap_or(""));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

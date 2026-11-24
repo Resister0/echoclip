@@ -495,12 +495,17 @@ jobs:
           if [ "$CHANNEL" = "stable" ]; then
             jq -n --arg v "$V" --arg m "$msg" --argjson sigs "$sigs" --argjson files "$names" '{version: $v, notes: $m, sigs: $sigs, files: $files}' > rel.json
           else
-            # an older server (before channels) would take a beta / dev build for stable: only tell one that knows
-            # channels (it answers POST /channel/check with JSON {"ok": ...})
-            if ! curl -sS -f -X POST -H "Content-Type: application/json" --data '{"code":""}' https://echoclip.link/channel/check | grep -q '"ok"'; then
-              echo "::warning::echoclip.link doesn't know update channels yet (deploy cloud/ first) - $CHANNEL build NOT announced"; exit 0
-            fi
+            # 18 Nov 2026: no more POST /channel/check first - it is rate limited per IP (GitHub's runners share IPs),
+            # so a refusal silently skipped the dev build (2.0.12 never reached the testers). echoclip.link knows
+            # channels since 17 Nov; its answer must name the channel, else this step fails (red, not a warning).
             jq -n --arg v "$V" --arg m "$msg" --arg ch "$CHANNEL" --argjson sigs "$sigs" --argjson files "$names" '{version: $v, notes: $m, channel: $ch, sigs: $sigs, files: $files}' > rel.json
+            for i in 1 2 3; do
+              r=$(curl -sS -X POST -H "Content-Type: application/json" -H "x-release-key: $RELEASE_KEY" --data @rel.json https://echoclip.link/release/push || true)
+              echo "echoclip.link: $r"
+              if grep -q "\"channel\":\"$CHANNEL\"" <<<"$r"; then exit 0; fi
+              sleep 30
+            done
+            echo "::error::echoclip.link didn't take the $CHANNEL build - testers won't get it"; exit 1
           fi
           curl -sS -f -X POST -H "Content-Type: application/json" -H "x-release-key: $RELEASE_KEY" --data @rel.json https://echoclip.link/release/push || echo "::warning::Telling echoclip.link failed - it falls back to asking GitHub"
       - name: Announce on Discord

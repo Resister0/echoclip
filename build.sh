@@ -6,8 +6,8 @@ cd "$(dirname "$0")"
 if ! command -v cargo >/dev/null; then
   echo "Installing Rust..."; curl -sSf https://sh.rustup.rs | sh -s -- -y; source "$HOME/.cargo/env"
 fi
-# mpv-libs = libmpv.so.2, the video player (loaded at runtime); fontconfig + xkbcommon for Slint; D-Bus + ALSA for echo-core
-need="dbus-devel pkgconf-pkg-config alsa-lib-devel fontconfig-devel libxkbcommon-devel mpv-libs wl-clipboard unzip libnotify"
+# gcc = the linker Rust needs (missing on a fresh Fedora toolbox, 17 Nov 2026); mpv-libs = libmpv.so.2, the video player (loaded at runtime); fontconfig + xkbcommon for Slint; D-Bus + ALSA for echo-core
+need="gcc dbus-devel pkgconf-pkg-config alsa-lib-devel fontconfig-devel libxkbcommon-devel mpv-libs wl-clipboard unzip libnotify"
 missing=""; for p in $need; do rpm -q $p >/dev/null 2>&1 || missing="$missing $p"; done
 command -v ffmpeg >/dev/null || missing="$missing ffmpeg-free"
 [ -n "$missing" ] && { echo "Installing:$missing"; sudo dnf install -y --skip-broken $missing || exit 1; }
@@ -21,7 +21,9 @@ cp "$bin" ./Echo || exit 1
 # X11 class is "link.echoclip.Echo" (popup.rs; Echo itself writes link.echoclip.Echo.desktop) -> StartupWMClass finds the icon.
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
 cp src-tauri/icons/icon.png ~/.local/share/icons/hicolor/256x256/apps/echo-clips.png
-for id in dk.volkan.clipper echo; do
+# 24 Nov 2026: the visible dev entry was named after the app's old id (dk.<...>.clipper) - that one goes, echo-dev replaces it
+rm -f ~/.local/share/applications/dk.*.clipper.desktop
+for id in echo-dev echo; do
   nd=false; [ "$id" = echo ] && nd=true
   cat > ~/.local/share/applications/$id.desktop <<EOF
 [Desktop Entry]

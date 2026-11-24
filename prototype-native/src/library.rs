@@ -70,13 +70,15 @@ pub fn find_clips_dir() -> PathBuf {
     if let Ok(p) = std::env::var("ECHO_SETTINGS") {
         cands.push(PathBuf::from(p));
     }
-    if let Ok(a) = std::env::var("APPDATA") {
-        cands.push(PathBuf::from(a).join("Clipper").join("settings.json"));
+    // Echo's folder (EchoClip, or Clipper until it's renamed - echo_core::settings::data_dir), then the usual places
+    // under both names
+    cands.push(echo_core::settings::Settings::path());
+    for name in [echo_core::settings::DIR_NAME, echo_core::settings::OLD_DIR_NAME] {
+        if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
+            cands.push(PathBuf::from(x).join(name).join("settings.json"));
+        }
+        cands.push(PathBuf::from(&home).join(".config").join(name).join("settings.json"));
     }
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        cands.push(PathBuf::from(x).join("Clipper").join("settings.json"));
-    }
-    cands.push(PathBuf::from(&home).join(".config").join("Clipper").join("settings.json"));
     for c in cands {
         if let Some(d) = read_text(&c)
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -779,8 +781,11 @@ pub struct LibModel {
     cloud_cache: RefCell<Option<(std::time::Instant, [Option<(Option<SystemTime>, u64)>; 2], HashSet<String>, HashSet<String>)>>,
     /// r2-threads (L29): the folders on disk (sidebar), from the disk sync; None = walk once more (Echo changed folders)
     disk_dirs: RefCell<Option<BTreeSet<String>>>,
-    /// Echo's savingPh: the "Saving clip…" card at the top while a clip is saved (until it is in the list)
-    pub saving: RefCell<Option<SavingPh>>,
+    /// Echo's savingPh: a "Saving clip…" card at the top while a clip is saved (until it is in the list). 24 Nov 2026
+    /// (William: "if you clip two clips fairly quickly, it only shows 1"): one per save, oldest first, matched by id
+    pub saving: RefCell<Vec<SavingPh>>,
+    /// the shown cards' texts (Lib.savings), refreshed with the rows in rebuild_rows so they always match
+    pub savings: Rc<VecModel<crate::SavingInfo>>,
     /// gaps-library row 44: lengths ffprobe found for clips without a .dur file (sort "Longest", lib_prefs::probe_long)
     pub probed: RefCell<HashMap<usize, f64>>,
     /// gaps-library row 21: the filter panel's "Search games and tags…" text
@@ -788,12 +793,81 @@ pub struct LibModel {
 }
 
 pub struct SavingPh {
+    /// rec_core's save id (Ev::Saving / Ev::Saved carry it)
+    pub id: u64,
     pub secs: u32,
+    /// when the save started, then when it finished (the time-outs count from it)
     pub at: std::time::Instant,
     /// where the clip goes (recorder save_target: its folder, else its game name, else "")
     pub folder: String,
     /// set once it is saved ("Clip saved · Opens in a moment")
     pub path: Option<PathBuf>,
+}
+
+/// a "Saving clip…" card's (done, text)
+fn saving_line(s: &SavingPh) -> (bool, String) {
+    if s.path.is_some() {
+        (true, "Almost ready…".into())
+    } else {
+        (false, format!("Saving the last {}…", fmt_len(s.secs as u64)))
+    }
+}
+
+/// The library's rows: per group a header row, then rows of up to `cols` cards. The `saves` "Saving clip…" cards
+/// go first in the top group (their own "Today" group when nothing is listed), as many per row as fit - more than a
+/// row's worth spill into the next row. `extra(first, n)` = px for note lines of the cards first..first+n.
+/// In the list view (cols 1) each saving card gets a row of its own.
+fn grid_rows(groups: &[(String, usize, usize)], cols: usize, saves: usize, extra: impl Fn(usize, usize) -> i32) -> Vec<GridRow> {
+    let cols = cols.max(1);
+    let row = |first: usize, n: usize, extra: i32, last: bool, saving: usize, sfirst: usize| GridRow {
+        header: "".into(),
+        count: "".into(),
+        first: first as i32,
+        n: n as i32,
+        extra,
+        last,
+        saving: saving as i32,
+        // 0 when the row has none, so rows below the saving cards stay equal (patch_rows doesn't redraw them)
+        sfirst: if saving > 0 { sfirst as i32 } else { 0 },
+    };
+    let head = |name: &str, count: &str, first: usize| GridRow {
+        header: name.into(),
+        count: count.into(),
+        first: first as i32,
+        n: 0,
+        extra: 0,
+        last: false,
+        saving: 0,
+        sfirst: 0,
+    };
+    let mut rows = vec![];
+    let (mut left, mut sfirst) = (saves, 0usize);
+    if left > 0 && groups.is_empty() {
+        rows.push(head("Today", "", 0));
+        while left > 0 {
+            let s = left.min(cols);
+            left -= s;
+            rows.push(row(0, 0, 0, left == 0, s, sfirst));
+            sfirst += s;
+        }
+    }
+    for (name, first, n) in groups {
+        let (first, n) = (*first, *n);
+        rows.push(head(name, &n.to_string(), first));
+        let mut k = 0;
+        while k < n || left > 0 {
+            let s = left.min(cols);
+            let m = (cols - s).min(n - k);
+            left -= s;
+            // cards in a row line up: room for the note line when a card in the row has one (11 Nov 2026: tags
+            // take no room any more - they sit on the picture, so a tagged clip doesn't make its row taller)
+            let ex = if m > 0 { extra(first + k, m) } else { 0 };
+            rows.push(row(first + k, m, ex, k + m >= n && left == 0, s, sfirst));
+            sfirst += s;
+            k += m;
+        }
+    }
+    rows
 }
 
 /// Card.idx of Home's cards starts here (library view rows are below it)
@@ -830,6 +904,7 @@ impl LibModel {
             disk_dirs: Default::default(),
             loading: Cell::new(false),
             saving: Default::default(),
+            savings: Rc::new(VecModel::default()),
             probed: Default::default(),
             fq: Default::default(),
             folder_order: RefCell::new(
@@ -1188,47 +1263,48 @@ impl LibModel {
         self.rebuild_rows();
     }
 
-    /// Echo's savingHere(): does the clip being saved belong in what the library shows now? Old Echo showed the
-    /// card in ANY folder for a moment (seen in a folder unrelated to the game, until it fixed itself).
-    fn saving_here(&self) -> bool {
-        let s = self.saving.borrow();
-        let Some(s) = s.as_ref() else { return false };
+    /// Echo's savingHere(): the cards whose clip belongs in what the library shows now, newest first (the newest
+    /// save sits left, like the newest clip). Old Echo showed the card in ANY folder for a moment (seen in a folder
+    /// unrelated to the game, until it fixed itself).
+    fn saving_shown(&self) -> Vec<(bool, String)> {
         let nav = self.nav.borrow();
-        match nav.as_str() {
+        let here = |s: &SavingPh| match nav.as_str() {
             "all" | "today" | "week" => true,
             n if n.starts_with("game:") => {
                 let g = &n[5..];
                 s.folder == g || s.folder.starts_with(&format!("{g}/"))
             }
             _ => false, // favourites, edited, cloud, tags: a new clip isn't in them
-        }
-    }
-
-    /// drops the card once the saved clip is in the list (disk sync, every 3 s) or after 90 s; true = dropped
-    pub fn saving_expire(&self) -> bool {
-        let gone = match self.saving.borrow().as_ref() {
-            None => return false,
-            Some(s) => {
-                s.at.elapsed().as_secs() > 90
-                    || s.path.as_ref().is_some_and(|p| {
-                        let p = p.to_string_lossy().replace('\\', "/").to_lowercase();
-                        self.all.borrow().iter().any(|c| !c.gone.get() && c.path.to_string_lossy().replace('\\', "/").to_lowercase() == p)
-                    })
-            }
         };
-        if gone {
-            *self.saving.borrow_mut() = None;
-        }
-        gone
+        self.saving.borrow().iter().rev().filter(|s| here(s)).map(saving_line).collect()
     }
 
-    /// the card's text (Echo: "Saving the last 3 min…" -> "Almost ready…")
-    pub fn saving_text(&self) -> (String, bool) {
-        match self.saving.borrow().as_ref() {
-            Some(s) if s.path.is_some() => ("Almost ready…".into(), true),
-            Some(s) => (format!("Saving the last {}…", fmt_len(s.secs as u64)), false),
-            None => (String::new(), false),
-        }
+    /// drops each card once its clip is in the list (disk sync, every 3 s) or is gone from the disk (a 2nd save that
+    /// covers the same moments replaces it - Echo's "saved twice keeps the latest"), after 90 s once saved, or 10 min
+    /// after its save started without an answer (a save that never reports back); true = one was dropped
+    pub fn saving_expire(&self) -> bool {
+        let all = self.all.borrow();
+        let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        let mut v = self.saving.borrow_mut();
+        let before = v.len();
+        v.retain(|s| match &s.path {
+            None => s.at.elapsed().as_secs() <= 600,
+            Some(p) => {
+                let key = norm(p);
+                s.at.elapsed().as_secs() <= 90 && p.exists() && !all.iter().any(|c| !c.gone.get() && norm(&c.path) == key)
+            }
+        });
+        v.len() != before
+    }
+
+    /// the cards' texts in the order they show (Echo: "Saving the last 3 min…" -> "Almost ready…")
+    pub fn saving_infos(&self) -> Vec<crate::SavingInfo> {
+        self.saving_shown().into_iter().map(|(done, line)| crate::SavingInfo { line: line.into(), done }).collect()
+    }
+
+    /// a save that hasn't finished yet: the header line ("Saving the last 3 min…") shows the newest one
+    pub fn saving_pending(&self) -> Option<String> {
+        self.saving.borrow().iter().rev().find(|s| s.path.is_none()).map(|s| saving_line(s).1)
     }
 
     /// header rows + rows of `cols` cards (Slint calls set_cols when the window width changes the column count)
@@ -1250,32 +1326,20 @@ impl LibModel {
                 _ => groups.push((name, i, 1)),
             }
         }
-        let mut rows = vec![];
-        // Echo prepends the "Saving clip…" card to the top group (its own "Today" group when nothing is shown yet);
-        // in a 1-column view (list) it gets a row of its own
-        let mut ph = self.saving_here();
-        if ph && groups.is_empty() {
-            rows.push(GridRow { header: "Today".into(), count: "".into(), first: 0, n: 0, extra: 0, last: false, saving: false });
-            rows.push(GridRow { header: "".into(), count: "".into(), first: 0, n: 0, extra: 0, last: true, saving: true });
-        }
-        for (name, first, n) in groups {
-            rows.push(GridRow { header: name.into(), count: n.to_string().into(), first: first as i32, n: 0, extra: 0, last: false, saving: false });
-            let mut k = 0;
-            while k < n {
-                let slot = std::mem::take(&mut ph);
-                let m = (cols - slot as usize).min(n - k);
-                // cards in a row line up: room for the note line when a card in the row has one (11 Nov 2026: tags
-                // take no room any more - they sit on the picture, so a tagged clip doesn't make its row taller)
-                let note = {
-                    let meta = self.meta.borrow();
-                    let all = self.all.borrow();
-                    view[first + k..first + k + m].iter().any(|&ci| meta.get(&all[ci].name).is_some_and(|e| !e.note.trim().is_empty()))
-                };
-                let extra = if note { 18 } else { 0 };
-                rows.push(GridRow { header: "".into(), count: "".into(), first: (first + k) as i32, n: m as i32, extra, last: k + m >= n, saving: slot });
-                k += m;
-            }
-        }
+        // Echo prepends the "Saving clip…" cards to the top group (grid_rows); their texts first, so a new row
+        // never shows a card without its text (patched in place: an unchanged card isn't redrawn)
+        let infos = self.saving_infos();
+        let saves = infos.len();
+        patch_rows(&self.savings, infos);
+        let rows = {
+            let meta = self.meta.borrow();
+            let all = self.all.borrow();
+            let note = |first: usize, m: usize| {
+                let has = view[first..first + m].iter().any(|&ci| meta.get(&all[ci].name).is_some_and(|e| !e.note.trim().is_empty()));
+                if has { 18 } else { 0 }
+            };
+            grid_rows(&groups, cols, saves, note)
+        };
         // 10 Nov 2026: patch the rows in place - set_vec resets the model and Slint's ListView then throws away every
         // row (new cards, pictures drawn again, its scroll estimate redone): after "Free up space", an upload, a
         // rename or a delete the list jumped up and the pictures went blank for a moment
@@ -2758,8 +2822,61 @@ mod patch_tests {
     #[test]
     fn grid_rows_compare_by_value() {
         // GridRow (Slint struct) must compare by value for the patch to see "same row"
-        let r = |first: i32| GridRow { header: "".into(), count: "".into(), first, n: 4, extra: 0, last: false, saving: false };
+        let r = |first: i32| GridRow { header: "".into(), count: "".into(), first, n: 4, extra: 0, last: false, saving: 0, sfirst: 0 };
         let m = VecModel::from(vec![r(0), r(4), r(8)]);
         assert_eq!(patch_rows(&m, vec![r(0), r(4), r(8)]), Patch::default());
+    }
+
+    /// rows as (header, first, n, saving, sfirst, last) for the grid_rows tests
+    fn shape(rows: &[GridRow]) -> Vec<(String, i32, i32, i32, i32, bool)> {
+        rows.iter().map(|r| (r.header.to_string(), r.first, r.n, r.saving, r.sfirst, r.last)).collect()
+    }
+
+    /// 24 Nov 2026: two quick saves = two "Saving clip…" cards; the cards in the rows still add up to every clip
+    #[test]
+    fn grid_rows_saving_cards() {
+        let g = |v: &[(&str, usize, usize)]| v.iter().map(|(a, b, c)| (a.to_string(), *b, *c)).collect::<Vec<_>>();
+        let none = |_: usize, _: usize| 0;
+        let h = |s: &str, first: i32| (s.to_string(), first, 0, 0, 0, false);
+        let today = g(&[("Today", 0, 3), ("November 2026", 3, 5)]);
+        // no saves: as before
+        assert_eq!(
+            shape(&grid_rows(&today, 4, 0, none)),
+            vec![h("Today", 0), ("".into(), 0, 3, 0, 0, true), h("November 2026", 3), ("".into(), 3, 4, 0, 0, false), ("".into(), 7, 1, 0, 0, true)]
+        );
+        // one save: first in the top row, one clip less in that row
+        assert_eq!(
+            shape(&grid_rows(&today, 4, 1, none))[..3],
+            [h("Today", 0), ("".into(), 0, 3, 1, 0, true), h("November 2026", 3)]
+        );
+        // two saves, 4 columns: both in the first row, then the clips that don't fit go to a 2nd row
+        assert_eq!(
+            shape(&grid_rows(&today, 4, 2, none))[..3],
+            [h("Today", 0), ("".into(), 0, 2, 2, 0, false), ("".into(), 2, 1, 0, 0, true)]
+        );
+        // five saves in 4 columns: a full row of saving cards, then 1 + 3 clips
+        assert_eq!(
+            shape(&grid_rows(&today, 4, 5, none))[..3],
+            [h("Today", 0), ("".into(), 0, 0, 4, 0, false), ("".into(), 0, 3, 1, 4, true)]
+        );
+        // nothing listed yet: a "Today" group of saving cards only
+        assert_eq!(shape(&grid_rows(&[], 4, 2, none)), vec![h("Today", 0), ("".into(), 0, 0, 2, 0, true)]);
+        assert_eq!(shape(&grid_rows(&[], 2, 3, none)), vec![h("Today", 0), ("".into(), 0, 0, 2, 0, false), ("".into(), 0, 0, 1, 2, true)]);
+        // list view (1 column): a row per saving card, then the clips
+        assert_eq!(
+            shape(&grid_rows(&g(&[("Today", 0, 2)]), 1, 2, none)),
+            vec![h("Today", 0), ("".into(), 0, 0, 1, 0, false), ("".into(), 0, 0, 1, 1, false), ("".into(), 0, 1, 0, 0, false), ("".into(), 1, 1, 0, 0, true)]
+        );
+        // every clip is in exactly one row and every saving card once, whatever the counts
+        for cols in 1..6 {
+            for saves in 0..9 {
+                let rows = grid_rows(&today, cols, saves, none);
+                let cards: Vec<i32> = rows.iter().filter(|r| r.header.is_empty()).flat_map(|r| r.first..r.first + r.n).collect();
+                assert_eq!(cards, (0..8).collect::<Vec<_>>(), "cols {cols} saves {saves}");
+                let s: Vec<i32> = rows.iter().flat_map(|r| r.sfirst..r.sfirst + r.saving).collect();
+                assert_eq!(s, (0..saves as i32).collect::<Vec<_>>(), "cols {cols} saves {saves}");
+                assert!(rows.iter().all(|r| (r.n + r.saving) as usize <= cols), "row too full: cols {cols} saves {saves}");
+            }
+        }
     }
 }

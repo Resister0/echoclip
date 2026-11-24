@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.24" date="2026-11-24">
+      <description>
+        <p>High-FPS clips no longer freeze, Discord on a headset is in your clips, recording no longer gets stuck after the lock screen, the editor can export just the sound, and lots of smaller fixes.</p>
+      </description>
+    </release>
     <release version="2.0.11" date="2026-11-17">
       <description>
         <p>New: Settings &gt; App Settings &gt; Update channel, for testers.</p>

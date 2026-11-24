@@ -224,7 +224,7 @@ pub fn push(a: &AppWindow, e: &Editor) {
         };
         shape_eq(ms, e.p.segs.iter().enumerate().map(|(i, s)| {
             let look = match s.look().as_str() { "vivid" => "Vivid", "punch" => "Punchy", "warm" => "Warm", "cool" => "Cool", "cinema" => "Cinematic", "bw" => "B&W", "vintage" => "Vintage", _ => "" };
-            let lab: Vec<String> = [if s.speed != 1.0 && !s.freeze() { format!("{}x", s.speed) } else { String::new() }, if s.freeze() { "Freeze".into() } else { String::new() }, if s.rev() && !s.freeze() { "Reverse".into() } else { String::new() }, look.to_string(), if s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true) { "audio separated".into() } else { String::new() }]
+            let lab: Vec<String> = [if s.speed != 1.0 && !s.freeze() { format!("{}x", s.speed) } else { String::new() }, if s.freeze() { "Freeze".into() } else { String::new() }, if s.rev() && !s.freeze() { "Reverse".into() } else { String::new() }, look.to_string(), if s.vhide() { "no video".into() } else if s.amute() { "audio separated".into() } else { String::new() }]
                 .into_iter().filter(|x| !x.is_empty()).collect();
             EdSeg { at: s.at as f32, len: s.len() as f32, start: s.start as f32, speed: if s.freeze() { 0.0 } else { s.speed as f32 }, sel: e.is_sel(Sel::Seg(i)), fi: s.fi as f32, fo: s.fo as f32,
                 label: if let Some(f) = s.src() { let n = Path::new(f).file_name().unwrap_or_default().to_string_lossy().to_string(); if lab.is_empty() { n } else { format!("{n} · {}", lab.join(" · ")) } } else { lab.join(" · ") }.into(),
@@ -721,10 +721,38 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
         std::thread::spawn(move || {
             let lv = crate::edrender::track_levels(&ff, &clip, tracks);
             let _ = slint::invoke_from_event_loop(move || {
-                let _ = &w;
+                let Some(a) = w.upgrade() else { return };
+                let mut note = None;
                 with_ed(|e| {
                     if e.clip == clip {
                         e.levels = lv;
+                        // U was pressed while this was measuring: now it makes the right lanes
+                        if std::mem::take(&mut e.sep_wait) {
+                            let (tr, lv) = (e.tracks, e.levels.clone());
+                            note = Some(e.detach_audio(tr, &lv).unwrap_or_else(|x| x));
+                            push(&a, e);
+                        }
+                    }
+                });
+                if let Some(m) = note {
+                    toast(&a, m);
+                }
+            });
+        });
+    }
+    // the clip's frame rate: the Export menu offers it and lower ones, never higher
+    if let Some(ff) = ff.clone() {
+        let (clip, w) = (c.path.clone(), a.as_weak());
+        std::thread::spawn(move || {
+            let fps = crate::edrender::probe_fps(&ff, &clip);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(a) = w.upgrade() else { return };
+                with_ed(|e| {
+                    if e.clip == clip {
+                        e.src_fps = fps;
+                        let g = a.global::<Ed>();
+                        g.set_out_fps(fps as i32);
+                        g.set_fps_opts(ModelRc::new(VecModel::from(crate::editor::fps_choices(fps))));
                     }
                 });
             });
@@ -761,6 +789,8 @@ fn open_rest(a: &AppWindow, p: &Rc<RefCell<Player>>, idx: usize, pj: Option<serd
     g.set_busy(false);
     g.set_listening(false);
     g.set_export_menu(false);
+    g.set_out_fps(0);
+    g.set_fps_opts(ModelRc::default());
     g.set_pick_open(false);
     g.set_export_pct(0.0);
     // Echo's export menu: "One export that fits under 10 MB, copied for pasting"
@@ -1312,6 +1342,12 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
         return;
     }
     if let Some(preset) = cmd.strip_prefix("export:") {
+        // (a sound-only export has its own "no sound to save" message)
+        if !matches!(preset, "mp3" | "wav") && with_ed(|e| e.export_is_silent()) == Some(true) {
+            let (p2, preset, root) = (p.clone(), preset.to_string(), root.to_path_buf());
+            confirm_box(a, "Export without sound?", "Every lane with sound is muted or deleted, so this video will be silent. Unmute a lane to keep its sound.", "Export anyway", move |a| export(a, &p2, &preset, &root));
+            return;
+        }
         export(a, p, preset, root);
         return;
     }
@@ -1354,6 +1390,8 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
         return;
     }
     let mut msg: Option<String> = None;
+    // the captions .txt just saved: its message gets "Show in folder" (the library doesn't list .txt files)
+    let mut saved_txt: Option<std::path::PathBuf> = None;
     let r = with_ed(|e| {
         let pl = p.borrow();
         let m = pl.mpv.as_ref();
@@ -1424,10 +1462,10 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 let dir = e.clip.parent().map(|d| d.to_path_buf()).unwrap_or_default();
                 let stem = e.clip.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let f = dir.join(format!("{stem} (captions).txt"));
-                msg = Some(match std::fs::write(&f, txt) {
-                    Ok(()) => format!("Saved as \"{}\" next to the clip", f.file_name().unwrap_or_default().to_string_lossy()),
-                    Err(x) => format!("Couldn't save the captions: {x}"),
-                });
+                match std::fs::write(&f, txt) {
+                    Ok(()) => saved_txt = Some(f),
+                    Err(x) => msg = Some(format!("Couldn't save the captions: {x}")),
+                }
                 reseek = false;
             }
             "box" | "zoomfx" => {
@@ -1484,11 +1522,17 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 }
             }
             "audio-sep" => {
-                let (tr, lv) = (e.tracks, e.levels.clone());
-                msg = Some(match e.detach_audio(tr, &lv) {
-                    Ok(x) => x,
-                    Err(x) => x,
-                });
+                // pressed before the tracks were measured: it used to show silent lanes too, and later only the real ones
+                if e.tracks >= 2 && e.levels.is_empty() && sheets::ffmpeg().is_some() {
+                    e.sep_wait = true;
+                    msg = Some("Checking which tracks have sound…".into());
+                } else {
+                    let (tr, lv) = (e.tracks, e.levels.clone());
+                    msg = Some(match e.detach_audio(tr, &lv) {
+                        Ok(x) => x,
+                        Err(x) => x,
+                    });
+                }
                 reseek = false;
             }
             // Echo: I = from the playhead to the end (or takes the highlight away); O = up to the playhead, keeping
@@ -1567,6 +1611,14 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
     if r.is_some() {
         if let Some(m) = msg {
             toast(a, m);
+        }
+        if let Some(f) = saved_txt {
+            crate::notes::say_act(
+                crate::notes::Kind::Done,
+                format!("Saved as \"{}\" next to the clip", f.file_name().unwrap_or_default().to_string_lossy()),
+                "Show in folder",
+                move || crate::show_in_folder(&f),
+            );
         }
     }
 }
@@ -1878,6 +1930,7 @@ fn set(a: &AppWindow, p: &Rc<RefCell<Player>>, key: &str, val: &str) {
                 e.normalize = val == "1";
                 crate::lib_fx::ui_set("ed_normalize", serde_json::json!(e.normalize)); // remembered (Echo)
             }
+            "out-fps" => e.out_fps = num as u32,
             "bri-live" | "bri" | "con-live" | "con" | "sat-live" | "sat" => {
                 if let Some(i) = e.sel_seg() {
                     live(e);
@@ -2107,7 +2160,7 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
         e.export_plan(&ff, preset).map(|pl| (pl, e.project_json()))
     });
     let Some(plan) = plan else { return };
-    let (plan, proj) = match plan {
+    let (mut plan, proj) = match plan {
         Ok(x) => x,
         Err(x) => {
             with_ed(|e| e.busy = false);
@@ -2115,8 +2168,20 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
             return;
         }
     };
+    // 18 Nov 2026: Sound only (MP3 / WAV) goes into <clips>/Audio like the player's MP3 button
+    let sound = plan.sound.clone();
+    if let Some(ext) = sound.as_deref() {
+        let dir = root.join("Audio");
+        if let Err(x) = std::fs::create_dir_all(&dir) {
+            with_ed(|e| e.busy = false);
+            toast(a, format!("Couldn't make the Audio folder: {x}"));
+            return;
+        }
+        let stem = plan.src.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        plan.out = (1..).map(|n| dir.join(if n == 1 { format!("{stem} (edit).{ext}") } else { format!("{stem} (edit {n}).{ext}") })).find(|p| !p.exists()).unwrap();
+    }
     a.global::<Ed>().set_busy(true);
-    let pb = prog_box(if range { "Exporting the highlighted part…" } else if preset == "tt" { "Exporting for TikTok…" } else if preset == "yt" { "Exporting for YouTube…" } else { "Exporting video…" });
+    let pb = prog_box(if sound.is_some() { "Exporting sound…" } else if range { "Exporting the highlighted part…" } else if preset == "tt" { "Exporting for TikTok…" } else if preset == "yt" { "Exporting for YouTube…" } else { "Exporting video…" });
     prog_set(pb, None, None, Some(0.0));
     a.global::<Ed>().set_export_pct(0.0);
     let (w, root2) = (a.as_weak(), root.to_path_buf());
@@ -2148,7 +2213,7 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
             let _ = slint::invoke_from_event_loop(move || elog(l));
         });
         // its card picture in the clip cache (<clips>/.thumbs/<name>.jpg, Echo's thumb) + length
-        let extra = r.as_ref().ok().map(|out| {
+        let extra = r.as_ref().ok().filter(|_| sound.is_none()).map(|out| {
             let _ = std::fs::create_dir_all(&tdir);
             let thumb = tdir.join(format!("{}.jpg", out.file_stem().unwrap_or_default().to_string_lossy()));
             let _ = crate::edrender::hidden_cmd(&plan.ff).args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "0.5", "-i"]).arg(out).args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4"]).arg(&thumb).stdin(std::process::Stdio::null()).output();
@@ -2161,6 +2226,14 @@ fn export(a: &AppWindow, p: &Rc<RefCell<Player>>, preset: &str, root: &Path) {
             with_ed(|e| e.busy = false);
             a.global::<Ed>().set_export_pct(0.0);
             match r {
+                Ok(out) if sound.is_some() => {
+                    elog(format!("editor: exported {}", out.display()));
+                    let what = if sound.as_deref() == Some("wav") { "WAV" } else { "MP3" };
+                    match crate::copy::clipboard_file(&out) {
+                        Ok(()) => toast(&a, format!("{what} copied - saved in the Audio folder")),
+                        Err(x) => toast(&a, format!("{what} saved in the Audio folder ({x})")),
+                    }
+                }
                 Ok(out) => {
                     // the project next to the clip cache (Echo's save_project): "Edit" on the export finds it, in
                     // either app

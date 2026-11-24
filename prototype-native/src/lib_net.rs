@@ -158,8 +158,25 @@ pub fn bg<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, done: im
 }
 
 // ---------- log ----------
+/// proto.log next to the exe where that folder can be written to, else the temp folder (22 Nov 2026: an AppImage's
+/// own folder is read-only, so the "native app log" part of a sent log was always empty on Linux)
 pub fn log_path() -> PathBuf {
-    std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("proto.log"))).unwrap_or_else(|| std::env::temp_dir().join("echo-native.log"))
+    static P: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let next = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("proto.log")));
+        match next {
+            Some(p) if std::fs::OpenOptions::new().create(true).append(true).open(&p).is_ok() => p,
+            _ => {
+                // /tmp is RAM on many Linux PCs: never let it grow past 2 MB (started fresh at the next start)
+                let t = std::env::temp_dir().join("echo-native.log");
+                if std::fs::metadata(&t).map(|m| m.len() > 2_000_000).unwrap_or(false) {
+                    let _ = std::fs::remove_file(&t);
+                }
+                t
+            }
+        }
+    })
+    .clone()
 }
 
 pub fn log_line(msg: &str) {

@@ -2,7 +2,7 @@
 //! Off / Snow / Stars / Fireflies / Embers / Leaves / Rain + "Still" (one frame, never animates). Same particle counts,
 //! speeds and colours. ~30 fps; draws NOTHING while Echo isn't in front (focus / minimized / hidden = while you play)
 //! and while the player or the editor is open, like Echo. Per PC like Echo's localStorage: kept in
-//! %APPDATA%\Clipper\native_ui.json (not settings.json - Echo's recorder rewrites that file).
+//! %APPDATA%\EchoClip\native_ui.json (was Clipper) (not settings.json - Echo's recorder rewrites that file).
 use crate::AppWindow;
 use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, Model, VecModel};

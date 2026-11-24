@@ -1,5 +1,6 @@
 import { DISPOSABLE } from "./disposable.js";
 import { CLIP_THUMB_TABLES, thumbsHave, thumbsGet, thumbsPut, dropClipThumbs, moveClipThumb, dropUserThumbs } from "./clip_thumbs.js";
+import { WorkerEntrypoint } from "cloudflare:workers";
 // Echo Cloud server: sign in with an email code, usage / quota, and short-lived R2 keys that only
 // reach the user's own folder (u/<id>/) in the bucket. Echo then talks to R2 directly (rclone s3).
 //
@@ -129,7 +130,10 @@ async function userFromToken(req, env) {
     await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(th).run();
     return null;
   }
-  await env.DB.prepare("UPDATE sessions SET last_seen = ? WHERE token_hash = ?").bind(now(), th).run();
+  // the admin page's own session (adm_, refreshes every 5 min) doesn't make the admin an active Echo Cloud user
+  // (21 Nov 2026 review); it still expires like any session, so it gets a touch at most once a day
+  if (!token.startsWith("adm_") || s.last_seen < now() - 86400)
+    await env.DB.prepare("UPDATE sessions SET last_seen = ? WHERE token_hash = ?").bind(now(), th).run();
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
 }
 
@@ -152,7 +156,7 @@ async function usage(env, user, fresh = false) {
 function me(user, used) {
   // over_since > 0: over the plan, clips above it go on delete_at (Echo shows a warning)
   const since = user.over_since || 0;
-  return { id: user.id, email: user.email, plan: user.plan, paid: !!user.polar_sub, until: user.plan_until || 0, used, quota: user.quota_bytes,
+  return { id: user.id, email: user.plan === "device" ? "" : user.email, plan: user.plan, paid: !!user.polar_sub, until: user.plan_until || 0, used, quota: user.quota_bytes,
     over_since: since, delete_at: since ? since + OVER_GRACE_DAYS * 86400 : 0 };
 }
 
@@ -232,6 +236,35 @@ async function authVerify(req, env) {
   await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, created, last_seen) VALUES (?, ?, ?, ?)")
     .bind(await sha256(token), user.id, now(), now()).run();
   return json({ token, ...me(user, await usage(env, user)) });
+}
+
+// ----- Lasso share links without an account (William, 21 Nov 2026: "yes, no account") -----
+// Lasso makes a random device key on its first link and keeps it in a file. POST /auth/device turns it into a normal
+// session of a hidden "device" account (plan 'device', no e-mail - the address column gets a made-up
+// d-<hash>@device.lasso that is never mailed). Such an account can only upload and share Lasso pictures, its links
+// last a year at most (365 days, also when it asks for "never"), 1 GB of room, at most DEVICE_SHARES_PER_DAY links a
+// day; signing in to a real account in Lasso lifts all that. The key itself is never stored, only its hash.
+const DEVICE_DAYS = 365;
+const DEVICE_OK = new Set(["POST /upload", "POST /share", "POST /share/remove", "POST /shares/views", "GET /me", "POST /auth/logout"]);
+async function authDevice(req, env) {
+  const b = await body(req);
+  const key = String(b.device || "");
+  if (!/^[0-9a-f]{64}$/.test(key)) return fail("Bad device key");
+  if (!(await allow(env, `devip:${ipOf(req)}`, 30, 3600))) return fail("Too many tries - wait a while", 429);
+  const email = `d-${(await sha256(`device:${key}`)).slice(0, 32)}@device.lasso`;
+  let user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+  if (!user) {
+    if (!(await allow(env, `newdev:${ipOf(req)}`, Number(env.DEVICE_ACCOUNTS_PER_DAY || 5), 86400)))
+      return fail("Too many new Lasso devices from this network today - try again tomorrow", 429);
+    const id = randomId();
+    await env.DB.prepare("INSERT INTO users (id, email, plan, quota_bytes, used_bytes, used_at, created) VALUES (?, ?, 'device', ?, 0, 0, ?)")
+      .bind(id, email, Number(env.DEVICE_GB || 1) * GB, now()).run();
+    user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+  }
+  const token = randomHex(32);
+  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, created, last_seen) VALUES (?, ?, ?, ?)")
+    .bind(await sha256(token), user.id, now(), now()).run();
+  return json({ token, device: true, ...me(user, await usage(env, user)) });
 }
 
 async function creds(user, env) {
@@ -516,6 +549,14 @@ async function upload(req, user, env) {
   const size = Math.floor(Number(b.size));
   if (!key) return fail("Bad clip path");
   if (!(size > 0) || size > 5e9) return fail("Clips over 5 GB can't be uploaded to Echo Cloud yet");
+  if (user.plan === "device" && !isLassoKey(key)) return fail("Sign in to Echo Cloud to upload clips", 403);
+  // Lasso: only pictures (by name; /share checks the real bytes), up to IMAGE_MAX, always share-only
+  if (isLassoKey(key) || b.kind === "image") {
+    if (!isLassoKey(key) || !imageExtOf(key)) return fail("Only PNG, JPEG or WebP pictures can be shared");
+    if (size > IMAGE_MAX) return fail("Pictures over 25 MB can't be shared");
+    b.share_only = true;
+    b.share_first = false;
+  }
   // cloud-savings: the same clip (content hash from Echo) is already stored under another name -> no second copy
   // (Echo asks /upload/check first; allow_dup = it knows and wants this one anyway). Older Echo sends no hash.
   const hash = cleanHash(b.hash);
@@ -586,6 +627,8 @@ async function upload(req, user, env) {
   await env.DB.prepare(`INSERT INTO objects (key, user_id, hash, share_only, fmt) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET user_id = excluded.user_id, hash = excluded.hash, share_only = excluded.share_only, fmt = excluded.fmt`)
     .bind(key, user.id, hash, shareOnly, fmt).run();
+  // Lasso: when the picture's upload started (the daily orphan cleanup only takes ones older than a day)
+  if (isLassoKey(key)) await env.DB.prepare("UPDATE objects SET uploaded_at = ? WHERE key = ?").bind(now(), key).run();
   return json({ url, size, expires: now() + UPLOAD_SECONDS, share_only: !!shareOnly, ...(first ? { swap: userPath(user, target) } : {}) });
 }
 
@@ -670,6 +713,31 @@ async function move(req, user, env) {
 // share copies (watermark / AV1 -> H.264, or clips that live on another cloud) only exist for their link
 const isShareCopy = (key) => key.includes("/Echo/.shared/");
 
+// ----- Lasso share links (Sonela Lasso screenshots, 13 Nov 2026): pictures at sonela.app/s/<id> -----
+// Lasso uploads with Echo's flow (/upload share_only -> PUT -> /share kind=image) to u/<user>/Lasso/<yyyy>/<mm>/<name>.
+// The sonela.app Worker (sonela-hub) forwards /s/* here through a service binding, so the request keeps its
+// sonela.app host. Each link lives on one domain: an image id on echoclip.link -> 301 sonela.app, a clip id on
+// sonela.app -> 301 echoclip.link. Var IMAGE_ORIGIN overrides https://sonela.app (tests: a workers.dev address).
+const IMAGE_MAX = 25e6;                // bytes per picture (Lasso keeps them under 10 MB for Discord anyway)
+const IMAGE_ONCE_SECONDS = 600;        // a view-once link: the picture works this long after the first real view
+const LASSO_PROTOCOL = 1;              // /health "lasso": Lasso uploads only when the server says this (or more)
+const imageOrigin = (env) => String(env.IMAGE_ORIGIN || "https://sonela.app").replace(/\/+$/, "");
+const SONELA_HOSTS = new Set(["sonela.app", "www.sonela.app"]);
+/// u/<id>/Lasso/... - a Lasso picture (by its place in the account)
+const isLassoKey = (key) => /^u\/[^/]+\/Lasso\//.test(key);
+const IMAGE_EXT = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" };
+const imageExtOf = (key) => { const m = /\.(png|jpe?g|webp)$/i.exec(key); return m ? m[1].toLowerCase() : ""; };
+/// What the uploaded file really is (first bytes): only PNG / JPEG / WebP are ever served as pictures
+async function imageMime(env, key) {
+  const o = await env.BUCKET.get(key, { range: { offset: 0, length: 16 } });
+  if (!o) return "";
+  const b = new Uint8Array(await o.arrayBuffer());
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "image/png";
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (String.fromCharCode(...b.slice(0, 4)) === "RIFF" && String.fromCharCode(...b.slice(8, 12)) === "WEBP") return "image/webp";
+  return "";
+}
+
 /// a clip uploaded only for an expiring share link (cloud-savings) that no working link uses any more
 async function shareOnlyUnused(env, key) {
   const o = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
@@ -686,6 +754,14 @@ async function unshare(req, user, env) {
   // a clip uploaded only for its link (cloud-savings): the link stops now (expired), the clip goes with the next daily
   // cleanup - a day for Echo to say it's kept (/keep: the PC copy was deleted meanwhile, it became a favourite…)
   const so = await env.DB.prepare("SELECT share_only FROM objects WHERE key = ?").bind(key).first();
+  // Lasso: "Stop sharing" = the link dies and the picture is deleted now (it was only uploaded for the link)
+  if (rows.length && isLassoKey(key)) {
+    await env.DB.prepare("DELETE FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).run();
+    await env.BUCKET.delete(key);
+    await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(key).run();
+    await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(user.id).run();
+    return json({ ok: true, removed: rows.length, copy_deleted: true, upload_deleted: true });
+  }
   if (rows.length && so && so.share_only && !isShareCopy(key)) {
     await env.DB.prepare("UPDATE shares SET expires = ? WHERE key = ? AND user_id = ?").bind(now() - 1, key, user.id).run();
     return json({ ok: true, removed: rows.length, copy_deleted: false });
@@ -971,7 +1047,7 @@ async function enforceQuota(env) {
   await migrate(env);
   const day = 86400, t = now();
   // used_bytes is the last count; it's recounted below for every candidate
-  const rows = (await env.DB.prepare("SELECT * FROM users WHERE (used_bytes > quota_bytes OR over_since > 0) ORDER BY over_since DESC LIMIT 25").all()).results || [];
+  const rows = (await env.DB.prepare("SELECT * FROM users WHERE (used_bytes > quota_bytes OR over_since > 0) AND plan != 'device' ORDER BY over_since DESC LIMIT 25").all()).results || [];
   const report = [];
   for (const u of rows) {
     const set = (sql, ...v) => env.DB.prepare(`UPDATE users SET ${sql} WHERE id = ?`).bind(...v, u.id).run();
@@ -1150,9 +1226,12 @@ async function countDownload(req, env, what) {
 // updates through flatpak) asks /update/<os>/<arch>/<version> every few hours. Counted once per computer per day:
 // a scrambled code of day + IP + OS goes into uv (kept 2 days, like the website's), never the IP itself.
 // Keys: app:<os> (copies that checked in that day) and appv:<os>:<version>.
-async function countApp(req, env, os, version) {
+// 18 Nov 2026: channel = the update channel this check was answered for (channelOf: stable / beta / dev), kept with the
+// 15-day "different PCs" code so the admin page can show how many PCs use each channel
+async function countApp(req, env, os, version, channel = "stable") {
   try {
     if (!UPDATE_FILES[os] || !/^\d{1,3}\.\d{1,3}\.\d{1,4}$/.test(version)) return;
+    await migrate(env);
     const h = "a" + (await sha256(`${utcDay()}|${ipOf(req)}|app:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
     const r = await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), h).run();
     if (((r && r.meta) ? r.meta.changes : r && r.changes) > 0) {
@@ -1172,7 +1251,11 @@ async function countApp(req, env, os, version) {
     const vk = "v" + (await sha256(`${utcDay()}|${ipOf(req)}|appv:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 22) + ":";
     const prev = await env.DB.prepare("SELECT h FROM uv WHERE day = ? AND h LIKE ?").bind(utcDay(), vk + "%").first();
     const asOld = (v) => (v === "2.0.72" ? "1.99.0" : v); // the 2.0.72 test build is older than 2.0.0
+    // the 15-day code for "different PCs" (upc): same IP + OS = same code on every day
+    const pc = "p" + (await sha256(`${ipOf(req)}|pc:${os}|${env.ADMIN_KEY || "echo"}`)).slice(0, 23);
+    const pcRow = () => env.DB.prepare("INSERT OR REPLACE INTO upc (day, h, os, ver, cc, ch) VALUES (?, ?, ?, ?, ?, ?)").bind(utcDay(), pc, os, version, cc, channel).run();
     if (!prev) {
+      await pcRow();
       await env.DB.prepare("INSERT OR IGNORE INTO uv (day, h) VALUES (?, ?)").bind(utcDay(), `${vk}${version}|${cc}`).run();
       await bump(env, `appv:${os}:${version}`);
       if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
@@ -1184,8 +1267,11 @@ async function countApp(req, env, os, version) {
         // the old version's row (and its country) goes down by one - and is removed at 0, so "Where" doesn't keep
         // showing a country nobody is on any more (11 Nov 2026: 2.0.1 showed 0 / 0 but "DK · US")
         await unbump(env, `appv:${os}:${pv}`); await bump(env, `appv:${os}:${version}`);
+        await pcRow();
         if (pc) await unbump(env, `appc:${os}:${pv}:${pc}`);
         if (cc) await bump(env, `appc:${os}:${version}:${cc}`);
+      } else if (pv === version) {
+        await pcRow(); // same version again: keeps the channel current (switched in Settings without updating yet)
       }
     }
   } catch (e) { console.log("app count error", e && e.message); }
@@ -1199,7 +1285,12 @@ const PERF_STATES = ["tray", "idle", "active", "player"];
 // Fresh start (the user, 11 Nov 2026): only reports from this version on count - older ones carried fixed problems
 // (RGB theme CPU in the window, untrimmed tray memory) and made Echo look worse than it is. The old rows were deleted
 // by hand (Claude outputs/echo-perf-reset.md). Dev builds (0.1.0) and the 2.0.72 test build never count.
-const PERF_MIN_VER = "2.0.6"; // 12 Nov 2026: raised from 2.0.5 - 2.0.6 has the player's RAM + VRAM fixes
+// 18 Nov 2026: back to 2.0.6 - a 2.0.11-only filter hid the user's own ~190 h of recordings; the CPU-copy PCs (the ones that
+// made the numbers look bad) are kept apart by the GPU / CPU encoder split instead (perfStats)
+const PERF_MIN_VER = "2.0.6";
+// 18 Nov 2026: some PCs send the encoder name with a stray "Â" before ® / © ("IntelÂ® Quick Sync ...", UTF-8 read as
+// Latin-1 somewhere) - the same encoder must not show up twice
+const cleanEnc = (s) => (s ? s.replace(/\u00c2(?=[\u00a9\u00ae])/g, "") : s);
 async function countPerf(req, env, url, os, version) {
   try {
     const q = url.searchParams;
@@ -1225,16 +1316,24 @@ async function countPerf(req, env, url, os, version) {
         const v = String(q.get("s_" + st) || "").split(",").map((x, i) => { const y = Math.round(Number(x)); return Number.isFinite(y) && y >= 0 ? Math.min(y, lim[i] ?? 0) : null; });
         if (v.length !== 8 || v.some((x) => x == null) || !v[0]) continue;
         const [sn, srn, m, mp, c, cp, rm, rc] = v;
-        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn), ...pair("v_" + st)]);
+        rows.push([st, m, mp, c, cp, rm, rc, sn, Math.min(srn, sn), ...pair("v_" + st), ...pair("e_" + st)]);
       }
     }
-    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp")]);
-    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    if (!rows.length) rows.push(["mixed", int("m", 1e6), int("mp", 1e6), int("c", 1000), int("cp", 1000), int("rm", 1e6), int("rc", 1000), n, int("rn", 100000) || 0, opt("g"), opt("gp"), null, null]);
+    const ins = env.DB.prepare(`INSERT INTO perf (at, day, h, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn, xr, xj, xu, xc, xa, pdec, aud)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    // 21 Nov 2026: x_<state>=rec,job,ui,cap,aud (perf.rs part_fields) - five numbers or none at all
+    const parts = (st) => { const v = String(q.get("x_" + st) || "").split(",").map((x) => { const y = Math.round(Number(x)); return x !== "" && Number.isFinite(y) && y >= 0 ? Math.min(y, 1000) : null; });
+      return v.length === 5 && v.every((x) => x != null) ? v : [null, null, null, null, null]; };
     const at = now(), base = [at, utcDay(), h, os, String(version).slice(0, 30), str("cpu"), str("gpu"), int("ram", 4096), int("k", 1024), str("os"), str("res"), int("fps", 1000), str("enc")];
-    // ce / rce are for all states together: each state row carries them (averages weigh by minutes, so it adds up)
-    const own = [q.has("ce") ? int("ce", 1000) : null, q.has("rce") ? int("rce", 1000) : null, str("encn")];
-    await env.DB.batch(rows.map(([st, ...v]) => ins.bind(...base, ...v, /^[A-Z]{2}$/.test(cc) ? cc : null, st, ...own)));
+    // ce / rce (2.0.11+) are for all states together. 18 Nov 2026: newer Echo also sends e_<state>=ce,rce per state, so
+    // a state's split is its own; without it each state row carries the all-states numbers (right for "All" only)
+    const ce = q.has("ce") ? int("ce", 1000) : null, rce = q.has("rce") ? int("rce", 1000) : null;
+    const encn = cleanEnc(str("encn")), pdec = str("pdec"), aud = str("aud");
+    await env.DB.batch(rows.map(([st, m, mp, c, cp, rm, rc, sn, srn, g, gp, se, sre]) => {
+      const own = se != null ? [Math.min(se, 1000), srn ? Math.min(sre, 1000) : null] : [ce, rce];
+      return ins.bind(...base, m, mp, c, cp, rm, rc, sn, srn, g, gp, /^[A-Z]{2}$/.test(cc) ? cc : null, st, ...own, encn, ...parts(st), pdec, aud);
+    }));
   } catch (e) { console.log("perf report error", e && e.message); }
 }
 
@@ -1261,7 +1360,13 @@ async function installStats(env) {
 
 // admin page: Echo's CPU / memory on real PCs, last 30 days. Averages are weighted by minutes measured.
 // perf-states: the same totals + tables per state too (by_state.tray / idle / active / player / mixed = older Echo).
-async function perfStats(env) {
+// 18 Nov 2026: split by encoder: path "gpu" = the graphics card's own encoder
+// (zero-copy, plus minutes with no recording), "cpu" = the recorder's CPU fallbacks (ffmpeg's CPU copy into a vendor
+// encoder, or the software x264 encoder) - both have "(CPU copy)" in enc (specs.rs).
+// 21 Nov 2026: the CPU parts of rows from newer Echo (x_<state>), averaged over only those rows: all, Echo's own process,
+// its window thread, capture + encoder thread, audio mixer, recorder helpers, other jobs (admin.js "parts" line)
+const PARTS = [["p_all", "c"], ["p_own", "ce"], ["p_ui", "xu"], ["p_cap", "xc"], ["p_aud", "xa"], ["p_rec", "xr"], ["p_job", "xj"]];
+async function perfStats(env, path = "gpu") {
   try {
     await migrate(env);
     const from = utcDay(now() - 29 * 86400);
@@ -1271,15 +1376,16 @@ async function perfStats(env) {
       ROUND(MAX(cp) / 10.0, 1) AS cpu_peak, MAX(mp) AS mem_peak,
       ROUND(SUM(g * n) * 1.0 / NULLIF(SUM(CASE WHEN g IS NOT NULL THEN n END), 0)) AS vram, MAX(gp) AS vram_peak,
       ROUND(SUM(ce * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_self,
-      ROUND(SUM(c * n) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_split,
+      ROUND(SUM(CASE WHEN ce IS NOT NULL THEN c * n END) * 1.0 / NULLIF(SUM(CASE WHEN ce IS NOT NULL THEN n END), 0) / 10, 2) AS cpu_split,
       ROUND(SUM(rce * rn) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_self,
-      ROUND(SUM(CASE WHEN rce IS NOT NULL THEN rc * rn END) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_split`;
+      ROUND(SUM(CASE WHEN rce IS NOT NULL THEN rc * rn END) * 1.0 / NULLIF(SUM(CASE WHEN rce IS NOT NULL THEN rn END), 0) / 10, 2) AS rcpu_split,
+      ${PARTS.map(([k, col]) => `ROUND(SUM(CASE WHEN xr IS NOT NULL THEN ${col} * n END) * 1.0 / NULLIF(SUM(CASE WHEN xr IS NOT NULL THEN n END), 0) / 10, 2) AS ${k}`).join(", ")}`;
     const ramBucket = "CASE WHEN ram IS NULL THEN NULL WHEN ram < 12 THEN 'under 12 GB' WHEN ram < 24 THEN '16 GB' WHEN ram < 48 THEN '32 GB' ELSE '64 GB+' END";
-    const cols = { gpu: "gpu", cpu: "cpu", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
+    const cols = { gpu: "gpu", cpu: "cpu", enc: "enc", os: "osname", ver: "ver", ram: ramBucket, res: "res || ' @ ' || fps" };
     // 17 Nov 2026: PCs whose recorder fell back to ffmpeg's CPU copy (specs.rs adds "(CPU copy)" to the encoder name)
-    // cost far more CPU and diluted the zero-copy numbers. Every table + tile below is the GPU path only; the
-    // "Capture path" table (all rows) shows both side by side.
-    const GPU = "AND (enc IS NULL OR enc NOT LIKE '%(CPU copy)%')";
+    // cost far more CPU - kept apart from the zero-copy numbers; the "Capture path" table shows both side by side.
+    const NEW = "";
+    const GPU = (path === "cpu" ? "AND enc LIKE '%(CPU copy)%'" : "AND (enc IS NULL OR enc NOT LIKE '%(CPU copy)%')") + NEW;
     const pathCol = "CASE WHEN enc LIKE '%(CPU copy)%' THEN 'CPU copy fallback' WHEN enc IS NULL OR enc = '' THEN 'Not recording / unknown' ELSE 'Zero-copy GPU' END";
     // one round trip: per table the all-states rows + the per-state rows, then the totals
     const qs = [];
@@ -1289,16 +1395,17 @@ async function perfStats(env) {
     }
     qs.push(env.DB.prepare(`SELECT ${agg} FROM perf WHERE day >= ? ${GPU}`).bind(from));
     qs.push(env.DB.prepare(`SELECT state AS st, ${agg} FROM perf WHERE day >= ? ${GPU} GROUP BY state`).bind(from));
-    qs.push(env.DB.prepare("SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn FROM perf ORDER BY at DESC, rowid LIMIT 40"));
-    // [15] the capture paths side by side (every row), [16] each GPU-path PC-day's CPU for the typical-PC median
-    qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ? GROUP BY k ORDER BY pcs DESC`).bind(from));
+    qs.push(env.DB.prepare(`SELECT at, os, ver, cpu, gpu, ram, cores, osname, res, fps, enc, m, mp, c, cp, rm, rc, n, rn, g, gp, cc, state, ce, rce, encn, xr, xj, xu, xc, xa, pdec, aud FROM perf WHERE 1 ${GPU} ORDER BY at DESC, rowid LIMIT 40`));
+    // then the capture paths side by side (every 2.0.11+ row), then each PC-day's CPU (this path) for the typical-PC median
+    qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ?${NEW} GROUP BY k ORDER BY pcs DESC`).bind(from));
     qs.push(env.DB.prepare(`SELECT SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10 AS cpu, SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10 AS rcpu FROM perf WHERE day >= ? ${GPU} GROUP BY day || h`).bind(from));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
     const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); if (!v.length) return null;
       const m = v.length >> 1; return Math.round((v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2) * 100) / 100; };
-    const out = { total: res[12][0] || {}, from, min_ver: PERF_MIN_VER, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[14],
-      path: res[15], median_cpu: median(res[16].map((r) => r.cpu)), median_rcpu: median(res[16].map((r) => r.rcpu)) };
-    for (const t of res[13]) out.by_state[t.st || "mixed"] = { total: t };
+    const b = Object.keys(cols).length * 2; // the totals etc. come after the per-column tables
+    const out = { total: res[b][0] || {}, from, min_ver: PERF_MIN_VER, enc_path: path, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[b + 2],
+      path: res[b + 3], median_cpu: median(res[b + 4].map((r) => r.cpu)), median_rcpu: median(res[b + 4].map((r) => r.rcpu)) };
+    for (const t of res[b + 1]) out.by_state[t.st || "mixed"] = { total: t };
     Object.keys(cols).forEach((name, i) => {
       out[name] = res[i * 2];
       for (const r of res[i * 2 + 1]) {
@@ -1322,6 +1429,7 @@ async function countUpdAnswer(req, env, os, why) {
 }
 async function cleanupStats(env) {
   await env.DB.prepare("DELETE FROM uv WHERE day < ?").bind(utcDay(now() - 2 * 86400)).run();
+  await env.DB.prepare("DELETE FROM upc WHERE day < ?").bind(utcDay(now() - 15 * 86400)).run().catch(() => { });
   // pins of share links that were removed or expired
   await env.DB.prepare("DELETE FROM pins WHERE share_id NOT IN (SELECT id FROM shares WHERE expires = 0 OR expires > ?)").bind(now()).run();
 }
@@ -1329,7 +1437,8 @@ async function siteStats(env) {
   const days = [...Array(30)].map((_, i) => utcDay(now() - (29 - i) * 86400)); // oldest .. today
   const rows = ((await env.DB.prepare("SELECT day, k, n FROM stats WHERE day >= ?").bind(days[0]).all()).results) || [];
   const keys = {}; // key -> [today, 7 days, 30 days]
-  const daily = days.map((day) => ({ day, visitors: 0, views: 0, downloads: 0 }));
+  // 18 Nov 2026: downloads per platform too (dlw = Windows installer + zip, dll = Linux AppImage / tar.gz / Flatpak) for the admin chart
+  const daily = days.map((day) => ({ day, visitors: 0, views: 0, downloads: 0, dlw: 0, dll: 0 }));
   for (const r of rows) {
     const i = days.indexOf(r.day);
     if (i < 0) continue;
@@ -1339,7 +1448,7 @@ async function siteStats(env) {
     a[2] += r.n;
     if (r.k === "visitors") daily[i].visitors += r.n;
     else if (r.k.startsWith("view:")) daily[i].views += r.n;
-    else if (r.k.startsWith("dl:")) daily[i].downloads += r.n;
+    else if (r.k.startsWith("dl:")) { daily[i].downloads += r.n; daily[i][r.k.startsWith("dl:windows") ? "dlw" : "dll"] += r.n; }
   }
   return { keys, daily };
 }
@@ -1568,17 +1677,20 @@ async function adminStats(req, env) {
   const all = async (sql, ...v) => ((await env.DB.prepare(sql).bind(...v).all()).results) || [];
   const users = await one(`SELECT COUNT(*) AS total,
       SUM(created > ?) AS d1, SUM(created > ?) AS d7, SUM(created > ?) AS d30,
-      SUM(polar_sub IS NOT NULL) AS paid, SUM(used_bytes) AS used, SUM(over_since > 0) AS over FROM users`, t - d, t - 7 * d, t - 30 * d);
+      SUM(polar_sub IS NOT NULL) AS paid, SUM(used_bytes) AS used, SUM(over_since > 0) AS over FROM users WHERE plan != 'device'`, t - d, t - 7 * d, t - 30 * d);
   const active = await one(`SELECT COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d1,
-      COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d7, COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d30 FROM sessions`,
+      COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d7, COUNT(DISTINCT CASE WHEN last_seen > ? THEN user_id END) AS d30 FROM sessions
+      WHERE user_id NOT IN (SELECT id FROM users WHERE plan = 'device')`,
     t - d, t - 7 * d, t - 30 * d);
-  const byPlan = await all("SELECT plan, COUNT(*) AS n, SUM(used_bytes) AS used FROM users GROUP BY plan ORDER BY n DESC");
-  const top = await all("SELECT email, plan, used_bytes AS used, quota_bytes AS quota, used_at, over_since, created FROM users ORDER BY used_bytes DESC LIMIT 15");
-  const newest = await all("SELECT email, plan, created FROM users ORDER BY created DESC LIMIT 10");
-  const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 ORDER BY over_since LIMIT 20");
-  const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares", t - 7 * d, t);
+  const byPlan = await all("SELECT plan, COUNT(*) AS n, SUM(used_bytes) AS used FROM users WHERE plan != 'device' GROUP BY plan ORDER BY n DESC");
+  const top = await all("SELECT email, plan, used_bytes AS used, quota_bytes AS quota, used_at, over_since, created FROM users WHERE plan != 'device' ORDER BY used_bytes DESC LIMIT 15");
+  const newest = await all("SELECT email, plan, created FROM users WHERE plan != 'device' ORDER BY created DESC LIMIT 10");
+  const over = await all("SELECT email, used_bytes AS used, quota_bytes AS quota, over_since, over_stage FROM users WHERE over_since > 0 AND plan != 'device' ORDER BY over_since LIMIT 20");
+  // Echo clip links only; Lasso's picture links (kind = image) are counted apart (21 Nov 2026 review)
+  const shares = await one("SELECT COUNT(*) AS total, SUM(created > ?) AS d7, SUM(expires = 0 OR expires > ?) AS live FROM shares WHERE kind != 'image'", t - 7 * d, t);
+  const lassoLive = await one("SELECT COUNT(*) AS n FROM shares WHERE kind = 'image' AND (expires = 0 OR expires > ?)", t);
   const topShares = await all(`SELECT s.id, s.key, s.views, s.created, u.email FROM shares s LEFT JOIN users u ON u.id = s.user_id
-      WHERE (s.expires = 0 OR s.expires > ?) AND s.views > 0 ORDER BY s.views DESC LIMIT 10`, t);
+      WHERE (s.expires = 0 OR s.expires > ?) AND s.views > 0 AND s.kind != 'image' ORDER BY s.views DESC LIMIT 10`, t);
   const profs = await one("SELECT COUNT(*) AS n, SUM(created > ?) AS d7 FROM profiles", t - 7 * d);
   const fl = await one("SELECT COUNT(*) AS n FROM follows");
   const profList = await all(`SELECT p.handle, p.name, p.created, u.email, (SELECT COUNT(*) FROM follows f WHERE f.followee = p.user_id) AS followers,
@@ -1594,7 +1706,9 @@ async function adminStats(req, env) {
   }
   // Polar keeps 5% + 0.50 per payment; prices include VAT, which Polar pays to the tax office (~20% in the EU)
   const net = Math.max(0, gross / 1.2 * 0.95 - 0.5 * paying);
-  const usedGB = (users.used || 0) / GB;
+  // storage cost: everything in R2, Lasso's no-account pictures included (users.used leaves device accounts out)
+  const allUsed = await one("SELECT SUM(used_bytes) AS b FROM users");
+  const usedGB = (allUsed.b || users.used || 0) / GB;
   const r2 = Math.max(0, usedGB - 10) * 0.015;   // R2: first 10 GB free, then $0.015 per GB-month
   const domain = 7.2 / 12;
   let logs = 0;
@@ -1606,14 +1720,15 @@ async function adminStats(req, env) {
     users: { total: users.total || 0, new_1d: users.d1 || 0, new_7d: users.d7 || 0, new_30d: users.d30 || 0, paid: users.paid || 0, over: users.over || 0 },
     active: { d1: active.d1 || 0, d7: active.d7 || 0, d30: active.d30 || 0 },
     plans: byPlan,
-    storage: { used_bytes: users.used || 0 },
+    storage: { used_bytes: allUsed.b || users.used || 0 },
     money: { currency: cur, gross_month: +gross.toFixed(2), net_month: +net.toFixed(2), paying, discounted_free: free, unknown, r2_usd_month: +r2.toFixed(2), domain_usd_month: +domain.toFixed(2) },
-    shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0, top: topShares },
+    shares: { total: shares.total || 0, live: shares.live || 0, new_7d: shares.d7 || 0, top: topShares, lasso: lassoLive.n || 0 },
     logs, backup, top, newest, over,
     profiles: { total: profs.n || 0, new_7d: profs.d7 || 0, follows: fl.n || 0, list: profList },
     site: await siteStats(env),
     apps: await appStats(env),
-    perf: await perfStats(env),
+    perf: await perfStats(env, "gpu"),
+    perf_cpu: await perfStats(env, "cpu"),
     installs: await installStats(env),
     releases: await releaseList(env),
   });
@@ -1747,6 +1862,10 @@ async function migrate(env) {
     // @names the admin removed and blocked (can't be taken again)
     env.DB.prepare("CREATE TABLE IF NOT EXISTS banned_handles (handle TEXT PRIMARY KEY, at INTEGER NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS uv (day TEXT NOT NULL, h TEXT NOT NULL, PRIMARY KEY (day, h))"),
+    // different PCs per version over 7 / 14 days (18 Nov 2026): one row per computer per day with its newest version
+    // that day. h = a scrambled code from the IP address that stays the same across days, so a computer is counted
+    // once over a week; rows are deleted after 15 days (privacy page says so). No IP address is stored.
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS upc (day TEXT NOT NULL, h TEXT NOT NULL, os TEXT NOT NULL, ver TEXT NOT NULL, cc TEXT, PRIMARY KEY (day, h))"),
     // Echo's own CPU / memory on real PCs + the PC's specs (10 Nov 2026, perf.rs / specs.rs): one row per report
     // (sent with the update check). h = that day's scrambled code (like uv), so one PC can be told apart within a
     // day but never followed across days. m/mp/rm = MB, c/cp/rc = CPU % of the whole PC x10, n/rn = minutes.
@@ -1755,7 +1874,9 @@ async function migrate(env) {
       m INTEGER, mp INTEGER, c INTEGER, cp INTEGER, rm INTEGER, rc INTEGER, n INTEGER, rn INTEGER, cc TEXT)`),
     // (the state column - tray / idle / active / player, "mixed" = older Echo - is added below)
     env.DB.prepare("CREATE INDEX IF NOT EXISTS perf_day ON perf (day)"),
-    env.DB.prepare("DELETE FROM perf WHERE at < ?").bind(now() - 180 * 86400),
+    // by day (indexed: perf_day): reads only the rows it deletes. "at < ?" had no index and read the whole table at
+    // every Worker start - ~850 starts a day = 1.3M rows read a day (21 Nov 2026, D1 insights)
+    env.DB.prepare("DELETE FROM perf WHERE day < ?").bind(utcDay(now() - 180 * 86400)),
     env.DB.prepare("DELETE FROM limits WHERE reset < ?").bind(now() - 86400),
     // quotas used to be counted in GiB (10 GB showed as 10.74 GB)
     env.DB.prepare("UPDATE users SET quota_bytes = ? WHERE plan = 'free' AND quota_bytes = ?").bind(Number(env.FREE_GB || 10) * GB, Number(env.FREE_GB || 10) * 1024 ** 3),
@@ -1773,20 +1894,38 @@ async function migrate(env) {
   const scols = new Set(((await env.DB.prepare("PRAGMA table_info(shares)").all()).results || []).map((c) => c.name));
   for (const [c, type] of [["title", "TEXT"], ["w", "INTEGER NOT NULL DEFAULT 0"], ["h", "INTEGER NOT NULL DEFAULT 0"], ["dur", "REAL NOT NULL DEFAULT 0"], ["thumb", "INTEGER NOT NULL DEFAULT 0"], ["wm", "TEXT"],
     // how often the share page's video was played (once per viewer per day; Discord's inline player can't be counted)
-    ["views", "INTEGER NOT NULL DEFAULT 0"]]) {
+    ["views", "INTEGER NOT NULL DEFAULT 0"],
+    // Lasso (13 Nov 2026): kind = clip / image, once = view-once link, mime = what the picture really is
+    ["kind", "TEXT NOT NULL DEFAULT 'clip'"], ["once", "INTEGER NOT NULL DEFAULT 0"], ["mime", "TEXT"],
+    // view-once: when a viewer pressed "View" (0 = not yet); from then on the link's short window can't be reset
+    ["viewed_at", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!scols.has(c)) await env.DB.prepare(`ALTER TABLE shares ADD COLUMN ${c} ${type}`).run();
   }
   // perf-states (10 Nov 2026): what Echo was doing in those minutes; rows from before = "mixed"
   const pcols = new Set(((await env.DB.prepare("PRAGMA table_info(perf)").all()).results || []).map((c) => c.name));
   if (!pcols.has("state")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN state TEXT NOT NULL DEFAULT 'mixed'").run();
+  // 18 Nov 2026: update channel per PC (countApp); NULL = counted before this
+  const ucols = new Set(((await env.DB.prepare("PRAGMA table_info(upc)").all()).results || []).map((c) => c.name));
+  if (!ucols.has("ch")) await env.DB.prepare("ALTER TABLE upc ADD COLUMN ch TEXT").run();
   // VRAM (12 Nov 2026): graphics-card memory MB, average / peak; NULL = not measured (Linux, Echo before 2.0.7)
   for (const c of ["g", "gp"]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} INTEGER`).run();
   // 17 Nov 2026 (Echo 2.0.11+): Echo's own process CPU % x10 (all / recording minutes; the rest is its ffmpeg) and the
   // exact encoder of the zero-copy pipeline (Windows). NULL = older Echo
   for (const [c, type] of [["ce", "INTEGER"], ["rce", "INTEGER"], ["encn", "TEXT"]]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} ${type}`).run();
+  // 21 Nov 2026 (newer Echo, x_<state>): where that state's CPU went, % x10 - recorder helpers (ffmpeg / gpu-screen-recorder),
+  // other child processes (jobs), and in Echo's own process the window thread, capture + encoder thread, audio mixer
+  for (const c of ["xr", "xj", "xu", "xc", "xa"]) if (!pcols.has(c)) await env.DB.prepare(`ALTER TABLE perf ADD COLUMN ${c} INTEGER`).run();
+  // ... and how its player decoded the last clip ("d3d11va h264", "no hevc" = on the processor)
+  if (!pcols.has("pdec")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN pdec TEXT").run();
+  // 22 Nov 2026: the recorder ffmpeg's audio work ("48000 Hz, 2 ch, 3 tracks, no mic filter") - its CPU on some PCs
+  if (!pcols.has("aud")) await env.DB.prepare("ALTER TABLE perf ADD COLUMN aud TEXT").run();
+  // (18-21 Nov 2026 a one-off repair of encoder names with a stray "\u00c2" ran here at every Worker start and read the
+  // whole perf table each time, 1.2M rows a day; the old rows are fixed and cleanEnc keeps new ones clean - removed)
   // faster-share-links: what kind of file Echo uploaded (upload(): small / orig / keep; NULL = older Echo, unknown)
   const ocols = new Set(((await env.DB.prepare("PRAGMA table_info(objects)").all()).results || []).map((c) => c.name));
   if (!ocols.has("fmt")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN fmt TEXT").run();
+  // Lasso (13 Nov 2026): when a picture's upload started (unix seconds; 0 = not a Lasso picture / unknown)
+  if (!ocols.has("uploaded_at")) await env.DB.prepare("ALTER TABLE objects ADD COLUMN uploaded_at INTEGER NOT NULL DEFAULT 0").run();
   await modTables(env);
   migrated = true;
 }
@@ -1798,7 +1937,27 @@ async function share(req, user, env, origin) {
   const key = `u/${user.id}/${path}`;
   // (faster-share-links: or its original is up while the smaller copy is made)
   if (!(await env.BUCKET.head(key)) && !(await liveSwap(env, key))) return fail("This clip isn't in Echo Cloud yet - upload it first", 404);
-  const days = Math.max(0, Math.min(3650, Number(b.days) || 0));
+  // Lasso: a picture link - only for a real PNG / JPEG / WebP under Lasso/ (checked on its first bytes)
+  const image = b.kind === "image" || isLassoKey(key);
+  let mime = "";
+  if (image) {
+    if (!isLassoKey(key)) return fail("Only Lasso pictures can be shared as pictures");
+    mime = await imageMime(env, key);
+    if (!mime) return fail("That file isn't a PNG, JPEG or WebP picture");
+    // view-once that someone already opened: its short window stays as it is ("Update link" / a new expiry can't
+    // give it a new life). Once that window is over, sharing again makes a new link (the old one stays dead).
+    const seen = await env.DB.prepare("SELECT id, expires FROM shares WHERE key = ? AND user_id = ? AND once = 1 AND viewed_at > 0")
+      .bind(key, user.id).first();
+    if (seen && seen.expires > now()) return json({ url: `${imageOrigin(env)}/s/${seen.id}`, id: seen.id, expires: seen.expires, viewed: true });
+    if (seen) await env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(seen.id).run();
+  }
+  let days = Math.max(0, Math.min(3650, Number(b.days) || 0));
+  if (user.plan === "device") {
+    if (!image) return fail("Sign in to Echo Cloud to share clips", 403);
+    // no account: a year at most ("never" too) - signing in keeps links for good
+    if (!days || days > DEVICE_DAYS) days = DEVICE_DAYS;
+    if (!(await allow(env, `devshare:${user.id}`, Number(env.DEVICE_SHARES_PER_DAY || 100), 86400))) return fail("That's a lot of links today - try again tomorrow", 429);
+  }
   const expires = days ? now() + days * 86400 : 0;
   const old = await env.DB.prepare("SELECT id FROM shares WHERE key = ? AND user_id = ?").bind(key, user.id).first();
   let id = old && old.id;
@@ -1828,6 +1987,10 @@ async function share(req, user, env, origin) {
   const wm = b.wm === "kimbo" || b.wm === "echo" || b.wm === "link" ? b.wm : null;
   await env.DB.prepare("UPDATE shares SET title = ?, w = ?, h = ?, dur = ?, thumb = MAX(thumb, ?), wm = ? WHERE id = ?")
     .bind(title || null, w, h, dur, thumb, wm, id).run();
+  if (image) {
+    await env.DB.prepare("UPDATE shares SET kind = 'image', once = ?, mime = ? WHERE id = ?").bind(b.once ? 1 : 0, mime, id).run();
+    return json({ url: `${imageOrigin(env)}/s/${id}`, id, expires });
+  }
   return json({ url: `${origin}/s/${id}`, expires });
 }
 
@@ -2417,7 +2580,34 @@ async function appStats(env) {
     const real = r.find((x) => offered(x) && (!out || !newer(String(x.version).replace(/[^0-9.]/g, ""), out)));
     latest = real ? String(real.version).replace(/[^0-9.]/g, "") : null;
   } catch { /* table not there yet */ }
-  return { rows, latest, today: utcDay() };
+  // different PCs per version (upc): each computer once, under the newest version it used in the range
+  let uniq = null;
+  try {
+    const pcs = ((await env.DB.prepare("SELECT day, h, os, ver, cc, ch FROM upc WHERE day >= ?").bind(from).all()).results) || [];
+    const asOld = (v) => (v === "2.0.72" ? "1.99.0" : v);
+    const today = utcDay(), yest = utcDay(now() - 86400), d7 = utcDay(now() - 6 * 86400);
+    const ranges = { [today]: (d) => d === today, [yest]: (d) => d === yest, "7": (d) => d >= d7, "14": () => true };
+    uniq = { since: pcs.reduce((a, r) => (!a || r.day < a ? r.day : a), null) };
+    for (const [key, inRange] of Object.entries(ranges)) {
+      const best = new Map();
+      for (const r of pcs) {
+        if (!inRange(r.day)) continue;
+        const b = best.get(r.h);
+        if (!b || newer(asOld(r.ver), asOld(b.ver)) || (r.ver === b.ver && r.day > b.day)) best.set(r.h, r);
+      }
+      const v = {};
+      for (const r of best.values()) {
+        const x = (v[r.ver] = v[r.ver] || { windows: 0, linux: 0, c: {} });
+        x[r.os === "linux" ? "linux" : "windows"]++;
+        if (r.cc) x.c[r.cc] = (x.c[r.cc] || 0) + 1;
+      }
+      // 18 Nov 2026: the same PCs by update channel (the channel of their newest row; "" = counted before channels were kept)
+      const ch = {};
+      for (const r of best.values()) { const y = (ch[r.ch || ""] = ch[r.ch || ""] || { windows: 0, linux: 0 }); y[r.os === "linux" ? "linux" : "windows"]++; }
+      uniq[key] = { v, ch, total: best.size };
+    }
+  } catch { /* table not there yet */ }
+  return { rows, latest, today: utcDay(), uniq };
 }
 
 // ----- updates for Echo (Tauri updater): GET /update/<windows|linux>/<arch>/<current version> -----
@@ -2584,9 +2774,201 @@ function gone() {
   return new Response("This clip link has expired or the clip was removed.", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
+// ----- Lasso picture links (13 Nov 2026) -----
+function imageGone() {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Screenshot gone - Sonela Lasso</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0a0a0a;color:#efefef;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;text-align:center}
+a{color:#36c9a8}h1{font-weight:500;font-size:26px;margin:0 0 8px}p{color:#a3a3a3;margin:0}</style></head>
+<body><main><h1>This screenshot is gone.</h1><p>The link expired or was taken down. <a href="https://sonela.app/lasso">Sonela Lasso</a></p></main></body></html>`;
+  return new Response(html, { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex", "x-content-type-options": "nosniff" } });
+}
+
+/// /s/<id> of a Lasso picture: the page (browsers + link previews) or, with an extension, the picture itself
+async function serveImage(req, env, row, id, ext, ctx) {
+  const u = new URL(req.url), origin = imageOrigin(env);
+  // each link lives on one domain: a picture link opened on echoclip.link goes to sonela.app
+  if (u.hostname === "echoclip.link") return Response.redirect(`${origin}${u.pathname}${u.search}`, 301);
+  const ua = req.headers.get("user-agent") || "", bot = BOTS.test(ua);
+  const fext = imageExtOf(row.key) || "png";
+  if (!ext) {
+    if (bot) { try { await bump(env, /discordbot/i.test(ua) ? "lembed:discord" : "lembed:other"); } catch { /* ignore */ } }
+    // view-once: a GET never uses the view up (mail link scanners, antivirus and Safe Links open every link): until
+    // someone presses "View" (a POST from the page's script, startOnce) the page only shows that button
+    return imagePage(req, row, id, origin, fext, bot);
+  }
+  // view-once: the picture only inside the window a "View" started (never to a preview bot or a bare .png link)
+  if (row.once && !row.viewed_at) return imageGone();
+  const h = new Headers({
+    "content-type": row.mime || IMAGE_EXT[fext] || "image/png",
+    // "Update link" puts a fixed picture under the same link: browsers / Discord fetch it again after a few minutes
+    "cache-control": row.once ? "no-store" : "public, max-age=300",
+    "content-disposition": `${u.searchParams.has("dl") ? "attachment" : "inline"}; filename="Lasso ${id}.${fext}"`,
+    "access-control-allow-origin": "*",
+    // users upload whatever they like: never let a browser run it as a page
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    "x-robots-tag": "noindex",
+  });
+  if (req.method === "HEAD") {
+    const o = await env.BUCKET.head(row.key);
+    if (!o) return imageGone();
+    h.set("content-length", String(o.size));
+    h.set("etag", o.httpEtag);
+    return new Response(null, { headers: h });
+  }
+  const p = touchKeys(env, row.user_id, [row.key]).catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
+  const o = await env.BUCKET.get(row.key);
+  if (!o) return imageGone();
+  h.set("content-length", String(o.size));
+  h.set("etag", o.httpEtag);
+  return new Response(o.body, { headers: h });
+}
+
+/// POST /s/<id>: a viewer pressed "View" on a view-once picture page. The first one starts the short window (or
+/// keeps the link's own expiry if that is sooner); later ones change nothing. A plain GET never gets here.
+async function startOnce(env, id) {
+  const row = await env.DB.prepare("SELECT kind, once, expires, viewed_at FROM shares WHERE id = ?").bind(id).first();
+  const t = now();
+  if (!row || row.kind !== "image" || !row.once || (row.expires && row.expires < t)) return json({ error: "This screenshot is gone." }, 410);
+  if (!row.viewed_at) {
+    const end = t + IMAGE_ONCE_SECONDS;
+    await env.DB.prepare("UPDATE shares SET viewed_at = ?, expires = CASE WHEN expires > 0 AND expires < ? THEN expires ELSE ? END WHERE id = ? AND viewed_at = 0")
+      .bind(t, end, end, id).run();
+  }
+  return json({ ok: true });
+}
+
+/// The picture page: dark, Lasso teal, the picture full width (click = 100 %), Download + Copy image, Report.
+/// Open Graph: og:image = the picture itself -> Discord / X / WhatsApp show it big. noindex: screenshots stay out of Google.
+function imagePage(req, row, id, origin, fext, bot) {
+  const base = `${origin}/s/${id}`, img = `${base}.${fext}`;
+  const name = String(row.title || "").trim() || "Screenshot";
+  const w = row.w || 0, h = row.h || 0;
+  // a view-once picture never goes into a chat app's preview, and stays behind "View" until someone presses it
+  const hidden = !!row.once, tap = !!row.once && !row.viewed_at;
+  const desc = row.once ? "A view-once screenshot: it can be opened once, then it's gone." : "Shared with Sonela Lasso, the free screenshot tool for Windows and Linux.";
+  const nonce = randomHex(16);
+  const og = hidden ? "" : `<meta property="og:image" content="${img}">
+<meta property="og:image:type" content="${esc(row.mime || IMAGE_EXT[fext] || "image/png")}">${w && h ? `
+<meta property="og:image:width" content="${w}">
+<meta property="og:image:height" content="${h}">` : ""}
+<meta name="twitter:image" content="${img}">`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>${esc(name)} - Sonela Lasso</title>
+<meta name="description" content="${esc(desc)}">
+<meta name="theme-color" content="#14a38b">
+<meta property="og:site_name" content="Sonela Lasso">
+<meta property="og:title" content="${esc(name)}">
+<meta property="og:description" content="${esc(desc)}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="${base}">
+${og}
+<meta name="twitter:card" content="${hidden ? "summary" : "summary_large_image"}">
+<meta name="twitter:title" content="${esc(name)}">
+<link rel="icon" href="/lasso.svg" type="image/svg+xml">
+<style>
+@font-face{font-family:"Host Grotesk";font-weight:400 700;font-display:swap;src:url(/fonts/host-grotesk.woff2) format("woff2")}
+*{box-sizing:border-box;margin:0}
+[hidden]{display:none!important}
+body{min-height:100vh;background:#0a0a0a;color:#efefef;font:16px/1.5 "Host Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#efefef;text-decoration:underline;text-underline-offset:3px;text-decoration-color:#efefef44}a:hover{text-decoration-color:currentColor}
+header{max-width:1280px;margin:0 auto;padding:0 24px;height:64px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #ffffff14}
+.brand{display:flex;align-items:center;gap:10px;font-weight:500;font-size:19px;letter-spacing:-.02em;text-decoration:none}
+.brand img{width:28px;height:28px}
+main{max-width:1280px;margin:0 auto;padding:28px 24px 40px}
+.pic{border-radius:16px;overflow:auto;background:#151515;border:1px solid #ffffff1f;max-height:80vh;display:flex;justify-content:center}
+.pic img{display:block;max-width:100%;height:auto;cursor:zoom-in}
+body.full .pic{max-height:none}body.full .pic img{max-width:none;cursor:zoom-out}
+.info{display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:16px}
+h1{font-weight:500;font-size:24px;line-height:1.2;letter-spacing:-.02em;word-break:break-word}
+.once{color:#36c9a8;font-size:14px;margin-top:4px}
+.tap{padding:72px 24px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;color:#a3a3a3}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;height:42px;padding:0 18px;border-radius:999px;font:inherit;font-weight:500;border:1px solid #ffffff33;background:transparent;color:#efefef;text-decoration:none;cursor:pointer}
+.btn.p{background:#14a38b;border-color:transparent;color:#fff}
+.btn:hover{text-decoration:none;filter:brightness(1.12)}
+.btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+footer{max-width:1280px;margin:0 auto;padding:12px 24px 36px;color:#a3a3a3;font-size:14px}
+@media(max-width:640px){h1{font-size:19px}.acts{width:100%}.acts .btn{flex:1;justify-content:center}}
+</style></head><body>
+<header><a class="brand" href="https://sonela.app/lasso"><img src="/lasso.svg" alt="">Sonela Lasso</a></header>
+<main>
+<div class="pic">${tap ? `<div class="tap" id="tap"><p>This screenshot can be viewed once. It's gone a few minutes after you open it.</p>
+<button class="btn p" id="view" type="button">View screenshot</button></div>` : ""}<img id="pic"${tap ? " hidden" : ` src="${img}"`}${w && h ? ` width="${w}" height="${h}"` : ""} alt="${esc(name)}"></div>
+<div class="info"><div><h1>${esc(name)}</h1>${row.once ? `<div class="once">View-once: this picture is gone a few minutes after it was first opened.</div>` : ""}</div>
+<div class="acts"><button class="btn" id="copy" type="button" hidden><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg><span>Copy image</span></button>
+<a class="btn p" id="dl" href="${img}?dl=1" download${tap ? " hidden" : ""}><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</a></div></div>
+</main>
+<footer>Made with <a href="https://sonela.app/lasso">Sonela Lasso</a> · <a href="https://echoclip.link/terms">Terms</a> · <a href="https://echoclip.link/report?s=${id}">Report this screenshot</a></footer>
+<script nonce="${nonce}">
+(function () {
+  var im = document.getElementById("pic"), b = document.getElementById("copy"), v = document.getElementById("view");
+  var canCopy = !!(navigator.clipboard && window.ClipboardItem);
+  im.addEventListener("click", function () { document.body.classList.toggle("full"); });
+  // view-once: only this button (a POST) uses the view up - a link scanner's GET doesn't
+  if (v) v.addEventListener("click", function () {
+    v.disabled = true;
+    fetch(location.pathname.replace(/\\/+$/, ""), { method: "POST", cache: "no-store", credentials: "omit" }).then(function (r) {
+      if (r.status === 410) { v.textContent = "This screenshot is gone."; return; }
+      if (!r.ok) throw 0;
+      im.src = ${JSON.stringify(img)}; im.hidden = false;
+      document.getElementById("tap").hidden = true;
+      document.getElementById("dl").hidden = false;
+      b.hidden = !canCopy;
+    }).catch(function () { v.disabled = false; v.textContent = "Couldn't open it - try again"; });
+  });
+  if (!canCopy) return;
+  b.hidden = !!v;
+  b.addEventListener("click", function () {
+    var c = document.createElement("canvas");
+    c.width = im.naturalWidth; c.height = im.naturalHeight;
+    c.getContext("2d").drawImage(im, 0, 0);
+    var png = new Promise(function (res) { c.toBlob(res, "image/png"); });
+    navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(function () { b.lastChild.textContent = "Copied"; }, function () { b.lastChild.textContent = "Couldn't copy"; });
+  });
+})();
+</script>
+</body></html>`;
+  return new Response(req.method === "HEAD" ? null : html, { headers: {
+    "content-type": "text/html; charset=utf-8", "cache-control": row.once ? "no-store" : "public, max-age=60",
+    "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self' ${origin}; font-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+    "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "x-robots-tag": "noindex",
+  } });
+}
+
+/// Daily: Lasso pictures that were uploaded but never got a link (the link call failed, Lasso was closed) - gone after a day.
+/// Never one whose upload is still open (its presigned PUT may still come: dropping the share-only mark then would
+/// leave the picture for good). Oldest first, so 500 a day always makes progress.
+async function cleanupLassoOrphans(env) {
+  await migrate(env);
+  const t = now();
+  const rows = (await env.DB.prepare(`SELECT o.key, o.user_id FROM objects o WHERE o.share_only = 1 AND o.key LIKE 'u/%/Lasso/%'
+    AND o.uploaded_at < ?
+    AND NOT EXISTS (SELECT 1 FROM shares s WHERE s.key = o.key)
+    AND NOT EXISTS (SELECT 1 FROM uploads p WHERE p.key = o.key AND p.expires > ?)
+    ORDER BY o.uploaded_at LIMIT 500`).bind(t - 86400, t).all()).results || [];
+  let deleted = 0;
+  for (const r of rows) {
+    await env.BUCKET.delete(r.key);
+    await env.DB.prepare("DELETE FROM objects WHERE key = ?").bind(r.key).run();
+    await env.DB.prepare("UPDATE users SET used_at = 0 WHERE id = ?").bind(r.user_id).run();
+    deleted++;
+  }
+  console.log("cleanup: Lasso pictures without a link deleted", deleted);
+  return { deleted };
+}
+
 async function serveShare(req, env, id, ext, ctx) {
   const row = await env.DB.prepare("SELECT * FROM shares WHERE id = ?").bind(id).first();
-  if (!row || (row.expires && row.expires < now())) return gone();
+  const u = new URL(req.url);
+  if (!row || (row.expires && row.expires < now())) return SONELA_HOSTS.has(u.hostname) ? imageGone() : gone();
+  if (row.kind === "image") return await serveImage(req, env, row, id, ext, ctx);
+  // an Echo clip opened on sonela.app: its home is echoclip.link
+  if (SONELA_HOSTS.has(u.hostname)) return Response.redirect(`https://echoclip.link${u.pathname}${u.search}`, 301);
   if (ext === ".jpg") {
     const t = row.thumb && (await env.BUCKET.get(`thumbs/${id}.jpg`));
     if (!t) return new Response("no thumbnail", { status: 404 });
@@ -2655,16 +3037,41 @@ const AUTHED = new Set(["GET /profile/me", "POST /profile", "POST /profile/avata
   "POST /upload", "POST /upload/check", "POST /upload/swap", "POST /objects/fmt", "POST /objects/mark", "POST /keep", "POST /touch", "POST /delete", "POST /move", "POST /share/remove", "POST /account/delete",
   "GET /games", "POST /games/icons", "POST /games/icon", "POST /thumbs/have", "POST /thumbs/get", "POST /thumbs/put"]);
 
+/// sonela.app/admin (Worker "sonela-hub") = this same admin page (site/admin.html + admin.js) with an app switcher. The hub
+/// reaches Echo through two service bindings (its wrangler.toml): ECHO_WEB = this Worker's normal fetch (the page's own
+/// calls - /auth/start, /admin/stats, ... - passed on unchanged, so every check here still applies) and ECHO = this
+/// entrypoint, which has no web address (only Workers in this Cloudflare account can call it): the page files, and
+/// whether an admin session is valid (the hub's own numbers for Aimdot / Lasso are only shown to the admin).
+export class HubStats extends WorkerEntrypoint {
+  async isAdmin(token) {
+    if (!/^adm_[0-9a-f]{64}$/.test(String(token || ""))) return false;
+    await migrate(this.env);
+    const u = await userFromToken(new Request("https://echoclip.link/", { headers: { authorization: `Bearer ${token}` } }), this.env);
+    return !!u && isAdminEmail(this.env, u.email);
+  }
+  async adminFiles() {
+    const get = async (p) => { const r = await this.env.ASSETS.fetch(new Request(`https://echoclip.link${p}`)); return r.ok ? r.text() : ""; };
+    const [html, js] = await Promise.all([get("/admin"), get("/admin.js")]);
+    return { html, js };
+  }
+}
+
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "") || "/"}`;
     try {
       await migrate(env);
-      const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(\.mp4|\.jpg)?\/?$/);
+      const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(\.mp4|\.jpg|\.jpeg|\.png|\.webp)?\/?$/);
       if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1], sm[2] || "", ctx);
+      // Lasso view-once: "View" on the picture page (the only thing that uses the view up)
+      if (sm && !sm[2] && req.method === "POST") return await startOnce(env, sm[1]);
       // GET / and the other website pages come from site/ (static assets, answered before this code runs)
-      if (route === "GET /health") return json({ service: "echo-cloud", ok: true });
+      // "lasso": Lasso's share links work here (Lasso asks before it uploads anything)
+      if (route === "GET /health") return json({ service: "echo-cloud", ok: true, lasso: LASSO_PROTOCOL });
+      // the admin page moved to sonela.app/admin (every Sonela app, Echo first); its calls (/admin/stats ...) stay here
+      if ((route === "GET /admin" || route === "GET /admin.html") && !/(^|\.)sonela\.app$/.test(url.hostname))
+        return new Response(null, { status: 301, headers: { location: "https://sonela.app/admin?app=echo", "cache-control": "no-store" } });
       const dm = url.pathname.match(/^\/download\/([a-z-]+)\/?$/);
       if (dm && req.method === "GET") {
         const r = await download(env, dm[1], url.searchParams.get("from") === "private" ? "private" : "");
@@ -2680,10 +3087,11 @@ export default {
       if (om && req.method === "GET") return await shareOembed(req, env, om[1]);
       const um = url.pathname.match(/^\/update\/([a-z]+)\/([a-z0-9_]+)\/([0-9][0-9a-z.+-]{0,30})\/?$/);
       if (um && req.method === "GET") {
-        if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3])); else await countApp(req, env, um[1], um[3]);
+        const ch = channelOf(req, url, env);
+        if (ctx && ctx.waitUntil) ctx.waitUntil(countApp(req, env, um[1], um[3], ch)); else await countApp(req, env, um[1], um[3], ch);
         if (url.searchParams.has("m")) { const p = countPerf(req, env, url, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         if (url.searchParams.get("first") === "1") { const p = countInstall(req, env, um[1], um[3]); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
-        const res = await update(env, um[1], um[3], channelOf(req, url, env));
+        const res = await update(env, um[1], um[3], ch);
         const why = res.status === 200 ? "offered" : res.headers.get("x-echo-why") || "current";
         if (why !== "current") { const p = countUpdAnswer(req, env, um[1], why); if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p; }
         return res;
@@ -2697,6 +3105,7 @@ export default {
       if (route === "POST /polar/webhook") return await polarWebhook(req, env);
       if (route === "POST /auth/start") return await authStart(req, env);
       if (route === "POST /auth/verify") return await authVerify(req, env);
+      if (route === "POST /auth/device") return await authDevice(req, env);
       if (route === "POST /release/push") return await releasePush(req, env);
       if (route === "POST /channel/check") return await channelCheck(req, env);
       if (route === "POST /admin/takedown") return await takedown(req, env);
@@ -2715,6 +3124,8 @@ export default {
       const user = await userFromToken(req, env);
       if (!user) return AUTHED.has(route) || req.headers.has("authorization")
         ? fail("Signed out - sign in to Echo Cloud again", 401) : await notFound(req, env);
+      // a Lasso device account (no sign-in): only its picture links
+      if (user.plan === "device" && !DEVICE_OK.has(route)) return fail("Sign in to Echo Cloud for this", 403);
       if (route === "GET /me") return json(me(user, await usage(env, user, url.searchParams.has("fresh"))));
       if (route === "POST /creds") return await creds(user, env);
       if (route === "POST /share") return await share(req, user, env, url.origin);
@@ -2757,7 +3168,7 @@ export default {
   },
   async scheduled(event, env, ctx) {
     // the storage class job after the cleanups (no point moving a copy that is about to be deleted)
-    ctx.waitUntil(cleanupExpired(env).then(() => cleanupSwaps(env)).then(() => cleanupStrayCopies(env)).then(() => tierObjects(env)).catch((e) => console.log("cleanup error", e && e.stack)));
+    ctx.waitUntil(cleanupExpired(env).then(() => cleanupSwaps(env)).then(() => cleanupStrayCopies(env)).then(() => cleanupLassoOrphans(env)).then(() => tierObjects(env)).catch((e) => console.log("cleanup error", e && e.stack)));
     ctx.waitUntil(backupDb(env).catch((e) => console.log("backup error", e && e.stack)));
     ctx.waitUntil(syncReleases(env).catch((e) => console.log("changes sync error", e && e.stack)));
     ctx.waitUntil(cleanupLogs(env).catch((e) => console.log("logs cleanup error", e && e.stack)));
@@ -2886,7 +3297,8 @@ a{color:var(--accent)}.err{color:var(--bad);margin-top:10px}</style></head><body
 async function reportTarget(env, kind, target) {
   if (kind === "s") {
     if (!/^[a-z0-9]{6,20}$/.test(target)) return null;
-    const r = await env.DB.prepare("SELECT id, title FROM shares WHERE id = ?").bind(target).first();
+    const r = await env.DB.prepare("SELECT id, title, kind FROM shares WHERE id = ?").bind(target).first();
+    if (r && r.kind === "image") return { what: "this screenshot", name: r.title || "a shared screenshot", back: `/s/${r.id}` };
     return r ? { what: "this clip", name: r.title || "a shared clip", back: `/s/${r.id}` } : null;
   }
   if (!HANDLE_RE.test(target)) return null;

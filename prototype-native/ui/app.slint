@@ -1889,9 +1889,10 @@ export component AppWindow inherits Window {
                                     height: grid.card-h + r.extra * 1px;
                                     spacing: grid.gap;
                                     alignment: start;
-                                    if r.saving: SavingCard {
+                                    for s in r.saving: SavingCard {
                                         width: grid.card-w;
                                         height: grid.card-h + r.extra * 1px;
+                                        info: Lib.savings[r.sfirst + s];
                                     }
                                     for c in r.n: CardView {
                                         width: grid.card-w;
@@ -1899,14 +1900,15 @@ export component AppWindow inherits Window {
                                         data: root.cards[r.first + c];
                                     }
                                 }
-                                if r.header == "" && root.list-view && r.saving: SavingCard {
+                                if r.header == "" && root.list-view && r.saving > 0: SavingCard {
                                     x: 28px;
                                     y: 0;
                                     width: grid.card-w;
                                     height: 101px;
                                     small: true;
+                                    info: Lib.savings[r.sfirst];
                                 }
-                                if r.header == "" && root.list-view && !r.saving: ListCard {
+                                if r.header == "" && root.list-view && r.saving == 0: ListCard {
                                     x: 28px;
                                     y: 0;
                                     width: grid.card-w;

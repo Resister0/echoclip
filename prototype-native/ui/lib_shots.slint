@@ -117,11 +117,15 @@ export component ShotViewer inherits Rectangle {
         y: root.by + root.oy;
         width: root.bw * root.s;
         height: root.bh * root.s;
-        border-radius: 8px;
+        // rounded corners only at the fitted size too: a rounded clip draws the WHOLE zoomed picture into an
+        // offscreen copy (about 15000 px wide at 8x) at every zoom step, which still lagged far in; square = cheap clip (24 Nov 2026)
+        border-radius: root.s > 1 ? 0 : 8px;
         clip: true;
         drop-shadow-blur: 60px;
         drop-shadow-offset-y: 20px;
-        drop-shadow-color: #000000;
+        // only at the fitted size: every new size re-renders + blurs a shadow texture as big as the zoomed picture
+        // (about 20000 px wide at 8x), which made each zoom step lag while panning stayed smooth (24 Nov 2026)
+        drop-shadow-color: root.s > 1 ? transparent : #000000;
         Image {
             width: parent.width;
             height: parent.height;
@@ -199,7 +203,9 @@ component ShotCard inherits Rectangle {
                 Shots.open(root.i);
             }
         }
-    }
+    // 22 Nov 2026 (William: hovering a screenshot flickers; the clip cards don't): ta WRAPS the picture, tick and
+    // buttons like the clip cards' CardTouch - as a sibling, the buttons it showed took the hover from it, so they
+    // vanished, the hover came back, and so on
     Rectangle {
         x: 1px;
         y: 1px;
@@ -271,6 +277,7 @@ component ShotCard inherits Rectangle {
             tip: "Delete";
             clicked => { Shots.act(root.i, "delete"); }
         }
+    }
     }
 }
 

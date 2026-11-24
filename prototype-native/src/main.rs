@@ -293,10 +293,10 @@ fn log(p: &mut Player, line: String) {
 /// same as log(), for code that holds mpv borrowed from the Player (only the log list is borrowed here)
 fn log_to(list: &mut Vec<String>, line: String) {
     eprintln!("{line}");
-    // the prototype's log: proto.log next to the exe
-    if let Some(d) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("proto.log"))) {
+    // the prototype's log: proto.log next to the exe (or the temp folder when that's read-only - lib_net::log_path)
+    {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(d) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(lib_net::log_path()) {
             let _ = writeln!(f, "{} {line}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
         }
     }
@@ -894,21 +894,51 @@ fn main() {
                 })
             });
         };
-        while let Ok((idx, path, clip)) = rx.recv() {
-            // 9 Nov: sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
-            // 1440p screen. A 720 px still of the SAME moment (Echo's .thumbt, else 0.5 s) is made once per clip as
-            // <name>.card720.jpg next to it (remade when Echo's picture changes, e.g. Use as thumbnail).
-            let hi = library::card_hi_path(&path);
-            if library::card_hi_fresh(&path, &hi) {
-                if let Some(px) = library::decode(&hi) {
-                    send(idx, px);
-                    continue;
+        // 17 Nov 2026 (library froze + went black far down a big library, then needed a restart): requests were
+        // handled strictly in order, each one possibly running ffmpeg for its 720 px picture - scrolling fast queued
+        // every card passed, and the cards on screen waited behind all of them. Now: the NEWEST request first (= the
+        // cards on screen now), every quick picture before any slow 720 px one, and only the newest slow ones kept.
+        type Job = (usize, PathBuf, Option<PathBuf>);
+        const SLOW_MAX: usize = 60;
+        let mut quick: Vec<Job> = Vec::new();
+        let mut slow: std::collections::VecDeque<(usize, PathBuf, PathBuf, PathBuf)> = Default::default();
+        loop {
+            if quick.is_empty() && slow.is_empty() {
+                match rx.recv() {
+                    Ok(j) => quick.push(j),
+                    Err(_) => break,
                 }
             }
-            if let Some(px) = library::decode(&path) {
-                send(idx, px);
+            while let Ok(j) = rx.try_recv() {
+                quick.push(j);
             }
-            if let Some(clip) = clip {
+            if let Some((idx, path, clip)) = quick.pop() {
+                // an older request for the same card is the same work
+                quick.retain(|j| j.0 != idx);
+                // 9 Nov: sharper card pictures - Echo's .thumbs/<name>.jpg is 480 px, stretched to ~600 px on a
+                // 1440p screen. A 720 px still of the SAME moment (Echo's .thumbt, else 0.5 s) is made once per clip
+                // as <name>.card720.jpg next to it (remade when Echo's picture changes, e.g. Use as thumbnail).
+                let hi = library::card_hi_path(&path);
+                if library::card_hi_fresh(&path, &hi) {
+                    if let Some(px) = library::decode(&hi) {
+                        send(idx, px);
+                        continue;
+                    }
+                }
+                if let Some(px) = library::decode(&path) {
+                    send(idx, px);
+                }
+                if let Some(clip) = clip {
+                    slow.retain(|j| j.0 != idx);
+                    slow.push_back((idx, path, hi, clip));
+                    while slow.len() > SLOW_MAX {
+                        // a card scrolled past long ago: made the next time it's shown
+                        slow.pop_front();
+                    }
+                }
+                continue;
+            }
+            if let Some((idx, path, hi, clip)) = slow.pop_back() {
                 if library::make_card_hi(&clip, &path, &hi) {
                     if let Some(px) = library::decode(&hi) {
                         send(idx, px);
@@ -922,6 +952,7 @@ fn main() {
     LIB.with(|l| *l.borrow_mut() = Some(lib.clone()));
     app.set_cards(ModelRc::from(lib.clone()));
     app.set_rows(ModelRc::from(lib.rows.clone()));
+    app.global::<Lib>().set_savings(ModelRc::from(lib.savings.clone()));
     eprintln!("library: {} clips in {} scanned in {scan_ms} ms", lib.len(), clips_dir.display());
 
     // header + sidebar meter from Echo's settings.json (look-only: the prototype doesn't record)
@@ -3516,7 +3547,7 @@ fn main() {
             cloud_live::player_tick(&a, p.mpv.as_ref(), p.clip.filter(|_| p.open)); // gaps-cloud (row 5)
             // the "Saving clip…" card never stays longer than 90 s (a save that never reports back)
             if tick % 12 == 6 && lib.saving_expire() {
-                lib.rebuild_rows();
+                rec_core::saving_card(&a, &lib);
             }
             // every 3 s: clips deleted / added outside Echo (file manager) leave / join the library (chat 5)
             // r2-threads (L3): the walk runs on a worker (bgwork.rs), the library follows on the UI thread
@@ -3658,6 +3689,7 @@ fn main() {
             let vfps = m.get_f64("container-fps").unwrap_or(0.0);
             if !p.info_done && !vw.is_empty() {
                 p.info_done = true;
+                crate::specs::set_player_decode(&hw, &codec);
                 if let Some(idx) = p.clip {
                     let c = lib.clip(idx);
                     pl.set_info(info_text(&c, Some(format!("{vw}×{vh} · {codec} · {vfps:.0} fps"))).into());
@@ -3793,6 +3825,25 @@ fn main() {
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
             ownkeys::winit_event(ev); // Echo's hotkeys while its own window has the keyboard
+            // 22 Nov 2026 (William on KDE Wayland, 2.0.17: "can't scroll"): Wayland never tells a window it isn't
+            // minimized any more (winit's is_minimized() = None there), so after Echo's own minimize button Slint kept
+            // "minimized" for good - every wheel turn was dropped (below), the idle mode never woke, the disk check
+            // stopped. Any sign the window is in use again clears it.
+            if win.is_minimized()
+                && matches!(
+                    ev,
+                    winit::event::WindowEvent::Focused(true)
+                        | winit::event::WindowEvent::CursorEntered { .. }
+                        | winit::event::WindowEvent::CursorMoved { .. }
+                        | winit::event::WindowEvent::MouseInput { .. }
+                        | winit::event::WindowEvent::MouseWheel { .. }
+                        | winit::event::WindowEvent::KeyboardInput { .. }
+                )
+                && win.with_winit_window(|w| w.is_minimized().is_none()).unwrap_or(false)
+            {
+                win.set_minimized(false);
+                echo_core::recorder::log_line("ui: window in use again - no longer minimized (Wayland doesn't say)");
+            }
             if let Some(r) = uiscale::main_event(win, ev) {
                 return r; // Echo's own size on top of the system's scale (uiscale.rs)
             }

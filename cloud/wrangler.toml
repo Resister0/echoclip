@@ -12,6 +12,9 @@ routes = [{ pattern = "echoclip.link", custom_domain = true }]
 [assets]
 directory = "./site"
 binding = "ASSETS"
+# 21 Nov 2026: the admin page lives at sonela.app/admin now (all apps, Echo included) - /admin runs the script first,
+# which sends echoclip.link/admin there. The file itself stays: sonela.app reads it through HubStats.adminFiles().
+run_worker_first = ["/admin", "/admin.html"]
 
 # once a day: expired share links lose their share copy (frees Echo Cloud space) and clips uploaded only for that
 # link; clips nobody watched for 60 days move to R2 Infrequent Access (tierObjects in src/index.js)

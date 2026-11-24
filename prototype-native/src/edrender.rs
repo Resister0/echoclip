@@ -344,7 +344,7 @@ impl Editor {
         let mut ev: Vec<String> = vec![];
         let black = "&H000000&";
         let yellow = "&H3FD2FF&";
-        if self.gap {
+        if self.gap || self.p.segs.get(self.cur).is_some_and(|s| s.vhide()) {
             ev.push(rect(g.cx, g.cy, g.cw, g.ch, black, 0));
         } else if let Some(s) = self.p.segs.get(self.cur) {
             let k = fade_gain(s.at, s.len(), s.fi, s.fo, self.t);
@@ -970,7 +970,9 @@ impl Editor {
         // stickers: inputs after the other files (looping pictures / GIFs - Echo's render_edit)
         let sticks: Vec<&BoxFx> = self.sticker_boxes();
         let fit = |k: usize| if k == 0 { String::new() } else { format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,") };
-        const VF: &str = "fps=60,setsar=1,format=yuv420p";
+        let out_fps = self.export_fps(preset);
+        #[allow(non_snake_case)]
+        let VF = format!("fps={out_fps},setsar=1,format=yuv420p");
         const AF: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
         let audio = has_audio && !self.p.mute;
         // reversed pieces: files made before the export (run_export), inputs after the stickers (Echo's reverse_piece)
@@ -1019,7 +1021,11 @@ impl Editor {
             let amute = s.extra.get("amute").and_then(|x| x.as_bool()) == Some(true);
             let src_sound = k == 0 || s.src().and_then(|f| self.srcs.get(f)).is_some_and(|x| x.0);
             let mut silent = amute || !src_sound;
-            if s.freeze() {
+            if s.vhide() {
+                // picture deleted (sound kept on the audio rows): black for the piece's length
+                g.push(format!("color=c=black:s={w}x{h}:r=60:d={total:.3},{VF}{vf}[v{i}]"));
+                silent = true;
+            } else if s.freeze() {
                 g.push(format!("[{k}:v]trim=start={:.3}:duration=0.25,setpts=PTS-STARTPTS,{}{VF},trim=end_frame=1,tpad=stop_mode=clone:stop_duration={total:.3},trim=duration={total:.3},setpts=PTS-STARTPTS{gr}{vf}[v{i}]", s.start, fit(k)));
                 silent = true;
             } else if let Some(r) = s.rev().then(|| rev_inp(s)).flatten() {
@@ -1092,7 +1098,7 @@ impl Editor {
                 cx += &format!("+{:.4}*{ramp}", b.x.clamp(0.0, 1.0) - 0.5);
                 cy += &format!("+{:.4}*{ramp}", b.y.clamp(0.0, 1.0) - 0.5);
             }
-            g.push(format!("[vc]zoompan=z='{z}':x='clip(({cx})*iw-iw/zoom/2\\,0\\,iw-iw/zoom)':y='clip(({cy})*ih-ih/zoom/2\\,0\\,ih-ih/zoom)':d=1:s={w}x{h}:fps=60,setsar=1[vz]"));
+            g.push(format!("[vc]zoompan=z='{z}':x='clip(({cx})*iw-iw/zoom/2\\,0\\,iw-iw/zoom)':y='clip(({cy})*ih-ih/zoom/2\\,0\\,ih-ih/zoom)':d=1:s={w}x{h}:fps={out_fps},setsar=1[vz]"));
             last = "vz".into();
         }
         // video layers (Echo's overlay graph): each piece timed to its spot, scaled to `scale` of the width, centred
@@ -1319,6 +1325,31 @@ pub fn probe(ff: &Path, clip: &Path) -> (u32, u32, bool, u32) {
     r
 }
 
+/// the frame rate from ffprobe's "r_frame_rate,avg_frame_rate" line, rounded: the average first (the "r" rate of a
+/// variable-rate file can be a huge number). 0 = can't tell.
+pub fn parse_fps(line: &str) -> u32 {
+    let rate = |x: &str| -> u32 {
+        let mut p = x.trim().split('/');
+        let n: f64 = p.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let d: f64 = p.next().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        let f = if d > 0.0 { (n / d).round() } else { 0.0 };
+        if (1.0..=1000.0).contains(&f) { f as u32 } else { 0 }
+    };
+    let mut parts = line.trim().trim_end_matches(',').split(',');
+    let (r, avg) = (parts.next().map_or(0, rate), parts.next().map_or(0, rate));
+    if avg > 0 { avg } else { r }
+}
+
+/// frame rate of the clip's picture (0 = can't tell)
+pub fn probe_fps(ff: &Path, clip: &Path) -> u32 {
+    hidden_cmd(&ffprobe(ff))
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "csv=p=0"])
+        .arg(clip)
+        .stdin(Stdio::null())
+        .output()
+        .map_or(0, |o| parse_fps(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("")))
+}
+
 pub struct ExportPlan {
     pub ff: PathBuf,
     pub src: PathBuf,
@@ -1336,6 +1367,8 @@ pub struct ExportPlan {
     pub sized: bool,
     /// reversed pieces made before the export (their files are already in `inputs`)
     pub revs: Vec<RevJob>,
+    /// 18 Nov 2026: "mp3" / "wav" = only the sound is written (Export > Sound only)
+    pub sound: Option<String>,
 }
 
 /// a piece played backwards, rendered to its own file before the export (Echo's reverse_piece)
@@ -1458,8 +1491,16 @@ impl Editor {
                 }
             }
         }
-        let graph_ass = if has_text { Some(self.export_graph(preset, w, h, has_audio, Some(&ass_file), sized_h).map(|(g, l, ..)| (g, l))?) } else { None };
-        let (gp, lp, audio, total) = self.export_graph(preset, w, h, has_audio, None, sized_h)?;
+        let sound = matches!(preset, "mp3" | "wav").then(|| preset.to_string());
+        let graph_ass = if has_text && sound.is_none() { Some(self.export_graph(preset, w, h, has_audio, Some(&ass_file), sized_h).map(|(g, l, ..)| (g, l))?) } else { None };
+        let (mut gp, lp, audio, total) = self.export_graph(preset, w, h, has_audio, None, sized_h)?;
+        if sound.is_some() {
+            if !audio {
+                return Err("this edit has no sound to save (or the sound is muted)".into());
+            }
+            // the picture isn't written: its end of the graph goes nowhere
+            gp += &format!(";[{lp}]nullsink");
+        }
         let dir = self.clip.parent().map(|d| d.to_path_buf()).unwrap_or_default();
         let stem = self.clip.file_stem().unwrap_or_default().to_string_lossy().to_string();
         let out = (1..).map(|n| dir.join(if n == 1 { format!("{stem} (edit).mp4") } else { format!("{stem} (edit {n}).mp4") })).find(|p| !p.exists()).unwrap();
@@ -1482,7 +1523,7 @@ impl Editor {
         for r in &revs {
             inputs.push((vec![], r.out.clone()));
         }
-        Ok(ExportPlan { ff: ff.to_path_buf(), src: self.clip.clone(), inputs, out, graph_ass, graph_plain: (gp, lp), ass_file, ass_text, audio, total, kbps, sized, revs })
+        Ok(ExportPlan { ff: ff.to_path_buf(), src: self.clip.clone(), inputs, out, graph_ass, graph_plain: (gp, lp), ass_file, ass_text, audio, total, kbps, sized, revs, sound })
     }
 }
 
@@ -1508,12 +1549,19 @@ pub fn run_export(plan: &ExportPlan, progress: &dyn Fn(f64), log: &dyn Fn(String
         for (args, f) in &plan.inputs {
             c.args(args).arg("-i").arg(f);
         }
-        c.args(["-filter_complex", graph, "-map", &format!("[{last}]")]);
+        c.args(["-filter_complex", graph]);
+        if let Some(f) = plan.sound.as_deref() {
+            c.args(["-map", "[ao]", "-vn"]);
+            c.args(if f == "wav" { &["-c:a", "pcm_s16le", "-ar", "48000", "-f", "wav"][..] } else { &["-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3"][..] });
+            c.args(["-progress", "pipe:1", "-nostats"]).arg(&tmp_out);
+        } else {
+        c.args(["-map", &format!("[{last}]")]);
         if plan.audio {
             c.args(["-map", "[ao]", "-c:a", "aac", "-b:a", if plan.sized { "128k" } else { "192k" }]);
         }
         c.args(venc).args(["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]);
         c.args(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4"]).arg(&tmp_out);
+        }
         let Ok(mut ch) = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false };
         let errp = ch.stderr.take();
         let errt = std::thread::spawn(move || {
@@ -1564,7 +1612,9 @@ pub fn run_export(plan: &ExportPlan, progress: &dyn Fn(f64), log: &dyn Fn(String
         let _ = std::fs::remove_file(&tmp_out);
         return Err("the texts couldn't be drawn (ffmpeg without libass?) - see the log".into());
     }
-    if !ok {
+    if !ok && plan.sound.is_some() {
+        ok = run(&plan.graph_plain.0, &plan.graph_plain.1, &[]);
+    } else if !ok {
         ok = encode(&plan.graph_plain.0, &plan.graph_plain.1);
     }
     if !ok {
@@ -1581,10 +1631,9 @@ fn whisper_dir() -> PathBuf {
     if let Ok(d) = std::env::var("ECHO_WHISPER_DIR") {
         return PathBuf::from(d);
     }
-    // r2-threads (L31): echo_core's folder on every system ($APPDATA/Clipper/whisper - on Linux rec_core::early_env
-    // sets APPDATA = ~/.config), so captions_ready and the download Echo made match what transcribe uses
-    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-    base.join("Clipper").join("whisper")
+    // r2-threads (L31): echo_core's folder on every system ($APPDATA/EchoClip/whisper, was Clipper - on Linux
+    // rec_core::early_env sets APPDATA = ~/.config), so captions_ready and the download Echo made match what transcribe uses
+    echo_core::settings::data_dir().join("whisper")
 }
 
 /// r2-threads (L31): where this app downloaded whisper on Linux before (~/.local/share/Clipper/whisper) - still
@@ -1884,4 +1933,65 @@ pub fn transcribe(ff: &Path, clip: &Path, tracks: u32, log: &dyn Fn(String)) -> 
 #[allow(dead_code)]
 pub fn describe(e: &Editor) -> String {
     format!("{} pieces, {} texts, {}", e.p.segs.len(), e.p.texts.len(), fmt_t(e.total()))
+}
+
+#[cfg(test)]
+mod sound_only_tests {
+    use crate::editor::{Editor, Sel};
+    use std::path::{Path, PathBuf};
+
+    /// 18 Nov 2026: U, then Delete = the picture goes, the sound rows stay; Export > Sound only writes an MP3 / WAV
+    #[test]
+    fn delete_picture_then_sound_only_export() {
+        let ff = PathBuf::from(if Path::new("/usr/local/bin/ffmpeg").exists() { "/usr/local/bin/ffmpeg" } else { "ffmpeg" });
+        let dir = std::env::temp_dir().join(format!("echo-sound-only-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let clip = dir.join("clip.mp4");
+        // 4 s, a picture + 7 audio tracks like an Echo clip (mix, desktop, mic, game, Discord, browser, music)
+        let mut c = std::process::Command::new(&ff);
+        c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x240:r=30:d=4"]);
+        for k in 0..7 {
+            c.args(["-f", "lavfi", "-i", &format!("sine=f={}:d=4:r=48000", 300 + k * 100)]);
+        }
+        c.args(["-map", "0:v"]);
+        for k in 1..=7 {
+            c.args(["-map".to_string(), format!("{k}:a")]);
+        }
+        let ok = c.args(["-c:v", "libx264", "-c:a", "aac", "-ac", "2"]).arg(&clip).status().map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("no ffmpeg here - skipped");
+            return;
+        }
+        let mut e = Editor::new(clip.clone(), "clip".into(), 4.0, 320, 240);
+        e.tracks = 7;
+        e.sel = Some(Sel::Seg(0));
+        assert_eq!(e.delete_sel(true), Err("Can't delete the last piece - press U first to keep only its sound"));
+        e.detach_audio(7, &[0.0; 7]).unwrap();
+        e.sel = Some(Sel::Seg(0));
+        assert!(e.delete_sel(true).unwrap().starts_with("Video removed"));
+        assert!(e.p.segs[0].vhide() && e.p.segs.len() == 1);
+        assert!(!e.p.audio.is_empty());
+        // a normal export now has a black picture
+        let (g, ..) = e.export_graph("", 320, 240, true, None, None).unwrap();
+        assert!(g.contains("color=c=black:s=320x240:r=60:d=4.000"), "{g}");
+        let mut plan = e.export_plan(&ff, "").unwrap();
+        plan.out = dir.join("black.mp4");
+        super::run_export(&plan, &|_| {}, &|l| eprintln!("{l}")).expect("mp4 export with the picture removed");
+        for ext in ["mp3", "wav"] {
+            let mut plan = e.export_plan(&ff, ext).unwrap();
+            assert!(plan.graph_ass.is_none() && plan.graph_plain.0.ends_with("nullsink"));
+            plan.out = dir.join(format!("out.{ext}"));
+            let out = super::run_export(&plan, &|_| {}, &|l| eprintln!("{l}")).unwrap();
+            let probe = std::process::Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type,codec_name:format=duration", "-of", "csv=p=0"]).arg(&out).output().unwrap();
+            let s = String::from_utf8_lossy(&probe.stdout).to_string();
+            assert!(!s.contains("video"), "{s}");
+            assert!(s.contains(if ext == "wav" { "pcm_s16le" } else { "mp3" }), "{s}");
+            let d: f64 = s.lines().last().unwrap().trim().parse().unwrap();
+            assert!((d - 4.0).abs() < 0.2, "{s}");
+        }
+        // muted edit: no sound to save
+        e.p.mute = true;
+        assert!(e.export_plan(&ff, "mp3").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

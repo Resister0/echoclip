@@ -3,6 +3,27 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.24 - 24 Nov
+Everything from the test builds 2.0.15 - 2.0.23, plus:
+- Clips recorded at more than 60 fps no longer freeze for about 2 seconds at some points
+- Windows: recording no longer gets stuck on one picture after the lock screen
+- Discord (or any app) playing on a headset or other output device is now in your clip's main sound
+- Echo keeps recording when your graphics card's video encoder won't start: it falls back to the processor and asks you to update your graphics driver
+- Saving two clips quickly shows a "Saving clip..." card for each one
+- If a save ever fails, Echo tries again the simple way, so the clip still comes out
+- Editor: choose the export frame rate, export only the sound (MP3 / WAV), delete a piece's picture but keep its sound, and a warning before exporting without sound
+- Editor: the captions file has a Show in folder button
+- Screenshots: zooming in is smooth, and hovering a picture no longer flickers
+- Library: pictures load in the order you scroll, so a big library no longer freezes or goes black
+- Lasso and Aimdot are no longer mistaken for games
+- Quality settings: the suggested bitrate now follows your frame rate
+- Echo's settings folder is now called EchoClip (it moves by itself once; the old name keeps working)
+- Linux: scrolling works again after minimizing, Minecraft from a Flatpak launcher is on the Game track, the app menu entry has the right name
+- Anonymous performance numbers now show where Echo's CPU goes (window, capture, sound, player), and minutes that wrongly showed 0 % are fixed
+
+## 2.0.11 - 17 Nov
+- New: Settings > App Settings > About > Update channel (Stable / Beta / Dev), for testers
+
 ## 2.0.10 - 13 Nov
 - Echo gives graphics memory back while it sits in the tray: the video player now shuts down a minute after you close a clip, even when Echo is hidden (before, it stayed loaded the whole time you played)
 - Echo hidden for 5 minutes with a clip still open closes the player, so that memory is freed too (not while you're editing a clip)

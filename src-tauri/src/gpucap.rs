@@ -620,6 +620,113 @@ struct Capture {
     /// mouse pointer drawn on top (whole-monitor capture only; window capture lets Windows draw it)
     cursor: Option<CursorDraw>,
     log: Log,
+    /// whole-monitor capture: the stuck-picture guard's clock (StaleGuard), how often the duplication was made
+    /// again because no new picture came, and when a failed one may be tried again
+    stale: StaleGuard,
+    stale_redups: u32,
+    retry_at: std::time::Instant,
+    /// lock watch (24 Nov 2026): when the input desktop was last looked at, whether it's the lock screen / a secure
+    /// desktop now, and a second "make it again" shortly after unlocking
+    desk_check: std::time::Instant,
+    desk_locked: bool,
+    redo_at: Option<std::time::Instant>,
+    /// duplication errors other than "nothing new" (access lost...), for the log
+    dup_errors: u32,
+    /// how long making the capture again took (last, slowest) in ms - in the log lines, so a Send log from a slow PC
+    /// shows the real cost (24 Nov 2026: 0.3 ms average on an RX 9070 XT)
+    redo_ms: (f64, f64),
+}
+
+/// No new picture from the whole-monitor capture for this long = make the duplication again (cheap; a fresh one
+/// hands over the current screen at once). 22 Nov 2026: a user's clips showed the Windows lock screen from the day
+/// before - the capture stayed stuck on that frame after unlocking until Echo restarted.
+/// 24 Nov 2026 (William, Windows 11, RX 9070 XT): still stuck after a 10 s lock - frozen on the frame before the lock
+/// for ~40 s after unlocking, then on a lock-screen frame until the save, and the guard never ran: it only counted
+/// "nothing new at all" answers, but every mouse move is a pointer-only answer. Now it counts any answer without a new
+/// picture, and the lock itself is watched (input_desktop_normal).
+const STALE_REDUP: std::time::Duration = std::time::Duration::from_secs(5);
+/// Longest wait between two re-makes while the screen stays still (24 Nov 2026, William: "it needs to be more
+/// efficient before it ships"): 5, 10, 20, 40, 60, 60... s - an hour of still desktop = ~60 re-makes, not 720. Locks
+/// don't wait for this (input_desktop_normal re-makes at once).
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+/// A failed re-make (Windows refuses a new duplication, e.g. mid mode switch) is tried again at most this often
+/// (was every frame, 60 times a second)
+const RETRY_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The stuck-picture guard's clock: when the screen last gave a real new picture, how long to wait before making the
+/// capture again, and whether the next picture is just the one a fresh capture always hands over (that one doesn't
+/// prove the screen changed, so it doesn't reset the wait).
+#[derive(Debug, Clone, Copy)]
+struct StaleGuard {
+    last_new: std::time::Instant,
+    wait: std::time::Duration,
+    just_redone: bool,
+}
+
+impl StaleGuard {
+    fn new(now: std::time::Instant) -> Self {
+        StaleGuard { last_new: now, wait: STALE_REDUP, just_redone: false }
+    }
+
+    /// a picture with new content came
+    fn picture(&mut self, now: std::time::Instant) {
+        self.last_new = now;
+        if self.just_redone {
+            self.just_redone = false;
+        } else {
+            self.wait = STALE_REDUP;
+        }
+    }
+
+    /// time to make the capture again?
+    fn due(&self, now: std::time::Instant) -> bool {
+        now.duration_since(self.last_new) >= self.wait
+    }
+
+    /// the capture was made again because nothing new came: wait twice as long next time
+    fn redone_stale(&mut self, now: std::time::Instant) {
+        self.last_new = now;
+        self.just_redone = true;
+        self.wait = (self.wait * 2).min(STALE_MAX);
+    }
+
+    /// made again for another reason (unlock, lost access): start counting again, keep the wait
+    fn redone(&mut self, now: std::time::Instant) {
+        self.last_new = now;
+        self.just_redone = true;
+    }
+
+    /// unlocked: back to the short wait
+    fn reset(&mut self, now: std::time::Instant) {
+        self.redone(now);
+        self.wait = STALE_REDUP;
+    }
+}
+
+/// The desktop that gets the keyboard and mouse is the normal one ("Default") - not the lock screen, the sign-in
+/// screen or a UAC prompt ("Winlogon", which a normal program can't even open). Desktop Duplication can't see those.
+fn input_desktop_normal() -> bool {
+    use windows::Win32::System::StationsAndDesktops::*;
+    unsafe {
+        let Ok(h) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) else { return false };
+        let mut name = [0u16; 64];
+        let mut need = 0u32;
+        let ok = GetUserObjectInformationW(
+            windows::Win32::Foundation::HANDLE(h.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr() as *mut _),
+            (name.len() * 2) as u32,
+            Some(&mut need),
+        )
+        .is_ok();
+        let _ = CloseDesktop(h);
+        if !ok {
+            // can't tell: count it as normal, the stuck-picture guard still runs
+            return true;
+        }
+        let n = String::from_utf16_lossy(&name);
+        n.trim_end_matches('\0').eq_ignore_ascii_case("default")
+    }
 }
 
 unsafe fn bgra_tex(device: &ID3D11Device, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
@@ -810,6 +917,8 @@ impl Capture {
             let mut c = Capture {
                 device, ctx, src, luid: adesc.AdapterLuid, vendor: adesc.VendorId, hdr, width, height, out_w, out_h, bgra,
                 vdev, vctx, venum, vproc, in_view: in_v, nv12, cursor, log,
+                stale: StaleGuard::new(std::time::Instant::now()), stale_redups: 0, retry_at: std::time::Instant::now(),
+                desk_check: std::time::Instant::now(), desk_locked: false, redo_at: None, dup_errors: 0, redo_ms: (0.0, 0.0),
             };
             if let Source::Dup { .. } = c.src {
                 c.reduplicate();
@@ -892,47 +1001,123 @@ impl Capture {
         }
     }
 
+    /// Drop the whole-monitor duplication and make a new one (the old one must be gone first)
+    fn redo_dup(&mut self) {
+        let t = std::time::Instant::now();
+        if let Source::Dup { dup, .. } = &mut self.src {
+            *dup = None;
+        }
+        self.reduplicate();
+        let now = std::time::Instant::now();
+        let ms = now.duration_since(t).as_secs_f64() * 1000.0;
+        self.redo_ms = (ms, self.redo_ms.1.max(ms));
+        self.retry_at = now + RETRY_EVERY;
+    }
+
+    /// " (took 0.3 ms, slowest 1.0 ms)" for the log lines
+    fn redo_took(&self) -> String {
+        format!(" (took {:.1} ms, slowest {:.1} ms)", self.redo_ms.0, self.redo_ms.1)
+    }
+
+    /// Whole-monitor capture: the newest screen picture into `bgra` if there is one (otherwise keep the last one).
+    fn grab_dup(&mut self, hdr: bool) {
+        let now = std::time::Instant::now();
+        // the lock screen / a UAC prompt: Desktop Duplication can't see it and may stay stuck afterwards. Looked at
+        // twice a second; back on the normal desktop = make the capture again at once and once more 2 s later.
+        if now.duration_since(self.desk_check) >= std::time::Duration::from_millis(500) {
+            self.desk_check = now;
+            let normal = input_desktop_normal();
+            if !normal && !self.desk_locked {
+                self.desk_locked = true;
+                (self.log)("gpu: screen locked (or a sign-in / UAC screen) - the clip holds the last picture until it's back");
+            } else if normal && self.desk_locked {
+                self.desk_locked = false;
+                self.redo_dup();
+                self.stale.reset(now);
+                (self.log)(&format!("gpu: screen unlocked - capture made again{}", self.redo_took()));
+                self.redo_at = Some(now + std::time::Duration::from_secs(2));
+                return;
+            }
+        }
+        if self.redo_at.is_some_and(|t| now >= t) {
+            self.redo_at = None;
+            self.redo_dup();
+            self.stale.redone(now);
+            return;
+        }
+        let Source::Dup { dup, .. } = &self.src else { return };
+        let Some(d) = dup.clone() else {
+            // Windows refused the last one: try again a few times a second, not every frame; while locked not at
+            // all (the unlock makes it)
+            if !self.desk_locked && now >= self.retry_at {
+                self.redo_dup();
+                self.stale.redone(now);
+            }
+            return;
+        };
+        let mut stale = false;
+        unsafe {
+            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut res: Option<IDXGIResource> = None;
+            match d.AcquireNextFrame(0, &mut info, &mut res) {
+                Ok(()) => {
+                    if info.LastPresentTime != 0 {
+                        self.stale.picture(now);
+                        if let Some(tex) = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
+                            // the screen changed resolution (a game's own / stretched mode): new input size,
+                            // scaled to the recording size (before: only the top-left part was copied)
+                            let mut td = D3D11_TEXTURE2D_DESC::default();
+                            tex.GetDesc(&mut td);
+                            if !hdr && (td.Width != self.width || td.Height != self.height) && td.Width >= 320 && td.Height >= 240 {
+                                self.screen_resized(td.Width, td.Height);
+                            }
+                            self.put(&tex, hdr);
+                        }
+                    }
+                    // the pointer moved / changed shape (only valid until ReleaseFrame)
+                    if let Some(cur) = self.cursor.as_mut() {
+                        cur.update(&self.device, &d, &info);
+                    }
+                    let _ = d.ReleaseFrame();
+                }
+                Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
+                Err(err) => {
+                    // access lost (resolution change, UAC, lock, fullscreen switch...) - recreate
+                    self.dup_errors += 1;
+                    drop(d);
+                    self.redo_dup();
+                    self.stale.redone(now);
+                    if matches!(self.dup_errors, 1 | 10 | 100 | 1000) {
+                        (self.log)(&format!("gpu: screen capture lost ({:#x}) - made again ({} times){}", err.code().0, self.dup_errors, self.redo_took()));
+                    }
+                    return;
+                }
+            }
+            // no new picture for a while - also when only the pointer moved (a pointer-only answer kept the old
+            // guard from ever running): a still desktop, or a duplication that silently stopped (seen after the
+            // lock screen). Making it again costs ~0.3 ms and gives the current screen at once; the wait grows
+            // 5 -> 60 s while the screen stays still (StaleGuard)
+            if !self.desk_locked && self.stale.due(now) {
+                stale = true;
+            }
+        }
+        if stale {
+            self.stale_redups += 1;
+            let waited = self.stale.wait.as_secs();
+            drop(d);
+            self.redo_dup();
+            self.stale.redone_stale(now);
+            if matches!(self.stale_redups, 1 | 10 | 100 | 1000) {
+                (self.log)(&format!("gpu: no new screen picture for {waited} s - capture made again ({} times){}", self.stale_redups, self.redo_took()));
+            }
+        }
+    }
+
     /// Grab the newest frame into `bgra` if there is one (otherwise keep the last one).
     fn grab(&mut self) {
         let hdr = self.hdr.is_some();
-        if let Source::Dup { dup, .. } = &self.src {
-            let Some(d) = dup.clone() else {
-                self.reduplicate();
-                return;
-            };
-            unsafe {
-                let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-                let mut res: Option<IDXGIResource> = None;
-                match d.AcquireNextFrame(0, &mut info, &mut res) {
-                    Ok(()) => {
-                        if info.LastPresentTime != 0 {
-                            if let Some(tex) = res.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
-                                // the screen changed resolution (a game's own / stretched mode): new input size,
-                                // scaled to the recording size (before: only the top-left part was copied)
-                                let mut td = D3D11_TEXTURE2D_DESC::default();
-                                tex.GetDesc(&mut td);
-                                if !hdr && (td.Width != self.width || td.Height != self.height) && td.Width >= 320 && td.Height >= 240 {
-                                    self.screen_resized(td.Width, td.Height);
-                                }
-                                self.put(&tex, hdr);
-                            }
-                        }
-                        // the pointer moved / changed shape (only valid until ReleaseFrame)
-                        if let Some(cur) = self.cursor.as_mut() {
-                            cur.update(&self.device, &d, &info);
-                        }
-                        let _ = d.ReleaseFrame();
-                    }
-                    Err(err) if err.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
-                    Err(_) => {
-                        // access lost (resolution change, UAC, fullscreen switch...) - recreate
-                        if let Source::Dup { dup, .. } = &mut self.src {
-                            *dup = None;
-                        }
-                        self.reduplicate();
-                    }
-                }
-            }
+        if matches!(self.src, Source::Dup { .. }) {
+            self.grab_dup(hdr);
             return;
         }
         // one window (Windows.Graphics.Capture)
@@ -1166,6 +1351,84 @@ impl DarkCap {
 mod dark_tests {
     use super::*;
 
+    /// Still screen: re-makes at 5, 15, 35, 75, 135, 195 s (waits 5, 10, 20, 40, 60, 60); the picture each fresh
+    /// capture hands over doesn't reset the wait, a real change does; unlocking goes back to 5 s.
+    #[test]
+    fn stale_guard_backs_off_on_a_still_screen() {
+        use std::time::Duration as D;
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + D::from_secs(s);
+        let mut g = StaleGuard::new(t0);
+        let mut redos = vec![];
+        for s in 0..=200u64 {
+            if g.due(at(s)) {
+                redos.push(s);
+                g.redone_stale(at(s));
+                // the fresh capture's first picture comes a moment later
+                g.picture(at(s));
+            }
+        }
+        assert_eq!(redos, vec![5, 15, 35, 75, 135, 195]);
+        assert_eq!(g.wait, STALE_MAX);
+        // the screen really changes: back to 5 s
+        g.picture(at(201));
+        assert!(!g.due(at(205)) && g.due(at(206)));
+        // long still again, then an unlock: 5 s again
+        g.redone_stale(at(206));
+        g.redone_stale(at(216));
+        assert_eq!(g.wait, D::from_secs(20));
+        g.reset(at(220));
+        assert!(g.due(at(225)));
+        // a game drawing every frame never makes it due
+        let mut g = StaleGuard::new(t0);
+        for ms in (0..60_000u64).step_by(16) {
+            let now = t0 + D::from_millis(ms);
+            assert!(!g.due(now));
+            g.picture(now);
+        }
+    }
+
+    /// What the stuck-picture guard's "make the capture again" costs on this PC (24 Nov 2026), and the lock check.
+    /// cargo test -p echo-core --release --lib redup_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn redup_cost() {
+        unsafe {
+            let sel = pick_output("").unwrap();
+            let mut device = None;
+            D3D11CreateDevice(&sel.adapter, D3D_DRIVER_TYPE_UNKNOWN, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]), D3D11_SDK_VERSION, Some(&mut device), None, None).unwrap();
+            let device = device.unwrap();
+            let (mut dup_ms, mut first_ms, mut worst) = (0.0f64, 0.0f64, 0.0f64);
+            let n = 30;
+            for _ in 0..n {
+                let t0 = std::time::Instant::now();
+                let d = sel.output.DuplicateOutput(&device).unwrap();
+                let t1 = std::time::Instant::now();
+                let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+                let mut res: Option<IDXGIResource> = None;
+                if d.AcquireNextFrame(200, &mut info, &mut res).is_ok() {
+                    let _ = d.ReleaseFrame();
+                }
+                let t2 = std::time::Instant::now();
+                drop(d);
+                let a = (t1 - t0).as_secs_f64() * 1000.0;
+                dup_ms += a;
+                first_ms += (t2 - t1).as_secs_f64() * 1000.0;
+                worst = worst.max(a);
+            }
+            let t = std::time::Instant::now();
+            for _ in 0..1000 {
+                let _ = input_desktop_normal();
+            }
+            let desk_us = t.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "{}x{}: DuplicateOutput {:.2} ms average ({:.2} worst), first picture after it {:.2} ms, lock check {:.1} us",
+                sel.width, sel.height, dup_ms / n as f64, worst, first_ms / n as f64, desk_us
+            );
+        }
+    }
+
     /// A busy night scene whose output grows as the cap goes down: the cap must settle, not pump on and off.
     #[test]
     fn busy_dark_scene_settles() {
@@ -1315,20 +1578,39 @@ impl Encoder {
                 String::from_utf16_lossy(&buf[..n as usize])
             };
             let idx = list.iter().position(|a| a.as_ref().map_or(false, |a| vendor_of(a).eq_ignore_ascii_case(&want))).unwrap_or(0);
-            let act = list[idx].clone().ok_or("null activate")?;
-            let mut name_buf = [0u16; 256];
-            let mut name_len = 0u32;
-            let _ = act.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
-            let ename = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-            log(&format!("gpu: {cname} encoder '{ename}' ({})", vendor_of(&act)));
-            if let Ok(mut n) = ENCODER_NAME.lock() {
-                *n = ename.trim().to_string();
+            // 18 Nov 2026: the preferred encoder first, then the others on the list - a user's Intel Quick Sync MFT failed
+            // with "ActivateObject: Unspecified error" and Echo gave up on zero-copy without trying anything else
+            let mut order: Vec<usize> = vec![idx];
+            order.extend((0..list.len()).filter(|&i| i != idx));
+            let mut picked: Option<IMFTransform> = None;
+            let mut last_err = String::new();
+            for i in order {
+                let Some(act) = list[i].clone() else { continue };
+                let mut name_buf = [0u16; 256];
+                let mut name_len = 0u32;
+                let _ = act.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
+                let ename = String::from_utf16_lossy(&name_buf[..(name_len as usize).min(name_buf.len())]);
+                log(&format!("gpu: {cname} encoder '{ename}' ({})", vendor_of(&act)));
+                match act.ActivateObject::<IMFTransform>() {
+                    Ok(m) => {
+                        if let Ok(mut n) = ENCODER_NAME.lock() {
+                            *n = ename.trim().to_string();
+                        }
+                        picked = Some(m);
+                        break;
+                    }
+                    Err(x) => {
+                        last_err = format!("ActivateObject: {x}");
+                        log(&format!("gpu: encoder '{}' didn't start ({last_err}) - trying the next one", ename.trim()));
+                    }
+                }
             }
-            let mft: IMFTransform = act.ActivateObject().map_err(e("ActivateObject"))?;
+            // free the list either way (it leaked when the encoder didn't start)
             for a in list.iter_mut() {
                 drop(a.take());
             }
             CoTaskMemFree(Some(acts as *const _));
+            let mft = picked.ok_or(if last_err.is_empty() { "null activate".to_string() } else { last_err })?;
 
             let attrs = mft.GetAttributes().map_err(e("GetAttributes"))?;
             attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1).map_err(e("ASYNC_UNLOCK"))?;
@@ -1493,6 +1775,8 @@ fn write_all(pipe: HANDLE, mut data: &[u8]) -> bool {
 /// Runs until `stop` is set or ffmpeg goes away. Call on its own thread.
 pub fn run(pipe: Pipe, stop: Arc<AtomicBool>, o: Opts, log: Log) {
     let pipe = HANDLE(pipe.0 as _);
+    // 21 Nov 2026: this thread = capture + encoder feeding, kept apart in the performance numbers (recorder.rs PERF_TIDS)
+    crate::recorder::PERF_TIDS[0].store(crate::recorder::os_thread_id(), Ordering::Relaxed);
     let res = (|| -> Result<(), String> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

@@ -25,7 +25,17 @@ fn start_rec(r: &Recorder) {
     if !e.is_empty() {
         recorder::log_line(&e);
     }
+    // 18 Nov 2026: no graphics encoder worked, the software one records instead - say so once per run (it costs a lot
+    // more CPU, so games can lag); the status card says it too (draw_status)
+    if e.is_empty() && is_software(r) && !SOFT_WARNED.swap(true, Ordering::Relaxed) {
+        toast("Recording with your processor", "Your graphics card's video encoder didn't start - update your graphics drivers, or games may lag", false);
+    }
     *START_ERR.lock().unwrap_or_else(|x| x.into_inner()) = e;
+}
+static SOFT_WARNED: AtomicBool = AtomicBool::new(false);
+/// the recorder runs on the software encoder (recorder.rs SOFTWARE_MODE): no graphics encoder worked
+fn is_software(r: &Recorder) -> bool {
+    r.mode.lock().map_or(false, |m| m.as_str() == recorder::SOFTWARE_MODE)
 }
 /// Echo's FPS_TESTING: the watch loop leaves the recorder alone while the FPS test pauses it
 pub static FPS_TESTING: AtomicBool = AtomicBool::new(false);
@@ -103,10 +113,12 @@ const SHOW: u32 = crate::showkey::SHOW;
 pub enum Ev {
     /// in-app message (only shown when the window is visible; the popup / notification covers games)
     Toast(String),
-    /// a clip was saved / a recording stopped: library refresh, the "Saving clip…" box ends
-    Saved(Result<String, String>),
-    /// "Saving clip…" box (seconds) + the library's "Saving clip…" card (folder the clip goes to, Echo's save_target)
-    Saving(u32, String),
+    /// a clip was saved / a recording stopped: library refresh, the "Saving clip…" box ends. The id is the save's
+    /// from Ev::Saving (None = no card belongs to it: a paused recorder, the long recording)
+    Saved(Option<u64>, Result<String, String>),
+    /// "Saving clip…" box + a "Saving clip…" card in the library: save id, seconds, folder the clip goes to (Echo's
+    /// save_target). 24 Nov 2026: one card per save - two quick saves showed only one (and the 2nd replaced the 1st)
+    Saving(u64, u32, String),
     /// Settings changed on disk: header hotkey chips
     Settings,
     /// tray / second launch: bring the window up
@@ -156,14 +168,31 @@ pub fn early_env() {
 /// can be tried next to the old Echo), but it never records - two recorders would share one buffer folder.
 fn take_instance_lock() -> bool {
     if std::env::var("ECHO_NO_RECORDER").is_ok() {
+        // test copies (scratch APPDATA only!) can still try the folder move: ECHO_TEST_MOVE_FOLDER=1
+        if std::env::var("ECHO_TEST_MOVE_FOLDER").is_ok() {
+            move_old_folder();
+        }
         return false;
     }
     #[cfg(windows)]
-    return !echo_core::winutil::already_running();
+    let got = !echo_core::winutil::already_running();
     #[cfg(target_os = "linux")]
-    return !echo_core::linuxutil::already_running();
-    #[allow(unreachable_code)]
-    true
+    let got = !echo_core::linuxutil::already_running();
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let got = true;
+    if got {
+        move_old_folder();
+    }
+    got
+}
+
+/// 24 Nov 2026: Echo's folder "Clipper" (its first test name) -> "EchoClip", once, by the one Echo that holds the lock
+/// (never a 2nd launch while another runs) - echo_core::settings::move_old_folder
+fn move_old_folder() {
+    let line = echo_core::settings::move_old_folder();
+    if !line.is_empty() {
+        recorder::log_line(&line);
+    }
 }
 
 /// Called once from main() after the window exists.
@@ -309,39 +338,46 @@ pub fn wire(app: &AppWindow) {
     });
 }
 
-/// the library's "Saving clip…" card: its row + text (also called from the 3 s disk sync, which ends it)
+/// the library's "Saving clip…" cards: their rows + texts, and the header line (also called from the 3 s disk sync,
+/// which ends them). The texts go in before the rows, so a new row never shows a card without its text.
 pub fn saving_card(a: &AppWindow, l: &crate::library::LibModel) {
     l.saving_expire();
     l.rebuild_rows();
-    let (line, done) = l.saving_text();
-    let g = a.global::<crate::Lib>();
-    g.set_saving_line(line.into());
-    g.set_saving_done(done);
+    a.set_rec_saving(l.saving_pending().unwrap_or_default().into());
 }
+
+/// each save's id, so its "Saving clip…" card ends when THAT save ends
+static SAVE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn handle(a: &AppWindow, e: Ev) {
     match e {
         Ev::Toast(s) => crate::toast(a, s),
-        Ev::Saving(secs, folder) => {
+        Ev::Saving(id, secs, folder) => {
             a.set_rec_saving(format!("Saving the last {}…", fmt_len(secs)).into());
             if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
-                *l.saving.borrow_mut() = Some(crate::library::SavingPh { secs, at: Instant::now(), folder, path: None });
+                l.saving.borrow_mut().push(crate::library::SavingPh { id, secs, at: Instant::now(), folder, path: None });
                 saving_card(a, &l);
             }
         }
-        Ev::Saved(r) => {
-            a.set_rec_saving("".into());
+        Ev::Saved(id, r) => {
             if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
-                {
-                    let mut s = l.saving.borrow_mut();
+                if let Some(id) = id {
+                    let mut v = l.saving.borrow_mut();
                     let saved = match &r { Ok(p) if !p.is_empty() => Some(std::path::PathBuf::from(p)), _ => None };
                     // saved: "Almost ready…" until the disk sync puts the clip in the list; failed: gone now
-                    match (saved, s.is_some()) {
-                        (Some(p), true) => { if let Some(ph) = s.as_mut() { ph.path = Some(p); } }
-                        _ => *s = None,
+                    match saved {
+                        Some(p) => {
+                            if let Some(ph) = v.iter_mut().find(|s| s.id == id) {
+                                ph.path = Some(p);
+                                ph.at = Instant::now();
+                            }
+                        }
+                        None => v.retain(|s| s.id != id),
                     }
                 }
                 saving_card(a, &l);
+            } else {
+                a.set_rec_saving("".into());
             }
             match r {
                 Ok(p) if !p.is_empty() => {
@@ -524,6 +560,7 @@ fn draw_status(a: &AppWindow) {
     a.set_rec_tip(match mode.as_str() {
         _ if !err.is_empty() && !on => format!("{err} - double-click the status to try again").into(),
         "gpu" => "Your last moments are always ready · GPU".into(),
+        recorder::SOFTWARE_MODE => "Recording with your processor - no graphics encoder worked. Update your graphics drivers".into(),
         "" => "Settings → App → Restart recorder".into(),
         _ => "Your last moments are always ready · CPU fallback".into(),
     });
@@ -537,7 +574,8 @@ fn draw_status(a: &AppWindow) {
         _ => "Recorder stopped".to_string(),
     }.into());
     a.set_rail_mode(if on {
-        format!("Your last {} is always ready · {}", fmt_len(cfg.buffer_seconds()), if mode == "gpu" { "GPU" } else { "CPU fallback" })
+        format!("Your last {} is always ready · {}", fmt_len(cfg.buffer_seconds()),
+            match mode.as_str() { "gpu" => "GPU", recorder::SOFTWARE_MODE => "processor only - update your graphics drivers", _ => "CPU fallback" })
     } else if !err.is_empty() {
         format!("{err} - double-click the status to try again")
     } else {
@@ -725,14 +763,15 @@ pub fn do_save(seconds: Option<u32>) -> Result<String, String> {
         recorder::play_sound(Sound::Failed, &cfg, false);
         toast("Not recording", &format!("Paused - {why}"), false);
         let e: Result<String, String> = Err(format!("Recording is paused ({why})"));
-        push(Ev::Saved(e.clone()));
+        push(Ev::Saved(None, e.clone()));
         return e;
     }
     // chime + popup right away on the keypress (saving long clips takes a moment); buzz later only if it fails
     recorder::play_sound(Sound::Saved, &cfg, false);
     let secs = seconds.unwrap_or_else(|| cfg.hotkeys.first().map(|h| h.seconds).unwrap_or(30));
     toast("Saving clip…", &format!("Last {}", fmt_len(secs)), true);
-    push(Ev::Saving(secs, rec.save_target(secs)));
+    let id = SAVE_ID.fetch_add(1, Ordering::Relaxed);
+    push(Ev::Saving(id, secs, rec.save_target(secs)));
     let r = rec.save(seconds);
     match &r {
         Ok(p) => {
@@ -756,7 +795,7 @@ pub fn do_save(seconds: Option<u32>) -> Result<String, String> {
             toast("Couldn't save clip", e, false);
         }
     }
-    push(Ev::Saved(r.clone()));
+    push(Ev::Saved(Some(id), r.clone()));
     r
 }
 
@@ -825,7 +864,7 @@ pub fn do_session() -> Result<Option<String>, String> {
             Err(e) => toast("Recording failed", e, false),
             _ => {}
         }
-        push(Ev::Saved(r.clone().map(|o| o.unwrap_or_default())));
+        push(Ev::Saved(None, r.clone().map(|o| o.unwrap_or_default())));
         r
     } else {
         let r = rec.start_session().map(|_| None);
