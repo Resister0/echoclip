@@ -121,7 +121,9 @@ export component ShotViewer inherits Rectangle {
         clip: true;
         drop-shadow-blur: 60px;
         drop-shadow-offset-y: 20px;
-        drop-shadow-color: #000000;
+        // only at the fitted size: every new size re-renders + blurs a shadow texture as big as the zoomed picture
+        // (about 20000 px wide at 8x), which made each zoom step lag while panning stayed smooth (24 Nov 2026)
+        drop-shadow-color: root.s > 1 ? transparent : #000000;
         Image {
             width: parent.width;
             height: parent.height;
