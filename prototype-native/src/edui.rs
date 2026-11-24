@@ -1354,6 +1354,8 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
         return;
     }
     let mut msg: Option<String> = None;
+    // the captions .txt just saved: its message gets "Show in folder" (the library doesn't list .txt files)
+    let mut saved_txt: Option<std::path::PathBuf> = None;
     let r = with_ed(|e| {
         let pl = p.borrow();
         let m = pl.mpv.as_ref();
@@ -1424,10 +1426,10 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
                 let dir = e.clip.parent().map(|d| d.to_path_buf()).unwrap_or_default();
                 let stem = e.clip.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let f = dir.join(format!("{stem} (captions).txt"));
-                msg = Some(match std::fs::write(&f, txt) {
-                    Ok(()) => format!("Saved as \"{}\" next to the clip", f.file_name().unwrap_or_default().to_string_lossy()),
-                    Err(x) => format!("Couldn't save the captions: {x}"),
-                });
+                match std::fs::write(&f, txt) {
+                    Ok(()) => saved_txt = Some(f),
+                    Err(x) => msg = Some(format!("Couldn't save the captions: {x}")),
+                }
                 reseek = false;
             }
             "box" | "zoomfx" => {
@@ -1567,6 +1569,14 @@ fn act(a: &AppWindow, p: &Rc<RefCell<Player>>, cmd: &str, root: &Path, play: &Rc
     if r.is_some() {
         if let Some(m) = msg {
             toast(a, m);
+        }
+        if let Some(f) = saved_txt {
+            crate::notes::say_act(
+                crate::notes::Kind::Done,
+                format!("Saved as \"{}\" next to the clip", f.file_name().unwrap_or_default().to_string_lossy()),
+                "Show in folder",
+                move || crate::show_in_folder(&f),
+            );
         }
     }
 }

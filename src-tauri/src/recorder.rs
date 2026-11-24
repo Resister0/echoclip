@@ -2178,8 +2178,11 @@ fn concat_list(segs: &[std::path::PathBuf]) -> String {
         // (s302m) audio of every 2 s segment made a save ~5x slower (9 Nov 2026: 2.0 -> 0.43 s per 24 s of clip).
         // "option" lines need ffmpeg 5+: the Linux AppImage uses the system's ffmpeg (Ubuntu 22.04 = 4.4 would
         // fail every save with them), so only when this PC's ffmpeg is new enough
+        // skip_estimate_duration_from_pts: ffmpeg otherwise reads the END of each segment to guess its length, and a
+        // frame from there could come out first on the real read. Every later frame of that segment then got squashed
+        // behind it = a ~1.9 s freeze at some joins, in 120/144 fps clips (24 Nov 2026). The "duration" lines cover it.
         if ffmpeg_major() >= 5 {
-            body += "option analyzeduration 0\noption probesize 65536\n";
+            body += "option analyzeduration 0\noption probesize 65536\noption skip_estimate_duration_from_pts 1\n";
         }
         if all && k + 1 < segs.len() {
             let (lead, vdur) = t[k].unwrap();
