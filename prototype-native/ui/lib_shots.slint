@@ -117,7 +117,9 @@ export component ShotViewer inherits Rectangle {
         y: root.by + root.oy;
         width: root.bw * root.s;
         height: root.bh * root.s;
-        border-radius: 8px;
+        // rounded corners only at the fitted size too: a rounded clip draws the WHOLE zoomed picture into an
+        // offscreen copy (about 15000 px wide at 8x) at every zoom step, which still lagged far in; square = cheap clip (24 Nov 2026)
+        border-radius: root.s > 1 ? 0 : 8px;
         clip: true;
         drop-shadow-blur: 60px;
         drop-shadow-offset-y: 20px;
