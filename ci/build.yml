@@ -54,7 +54,26 @@ jobs:
           # 9 Nov: the real release is 2.0.0 -> counted from run 73 (the publish after the 2.0.72 test
           # build): run 73 = 2.0.0, 74 = 2.0.1, ... The server treats the one 2.0.72 test build as older than 2.0.0
           # (cloud/src/index.js update()).
-          VER="2.0.$(( ${{ github.run_number }} - 73 ))"
+          # 24 Nov 2026 (the user): Stable counts on by itself (2.0.24, 2.0.25, ...) instead of taking every run's
+          # number. Beta / dev builds carry the number of the Stable they lead up to: 2.0.25-dev.1, 2.0.25-beta.2, ...
+          # (one count for both, so the newest build is always the highest). A pre-release counts as OLDER than
+          # its Stable (Echo's ver_gt, echoclip.link's newer()): testers stay on their channel until that Stable
+          # comes out, then get it. NEXT = one past the newest Stable, and past any old plain beta / dev number.
+          NEXT=0; PRE=0
+          for b in main beta dev; do
+            v=$(git -C /tmp/pub show "origin/$b:ci/version.txt" 2>/dev/null | tr -d ' \r\n')
+            p=$(printf '%s' "$v" | sed -n 's/^2\.0\.\([0-9][0-9]*\).*$/\1/p'); [ -n "$p" ] || continue
+            case "$v" in *-*) [ "$p" -gt "$NEXT" ] && NEXT=$p ;; *) [ $((p + 1)) -gt "$NEXT" ] && NEXT=$((p + 1)) ;; esac
+          done
+          for b in beta dev; do
+            v=$(git -C /tmp/pub show "origin/$b:ci/version.txt" 2>/dev/null | tr -d ' \r\n')
+            case "$v" in "2.0.$NEXT-"*.*) n=${v##*.}; [ "$n" -gt "$PRE" ] 2>/dev/null && PRE=$n ;; esac
+          done
+          if [ "$NEXT" -lt 25 ]; then
+            echo "::error::Couldn't read the public repo's versions (ci/version.txt per branch) - not guessing a number"; exit 1
+          fi
+          if [ "$BR" = main ]; then VER="2.0.$NEXT"; else VER="2.0.$NEXT-$BR.$((PRE + 1))"; fi
+          echo "version: $VER"
           echo "$VER" > ci/version.txt
           # this publish as a <release> in the Flatpak metainfo (Flathub's "What's new"); never stops the publish
           [ "$BR" != main ] || python3 ci/metainfo-release.py flatpak/link.echoclip.Echo.metainfo.xml /tmp/old-metainfo.xml "$VER" "$msg" \

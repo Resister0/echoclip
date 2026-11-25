@@ -782,7 +782,7 @@ pub struct LibModel {
     /// r2-threads (L29): the folders on disk (sidebar), from the disk sync; None = walk once more (Echo changed folders)
     disk_dirs: RefCell<Option<BTreeSet<String>>>,
     /// Echo's savingPh: a "Saving clip…" card at the top while a clip is saved (until it is in the list). 24 Nov 2026
-    /// (William: "if you clip two clips fairly quickly, it only shows 1"): one per save, oldest first, matched by id
+    /// (the user: "if you clip two clips fairly quickly, it only shows 1"): one per save, oldest first, matched by id
     pub saving: RefCell<Vec<SavingPh>>,
     /// the shown cards' texts (Lib.savings), refreshed with the rows in rebuild_rows so they always match
     pub savings: Rc<VecModel<crate::SavingInfo>>,

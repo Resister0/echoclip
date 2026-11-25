@@ -1270,7 +1270,7 @@ export component EditorView inherits Rectangle {
                 ESlider { value: Ed.sel-con; lo: 0.5; hi: 1.8; step: 0.02; moved(v) => { Ed.set("con-live", v); } commit(v) => { Ed.set("con", v); } reset => { Ed.set("con", 1); } }
                 Label { text: "Saturation " + round(Ed.sel-sat * 100) + "%"; }
                 ESlider { value: Ed.sel-sat; lo: 0; hi: 2; step: 0.02; moved(v) => { Ed.set("sat-live", v); } commit(v) => { Ed.set("sat", v); } reset => { Ed.set("sat", 1); } }
-                // 11 Nov 2026 (William: untidy): one grid - two rows of two, every button 30 px and half the width
+                // 11 Nov 2026 (the user: untidy): one grid - two rows of two, every button 30 px and half the width
                 // (Btn has a fixed width, so horizontal-stretch alone didn't fill the row)
                 HorizontalLayout {
                     spacing: 6px;

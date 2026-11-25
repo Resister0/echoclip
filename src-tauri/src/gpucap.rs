@@ -640,12 +640,12 @@ struct Capture {
 /// No new picture from the whole-monitor capture for this long = make the duplication again (cheap; a fresh one
 /// hands over the current screen at once). 22 Nov 2026: a user's clips showed the Windows lock screen from the day
 /// before - the capture stayed stuck on that frame after unlocking until Echo restarted.
-/// 24 Nov 2026 (William, Windows 11, RX 9070 XT): still stuck after a 10 s lock - frozen on the frame before the lock
+/// 24 Nov 2026 (the user, Windows 11, RX 9070 XT): still stuck after a 10 s lock - frozen on the frame before the lock
 /// for ~40 s after unlocking, then on a lock-screen frame until the save, and the guard never ran: it only counted
 /// "nothing new at all" answers, but every mouse move is a pointer-only answer. Now it counts any answer without a new
 /// picture, and the lock itself is watched (input_desktop_normal).
 const STALE_REDUP: std::time::Duration = std::time::Duration::from_secs(5);
-/// Longest wait between two re-makes while the screen stays still (24 Nov 2026, William: "it needs to be more
+/// Longest wait between two re-makes while the screen stays still (24 Nov 2026, the user: "it needs to be more
 /// efficient before it ships"): 5, 10, 20, 40, 60, 60... s - an hour of still desktop = ~60 re-makes, not 720. Locks
 /// don't wait for this (input_desktop_normal re-makes at once).
 const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(60);

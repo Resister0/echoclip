@@ -801,7 +801,7 @@ component Thumb inherits Rectangle {
         text: data.dur;
         bg: #000000dd;
     }
-    // bottom left: "Edited", then the tags (11 Nov 2026, William: a tag must not make the whole row of cards taller -
+    // bottom left: "Edited", then the tags (11 Nov 2026, the user: a tag must not make the whole row of cards taller -
     // they were a line under the name). Up to 2 tags, cut with … to stay clear of the length badge, the rest "+N".
     // The list view keeps its tag line next to the 176 px picture (its rows have a fixed height anyway).
     if (data.edited || (data.tags.length > 0 && !root.small)) && data.job == "": tg := HorizontalLayout {
@@ -975,7 +975,7 @@ component CardButtons inherits HorizontalLayout {
     in property <string> size-text;
     spacing: 2px;
     alignment: end;
-    // 11 Nov 2026 (William: the name is cut with … far too early on a maximised window): only as wide as the buttons.
+    // 11 Nov 2026 (the user: the name is cut with … far too early on a maximised window): only as wide as the buttons.
     // With the default stretch this layout took half of every spare pixel, so on big cards the name got only half.
     horizontal-stretch: 0;
     // .more: takes no room until hover (the name gets the full width), then slides open to the LEFT of copy

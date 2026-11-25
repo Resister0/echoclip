@@ -405,6 +405,8 @@ fn handle(a: &AppWindow, e: Ev) {
 
 thread_local! {
     static MAX_TIMER: slint::Timer = slint::Timer::default();
+    #[cfg(target_os = "linux")]
+    static GHOST_TIMER: slint::Timer = slint::Timer::default();
     /// the main window was on screen once (open_maximized)
     static WAS_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -514,11 +516,46 @@ pub fn run(app: &AppWindow) {
     } else if !tray_start {
         let _ = app.show();
         open_maximized(app);
+    } else {
+        #[cfg(target_os = "linux")]
+        drop_wayland_ghost(app);
     }
     let _ = slint::run_event_loop_until_quit();
     if let Some(r) = rec() {
         r.shutdown();
     }
+}
+
+/// Start into the tray on Wayland: Slint makes every window as soon as the event loop runs, even one that was never
+/// shown, and Wayland can't hide a window - KDE listed an empty "Echo" in the taskbar (not in Alt+Tab) on every start
+/// with "Start minimized" (the user, 25 Nov 2026). Once Slint has made it: show + hide in the same turn (nothing is
+/// drawn in between) makes Slint destroy it, like closing the window to the tray does. Opening Echo makes it anew.
+#[cfg(target_os = "linux")]
+fn drop_wayland_ghost(app: &AppWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let w = app.as_weak();
+    let tries = std::cell::Cell::new(0u32);
+    GHOST_TIMER.with(|t| {
+        t.start(slint::TimerMode::Repeated, Duration::from_millis(10), move || {
+            let Some(a) = w.upgrade() else { return GHOST_TIMER.with(|t| t.stop()) };
+            tries.set(tries.get() + 1);
+            // opened meanwhile (tray click, 2nd launch): nothing to drop
+            if a.window().is_visible() || tries.get() > 500 {
+                return GHOST_TIMER.with(|t| t.stop());
+            }
+            let raw = a.window().window_handle().window_handle().ok().map(|h| h.as_raw());
+            match raw {
+                None => {} // not made yet: next turn
+                Some(RawWindowHandle::Wayland(_)) => {
+                    let _ = a.show();
+                    let _ = a.hide();
+                    echo_core::recorder::log_line("tray start: dropped the empty Wayland window Slint made (no taskbar entry)");
+                    GHOST_TIMER.with(|t| t.stop());
+                }
+                Some(_) => GHOST_TIMER.with(|t| t.stop()), // X11 hides it properly
+            }
+        });
+    });
 }
 
 thread_local! {

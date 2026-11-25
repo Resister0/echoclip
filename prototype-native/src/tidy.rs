@@ -61,7 +61,7 @@ fn sort_out(items: &[Item], cloud_sizes: &HashMap<String, u64>) -> Sorted {
     Sorted { groups, keep, short, pairs, big, cloud: cloud.into_iter().map(|i| i.idx).collect() }
 }
 
-/// QA B25 (11 Nov 2026, approved by the coordinator; William's 10 Nov rule was "the latest is kept"): two clips of
+/// QA B25 (11 Nov 2026, approved by the coordinator; the user's 10 Nov rule was "the latest is kept"): two clips of
 /// about the same length (within 25 %) = the hotkey pressed twice -> keep the LATEST (it holds the last seconds that may
 /// matter). Different lengths (30 s + 3 min hotkeys) -> the short one lies inside the long one: keep the LONGEST -
 /// keeping the latest short clip threw minutes of footage away.

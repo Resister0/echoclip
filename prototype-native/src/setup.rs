@@ -420,16 +420,38 @@ fn version() -> String {
     std::env::var("ECHO_FAKE_VERSION").unwrap_or_else(|_| crate::lib_set::app_version())
 }
 
-fn ver_gt(a: &str, b: &str) -> bool {
-    let p = |s: &str| s.split(['.', '+', '-']).take(3).map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
-    let (x, y) = (p(a), p(b));
-    for i in 0..3 {
-        let (u, w) = (x.get(i).copied().unwrap_or(0), y.get(i).copied().unwrap_or(0));
-        if u != w {
-            return u > w;
-        }
+pub(crate) fn ver_gt(a: &str, b: &str) -> bool {
+    ver_key(a) > ver_key(b)
+}
+
+/// 2.0.25 -> (2, 0, 25, MAX); a beta / dev build 2.0.25-dev.3 -> (2, 0, 25, 3): older than the Stable 2.0.25 it
+/// leads up to (24 Nov 2026, ci/build.yml), newer than 2.0.24. Beta and dev share one count, so the label is ignored.
+fn ver_key(s: &str) -> (u32, u32, u32, u32) {
+    let s = s.trim().trim_start_matches('v');
+    let s = s.split('+').next().unwrap_or("");
+    let (core, pre) = s.split_once('-').map_or((s, None), |(c, p)| (c, Some(p)));
+    let n: Vec<u32> = core.split('.').take(3).map(|x| x.parse().unwrap_or(0)).collect();
+    let pre = pre.map_or(u32::MAX, |p| p.rsplit('.').next().and_then(|x| x.parse().ok()).unwrap_or(0));
+    (n.first().copied().unwrap_or(0), n.get(1).copied().unwrap_or(0), n.get(2).copied().unwrap_or(0), pre)
+}
+
+#[cfg(test)]
+mod ver_tests {
+    use super::ver_gt;
+    #[test]
+    fn stable_and_test_builds_in_order() {
+        assert!(ver_gt("2.0.25", "2.0.24"));
+        assert!(ver_gt("2.0.25-dev.1", "2.0.24"));
+        assert!(ver_gt("2.0.25", "2.0.25-dev.9"));
+        assert!(ver_gt("2.0.25-beta.3", "2.0.25-dev.2"));
+        assert!(ver_gt("2.0.26-dev.1", "2.0.25"));
+        assert!(ver_gt("2.0.25-dev.1", "2.0.23"));
+        assert!(ver_gt("2.0.24", "0.1.0"));
+        assert!(!ver_gt("2.0.25-dev.1", "2.0.25"));
+        assert!(!ver_gt("2.0.24", "2.0.24"));
+        assert!(!ver_gt("2.0.25-dev.2", "2.0.25-dev.2"));
+        assert!(!ver_gt("2.0.24", "2.0.25-dev.1"));
     }
-    false
 }
 
 /// installed copy that can replace itself (Windows: next to uninstall.exe; Linux: the AppImage)

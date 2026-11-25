@@ -95,7 +95,7 @@ fn auto(mon: Option<(u32, u32)>, os: f64) -> f64 {
     if r <= 1.0 {
         return 1.0; // smaller screens: as before (Echo was made for 1920x1080)
     }
-    // 11 Nov 2026 (William): the full ratio (1440p -> 133 %) was too big, 100 % too small: grow half of it (1440p -> 115 %)
+    // 11 Nov 2026 (the user): the full ratio (1440p -> 133 %) was too big, 100 % too small: grow half of it (1440p -> 115 %)
     let r = 1.0 + (r - 1.0) * 0.5;
     STEPS.iter().copied().min_by(|a, b| (a - r).abs().total_cmp(&(b - r).abs())).unwrap_or(1.0)
 }

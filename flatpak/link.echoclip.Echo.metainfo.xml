@@ -98,6 +98,11 @@
 
   <!-- ci/build.yml adds a <release> for every publish to the public repo's copy of this file (newest first) -->
   <releases>
+    <release version="2.0.25" date="2026-11-25">
+      <description>
+        <p>Linux: Echo started with your PC stays in the tray, no more empty Echo button in the taskbar.</p>
+      </description>
+    </release>
     <release version="2.0.24" date="2026-11-24">
       <description>
         <p>High-FPS clips no longer freeze, Discord on a headset is in your clips, recording no longer gets stuck after the lock screen, the editor can export just the sound, and lots of smaller fixes.</p>
@@ -241,11 +246,6 @@
     <release version="1.0.54" date="2026-11-05">
       <description>
         <p>Linux Flatpak, fullscreen and update fixes, safer share links, less Echo Cloud space used.</p>
-      </description>
-    </release>
-    <release version="1.0.50" date="2026-11-05">
-      <description>
-        <p>First Flatpak build.</p>
       </description>
     </release>
   </releases>

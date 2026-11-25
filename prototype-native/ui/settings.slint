@@ -510,7 +510,7 @@ export component RowView inherits Rectangle {
     in property <bool> wide;
     in property <length> tw: 200px;
     property <length> desc-max: root.wide ? 640px : 100000px;
-    // theme cards (13 Nov 2026, William's idea 1): a fixed height, the mini preview 1.2x the old 200 px card's
+    // theme cards (13 Nov 2026, the user's idea 1): a fixed height, the mini preview 1.2x the old 200 px card's
     property <float> ts: 1.2;
     property <bool> plain: r.kind != "ecplans" && r.kind != "seg" && r.kind != "presets" && r.kind != "themes" && r.kind != "usage" && r.kind != "game" && r.kind != "path" && r.kind != "info";
     property <[color]> pal: [T.accent, #3ddc97, #4fb8f0, #f0a93a, #e0609e, #8a96a8, #f07a1a, #6a6ff0];
@@ -1010,7 +1010,7 @@ export component RowView inherits Rectangle {
                 }
             }
         }
-        // .themegrid (13 Nov 2026, William's idea 1 + full rows): fit = how many 175 px cards + 12 px gaps fit; the
+        // .themegrid (13 Nov 2026, the user's idea 1 + full rows): fit = how many 175 px cards + 12 px gaps fit; the
         // columns are the largest of 12 / 8 / 6 / 4 that fits (below 4: fit), so the 24 cards always make full rows -
         // never 5 or 7. The cards widen to fill the row; rows fill left to right. Same rule as Aimdot's ThemeGrid.
         if root.r.kind == "themes": Rectangle {
@@ -1698,7 +1698,7 @@ export component SettingsPage inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 content-height: body.preferred-height + 90px;
-                // D natural (William, 11 Nov 2026): the column grows with the window (was 820 px), max 1400
+                // D natural (the user, 11 Nov 2026): the column grows with the window (was 820 px), max 1400
                 property <length> w: min(1400px, self.width - 68px);
                 property <bool> wide: self.w >= 1000px;
                 property <length> tw: self.wide ? min(420px, 200px + (self.w - 1000px) * 0.55) : 200px;

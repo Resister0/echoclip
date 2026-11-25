@@ -1623,12 +1623,12 @@ pub struct Palette {
     pub hi: Color,
     pub grad: [Color; 3],
     /// 11 Nov 2026: text / icons drawn ON the accent or its gradient (Save clip, Done, switches, chips): near-black
-    /// on a light accent, white on a dark one (William: white text on a #ffffff accent was invisible)
+    /// on a light accent, white on a dark one (the user: white text on a #ffffff accent was invisible)
     pub on_accent: Color,
     /// the same for things filled with the highlight colour
     pub on_hi: Color,
     /// the highlight used AS text / icon on the panels (selected chips, active buttons): the highlight itself when it
-    /// reads well there, else moved toward the text colour until it has 3:1 (William's #613849 on #1a1a1e: 1.8:1)
+    /// reads well there, else moved toward the text colour until it has 3:1 (the user's #613849 on #1a1a1e: 1.8:1)
     pub hi_text: Color,
     pub accent_hex: String,
     pub bg_hex: String,
