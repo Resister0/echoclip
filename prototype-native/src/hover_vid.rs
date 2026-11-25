@@ -47,7 +47,7 @@ pub fn size_for(a: &AppWindow, row: i32) -> (u32, u32) {
     (even(w, 64), even(h, 36))
 }
 
-/// 11 Nov 2026 (William: no preview "if you're hovering above it while tabbed out", especially on Linux, where a
+/// 11 Nov 2026 (the user: no preview "if you're hovering above it while tabbed out", especially on Linux, where a
 /// window that isn't focused still gets hover events): a preview plays only while Echo's window is in front - the
 /// Focused event (WIN_FOCUSED) AND winit's own focus state (a window that never got focus, e.g. shown from the tray
 /// without activation on KDE Wayland, never sent Focused(false)), visible and not minimised.

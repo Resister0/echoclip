@@ -43,7 +43,7 @@ fn fresh(sheet: &Path, clip: &Path) -> bool {
     }
 }
 
-/// ffmpeg: ECHO_FFMPEG, then the copy Echo downloaded (%APPDATA%\Clipper\ffmpeg), then PATH
+/// ffmpeg: ECHO_FFMPEG, then the copy Echo downloaded (%APPDATA%\EchoClip\ffmpeg, was Clipper), then PATH
 pub fn ffmpeg() -> Option<PathBuf> {
     // looked up ONCE: the PATH check runs 'ffmpeg -version' (~50 ms on Linux) and callers sit on the UI thread -
     // every clip open stuttered on Linux (9 Nov 2026, after the Windows-exe fix made Linux reach the PATH check)
@@ -74,7 +74,7 @@ fn find_ffmpeg() -> Option<PathBuf> {
     // Windows only: Echo's downloaded ffmpeg.exe. On Linux APPDATA = ~/.config, and a synced Clipper folder can hold
     // the Windows ffmpeg.exe -> 'Permission denied' on spawn = no seek pictures / editor renders (9 Nov 2026, Nobara)
     #[cfg(windows)]
-    if let Ok(a) = std::env::var("APPDATA") {
+    {
         fn find(d: &Path) -> Option<PathBuf> {
             for e in std::fs::read_dir(d).ok()?.flatten() {
                 let p = e.path();
@@ -88,7 +88,7 @@ fn find_ffmpeg() -> Option<PathBuf> {
             }
             None
         }
-        if let Some(f) = find(&PathBuf::from(a).join("Clipper").join("ffmpeg")) {
+        if let Some(f) = find(&echo_core::settings::data_dir().join("ffmpeg")) {
             return Some(f);
         }
     }

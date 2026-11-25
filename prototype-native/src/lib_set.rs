@@ -771,7 +771,7 @@ pub fn self_test(a: &AppWindow, refresh: &Refresh) {
         n.get()
     });
     SELFTEST_REFRESH.with(|x| *x.borrow_mut() = Some(refresh.clone()));
-    // William, 11 Nov 2026: the label stayed on "(6 s)" - now it counts down once a second (settings.rs
+    // The user, 11 Nov 2026: the label stayed on "(6 s)" - now it counts down once a second (settings.rs
     // self_test_row), then says "Checking…" while the clip is checked
     SELFTEST_AT.with(|t| t.set(Some(std::time::Instant::now())));
     SELFTEST_TICK.with(|t| {

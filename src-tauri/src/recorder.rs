@@ -788,7 +788,7 @@ fn max_key_gap(clip: &str) -> f64 {
 
 pub fn app_dir_pub() -> PathBuf { app_dir() }
 fn app_dir() -> PathBuf {
-    std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper")
+    crate::settings::data_dir()
 }
 
 /// games.json (game name -> exe) without entries that are Echo itself. QA E19 (11 Nov 2026): a maximised test copy of
@@ -956,6 +956,9 @@ fn game_name_raw(stem: &str, title: &str, fullscreen: bool) -> Option<String> {
         "wt", "notepad", "textinputhost", "systemsettings", "battle.net", "riotclientux", "riotclientservices", "eadesktop",
         "ubisoftconnect", "upc", "galaxyclient", "vlc", "mpc-hc64", "photos", "whatsapp", "telegram", "teams", "ms-teams",
         "echo", "echoclip", "filen", "bitwarden", "lightshot", "1password", "keepass", "keepassxc", "snippingtool", "screenclippinghost",
+        // Sonela's own apps (24 Nov 2026: Lasso's frozen screen covers the monitor -> Echo took it for a game and recorded
+        // only Lasso's window; Aimdot's overlay is a full-monitor window too)
+        "lasso", "aimdot", "aimdot-settings",
         "sharex", "greenshot", "nvidia app", "radeonsoftware", "amdrsserv", "msiafterburner", "rtss", "outlook", "winword",
         "excel", "powerpnt", "onenote", "slack", "zoom", "notion", "obsidian", "signal", "thunderbird", "mspaint", "notepad++",
         // Linux desktop programs that showed up as "games" (chat 30: xalia = KDE's gamepad accessibility helper)
@@ -1015,8 +1018,7 @@ pub struct Word {
 }
 
 fn whisper_dir() -> PathBuf {
-    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-    base.join("Clipper").join("whisper")
+    crate::settings::data_dir().join("whisper")
 }
 
 /// Tools shipped with the installer (Echo-Setup.exe puts ffmpeg / rclone in "tools" next to EchoClip.exe):
@@ -2193,6 +2195,11 @@ fn concat_list(segs: &[std::path::PathBuf]) -> String {
         }
     }
     body
+}
+
+/// The fallback list (24 Nov 2026): only "file" lines - no option lines, no exact joins. Works with any ffmpeg.
+fn concat_list_plain(segs: &[std::path::PathBuf]) -> String {
+    segs.iter().map(|p| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"))).collect()
 }
 
 /// Device each capture is using right now: [desktop, mic] ("" = none / not started). health() compares them
@@ -3561,7 +3568,7 @@ impl Recorder {
         let list = self.buf_dir.join(format!("list_{}.txt", std::process::id()));
         let paths: Vec<PathBuf> = segs.iter().map(|(_, p)| p.clone()).collect();
         let body = concat_list(&paths);
-        fs::write(&list, body).map_err(err)?;
+        fs::write(&list, &body).map_err(err)?;
         let cfg = self.settings();
         // video copied, the buffer's raw audio (s302m) encoded to AAC here - the same tracks clips always had.
         // 18 Nov 2026: apps that play to another output device than the recorded one (off_device_tracks) are mixed
@@ -3608,6 +3615,21 @@ impl Recorder {
         // clip still saves with all its tracks, and log which track was empty.
         if !ok && msg.contains("sample rate not set") {
             ok = self.join_with_silence(&list, segs.len(), out).unwrap_or(false);
+        }
+        // 24 Nov 2026 (the user: "ensure it works no matter what"): the list's newer lines ("option ..." for ffmpeg 5+,
+        // exact "duration" joins) are what keep 120/144 fps clips from freezing at joins - but an ffmpeg that chokes on
+        // them must never cost the clip. Still failing = once more with only "file" lines (how every save worked before
+        // 2.0.6) and nothing mixed in: a clip that may stutter at a join beats no clip.
+        let plain = concat_list_plain(&paths);
+        if !ok && plain != body && fs::write(&list, &plain).is_ok() {
+            let st = run(&[]).map_err(err)?;
+            let m2 = String::from_utf8_lossy(&st.stderr).to_string();
+            ok = st.status.success();
+            if !ok && m2.contains("sample rate not set") {
+                ok = self.join_with_silence(&list, segs.len(), out).unwrap_or(false);
+            }
+            log_line(&format!("save: failed with the exact joins - plain list {} ({})", if ok { "worked" } else { "failed too" },
+                m2.trim().lines().next().unwrap_or("no error text")));
         }
         let _ = fs::remove_file(&list);
         Ok(ok)
@@ -4004,7 +4026,7 @@ impl Recorder {
     pub fn move_clip(&self, path: &str, folder: &str) -> Result<String, String> {
         let p = PathBuf::from(path);
         if !self.is_clip(&p) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let folder = clean_folder(folder);
         if folder_reserved(&folder) {
@@ -4530,7 +4552,7 @@ impl Recorder {
         let p = PathBuf::from(path);
         let shot = p.parent() == Some(self.clips_dir().join("Screenshots").as_path());
         if !self.is_clip(&p) && !shot {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         #[cfg(windows)]
         {
@@ -5119,7 +5141,7 @@ impl Recorder {
     pub fn trim_clip(&self, path: &str, start: f64, end: f64, exact: bool, replace: bool) -> Result<String, String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let len = end - start;
         if !(start >= 0.0 && len >= 0.3) {
@@ -5304,7 +5326,7 @@ impl Recorder {
     pub fn compress_clip(&self, path: &str, factor: f64, av1: bool, progress: &dyn Fn(f64)) -> Result<(u64, u64), String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         // AV1 already: converting again gains nothing, and H.264 at half its bitrate would look much worse
         if is_av1(path) {
@@ -6169,7 +6191,7 @@ impl Recorder {
     pub fn render_edit(&self, path: &str, e: &Edit) -> Result<String, String> {
         let src = PathBuf::from(path);
         if !self.is_clip(&src) {
-            return Err("not a Clipper clip".into());
+            return Err("not an Echo clip".into());
         }
         let out_dir = src.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| self.clips_dir());
         let mut segs: Vec<&Seg> = e.segments.iter().filter(|s| s.end - s.start >= 0.05).collect();
@@ -9756,5 +9778,59 @@ mod fit_size_tests {
             }
         }
         assert!(bad.is_empty(), "outside 85-100 %: {bad:?}");
+    }
+}
+
+#[cfg(test)]
+mod save_list_tests {
+    use super::*;
+
+    /// 24 Nov 2026 ("ensure it works no matter what"): a save that fails with the exact-joins list is tried again with
+    /// the plain one. Real ffmpeg (skipped without one): three 2 s buffer-like segments (H.264 + s302m audio in TS)
+    /// saved with the full list, the plain list, and a list with a broken line - the plain list must always save.
+    #[test]
+    fn plain_list_saves_when_the_exact_one_cannot() {
+        let ff = std::env::var("ECHO_TEST_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        if Command::new(&ff).arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| !s.success()).unwrap_or(true) {
+            eprintln!("no ffmpeg here - skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("echo-save-list-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let mut segs = vec![];
+        for i in 0..3 {
+            let p = dir.join(format!("seg_{i}.ts"));
+            let ok = Command::new(&ff)
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x240:r=120:d=2",
+                    "-f", "lavfi", "-i", "sine=f=440:d=2:r=48000", "-c:v", "libx264", "-g", "240", "-c:a", "s302m", "-strict", "-2", "-ac", "2",
+                    "-output_ts_offset", &format!("{}", i * 2), "-f", "mpegts"])
+                .arg(&p).output();
+            let ok = match &ok { Ok(o) if o.status.success() => true, Ok(o) => { eprintln!("{}", String::from_utf8_lossy(&o.stderr)); false } Err(e) => { eprintln!("{e}"); false } };
+            if !ok {
+                eprintln!("this ffmpeg can't make test segments - skipped");
+                return;
+            }
+            segs.push(p);
+        }
+        let save = |list: &str, name: &str| {
+            let l = dir.join(format!("{name}.txt"));
+            fs::write(&l, list).unwrap();
+            let out = dir.join(format!("{name}.mp4"));
+            let st = Command::new(&ff).args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&l)
+                .args(["-map", "0:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-f", "mp4"]).arg(&out)
+                .output().unwrap();
+            (st.status.success() && fs::metadata(&out).map(|m| m.len() > 1000).unwrap_or(false), String::from_utf8_lossy(&st.stderr).to_string())
+        };
+        let plain = concat_list_plain(&segs);
+        assert!(plain.lines().all(|l| l.starts_with("file '")), "{plain}");
+        assert!(save(&plain, "plain").0, "the plain list must save with any ffmpeg");
+        let full = concat_list(&segs);
+        let (ok_full, e_full) = save(&full, "full");
+        eprintln!("exact list: {} {}", if ok_full { "saved" } else { "FAILED" }, e_full.trim());
+        // a line this ffmpeg can't take: the first try may fail, the plain list is what join() then uses
+        let broken = full.replacen("file '", "option no_such_option_here 1\nfile '", 1).replace("duration ", "duraton ");
+        let (ok_broken, e_broken) = save(&broken, "broken");
+        eprintln!("broken list: {} {}", if ok_broken { "saved anyway" } else { "failed (plain list takes over)" }, e_broken.trim().lines().next().unwrap_or(""));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -238,7 +238,7 @@ async function authVerify(req, env) {
   return json({ token, ...me(user, await usage(env, user)) });
 }
 
-// ----- Lasso share links without an account (William, 21 Nov 2026: "yes, no account") -----
+// ----- Lasso share links without an account (the user, 21 Nov 2026: "yes, no account") -----
 // Lasso makes a random device key on its first link and keeps it in a file. POST /auth/device turns it into a normal
 // session of a hidden "device" account (plan 'device', no e-mail - the address column gets a made-up
 // d-<hash>@device.lasso that is never mailed). Such an account can only upload and share Lasso pictures, its links
@@ -2424,7 +2424,7 @@ async function releaseFromWeb(repo) {
   console.log("github: API failed, read", repo, v, "from github.com (", assets.length, "files)");
   return { name, body, published_at: updated, created_at: updated, public: true, assets };
 }
-const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+/) || [])[0];
+const relVersion = (rel) => rel && ((rel.name || "").match(/\d+\.\d+\.\d+(?:-[a-z]+\.\d+)?/) || [])[0];
 /// the release the public build pushed last (D1 table pushedrel, cached 30 s per Worker copy), or null.
 /// While a new build is replacing "latest" its files are briefly gone - the push only arrives once they're up.
 // one entry per channel ("stable" = pushedrel id 1, the row it always used)
@@ -2450,10 +2450,12 @@ async function releasePush(req, env) {
   if (diff) return fail("Wrong release key", 403);
   const b = await req.json().catch(() => null);
   const v = b && String(b.version || "");
-  if (!/^\d+\.\d+\.\d+$/.test(v) || !Array.isArray(b.files)) return fail("bad release", 400);
   // update channels (17 Nov 2026): no channel = stable = exactly the old behaviour
   const channel = b.channel === undefined || b.channel === "" ? "stable" : String(b.channel);
   if (!CHANNELS.includes(channel)) return fail("bad channel", 400);
+  // Stable = 2.0.25; beta / dev = 2.0.25-dev.3 (24 Nov 2026), the label must be the channel's own
+  const verOk = channel === "stable" ? /^\d+\.\d+\.\d+$/.test(v) : new RegExp(`^\\d+\\.\\d+\\.\\d+(-${channel}\\.\\d+)?$`).test(v);
+  if (!verOk || !Array.isArray(b.files)) return fail("bad release", 400);
   const repo = publicRepo(env), sigs = b.sigs || {}, tag = CHANNEL_TAG[channel];
   const notes = String(b.notes || "").split("\n")[0].trim().slice(0, 600);
   const assets = b.files.map(String).filter((n) => /^[A-Za-z0-9._-]{1,80}$/.test(n)).map((n) => ({
@@ -2614,10 +2616,18 @@ async function appStats(env) {
 // 204 = up to date; otherwise {version, notes, pub_date, url, signature}. The version comes from the
 // release title "Echo 1.0.<n>" (ci/build.yml), the signature from the <file>.sig next to the installer.
 const UPDATE_FILES = { windows: "windows", linux: "linux" };
-const verNum = (v) => String(v || "").split(/[.+-]/).slice(0, 3).map((x) => parseInt(x, 10) || 0);
+// 24 Nov 2026: beta / dev builds are 2.0.25-dev.3 (the Stable they lead up to + one count for beta and dev,
+// ci/build.yml) and count as OLDER than that Stable, newer than 2.0.24 - same as Echo's ver_gt (setup.rs)
+const verNum = (v) => {
+  const s = String(v || "").trim().replace(/^v/, "").split("+")[0], i = s.indexOf("-");
+  const n = (i < 0 ? s : s.slice(0, i)).split(".").slice(0, 3).map((x) => parseInt(x, 10) || 0);
+  while (n.length < 3) n.push(0);
+  n.push(i < 0 ? Infinity : parseInt(s.slice(i + 1).split(".").pop(), 10) || 0);
+  return n;
+};
 function newer(a, b) {
   const x = verNum(a), y = verNum(b);
-  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] > y[i];
   return false;
 }
 const sigCache = new Map();

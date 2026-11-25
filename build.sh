@@ -21,7 +21,9 @@ cp "$bin" ./Echo || exit 1
 # X11 class is "link.echoclip.Echo" (popup.rs; Echo itself writes link.echoclip.Echo.desktop) -> StartupWMClass finds the icon.
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
 cp src-tauri/icons/icon.png ~/.local/share/icons/hicolor/256x256/apps/echo-clips.png
-for id in dk.volkan.clipper echo; do
+# 24 Nov 2026: the visible dev entry was named after the app's old id (dk.<...>.clipper) - that one goes, echo-dev replaces it
+rm -f ~/.local/share/applications/dk.*.clipper.desktop
+for id in echo-dev echo; do
   nd=false; [ "$id" = echo ] && nd=true
   cat > ~/.local/share/applications/$id.desktop <<EOF
 [Desktop Entry]

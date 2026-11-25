@@ -15,9 +15,9 @@ const FIRST_ID: usize = 10;
 const MAX_IDS: usize = 40;
 const GIF_FPS: f64 = 20.0;
 
-/// Echo's sticker folder (%APPDATA%\Clipper\stickers) - edits made in either app find the files
+/// Echo's sticker folder (%APPDATA%\EchoClip\stickers, was Clipper) - edits made in either app find the files
 pub fn stickers_dir() -> PathBuf {
-    std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir()).join("Clipper").join("stickers")
+    echo_core::settings::data_dir().join("stickers")
 }
 
 // ---------- emoji -> picture (swash: the system's colour emoji font) ----------

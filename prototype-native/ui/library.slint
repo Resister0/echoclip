@@ -39,7 +39,16 @@ export struct GridRow {
     n: int,
     extra: int,      // px for tag / note lines under the names in this row (cards in a row line up)
     last: bool,      // last card row of its group: no gap below it (Echo's grid gap is only between rows)
-    saving: bool,    // the "Saving clip…" card comes first in this row (Echo's #savingcard, prepended to the top grid)
+    // "Saving clip…" cards that come first in this row (Echo's #savingcard, prepended to the top grid; 24 Nov 2026:
+    // one per clip being saved, so two quick saves show two), taken from Lib.savings[sfirst ..]
+    saving: int,
+    sfirst: int,
+}
+
+// one "Saving clip…" card
+export struct SavingInfo {
+    line: string,    // "Saving the last 3 min…" / "Almost ready…"
+    done: bool,      // saved: "Clip saved · Opens in a moment"
 }
 
 // one option in the filter panel
@@ -108,9 +117,8 @@ in-out property <bool> menu-closing;
     callback menu-open(int);             // row: Rust fills menu-n / menu-av1 before the menu shows
     callback shrink(int, string);        // row, "half" / "third" / "av1": asks, then queues (Echo's queueJobs)
     callback sel-act(string);            // the selection: "combine" / "fav" / "delete" / "clear" / "av1"
-    // Echo's "Saving clip…" card (shown while a clip is being saved, until it is in the list)
-    in-out property <string> saving-line;  // "Saving the last 3 min…" / "Almost ready…"
-    in-out property <bool> saving-done;    // saved: "Clip saved · Opens in a moment"
+    // Echo's "Saving clip…" cards (one per clip being saved, newest first, until each is in the list)
+    in-out property <[SavingInfo]> savings;
     // gaps-cloud (row 6, cloud_live.rs): the clip uploading in the background - its card (view row / Home card idx,
     // -1 = none) gets Echo's .upbar + .uplbl "☁ Uploading 40%"
     in-out property <int> up-row: -1;
@@ -122,6 +130,7 @@ in-out property <bool> menu-closing;
 // Echo's #savingcard: a card with a spinner on a dark picture, not clickable
 export component SavingCard inherits Rectangle {
     in property <bool> small; // list view
+    in property <SavingInfo> info;
     background: T.panel;
     border-radius: T.radius;
     border-width: 1px;
@@ -171,7 +180,7 @@ export component SavingCard inherits Rectangle {
                 }
             }
             Text {
-                text: Lib.saving-line;
+                text: root.info.line;
                 font-size: small ? 12px : 13px;
                 color: T.muted;
                 horizontal-alignment: center;
@@ -186,14 +195,14 @@ export component SavingCard inherits Rectangle {
         alignment: center;
         spacing: 3px;
         Text {
-            text: Lib.saving-done ? "Clip saved" : "Saving clip…";
+            text: root.info.done ? "Clip saved" : "Saving clip…";
             font-size: 15px;
             font-weight: 600 + T.fw;
             color: T.text;
             overflow: elide;
         }
         Text {
-            text: Lib.saving-done ? "Opens in a moment" : "Long clips take a few seconds";
+            text: root.info.done ? "Opens in a moment" : "Long clips take a few seconds";
             font-size: 12.5px;
             color: T.muted;
             overflow: elide;
@@ -792,7 +801,7 @@ component Thumb inherits Rectangle {
         text: data.dur;
         bg: #000000dd;
     }
-    // bottom left: "Edited", then the tags (11 Nov 2026, William: a tag must not make the whole row of cards taller -
+    // bottom left: "Edited", then the tags (11 Nov 2026, the user: a tag must not make the whole row of cards taller -
     // they were a line under the name). Up to 2 tags, cut with … to stay clear of the length badge, the rest "+N".
     // The list view keeps its tag line next to the 176 px picture (its rows have a fixed height anyway).
     if (data.edited || (data.tags.length > 0 && !root.small)) && data.job == "": tg := HorizontalLayout {
@@ -966,7 +975,7 @@ component CardButtons inherits HorizontalLayout {
     in property <string> size-text;
     spacing: 2px;
     alignment: end;
-    // 11 Nov 2026 (William: the name is cut with … far too early on a maximised window): only as wide as the buttons.
+    // 11 Nov 2026 (the user: the name is cut with … far too early on a maximised window): only as wide as the buttons.
     // With the default stretch this layout took half of every spare pixel, so on big cards the name got only half.
     horizontal-stretch: 0;
     // .more: takes no room until hover (the name gets the full width), then slides open to the LEFT of copy

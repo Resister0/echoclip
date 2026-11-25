@@ -1,4 +1,5 @@
-//! User settings, stored as JSON in %APPDATA%\Clipper\settings.json.
+//! User settings, stored as JSON in Echo's folder: %APPDATA%\EchoClip\settings.json (was %APPDATA%\Clipper before
+//! 24 Nov 2026 - see data_dir).
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -331,13 +332,114 @@ impl Default for Settings {
     }
 }
 
+// ---------- Echo's own folder ----------
+// %APPDATA%\EchoClip (Linux: ~/.config/EchoClip - rec_core::early_env points APPDATA there; Flatpak: inside its own
+// config folder). Until 24 Nov 2026 it was "Clipper", the app's first test name (the user: "why is Echo still called
+// Clipper in some places"). The Echo that holds the single-instance lock renames it ONCE at start (move_old_folder):
+// one rename = everything moves or nothing does, so settings, sign-ins, stickers and downloaded tools are never split.
+// If the rename can't happen (a file in use, a folder with the new name that isn't Echo's), Echo simply keeps using
+// "Clipper" and tries again next start. Afterwards a link named "Clipper" points at the new folder, so an older Echo
+// (installed again by hand) and an older Lasso still find everything.
+
+/// the folder's name now / before 24 Nov 2026
+pub const DIR_NAME: &str = "EchoClip";
+pub const OLD_DIR_NAME: &str = "Clipper";
+/// written into the new folder once it's Echo's (moved or made new) - a folder with that name without it isn't trusted
+const DIR_MARK: &str = ".echo-folder";
+
+fn dir_base() -> PathBuf {
+    std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir())
+}
+
+/// Echo's folder (settings.json, games.json, icons, stickers, ffmpeg, whisper, rclone, ...). Worked out on every call
+/// (a stat or two), never kept: a path read before the move still works through the "Clipper" link.
+pub fn data_dir() -> PathBuf {
+    data_dir_in(&dir_base())
+}
+
+pub fn data_dir_in(base: &std::path::Path) -> PathBuf {
+    let new = base.join(DIR_NAME);
+    if new.join(DIR_MARK).exists() {
+        return new;
+    }
+    let old = base.join(OLD_DIR_NAME);
+    if old.exists() {
+        return old;
+    }
+    new
+}
+
+/// Once at start, only by the Echo that holds the single-instance lock: "Clipper" -> "EchoClip". Returns a line for
+/// the log.
+pub fn move_old_folder() -> String {
+    move_old_folder_in(&dir_base())
+}
+
+pub fn move_old_folder_in(base: &std::path::Path) -> String {
+    let new = base.join(DIR_NAME);
+    let old = base.join(OLD_DIR_NAME);
+    let mark = |d: &std::path::Path| {
+        let _ = fs::write(d.join(DIR_MARK), "Echo's settings folder (it was called Clipper before 24 Nov 2026). Please leave this file here.\n");
+    };
+    if new.join(DIR_MARK).exists() {
+        return String::new(); // done before
+    }
+    let old_meta = fs::symlink_metadata(&old).ok();
+    let old_is_link = old_meta.as_ref().is_some_and(|m| m.file_type().is_symlink());
+    let old_is_dir = old_meta.as_ref().is_some_and(|m| m.is_dir()) && !old_is_link;
+    if old_is_dir {
+        if new.exists() {
+            return format!("folder: {DIR_NAME} already exists but isn't Echo's - staying in {OLD_DIR_NAME}");
+        }
+        if let Err(e) = fs::rename(&old, &new) {
+            return format!("folder: couldn't rename {OLD_DIR_NAME} to {DIR_NAME} ({e}) - staying in {OLD_DIR_NAME}, trying again next start");
+        }
+        mark(&new);
+        let link = link_old_name(&old, &new);
+        return format!("folder: {OLD_DIR_NAME} renamed to {DIR_NAME}{link}");
+    }
+    if old_meta.is_none() {
+        // a new install (or the old name is gone): this is Echo's folder from now on
+        let _ = fs::create_dir_all(&new);
+        mark(&new);
+        return String::new();
+    }
+    String::new()
+}
+
+/// the old name as a link to the new folder (Windows: a directory junction - no admin rights needed; Linux: a
+/// symlink). Best effort: without it only an OLDER Echo / Lasso wouldn't find the settings.
+fn link_old_name(old: &std::path::Path, new: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(old)
+            .arg(new)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok { ", old name links to it".into() } else { " (no link with the old name)".into() }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = new;
+        match std::os::unix::fs::symlink(DIR_NAME, old) {
+            Ok(()) => ", old name links to it".into(),
+            Err(e) => format!(" (no link with the old name: {e})"),
+        }
+    }
+}
+
 impl Settings {
     /// names of the secret fields (keyring item names on Linux)
     const SECRETS: [&'static str; 4] = ["ec_token", "r2_key", "r2_secret", "rclone_pass"];
 
     pub fn path() -> PathBuf {
-        let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-        base.join("Clipper").join("settings.json")
+        data_dir().join("settings.json")
     }
 
     pub fn load() -> Self {
@@ -592,5 +694,93 @@ pub mod secret {
         #[allow(dead_code)]
         pub fn protect(_: &[u8]) -> Option<Vec<u8>> { None }
         pub fn unprotect(_: &[u8]) -> Option<Vec<u8>> { None }
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("echo-folder-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 24 Nov 2026: an update moves the old "Clipper" folder in one go - nothing left behind, nothing lost, and the
+    /// old name still leads to the same files (older Echo / Lasso)
+    #[test]
+    fn old_folder_moves_once_and_keeps_everything() {
+        let b = scratch("move");
+        let old = b.join(OLD_DIR_NAME);
+        fs::create_dir_all(old.join("rclone")).unwrap();
+        fs::write(old.join("settings.json"), "{\"clips_dir\":\"X\"}").unwrap();
+        fs::write(old.join("rclone").join("echo.conf"), "login").unwrap();
+        assert_eq!(data_dir_in(&b), old, "before the move the old folder is used");
+        let line = move_old_folder_in(&b);
+        assert!(line.contains("renamed"), "{line}");
+        let new = b.join(DIR_NAME);
+        assert_eq!(data_dir_in(&b), new);
+        assert_eq!(fs::read_to_string(new.join("settings.json")).unwrap(), "{\"clips_dir\":\"X\"}");
+        assert_eq!(fs::read_to_string(new.join("rclone").join("echo.conf")).unwrap(), "login");
+        if line.contains("links to it") {
+            // through the old name: the same file
+            assert_eq!(fs::read_to_string(old.join("settings.json")).unwrap(), "{\"clips_dir\":\"X\"}");
+        }
+        // a second start changes nothing
+        assert_eq!(move_old_folder_in(&b), "");
+        assert_eq!(data_dir_in(&b), new);
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    /// a new install gets the new folder straight away; an older Echo installed later can't pull it back to "Clipper"
+    #[test]
+    fn new_install_uses_the_new_name() {
+        let b = scratch("fresh");
+        assert_eq!(data_dir_in(&b), b.join(DIR_NAME));
+        move_old_folder_in(&b);
+        assert!(b.join(DIR_NAME).join(DIR_MARK).exists());
+        fs::create_dir_all(b.join(OLD_DIR_NAME)).unwrap(); // an old Echo made its own folder
+        assert_eq!(data_dir_in(&b), b.join(DIR_NAME));
+        assert_eq!(move_old_folder_in(&b), "");
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    /// a folder with the new name that isn't Echo's is never taken over or merged: Echo stays in "Clipper"
+    #[test]
+    fn someone_elses_folder_is_left_alone() {
+        let b = scratch("clash");
+        fs::create_dir_all(b.join(OLD_DIR_NAME)).unwrap();
+        fs::write(b.join(OLD_DIR_NAME).join("settings.json"), "mine").unwrap();
+        fs::create_dir_all(b.join(DIR_NAME)).unwrap();
+        fs::write(b.join(DIR_NAME).join("other.txt"), "not Echo's").unwrap();
+        let line = move_old_folder_in(&b);
+        assert!(line.contains("staying in"), "{line}");
+        assert_eq!(data_dir_in(&b), b.join(OLD_DIR_NAME));
+        assert_eq!(fs::read_to_string(b.join(OLD_DIR_NAME).join("settings.json")).unwrap(), "mine");
+        assert!(!b.join(DIR_NAME).join(DIR_MARK).exists());
+        let _ = fs::remove_dir_all(&b);
+    }
+
+    /// a file held open without delete sharing (Windows) blocks the rename: Echo keeps using "Clipper", nothing is
+    /// half moved, and the next start tries again
+    #[cfg(windows)]
+    #[test]
+    fn a_busy_folder_stays_where_it_is() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let b = scratch("busy");
+        let old = b.join(OLD_DIR_NAME);
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("settings.json"), "keep").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(1).open(old.join("settings.json")).unwrap(); // FILE_SHARE_READ only
+        let line = move_old_folder_in(&b);
+        assert!(line.contains("couldn't rename"), "{line}");
+        assert_eq!(data_dir_in(&b), old);
+        assert!(!b.join(DIR_NAME).exists());
+        drop(held);
+        assert!(move_old_folder_in(&b).contains("renamed"));
+        assert_eq!(data_dir_in(&b), b.join(DIR_NAME));
+        let _ = fs::remove_dir_all(&b);
     }
 }

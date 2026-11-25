@@ -652,7 +652,7 @@ export component AppWindow inherits Window {
         tdl.take-focus();
     }
 
-    // Chat B (night): Echo's background effect (#bgfxc). William, 11 Nov 2026: it drew over the clip cards - now
+    // Chat B (night): Echo's background effect (#bgfxc). the user, 11 Nov 2026: it drew over the clip cards - now
     // BEHIND the pages (only in the gaps / see-through parts); the Settings page has its own copy (settings.slint)
     FxLayer {
         x: 0;
@@ -985,7 +985,7 @@ export component AppWindow inherits Window {
             recbtn := Btn {
                 y: 10px;
                 height: 32px;
-                // William, 11 Nov 2026: Record and Save clip the same size - both take the wider one, at least the
+                // The user, 11 Nov 2026: Record and Save clip the same size - both take the wider one, at least the
                 // width of "Stop · 10:00" so the button doesn't grow while a recording runs
                 width: max(124px, self.natural-w, savebtn.natural-w);
                 // Echo's #longbtn: red dot (asked: "the nice fancy red icon"), red edge + blinking dot while recording
@@ -1002,7 +1002,7 @@ export component AppWindow inherits Window {
                 y: 10px;
                 height: 32px;
                 width: max(124px, self.natural-w, recbtn.natural-w);
-                // William, 11 Nov 2026: its glow ran below the title bar into the page - here it's even on all sides
+                // The user, 11 Nov 2026: its glow ran below the title bar into the page - here it's even on all sides
                 // (no offset) and ends inside the 10 px under the button (the bar is 52 px, the button 10..42)
                 drop-shadow-blur: 8px;
                 drop-shadow-offset-y: 0;
@@ -1889,9 +1889,10 @@ export component AppWindow inherits Window {
                                     height: grid.card-h + r.extra * 1px;
                                     spacing: grid.gap;
                                     alignment: start;
-                                    if r.saving: SavingCard {
+                                    for s in r.saving: SavingCard {
                                         width: grid.card-w;
                                         height: grid.card-h + r.extra * 1px;
+                                        info: Lib.savings[r.sfirst + s];
                                     }
                                     for c in r.n: CardView {
                                         width: grid.card-w;
@@ -1899,14 +1900,15 @@ export component AppWindow inherits Window {
                                         data: root.cards[r.first + c];
                                     }
                                 }
-                                if r.header == "" && root.list-view && r.saving: SavingCard {
+                                if r.header == "" && root.list-view && r.saving > 0: SavingCard {
                                     x: 28px;
                                     y: 0;
                                     width: grid.card-w;
                                     height: 101px;
                                     small: true;
+                                    info: Lib.savings[r.sfirst];
                                 }
-                                if r.header == "" && root.list-view && !r.saving: ListCard {
+                                if r.header == "" && root.list-view && r.saving == 0: ListCard {
                                     x: 28px;
                                     y: 0;
                                     width: grid.card-w;

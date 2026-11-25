@@ -347,7 +347,7 @@ export component HomePage inherits Rectangle {
     // video keeps its full 16:9 size
     // 12 Nov 2026: always (the clip sits loaded + paused there, playing or not looks the same)
     property <length> strip-h: 123px;
-    // 12 Nov 2026 (William: the player stuck out over the top bar): the strip + bar count in what fits - without them
+    // 12 Nov 2026 (the user: the player stuck out over the top bar): the strip + bar count in what fits - without them
     // the page was 123 px taller than the window, so Home scrolled and the player (drawn over the page, not clipped
     // by it) went up over the title bar while the side card was cut off at it
     // at least 440 px: the bar under it (play, time, SPEED, VOL, fullscreen) needs ~430 (fits the narrowest window: 448)
@@ -388,7 +388,7 @@ export component HomePage inherits Rectangle {
                 Play.act("inline-stop");
             }
         }
-        // 11 Nov 2026 (William): a click anywhere on Home outside the clip playing in the picture closes it - back to
+        // 11 Nov 2026 (the user): a click anywhere on Home outside the clip playing in the picture closes it - back to
         // the still with the play button (buttons, the picture and the player itself take their own clicks)
         if Play.inline-active: TouchArea {
             x: 0;
@@ -576,7 +576,7 @@ export component HomePage inherits Rectangle {
                             height: root.vh + 2px; // the video's part (the strip + bar under it come with the clip)
                             data: root.hero-card;
                         }
-                        // 11 Nov 2026 (William: "remove hover to play, only for the Home player"): this takes the mouse over
+                        // 11 Nov 2026 (the user: "remove hover to play, only for the Home player"): this takes the mouse over
                         // the picture, so the card under it never starts its hover preview; a click plays it here
                         pta := TouchArea {
                             height: root.vh;

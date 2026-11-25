@@ -1631,10 +1631,9 @@ fn whisper_dir() -> PathBuf {
     if let Ok(d) = std::env::var("ECHO_WHISPER_DIR") {
         return PathBuf::from(d);
     }
-    // r2-threads (L31): echo_core's folder on every system ($APPDATA/Clipper/whisper - on Linux rec_core::early_env
-    // sets APPDATA = ~/.config), so captions_ready and the download Echo made match what transcribe uses
-    let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
-    base.join("Clipper").join("whisper")
+    // r2-threads (L31): echo_core's folder on every system ($APPDATA/EchoClip/whisper, was Clipper - on Linux
+    // rec_core::early_env sets APPDATA = ~/.config), so captions_ready and the download Echo made match what transcribe uses
+    echo_core::settings::data_dir().join("whisper")
 }
 
 /// r2-threads (L31): where this app downloaded whisper on Linux before (~/.local/share/Clipper/whisper) - still

@@ -8,8 +8,9 @@ if (-not $Clip -or -not (Test-Path $Clip)) { Write-Host "Clip not found. Run: .\
 $ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
 if (-not $ff) { Write-Host "ffmpeg.exe not found"; exit }
 
-$wm = "$env:APPDATA\Clipper\watermark.apng"
-if (-not (Test-Path $wm)) { $wm = "$env:APPDATA\Clipper\watermark_echo.apng" }
+$ed = if (Test-Path "$env:APPDATA\EchoClip\.echo-folder") { "$env:APPDATA\EchoClip" } else { "$env:APPDATA\Clipper" }  # renamed 24 Nov 2026
+$wm = "$ed\watermark.apng"
+if (-not (Test-Path $wm)) { $wm = "$ed\watermark_echo.apng" }
 $wmf = ($wm -replace '\\', '/') -replace ':', '\:'
 $o = "$env:TEMP\echo_bench"
 $tv = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"

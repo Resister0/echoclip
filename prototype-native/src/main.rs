@@ -337,15 +337,7 @@ fn changelog() -> Vec<(String, String)> {
 }
 
 fn ver_gt(a: &str, b: &str) -> bool {
-    let p = |s: &str| s.split('.').map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
-    let (x, y) = (p(a), p(b));
-    for i in 0..3 {
-        let (u, w) = (x.get(i).copied().unwrap_or(0), y.get(i).copied().unwrap_or(0));
-        if u != w {
-            return u > w;
-        }
-    }
-    false
+    crate::setup::ver_gt(a, b)   // one compare for everything (beta / dev builds 2.0.25-dev.3, 24 Nov 2026)
 }
 
 /// Echo's sidebar update card, look-only (the prototype has no version and doesn't update). Test hooks:
@@ -621,7 +613,7 @@ fn home_fill(a: &AppWindow, lib: &Rc<library::LibModel>) {
             let dir = std::env::temp_dir().join("echo-proto-hero");
             // "-start": the still is of the clip's start now (the older "-full" files were 15 % in)
             let out = dir.join(format!("{}-{stamp}-start.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
-            // 11 Nov 2026 (William: "why is this image preview like 360p"): without ffmpeg yet (a first start still
+            // 11 Nov 2026 (the user: "why is this image preview like 360p"): without ffmpeg yet (a first start still
             // downloads it) this used to mark the still as "being made" and stop - Home kept the small card picture
             // for good. Now a still already on disk is used without ffmpeg, and with neither, the next fill tries again.
             let ff = sheets::ffmpeg();
@@ -717,7 +709,7 @@ fn echo_in_front(win: &slint::Window) -> bool {
 }
 
 /// the moment Home shows of a clip: its still, and where Home's paused clip waits - its start (0:00; half a second
-/// in, the very first frame of a recording can be black). 12 Nov 2026 (William): coming back to Home shows 0:00, not
+/// in, the very first frame of a recording can be black). 12 Nov 2026 (the user): coming back to Home shows 0:00, not
 /// a spot further in (was 15 % of the clip, at most 5 s).
 fn home_still_at(_dur: f64) -> f64 {
     0.5
@@ -952,6 +944,7 @@ fn main() {
     LIB.with(|l| *l.borrow_mut() = Some(lib.clone()));
     app.set_cards(ModelRc::from(lib.clone()));
     app.set_rows(ModelRc::from(lib.rows.clone()));
+    app.global::<Lib>().set_savings(ModelRc::from(lib.savings.clone()));
     eprintln!("library: {} clips in {} scanned in {scan_ms} ms", lib.len(), clips_dir.display());
 
     // header + sidebar meter from Echo's settings.json (look-only: the prototype doesn't record)
@@ -2035,7 +2028,7 @@ fn main() {
             let thumb = sharp.clone().or_else(|| lib.thumb_img(idx));
             p.poster_px = thumb.as_ref().and_then(|i| i.to_rgb8());
             // 13 Nov 2026: Home's picture keeps showing its still (or the card picture while the sharp one is made)
-            // until the video's first frame - not black (William, Linux: arrowing through Home's clips showed black)
+            // until the video's first frame - not black (the user, Linux: arrowing through Home's clips showed black)
             let keep_still = sharp.is_some() || pl.get_inline() || std::env::var("ECHO_POSTER").is_ok(); // (the sharp still replaces the card picture when it's made: home_fill)
             pl.set_poster(if keep_still { thumb.unwrap_or_default() } else { slint::Image::default() });
             pl.set_poster_on(true);
@@ -2101,7 +2094,7 @@ fn main() {
             });
         })
     };
-    // 12 Nov 2026 (William: "diff between playing and not playing, i want both the same" + "the player opened one is
+    // 12 Nov 2026 (the user: "diff between playing and not playing, i want both the same" + "the player opened one is
     // significantly sharper, just the real freeze frame"): Home's clip sits LOADED and PAUSED in Home's picture, at the
     // moment Home's still shows - video + filmstrip + bar, the real frame at full size; play starts it right there,
     // nothing moves. `start` = play it now (Home's play), else only load it paused.
@@ -2116,7 +2109,7 @@ fn main() {
             play(library::HOME_BASE as i32);
             HOME_QUIET.with(|q| q.set(false));
             if !start {
-                // 12 Nov 2026 (William: back on Home it showed 0:00 but kept the old spot): always a fresh load from the
+                // 12 Nov 2026 (the user: back on Home it showed 0:00 but kept the old spot): always a fresh load from the
                 // start - mpv itself is there; the time and the playhead only come from mpv (play() starts them at 0)
                 let mut pb = p.borrow_mut();
                 pb.pending = Some((c.path.clone(), home_still_at(c.dur.unwrap_or(0.0))));
@@ -2125,7 +2118,7 @@ fn main() {
             }
         })
     };
-    // 12 Nov 2026 (William): Home's player in FULLSCREEN, ← at the very start / → at the very end = Home's previous / next
+    // 12 Nov 2026 (the user): Home's player in FULLSCREEN, ← at the very start / → at the very end = Home's previous / next
     // clip (the same as Home's ‹ ›), loaded in the same player: it stays fullscreen, starts at 0:00, playing or paused as
     // before. Nothing at the first / last clip.
     let home_edge: Rc<dyn Fn(&AppWindow, bool)> = {
@@ -2172,13 +2165,13 @@ fn main() {
                 && !ed.get_open()
                 && !ed.get_opening()
                 && !a.global::<Dlg>().get_open();
-            // 13 Nov 2026 (William): a cloud-only clip gets Home's player too (paused, it streams from the cloud copy)
+            // 13 Nov 2026 (the user): a cloud-only clip gets Home's player too (paused, it streams from the cloud copy)
             let local = idx.is_some_and(|i| { let c = lib.clip(i); c.path.is_file() || c.cloud.is_some() });
             let (open, clip) = {
                 let pb = p.borrow();
                 (pb.open, pb.clip)
             };
-            // 13 Nov 2026 (William, Linux: cloud clips on Home "don't trigger the full player"): only a local file is
+            // 13 Nov 2026 (the user, Linux: cloud clips on Home "don't trigger the full player"): only a local file is
             // pre-loaded paused, but a cloud-only clip started with Home's play (it streams) must stay - this check
             // closed it again 400 ms after it opened
             let want = shown && (local || (open && clip == idx && ps.get_inline_active()));
@@ -3316,7 +3309,7 @@ fn main() {
                             let sf = a.window().scale_factor();
                             let want = (((a.get_video_w() * sf).round() as i32).max(16), ((a.get_video_h() * sf).round() as i32).max(16));
                             let new_tex = unsafe { ensure_tex(gl, &mut pl.gpu, want) };
-                            // 13 Nov 2026 (William, Linux: Home's paused clip stayed black until Space): a clip loaded
+                            // 13 Nov 2026 (the user, Linux: Home's paused clip stayed black until Space): a clip loaded
                             // PAUSED may never flag a new frame - draw mpv's current picture when the first one is
                             // reported, and ask mpv to show it again (like Windows' window mode above)
                             if just_shown && m.get("pause").as_deref() == Some("yes") {
@@ -3546,7 +3539,7 @@ fn main() {
             cloud_live::player_tick(&a, p.mpv.as_ref(), p.clip.filter(|_| p.open)); // gaps-cloud (row 5)
             // the "Saving clip…" card never stays longer than 90 s (a save that never reports back)
             if tick % 12 == 6 && lib.saving_expire() {
-                lib.rebuild_rows();
+                rec_core::saving_card(&a, &lib);
             }
             // every 3 s: clips deleted / added outside Echo (file manager) leave / join the library (chat 5)
             // r2-threads (L3): the walk runs on a worker (bgwork.rs), the library follows on the UI thread
@@ -3824,7 +3817,7 @@ fn main() {
         let nav = nav.clone();
         app.window().on_winit_window_event(move |win, ev| {
             ownkeys::winit_event(ev); // Echo's hotkeys while its own window has the keyboard
-            // 22 Nov 2026 (William on KDE Wayland, 2.0.17: "can't scroll"): Wayland never tells a window it isn't
+            // 22 Nov 2026 (the user on KDE Wayland, 2.0.17: "can't scroll"): Wayland never tells a window it isn't
             // minimized any more (winit's is_minimized() = None there), so after Echo's own minimize button Slint kept
             // "minimized" for good - every wheel turn was dropped (below), the idle mode never woke, the disk check
             // stopped. Any sign the window is in use again clears it.
@@ -3941,7 +3934,7 @@ fn main() {
                     wake(&wk);
                     EventResult::Propagate
                 }
-                // 12 Nov 2026 (William: no scrolling work while minimized / in the tray): a wheel turn does nothing while
+                // 12 Nov 2026 (the user: no scrolling work while minimized / in the tray): a wheel turn does nothing while
                 // the window is minimized or hidden, and on Home also while Echo isn't the focused window (Windows'
                 // "scroll inactive windows" sends the wheel to whatever window is under the mouse, e.g. Echo open behind
                 // a game) - no glide, no relayout, nothing loaded

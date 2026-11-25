@@ -753,7 +753,7 @@ export component PlayerView inherits Rectangle {
                 Play.toggle-pause();
                 return accept;
             }
-            // ← / → in Home's picture (not fullscreen): Home's other clips, always (William, 12 Nov 2026). Everywhere else
+            // ← / → in Home's picture (not fullscreen): Home's other clips, always (the user, 12 Nov 2026). Everywhere else
             // they seek 5 s (Ctrl 2.5 s); Home's player in fullscreen also goes to Home's previous / next clip with a
             // press at the very start / end (main.rs seek-rel)
             if (inl && (e.text == Key.LeftArrow || e.text == Key.RightArrow)) {
@@ -1285,7 +1285,7 @@ export component PlayerView inherits Rectangle {
             width: root.vw;
             height: root.strip-h + root.ctl-h;
         }
-        // 12 Nov 2026 (William: "a small split to gray here, why not fade it all the way"): ONE background for the strip
+        // 12 Nov 2026 (the user: "a small split to gray here, why not fade it all the way"): ONE background for the strip
         // and the bar under it - the strip's colour at the top fading into the bar's deep theme shade at the bottom
         // (Light: light grey -> white -> a faint lavender); the strip and the bar draw no background of their own
         if !Play.full: Rectangle {
