@@ -137,3 +137,13 @@ main.sub #compare .ec-q { margin-top: var(--s-7); }
 /* 404: next steps */
 .ec-404links { list-style: none; padding: 0; margin: var(--s-6) 0 0; display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); }
 .ec-404links a::after { content: " →"; }
+
+/* guide pages (medalencoder-exe, clip-games-on-linux; 26 Nov 2026): numbered steps + a 2-column card grid */
+main.sub .grid.grid--2:not(.dlgrid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 767px) { main.sub .grid.grid--2:not(.dlgrid) { grid-template-columns: minmax(0, 1fr); } }
+main.sub .ec-steps { counter-reset: step; list-style: none; margin: var(--s-5) 0 var(--s-5); padding: 0; display: grid; gap: var(--s-3); max-width: 70ch; }
+main.sub .ec-steps li { counter-increment: step; position: relative; padding-left: 44px; color: #c4c4c4; line-height: 1.6; }
+main.sub .ec-steps li b { color: var(--ink); font-weight: 600; }
+main.sub .ec-steps li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: var(--t-small); font-weight: 600; color: var(--ink); background: rgba(var(--accent-rgb), .18); border: 1px solid rgba(var(--accent-rgb), .4); }
+main.sub--guide h1 { max-width: 22ch; }
+main.sub .ec-measure td:not(:first-child), main.sub .ec-measure th:not(:first-child) { white-space: nowrap; }

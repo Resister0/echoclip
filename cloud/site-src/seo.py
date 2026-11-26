@@ -20,14 +20,16 @@ import datetime, html, json, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parent          # cloud/site-src
 SITE = ROOT.parent / "site"
 ORIGIN = "https://echoclip.link"
-OG_IMAGE = f"{ORIGIN}/og.png?v=5"   # Discord caches images per URL: bump v when og.png changes
-OG_ALT = "Echo - incredibly lightweight clipper for Windows and Linux. About 150 MB of RAM while recording, Copy for Discord shrinks clips to fit the limit, no ads and no account."
+OG_IMAGE = f"{ORIGIN}/og.png?v=6"   # Discord caches images per URL: bump v when og.png changes
+OG_ALT = "Echo - incredibly lightweight clipper for Windows and Linux. ~81 MB of RAM while recording in the background, Copy for Discord shrinks clips to fit the limit, no ads and no account."
 
 # page file -> public path (the Worker serves download.html at /download etc.). Order = sitemap order.
 PAGES = {
     "index.html": "/",
     "download.html": "/download",
     "vs-medal.html": "/vs-medal",
+    "clip-games-on-linux.html": "/clip-games-on-linux",
+    "medalencoder-exe.html": "/medalencoder-exe",
     "pricing.html": "/pricing",
     "changelog.html": "/changelog",
     "code-signing.html": "/code-signing",
@@ -79,7 +81,7 @@ def app(desc):
 def jsonld(name, page, desc):
     org = {"@type": "Organization", "@id": f"{ORIGIN}/#org", "name": "EchoClip", "url": f"{ORIGIN}/",
            "logo": f"{ORIGIN}/icon-512.png", "email": "support@echoclip.link",
-           "sameAs": ["https://github.com/Resister0/echoclip", "https://discord.gg/JPVewEfUQs"]}
+           "sameAs": ["https://github.com/Resister0/echoclip", "https://sourceforge.net/projects/echoclip/", "https://discord.gg/JPVewEfUQs"]}
     home = head_info(page if name == "index.html" else (SITE / "index.html").read_text(encoding="utf-8"))[1]
     if name == "index.html":
         graph = [{"@type": "WebSite", "@id": f"{ORIGIN}/#site", "name": "EchoClip", "alternateName": "Echo", "url": f"{ORIGIN}/",

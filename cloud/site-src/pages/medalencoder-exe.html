@@ -1,0 +1,70 @@
+<!-- title: MedalEncoder.exe - what it is and why it uses so much CPU | desc: MedalEncoder.exe is the process that records and encodes Medal's clips. Why it can use a lot of CPU, how to lower it in Medal's settings, and a lighter alternative. -->
+<section class="sub-hero">
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <h1>What is MedalEncoder.exe?</h1>
+    <p class="lead">It's the part of Medal, the game clip app, that records your screen and encodes the video. If it uses a lot of CPU, it's almost always a setting in Medal, and a few changes bring it down.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="#lower">How to lower it</a>
+      <a class="btn btn--secondary" href="#lighter">A lighter recorder</a>
+    </div>
+  </div>
+</section>
+
+<section id="what">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Medal's recorder</h3><p>Medal keeps the last minutes of your game ready so you can save a clip with one key. That recording and the video encoding run in their own process: MedalEncoder.exe.</p></div>
+      <div class="card"><h3>Why Medal shows 0 %</h3><p>Because the encoder is a separate process, Medal's own row in Task Manager can show almost nothing while MedalEncoder.exe does the work. Look at both to see what Medal really uses.</p></div>
+      <div class="card"><h3>Is it safe?</h3><p>Yes, when Medal is installed: it's a normal part of the app. If you never installed Medal, right-click it in Task Manager → Open file location and check where it lives.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="why-cpu">
+  <div class="wrap">
+    <h2>Why it can use a lot of CPU</h2>
+    <div class="grid">
+      <div class="card"><h3>The encoder is set to CPU</h3><p>Medal can encode with your graphics card or with the processor. On the processor ("libx" in Medal's list) every frame is compressed by the CPU, which costs the most.</p></div>
+      <div class="card"><h3>High quality settings</h3><p>A higher resolution, frame rate or bitrate means more work for every second of the replay buffer.</p></div>
+      <div class="card"><h3>Auto Clipping</h3><p>Medal's support pages call Auto Clipping experimental and say it needs more resources while it's on.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="lower">
+  <div class="wrap">
+    <h2>How to lower it in Medal</h2>
+    <ol class="ec-steps">
+      <li><b>Open Task Manager</b> while Medal records and look at CPU and GPU for MedalEncoder.exe.</li>
+      <li><b>CPU high?</b> In Medal: Settings → Clip Settings → Video Encoder, pick your graphics card (NVIDIA, AMD or Intel) instead of "libx".</li>
+      <li><b>GPU busy instead?</b> Medal suggests the opposite there: switch to "libx" for that game.</li>
+      <li><b>Lower the quality</b> a step (resolution or bitrate) if it's still high.</li>
+      <li><b>Turn off Auto Clipping</b> if you don't use it.</li>
+      <li><b>Update your graphics driver.</b></li>
+    </ol>
+    <p class="fine">From Medal's own support pages, checked 26 November 2026. Menu names can change with Medal updates. Medal is a trademark of its owner; Echo isn't connected to it.</p>
+  </div>
+</section>
+
+<section id="lighter">
+  <div class="wrap">
+    <h2>Or use a lighter recorder</h2>
+    <p class="sub">Echo does the same job, saving the last minutes with one key, and was built to stay small. It always records with your graphics card's encoder.</p>
+    <div class="ec-vs-measure">
+      <table class="ec-measure">
+        <caption class="t-label muted" style="text-align:left;caption-side:top;padding-bottom:12px">Measured on one test PC: Echo and Medal, both recording</caption>
+        <tr><th>App</th><th>Memory</th><th>CPU</th></tr>
+        <tr class="us"><td>Echo 2.0</td><td>~81 MB</td><td>~0.6 %</td></tr>
+        <tr><td>Medal (incl. MedalEncoder.exe)</td><td>~470 MB</td><td>~1.2 %</td></tr>
+      </table>
+      <p class="fine">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Your numbers will differ. <a href="/vs-medal">Full comparison with Medal</a>.</p>
+    </div>
+    <p class="sub">Echo is free and open source, shows no ads, needs no account and runs on Windows and Linux. It can bring your Medal clips along in one click, with their dates and game folders.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="/download">Download Echo</a>
+      <a class="btn btn--secondary" href="/vs-medal">Echo vs Medal</a>
+    </div>
+  </div>
+</section>

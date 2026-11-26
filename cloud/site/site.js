@@ -252,7 +252,7 @@
   const STEPS = [
     ["#library .app", "Try it right here", "This is the real app layout - click around. One key saves the last moments; Copy ▾ shrinks a clip to fit Discord and copies it."],
     ["#features", "Everything after the moment", "Trim, edit, caption and share without another program. Share links play right inside Discord."],
-    ["#light", "Tiny and light", "About 150 MB of memory while recording: a native Rust app with no bundled browser. Echo records in the background without costing you frames, even on low-end PCs."],
+    ["#light", "Tiny and light", "~81 MB of memory while it records in the background: a native Rust app with no bundled browser. Echo records in the background without costing you frames, even on low-end PCs."],
     ["#switch", "Bring your old clips", "Coming from Medal or another app? Echo finds your clips and copies them in, dates and game folders kept."],
     ["#storage", "Your clips, your storage", "Echo Cloud, or your own Google Drive, NAS or server for free. No ads, no account needed to clip."],
   ];

@@ -1,0 +1,53 @@
+<!-- title: How to clip games on Linux and Steam Deck - replay buffer options | desc: Four free ways to save the last minutes of a game on Linux and Steam Deck: Steam Game Recording, OBS's replay buffer, gpu-screen-recorder and Echo. Which one fits you. -->
+<section class="sub-hero">
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <h1>How to clip games on Linux and Steam Deck</h1>
+    <p class="lead">Medal, NVIDIA's ShadowPlay and Outplayed are Windows only. On Linux and the Steam Deck there are four good free ways to keep the last minutes of a game and save them with one key.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="#options">See the options</a>
+      <a class="btn btn--secondary" href="#pick">Which one to pick</a>
+    </div>
+  </div>
+</section>
+
+<section id="options">
+  <div class="wrap">
+    <h2>The four options</h2>
+    <div class="grid grid--2">
+      <div class="card"><h3>Steam Game Recording</h3><p>Built into Steam. Turn on background recording in Steam's settings (Game Recording) and it keeps the last minutes of every game you start through Steam, also on the Steam Deck in Gaming Mode. Clips stay inside Steam until you export or share them.</p></div>
+      <div class="card"><h3>OBS Studio's replay buffer</h3><p>In OBS: Settings → Output → Replay Buffer, then set a "Save Replay" hotkey and press Start Replay Buffer. Very flexible, but you set up the scene, sources and audio yourself, and you get plain video files.</p></div>
+      <div class="card"><h3>gpu-screen-recorder</h3><p>A small, fast recorder that uses your graphics card, with a replay mode. Save keys work on KDE Plasma and Hyprland; on other desktops you bind a key to <code>killall -SIGUSR1 gpu-screen-recorder</code>. You get plain video files.</p></div>
+      <div class="card"><h3>Echo</h3><p>A clip app on top of gpu-screen-recorder: one key saves the last minutes, then a library sorted by game, an editor (trim, text, captions), Copy for Discord that shrinks clips to fit, and share links. Game, Discord and mic on their own tracks. AppImage or Flatpak.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="pick">
+  <div class="wrap">
+    <h2>Which one to pick</h2>
+    <div class="grid grid--2">
+      <div class="card"><h3>Steam Deck in Gaming Mode</h3><p>Steam Game Recording. It's already there and needs no setup.</p></div>
+      <div class="card"><h3>You stream or want full control</h3><p>OBS. You probably have it set up already, and the replay buffer is one more setting.</p></div>
+      <div class="card"><h3>Lightest possible, terminal is fine</h3><p>gpu-screen-recorder on its own.</p></div>
+      <div class="card"><h3>Clip, trim and send to friends</h3><p>Echo. It's the closest to Medal or ShadowPlay on Windows: your clips in one place, ready to paste into Discord.</p></div>
+    </div>
+    <p class="fine">Steam, OBS Studio and gpu-screen-recorder are made by others and free; Echo isn't connected to them. Echo is tested on KDE Plasma (Wayland). On another desktop and something doesn't work? Tell us in the <a href="https://discord.gg/JPVewEfUQs">Echo Discord</a>.</p>
+  </div>
+</section>
+
+<section id="echo-linux">
+  <div class="wrap">
+    <h2>Getting Echo on Linux</h2>
+    <ol class="ec-steps">
+      <li><b>Steam Deck, Bazzite or "I just want it to work":</b> the Flatpak. It opens in Discover, GNOME Software or Bazaar and brings everything it needs.</li>
+      <li><b>Any other distribution:</b> the AppImage. Make it runnable and open it; it updates itself. It uses gpu-screen-recorder and ffmpeg from your system.</li>
+      <li><b>First start:</b> pick your save key and where clips go. Then play.</li>
+    </ol>
+    <p class="sub">Echo is free and open source (GPL-3.0), with no ads and no account.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="/download">Download Echo for Linux</a>
+      <a class="btn btn--secondary" href="/#features">See what Echo does</a>
+    </div>
+  </div>
+</section>

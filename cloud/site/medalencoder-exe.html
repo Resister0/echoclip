@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="round" data-ground="sage" data-buttons="arrow" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MedalEncoder.exe - what it is and why it uses so much CPU</title>
+<meta name="description" content="MedalEncoder.exe is the process that records and encodes Medal's clips. Why it can use a lot of CPU, how to lower it in Medal's settings, and a lighter alternative.">
+<meta name="theme-color" content="#7c5cff">
+<!-- seo: managed by cloud/site-src/seo.py, edit there -->
+<link rel="canonical" href="https://echoclip.link/medalencoder-exe">
+<meta property="og:url" content="https://echoclip.link/medalencoder-exe">
+<meta property="og:title" content="MedalEncoder.exe - what it is and why it uses so much CPU">
+<meta property="og:description" content="MedalEncoder.exe is the process that records and encodes Medal's clips. Why it can use a lot of CPU, how to lower it in Medal's settings, and a lighter alternative.">
+<meta property="og:site_name" content="Echo">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://echoclip.link/og.png?v=6">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="EchoClip - incredibly lightweight clipper for Windows and Linux. ~81 MB of RAM while recording in the background, Copy for Discord shrinks clips to fit the limit, no ads and no account.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.ico?v=2" sizes="48x48">
+<link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<link rel="manifest" href="/site.webmanifest">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebPage","@id":"https://echoclip.link/medalencoder-exe#page","url":"https://echoclip.link/medalencoder-exe","name":"MedalEncoder.exe - what it is and why it uses so much CPU","description":"MedalEncoder.exe is the process that records and encodes Medal's clips. Why it can use a lot of CPU, how to lower it in Medal's settings, and a lighter alternative.","isPartOf":{"@id":"https://echoclip.link/#site"},"about":{"@id":"https://echoclip.link/#app"}},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Echo","item":"https://echoclip.link/"},{"@type":"ListItem","position":2,"name":"What is MedalEncoder.exe?","item":"https://echoclip.link/medalencoder-exe"}]}]}</script>
+<!-- /seo -->
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/system.css">
+<link rel="stylesheet" href="/assets/motion/motion.css">
+<link rel="stylesheet" href="/assets/layout/layout.css">
+<link rel="stylesheet" href="/echo.css">
+<link rel="stylesheet" href="/sub.css">
+<script>try{var t=localStorage.getItem("echo-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script src="/echo-head.js"></script>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 64 64" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>Echo</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="/#features">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <a class="menu-card span-4" href="/#library">
+              <div class="panel"><img class="frame__img" src="/img/clip-ow1.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="An Overwatch 2 victory screen saved as a clip" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Clip library</span>
+              <span class="t-small muted">Every clip sorted by game, ready to share</span>
+            </a>
+            <a class="menu-card span-4" href="/#moments">
+              <div class="panel"><img class="frame__img" src="/img/clip-sw2.webp" srcset="/img/clip-sw2-128.webp 128w, /img/clip-sw2-300.webp 300w, /img/clip-sw2.webp 405w, /img/clip-sw2-810.webp 810w, /img/clip-sw2-1216.webp 1216w" sizes="(max-width: 1023px) 46vw, 30vw" alt="A Star Wars Battlefront II clip of a burning desert" loading="lazy" width="405" height="228"></div>
+              <span class="t-card">Never miss the moment</span>
+              <span class="t-small muted">Save, mark and keep every track</span>
+            </a>
+            <a class="menu-card span-4" href="/#switch">
+              <div class="panel ec-imp" role="img" aria-label="Clips brought in from Medal sort into March 2025, the day they were recorded, not today"><div class="ec-imp__row"><p>This week</p><img src="/img/clip-mc2-128.webp" srcset="/img/clip-mc2-128.webp 128w, /img/clip-mc2-300.webp 300w, /img/clip-mc2.webp 405w, /img/clip-mc2-810.webp 810w, /img/clip-mc2-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-cs1-128.webp" srcset="/img/clip-cs1-128.webp 128w, /img/clip-cs1-300.webp 300w, /img/clip-cs1.webp 405w, /img/clip-cs1-810.webp 810w, /img/clip-cs1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-ow1-128.webp" srcset="/img/clip-ow1-128.webp 128w, /img/clip-ow1-300.webp 300w, /img/clip-ow1.webp 405w, /img/clip-ow1-810.webp 810w, /img/clip-ow1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div><div class="ec-imp__row ec-imp__in"><p>March 2025</p><img src="/img/clip-gi1-128.webp" srcset="/img/clip-gi1-128.webp 128w, /img/clip-gi1-300.webp 300w, /img/clip-gi1.webp 405w, /img/clip-gi1-810.webp 810w, /img/clip-gi1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-sw1-128.webp" srcset="/img/clip-sw1-128.webp 128w, /img/clip-sw1-300.webp 300w, /img/clip-sw1.webp 405w, /img/clip-sw1-810.webp 810w, /img/clip-sw1-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"><img src="/img/clip-eve-128.webp" srcset="/img/clip-eve-128.webp 128w, /img/clip-eve-300.webp 300w, /img/clip-eve.webp 405w, /img/clip-eve-810.webp 810w, /img/clip-eve-1216.webp 1216w" sizes="(max-width: 1023px) 15vw, 10vw" alt="" width="128" height="72" loading="lazy"></div></div>
+              <span class="t-card">Bring your old clips</span>
+              <span class="t-small muted">They land on the day they were recorded</span>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="/#storage">Storage</a></div>
+      <div class="nav__item"><a class="nav__link" href="/pricing">Echo Cloud</a></div>
+      <div class="nav__item"><a class="nav__link" href="/changelog">Changelog</a></div>
+      <div class="nav__item"><a class="nav__link" href="https://discord.gg/JPVewEfUQs">Discord</a></div>
+    </nav>
+    <div class="nav__actions">
+      <button class="themebtn" id="themebtn" type="button" title="Theme" aria-label="Theme" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14.5" cy="7" r="1"/><circle cx="17" cy="11" r="1"/></svg></button>
+      <div class="themes" id="themes" hidden><p>Theme</p></div>
+      <a class="btn btn--primary" href="/download">Download Echo</a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+<main id="top" class="sub sub--guide">
+<section class="sub-hero">
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <h1>What is MedalEncoder.exe?</h1>
+    <p class="lead">It's the part of Medal, the game clip app, that records your screen and encodes the video. If it uses a lot of CPU, it's almost always a setting in Medal, and a few changes bring it down.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="#lower">How to lower it</a>
+      <a class="btn btn--secondary" href="#lighter">A lighter recorder</a>
+    </div>
+  </div>
+</section>
+
+<section id="what">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Medal's recorder</h3><p>Medal keeps the last minutes of your game ready so you can save a clip with one key. That recording and the video encoding run in their own process: MedalEncoder.exe.</p></div>
+      <div class="card"><h3>Why Medal shows 0 %</h3><p>Because the encoder is a separate process, Medal's own row in Task Manager can show almost nothing while MedalEncoder.exe does the work. Look at both to see what Medal really uses.</p></div>
+      <div class="card"><h3>Is it safe?</h3><p>Yes, when Medal is installed: it's a normal part of the app. If you never installed Medal, right-click it in Task Manager → Open file location and check where it lives.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="why-cpu">
+  <div class="wrap">
+    <h2>Why it can use a lot of CPU</h2>
+    <div class="grid">
+      <div class="card"><h3>The encoder is set to CPU</h3><p>Medal can encode with your graphics card or with the processor. On the processor ("libx" in Medal's list) every frame is compressed by the CPU, which costs the most.</p></div>
+      <div class="card"><h3>High quality settings</h3><p>A higher resolution, frame rate or bitrate means more work for every second of the replay buffer.</p></div>
+      <div class="card"><h3>Auto Clipping</h3><p>Medal's support pages call Auto Clipping experimental and say it needs more resources while it's on.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="lower">
+  <div class="wrap">
+    <h2>How to lower it in Medal</h2>
+    <ol class="ec-steps">
+      <li><b>Open Task Manager</b> while Medal records and look at CPU and GPU for MedalEncoder.exe.</li>
+      <li><b>CPU high?</b> In Medal: Settings → Clip Settings → Video Encoder, pick your graphics card (NVIDIA, AMD or Intel) instead of "libx".</li>
+      <li><b>GPU busy instead?</b> Medal suggests the opposite there: switch to "libx" for that game.</li>
+      <li><b>Lower the quality</b> a step (resolution or bitrate) if it's still high.</li>
+      <li><b>Turn off Auto Clipping</b> if you don't use it.</li>
+      <li><b>Update your graphics driver.</b></li>
+    </ol>
+    <p class="fine">From Medal's own support pages, checked 26 November 2026. Menu names can change with Medal updates. Medal is a trademark of its owner; Echo isn't connected to it.</p>
+  </div>
+</section>
+
+<section id="lighter">
+  <div class="wrap">
+    <h2>Or use a lighter recorder</h2>
+    <p class="sub">Echo does the same job, saving the last minutes with one key, and was built to stay small. It always records with your graphics card's encoder.</p>
+    <div class="ec-vs-measure">
+      <table class="ec-measure">
+        <caption class="t-label muted" style="text-align:left;caption-side:top;padding-bottom:12px">Measured on one test PC: Echo and Medal, both recording</caption>
+        <tr><th>App</th><th>Memory</th><th>CPU</th></tr>
+        <tr class="us"><td>Echo 2.0</td><td>~81 MB</td><td>~0.6 %</td></tr>
+        <tr><td>Medal (incl. MedalEncoder.exe)</td><td>~470 MB</td><td>~1.2 %</td></tr>
+      </table>
+      <p class="fine">Same PC (Ryzen 7 9800X3D, Radeon RX 9070 XT, 32 GB), FiveM running, each app with its replay buffer on, 60 seconds, 9 November 2026. Your numbers will differ. <a href="/vs-medal">Full comparison with Medal</a>.</p>
+    </div>
+    <p class="sub">Echo is free and open source, shows no ads, needs no account and runs on Windows and Linux. It can bring your Medal clips along in one click, with their dates and game folders.</p>
+    <div class="dl">
+      <a class="btn btn--primary primary" href="/download">Download Echo</a>
+      <a class="btn btn--secondary" href="/vs-medal">Echo vs Medal</a>
+    </div>
+  </div>
+</section>
+</main>
+<footer class="footer closing footer--dark ec-subfoot">
+  <div class="wrap">
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="/"><span class="ec-logo"><svg viewBox="0 0 64 64" aria-hidden="true"><g opacity=".72"><path d="M11.8 40 A21.75 21.75 0 1 1 35.6 53.5 A1.75 1.75 0 0 1 35 50 A18.25 18.25 0 1 0 15 38.7 A1.75 1.75 0 0 1 11.8 40Z" fill="#fff" stroke-width="0"/><path d="M18 16.7 L9.4 21.2 L17.7 26.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g><path d="M27.6 21.4 L43.2 31.9 L27.6 42.4Z" fill="#fff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></span>EchoClip</a>
+          <p class="footer__lede">A free, open-source game clip recorder for Windows and Linux.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Echo</h3><ul><li><a href="/#features">Features</a></li><li><a href="/#extras">Small extras</a></li><li><a href="/pricing">Echo Cloud</a></li><li><a href="/changelog">Changelog</a></li><li><a href="/vs-medal">Echo vs Medal</a></li><li><a href="/clip-games-on-linux">Clipping on Linux</a></li><li><a href="/medalencoder-exe">MedalEncoder.exe</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Help</h3><ul><li><a href="https://discord.gg/JPVewEfUQs">Discord</a></li><li><a href="mailto:support@echoclip.link">Email support</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Source</h3><ul><li><a href="https://github.com/Resister0/echoclip">GitHub</a></li><li><a href="/code-signing">Code signing policy</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Legal</h3><ul><li><a href="/terms">Terms</a></li><li><a href="/privacy">Privacy</a></li><li><a href="/status">Status</a></li></ul></div>
+      </div>
+      <div class="ec-more" aria-label="More from Sonela">
+        <a class="ec-more__brand" href="https://sonela.app/"><img src="/icons/sonela.svg" alt="" width="32" height="32" loading="lazy"><span><b>More from Sonela</b><small>Echo is part of Sonela: small, free apps for PC gamers</small></span></a>
+        <a class="ec-more__app" href="https://sonela.app/aimdot"><img src="/icons/aimdot.svg" alt="" width="32" height="32" loading="lazy"><span><b>Aimdot</b><small>Crosshair overlay · out now</small></span></a>
+        <a class="ec-more__app" href="https://sonela.app/lasso"><img src="/icons/lasso.svg" alt="" width="32" height="32" loading="lazy"><span><b>Lasso</b><small>Screenshot tool · out now</small></span></a>
+        <a class="ec-more__link" href="https://sonela.app/">sonela.app</a>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 EchoClip · "Echo" for short · Open source (GPL-3.0)</span>
+        <span>Discord, Medal, Windows and other product names belong to their owners. EchoClip isn't connected to them.</span>
+      </div>
+    </div>
+  </div>
+</footer>
+<script src="/site.js"></script>
+<script type="module" src="/assets/system.js"></script>
+<script type="module" src="/assets/motion/motion.js"></script>
+</body>
+</html>

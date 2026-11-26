@@ -3,6 +3,13 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.26 - 26 Nov
+- Linux: Echo gives back the memory it isn't using while it sits in the tray, like on Windows (on a test PC about 40% less while it records in the background)
+
+## 2.0.25 - 25 Nov
+- Linux: Echo started with your PC stays in the tray - no more empty Echo button in the taskbar
+- New version numbers: test builds (beta / dev) are named after the next normal release, like 2.0.26-dev.1
+
 ## 2.0.24 - 24 Nov
 Everything from the test builds 2.0.15 - 2.0.23, plus:
 - Clips recorded at more than 60 fps no longer freeze for about 2 seconds at some points

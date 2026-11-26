@@ -209,7 +209,8 @@ function attention(j, A) {
   for (const v of Object.keys(cr).sort((a, b) => vcmp(b, a))) add("crash:" + v, cr[v], "serious", `${cr[v]} sent log${cr[v] === 1 ? "" : "s"} with an Echo crash this week on ${v}`, "apps");
   for (const r of j.releases || []) if (r.paused) add("paused:" + r.version, 1, "warning", `Updates to ${r.version} are paused - nobody gets it as an update`, "apps");
   if ((j.over || []).length) add("over", j.over.length, "warning", `${j.over.length} Echo Cloud account${j.over.length === 1 ? " is" : "s are"} over the plan - clips go after 30 days`, "cloud");
-  const pc = j.perf_cpu, soft = pc && (pc.enc || []).filter((r) => /x264/i.test(r.k || "")).reduce((a, r) => a + r.pcs, 0);
+  // soft_fixable (26 Nov 2026): leaves out cards that have no video encoder at all (server NO_ENCODER_GPUS); older server: all
+  const pc = j.perf_cpu, soft = pc && (pc.soft_fixable != null ? pc.soft_fixable : (pc.enc || []).filter((r) => /x264/i.test(r.k || "")).reduce((a, r) => a + r.pcs, 0));
   if (soft) add("x264", soft, "serious", `Echo had to use the software encoder on ${soft} day${soft === 1 ? "" : "s"} of PC use in the last 30 days - no graphics encoder worked there`, "perf");
   const gone = attDismissed(), shown = items.filter((x) => !(gone[x.id] >= x.n));
   const ICON = { serious: "▲", warning: "!" }, WORD = { serious: "Look at", warning: "Heads up" };
@@ -239,7 +240,7 @@ function funnel(j, I, vis, dls) {
   // different PCs are only counted since that started (18 Nov 2026): until it covers the whole week it reads too low
   const U = j.apps && j.apps.uniq, full = U && U.since && U.since <= new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
   const u = full ? U["7"] : null;
-  const steps = [["Website visits", vis[1]], ["Downloads from the site", dls[1]], ["New installs", I.d7], ["PCs with Echo", u ? u.total : null]];
+  const steps = [["Website visits", vis[1]], ["Downloads from the site", dls[1]], ["New installs", I.d7], [`PCs with ${appName()}`, u ? u.total : null]];
   return `<h2>Last 7 days</h2><div class="funnel">${steps.map(([l, v], i) => { const prev = i ? steps[i - 1][1] : null;
     // installs also come from GitHub / winget / AppImageHub (not through the site), so no "%" under them
     const conv = i === 3 ? `<span class="fn-c">${u ? "different PCs, new and old (told apart by internet address)" : `counted from ${esc(U && U.since ? shortDay(U.since) : "now")} - full after a week`}</span>`
@@ -672,7 +673,7 @@ function draw(j) {
     ${funnel(j, I, sk("visitors"), dls)}
     <h2>Today <span class="sub" style="font-weight:400;font-size:13px">UTC day, since 1:00 in Denmark · arrows compare full days</span></h2>
     <div class="grid">
-      ${A ? stat("PCs with Echo today", at.win + at.lin, `${at.win} Windows · ${at.lin} Linux · ${ay.win + ay.lin} yesterday`, A.days.map((d) => A.per[d].win + A.per[d].lin)) : ""}
+      ${A ? stat(`PCs with ${esc(appName())} today`, at.win + at.lin, `${at.win} Windows · ${at.lin} Linux · ${ay.win + ay.lin} yesterday`, A.days.map((d) => A.per[d].win + A.per[d].lin)) : ""}
       ${A && !lite ? stat("Returning today", at.ret || 0, `also checked in yesterday · ${ay.ret || 0} returned yesterday`, A.days.map((d) => A.per[d].ret || 0)) : ""}
       ${stat("New installs today", I.d1, `+${I.d7} in 7 days · ${I.total} since 10 Nov`, A ? A.days.map((d) => A.per[d].inst || 0) : null)}
       ${j.site ? stat("Downloads today", dls[0], `${dls[1]} this week · ${dls[2]} in 30 days`, (j.site.daily || []).map((x) => x.downloads)) : ""}

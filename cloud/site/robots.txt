@@ -1,16 +1,24 @@
 # echoclip.link - Echo, the free game clip recorder. Sitemap below lists the website pages.
+# Exact paths ($ = ends here): a plain "/me" also blocked "/medalencoder-exe" (26 Nov 2026).
 # /download/* are the file downloads themselves (they count downloads), the rest are the app's API and staff pages.
 User-agent: *
 Allow: /
 Disallow: /download/
-Disallow: /admin
-Disallow: /mod
+Disallow: /admin$
+Disallow: /admin/
+Disallow: /mod$
+Disallow: /mod/
 Disallow: /auth/
-Disallow: /report
-Disallow: /thanks
-Disallow: /me
-Disallow: /creds
-Disallow: /plans
+Disallow: /report$
+Disallow: /report/
+Disallow: /thanks$
+Disallow: /thanks/
+Disallow: /me$
+Disallow: /me/
+Disallow: /creds$
+Disallow: /creds/
+Disallow: /plans$
+Disallow: /plans/
 Disallow: /polar/
 
 Sitemap: https://echoclip.link/sitemap.xml

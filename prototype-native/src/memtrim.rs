@@ -1,4 +1,4 @@
-//! 11 Nov 2026: keep Echo's memory low while it sits hidden in the tray (Windows).
+//! 11 Nov 2026: keep Echo's memory low while it sits hidden in the tray (Windows; Linux since 26 Nov 2026, trim_linux).
 //! Task Manager's "Memory" is the private working set: pages Echo touched that Windows still keeps for it. On an
 //! AMD PC (2.0.4, recording 1080p60) it read 216 MB, but most of it was touched only ONCE - graphics-driver set-up for
 //! the capture, the encoder and the two OpenGL windows (main + popup), much of it just zero-filled buffers - and
@@ -26,7 +26,8 @@ thread_local! {
     static LAST_CHECK: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-/// Task Manager's "Memory" of Echo's own process, MB (None off Windows)
+/// Task Manager's "Memory" of Echo's own process, MB. Linux: the same thing from /proc (private pages in RAM,
+/// what perf.rs reports). None where it can't be read.
 fn private_mb() -> Option<f64> {
     #[cfg(windows)]
     unsafe {
@@ -37,10 +38,74 @@ fn private_mb() -> Option<f64> {
             return Some(c.PrivateWorkingSetSize as f64 / 1048576.0);
         }
     }
+    #[cfg(target_os = "linux")]
+    {
+        let r = std::fs::read_to_string("/proc/self/smaps_rollup").ok()?;
+        let kb: f64 = r
+            .lines()
+            .filter(|l| l.starts_with("Private_Clean:") || l.starts_with("Private_Dirty:"))
+            .filter_map(|l| l.split_whitespace().nth(1)?.parse::<f64>().ok())
+            .sum();
+        return Some(kb / 1024.0);
+    }
+    #[allow(unreachable_code)]
     None
 }
 
-/// Give Windows back the pages Echo isn't using (they return on first use). Returns " (216 -> 7 MB)" for the log
+/// Linux (26 Nov 2026): the same idea as Windows' EmptyWorkingSet. Players' PCs showed Echo at ~187 MB on Linux
+/// against ~67 MB on Windows; on the user's PC (tray, recording) Echo's own process held 127 MB, 111 MB of it plain
+/// program memory (heap + anonymous) - driver set-up, buffers touched once - and Linux had no trim. Two steps:
+/// 1. malloc_trim: glibc keeps freed heap memory for later; give the free parts back.
+/// 2. MADV_PAGEOUT on Echo's own writable private memory: Linux moves those pages out to swap (zram on Fedora,
+///    Nobara, Bazzite, Ubuntu ...: compressed in RAM - zero-filled set-up buffers take almost nothing). Pages in use
+///    come back on first touch (a quick fault), exactly like after a Windows trim. Without any swap it changes
+///    nothing (harmless). Only Echo's own process: trimming its helpers (gpu-screen-recorder, ffmpeg) would need
+///    CAP_SYS_NICE (process_madvise), which an app doesn't have.
+#[cfg(target_os = "linux")]
+fn trim_linux() {
+    extern "C" {
+        fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    const MADV_PAGEOUT: i32 = 21;
+    // SAFETY: malloc_trim only returns free heap memory to the system; madvise(MADV_PAGEOUT) is a hint that never
+    // changes the contents of a mapping (pages fault back in unchanged), and a range it doesn't like just fails.
+    unsafe {
+        malloc_trim(0);
+    }
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else { return };
+    for (start, end) in pageout_ranges(&maps) {
+        unsafe {
+            madvise(start as *mut std::ffi::c_void, end - start, MADV_PAGEOUT);
+        }
+    }
+}
+
+/// From /proc/self/maps: the writable private memory that is Echo's own data - anonymous mappings and the heap.
+/// Not the main thread's stack or the kernel's [vdso]/[vvar], not files (their data is small and read back from disk
+/// anyway), not shared memory (other processes - the compositor, the graphics driver - use it too).
+#[cfg(target_os = "linux")]
+fn pageout_ranges(maps: &str) -> Vec<(usize, usize)> {
+    maps.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let range = f.next()?;
+            let perms = f.next()?;
+            let path = f.nth(3).unwrap_or("");
+            if !perms.starts_with("rw") || perms.as_bytes().get(3) != Some(&b'p') {
+                return None;
+            }
+            if !(path.is_empty() || path == "[heap]" || path.starts_with("[anon:")) {
+                return None;
+            }
+            let (a, b) = range.split_once('-')?;
+            let (a, b) = (usize::from_str_radix(a, 16).ok()?, usize::from_str_radix(b, 16).ok()?);
+            (b > a).then_some((a, b))
+        })
+        .collect()
+}
+
+/// Give the system back the pages Echo isn't using (they return on first use). Returns " (216 -> 7 MB)" for the log
 /// ("" where it can't measure).
 pub fn trim() -> String {
     let before = private_mb();
@@ -48,6 +113,8 @@ pub fn trim() -> String {
     unsafe {
         windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet(windows_sys::Win32::System::Threading::GetCurrentProcess());
     }
+    #[cfg(target_os = "linux")]
+    trim_linux();
     LAST_TRIM.with(|t| t.set(Some(Instant::now())));
     SETTLED_MB.with(|s| s.set(None));
     match (before, private_mb()) {
@@ -111,4 +178,47 @@ pub fn hidden_tick() -> Option<String> {
     }
     let t = trim();
     Some(format!("memory: grew from {settled:.0} MB while hidden - trimmed again{t}"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_only_own_writable_private_memory() {
+        let maps = "\
+55d0a000-55d0b000 r--p 00000000 103:02 123 /usr/bin/echo-clips
+55d0b000-55d0c000 rw-p 00001000 103:02 123 /usr/bin/echo-clips
+55d0c000-55d2c000 rw-p 00000000 00:00 0 [heap]
+7f0000000000-7f0000100000 rw-p 00000000 00:00 0
+7f0000100000-7f0000101000 ---p 00000000 00:00 0
+7f0000200000-7f0000300000 rw-s 00000000 00:05 9 /memfd:wayland-shm (deleted)
+7f0000300000-7f0000301000 rw-p 00000000 00:00 0 [anon:glibc]
+7ffd00000000-7ffd00021000 rw-p 00000000 00:00 0 [stack]
+7ffd00030000-7ffd00032000 r-xp 00000000 00:00 0 [vdso]";
+        assert_eq!(
+            pageout_ranges(maps),
+            vec![(0x55d0c000, 0x55d2c000), (0x7f0000000000, 0x7f0000100000), (0x7f0000300000, 0x7f0000301000)]
+        );
+    }
+
+    /// Fills 64 MB, trims, and checks Echo's own number drops - only where the PC has swap (zram on Fedora / Nobara /
+    /// Bazzite / Ubuntu); without swap Linux can't move the pages out and the trim rightly changes nothing.
+    #[test]
+    fn trim_gives_back_untouched_memory() {
+        let swap = std::fs::read_to_string("/proc/swaps").map(|s| s.lines().count() > 1).unwrap_or(false);
+        let mut big = vec![0u8; 64 << 20];
+        for (i, b) in big.iter_mut().enumerate().step_by(512) {
+            *b = (i % 251) as u8 + 1;
+        }
+        let before = private_mb().expect("smaps_rollup");
+        trim_linux();
+        let after = private_mb().expect("smaps_rollup");
+        // the pages are still there and unchanged (they come back on touch)
+        assert!(big.iter().enumerate().step_by(512).all(|(i, b)| *b == (i % 251) as u8 + 1));
+        eprintln!("trim: {before:.0} -> {after:.0} MB (swap: {swap})");
+        if swap {
+            assert!(after < before - 40.0, "expected most of the 64 MB to leave RAM: {before:.0} -> {after:.0} MB");
+        }
+    }
 }

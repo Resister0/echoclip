@@ -550,8 +550,18 @@ async function upload(req, user, env) {
   if (!key) return fail("Bad clip path");
   if (!(size > 0) || size > 5e9) return fail("Clips over 5 GB can't be uploaded to Echo Cloud yet");
   if (user.plan === "device" && !isLassoKey(key)) return fail("Sign in to Echo Cloud to upload clips", 403);
-  // Lasso: only pictures (by name; /share checks the real bytes), up to IMAGE_MAX, always share-only
-  if (isLassoKey(key) || b.kind === "image") {
+  // Lasso backup (26 Nov 2026, off by default in Lasso): pictures the user chose to keep in Echo Cloud, under
+  // u/<id>/Lasso/Backup/ - a normal (not share-only) object, so it stays without a link and counts against the plan.
+  // Signed-in accounts only (a device session has no plan room). Echo itself only reads u/<id>/Echo/, so it never
+  // sees these.
+  if (b.kind === "backup") {
+    if (user.plan === "device") return fail("Sign in to Echo Cloud to back up pictures", 403);
+    if (!/^u\/[^/]+\/Lasso\/Backup\//.test(key) || !imageExtOf(key)) return fail("Only PNG, JPEG or WebP pictures can be backed up");
+    if (size > IMAGE_MAX) return fail("Pictures over 25 MB aren't backed up");
+    b.share_only = false;
+    b.share_first = false;
+  } else if (isLassoKey(key) || b.kind === "image") {
+    // Lasso: only pictures (by name; /share checks the real bytes), up to IMAGE_MAX, always share-only
     if (!isLassoKey(key) || !imageExtOf(key)) return fail("Only PNG, JPEG or WebP pictures can be shared");
     if (size > IMAGE_MAX) return fail("Pictures over 25 MB can't be shared");
     b.share_only = true;
@@ -720,7 +730,8 @@ const isShareCopy = (key) => key.includes("/Echo/.shared/");
 // sonela.app -> 301 echoclip.link. Var IMAGE_ORIGIN overrides https://sonela.app (tests: a workers.dev address).
 const IMAGE_MAX = 25e6;                // bytes per picture (Lasso keeps them under 10 MB for Discord anyway)
 const IMAGE_ONCE_SECONDS = 600;        // a view-once link: the picture works this long after the first real view
-const LASSO_PROTOCOL = 1;              // /health "lasso": Lasso uploads only when the server says this (or more)
+// /health "lasso": Lasso uploads only when the server says this (or more). 2 (26 Nov 2026) = backups (kind "backup")
+const LASSO_PROTOCOL = 2;
 const imageOrigin = (env) => String(env.IMAGE_ORIGIN || "https://sonela.app").replace(/\/+$/, "");
 const SONELA_HOSTS = new Set(["sonela.app", "www.sonela.app"]);
 /// u/<id>/Lasso/... - a Lasso picture (by its place in the account)
@@ -1171,7 +1182,7 @@ async function deleteAccount(req, user, env) {
 // The pages are static files, so site.js pings POST /hit {t:"view",p,r} or {t:"click",k}; downloads are counted
 // in /download. Unique visitors: a scrambled code of day + IP + browser (kept 2 days in uv, only to not count anyone twice).
 const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embed|curl|wget|python|go-http|headless|lighthouse|monitor|scan/i;
-const SITE_PAGES = new Set(["/", "/download", "/vs-medal", "/pricing", "/changelog", "/privacy", "/terms", "/code-signing"]);
+const SITE_PAGES = new Set(["/", "/download", "/vs-medal", "/pricing", "/changelog", "/privacy", "/terms", "/code-signing", "/clip-games-on-linux", "/medalencoder-exe"]);
 const SITE_CLICKS = new Set(["plans", "storage", "features", "discord", "changelog", "github", "download"]);
 const utcDay = (t = now()) => new Date(t * 1000).toISOString().slice(0, 10);
 const isBot = (req) => { const ua = req.headers.get("user-agent") || ""; return !ua || BOT_UA.test(ua); };
@@ -1366,6 +1377,10 @@ async function installStats(env) {
 // 21 Nov 2026: the CPU parts of rows from newer Echo (x_<state>), averaged over only those rows: all, Echo's own process,
 // its window thread, capture + encoder thread, audio mixer, recorder helpers, other jobs (admin.js "parts" line)
 const PARTS = [["p_all", "c"], ["p_own", "ce"], ["p_ui", "xu"], ["p_cap", "xc"], ["p_aud", "xa"], ["p_rec", "xr"], ["p_job", "xj"]];
+// Graphics cards with no video encoder at all (made without one): Echo can only use the CPU there, so the admin alert
+// skips them. AMD Navi 24 (RX 6300 / 6400 / 6500 XT), NVIDIA GT 1030. Only cards that are sure; laptop chips (MX ...)
+// usually sit next to Intel / AMD graphics that do have one, so those stay in the alert.
+const NO_ENCODER_GPUS = ["RX 6300", "RX 6400", "RX 6500", "GT 1030"];
 async function perfStats(env, path = "gpu") {
   try {
     await migrate(env);
@@ -1399,12 +1414,17 @@ async function perfStats(env, path = "gpu") {
     // then the capture paths side by side (every 2.0.11+ row), then each PC-day's CPU (this path) for the typical-PC median
     qs.push(env.DB.prepare(`SELECT ${pathCol} AS k, ${agg} FROM perf WHERE day >= ?${NEW} GROUP BY k ORDER BY pcs DESC`).bind(from));
     qs.push(env.DB.prepare(`SELECT SUM(c * n) * 1.0 / NULLIF(SUM(n), 0) / 10 AS cpu, SUM(rc * rn) * 1.0 / NULLIF(SUM(rn), 0) / 10 AS rcpu FROM perf WHERE day >= ? ${GPU} GROUP BY day || h`).bind(from));
+    // the admin Overview's "software encoder" alert (26 Nov 2026, the user): only PC-days that could have had a graphics
+    // encoder - cards that have none at all (NO_ENCODER_GPUS) are left out, nothing can be done for them
+    qs.push(env.DB.prepare(`SELECT COUNT(DISTINCT day || h) AS pcs FROM perf WHERE day >= ? AND enc LIKE '%x264%'
+      AND NOT (${NO_ENCODER_GPUS.map(() => "COALESCE(gpu, '') LIKE ?").join(" OR ")})`).bind(from, ...NO_ENCODER_GPUS.map((g) => `%${g}%`)));
     const res = (await env.DB.batch(qs)).map((r) => (r && r.results) || []);
     const median = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); if (!v.length) return null;
       const m = v.length >> 1; return Math.round((v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2) * 100) / 100; };
     const b = Object.keys(cols).length * 2; // the totals etc. come after the per-column tables
     const out = { total: res[b][0] || {}, from, min_ver: PERF_MIN_VER, enc_path: path, states: ["tray", "idle", "active", "player", "mixed"], by_state: {}, recent: res[b + 2],
-      path: res[b + 3], median_cpu: median(res[b + 4].map((r) => r.cpu)), median_rcpu: median(res[b + 4].map((r) => r.rcpu)) };
+      path: res[b + 3], median_cpu: median(res[b + 4].map((r) => r.cpu)), median_rcpu: median(res[b + 4].map((r) => r.rcpu)),
+      soft_fixable: Number((res[b + 5][0] || {}).pcs || 0) };
     for (const t of res[b + 1]) out.by_state[t.st || "mixed"] = { total: t };
     Object.keys(cols).forEach((name, i) => {
       out[name] = res[i * 2];
@@ -3071,6 +3091,11 @@ export default {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "") || "/"}`;
     try {
+      // Yandex Webmaster's site check (26 Nov 2026). A plain site/*.html file would be redirected to the address
+      // without ".html" by the static assets, and Yandex wants this exact address to answer 200.
+      if (url.pathname === "/yandex_d540c03a9a2e3c57.html")
+        return new Response('<html>\n    <head>\n        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">\n    </head>\n    <body>Verification: d540c03a9a2e3c57</body>\n</html>\n',
+          { headers: { "content-type": "text/html; charset=utf-8" } });
       await migrate(env);
       const sm = url.pathname.match(/^\/s\/([a-z0-9]{6,20})(\.mp4|\.jpg|\.jpeg|\.png|\.webp)?\/?$/);
       if (sm && (req.method === "GET" || req.method === "HEAD")) return await serveShare(req, env, sm[1], sm[2] || "", ctx);
