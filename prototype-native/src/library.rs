@@ -1059,6 +1059,25 @@ impl LibModel {
         }
     }
 
+    /// 26 Nov 2026: clips Echo rewrote in place in the background ("Shrink old clips") kept their old size on the
+    /// cards - read size / date again for the clips on this PC whose file length changed. Returns how many.
+    pub fn restat(&self) -> usize {
+        let root = self.root();
+        let changed: Vec<usize> = self
+            .all
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.gone.get() && c.cloud.is_none())
+            .filter(|(_, c)| std::fs::metadata(&c.path).is_ok_and(|m| m.len() != c.size))
+            .map(|(i, _)| i)
+            .collect();
+        for &i in &changed {
+            self.reload(i, &root);
+        }
+        changed.len()
+    }
+
     // ---------- Echo's files ----------
     fn favs_path(&self) -> PathBuf {
         self.thumbs_dir.join("favorites.json")

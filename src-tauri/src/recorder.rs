@@ -8670,8 +8670,11 @@ impl Recorder {
             }
             let t0 = Instant::now();
             let mut c = rclone_cmd()?;
+            // --dir-cache-time 10s (26 Nov 2026): rclone remembers a folder's list for 5 min by default - a clip that
+            // reached the cloud after that (a share-first original moved into place, an upload from another PC) was
+            // "not found" for minutes: "Couldn't stream this clip" + a full download on every open
             c.args(["serve", "http", CLOUD_ROOT, "--read-only", "--addr", &format!("127.0.0.1:{port}"), "--vfs-cache-mode", "minimal",
-                    "--baseurl", &format!("/{}", serve_token())])
+                    "--dir-cache-time", "10s", "--baseurl", &format!("/{}", serve_token())])
                 .stdout(Stdio::null()).stderr(Stdio::null());
             // ends together with Echo (quit, crash, restart) - servers were left running before (10 Nov 2026)
             let mut c = crate::childtie::spawn(c).map_err(err)?;

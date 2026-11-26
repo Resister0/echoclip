@@ -3,6 +3,11 @@
 Everything that changed in Echo, newest first. Each section is one published version (or a group of small
 internal builds). Release builds since the open-source switch come from this repository's GitHub Actions.
 
+## 2.0.27 - 26 Nov
+- Making a clip smaller now shows its new size on the card right away (also after Shrink old clips)
+- Share links of big clips play in Discord: Echo makes the smaller copy first when the clip itself is too big for Discord's preview
+- Echo Cloud: a clip that just reached the cloud plays straight away instead of downloading first
+
 ## 2.0.26 - 26 Nov
 - Linux: Echo gives back the memory it isn't using while it sits in the tray, like on Windows (on a test PC about 40% less while it records in the background)
 

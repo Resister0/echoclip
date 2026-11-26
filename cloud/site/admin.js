@@ -2,8 +2,23 @@
 const $ = (s) => document.querySelector(s);
 const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const gb = (b) => { b = b || 0; return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB" : b >= 1e9 ? (b / 1e9).toFixed(b >= 100e9 ? 0 : 1) + " GB" : (b / 1e6).toFixed(0) + " MB"; };
-const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"; };
-const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "-";
+// time zone for every clock time and date on the page (26 Nov 2026): Denmark (CET / CEST by itself), US Eastern (EST / EDT
+// by itself) or UTC, picked top right and remembered in this browser. Day totals stay UTC days - the server counts per UTC
+// day - so only the "day starts at" text follows the choice.
+const TZS = [["Europe/Copenhagen", "Denmark"], ["America/New_York", "US Eastern"], ["UTC", "UTC"]];
+let TZ = (() => { let s = ""; try { s = localStorage.getItem("sonela_admin_tz") || ""; } catch { } return TZS.some((z) => z[0] === s) ? s : TZS[0][0]; })();
+// "CET" / "CEST" need en-GB, "EST" / "EDT" need en-US (each spells the other's zone as "GMT+1")
+const tzAbbr = (d) => new Intl.DateTimeFormat(TZ.startsWith("America/") ? "en-US" : "en-GB", { timeZone: TZ, timeZoneName: "short" }).formatToParts(d).find((x) => x.type === "timeZoneName").value;
+const when = (t) => { const d = new Date(t * 1000); return d.toLocaleString(undefined, { timeZone: TZ, day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) + " " + tzAbbr(d); };
+const dayStart = () => {
+  if (TZ === "UTC") return "UTC day";
+  const d = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z");
+  const hm = d.toLocaleTimeString("en-GB", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
+  const before = d.toLocaleDateString("en-CA", { timeZone: TZ }) < d.toISOString().slice(0, 10);
+  return `UTC day, starts at ${hm} ${tzAbbr(d)}${before ? " the evening before" : ""}`;
+};
+const ago = (t) => { if (!t) return "-"; const d = Date.now() / 1000 - t; return `<span title="${esc(when(t))}">${d < 3600 ? Math.round(d / 60) + " min ago" : d < 86400 ? Math.round(d / 3600) + " h ago" : Math.round(d / 86400) + " days ago"}</span>`; };
+const day = (t) => t ? new Date(t * 1000).toLocaleDateString(undefined, { timeZone: TZ, day: "numeric", month: "short", year: "numeric" }) : "-";
 const money = (v, c) => (v || 0).toLocaleString(undefined, { style: "currency", currency: c || "EUR" });
 // signed in with the email code (the admin address only, chat 30): a session token like the app's, kept in this browser until
 // "Sign out" (ends the session on the server too) or 180 days unused. The old ADMIN_KEY is no longer stored anywhere.
@@ -435,7 +450,7 @@ function apps(A, site) {
   if (!A) return "";
   const { days, per } = appDays(A);
   const tot = (d) => per[d].win + per[d].lin, today = days[13], yest = days[12];
-  // versions: today once it has numbers, else yesterday (the UTC day starts at 1:00 in Denmark)
+  // versions: today once it has numbers, else yesterday (the UTC day starts at 1:00 / 2:00 in Denmark)
   // (11 Nov 2026: a version every PC moved away from today sits at 0 - not listed, nor its countries)
   const vd = tot(today) ? today : yest, vers = Object.keys(per[vd].v).filter((v) => per[vd].v[v].windows + per[vd].v[v].linux > 0).sort((a, b) => vcmp(b, a));
   const newest = A.latest, isNew = (v) => (newest ? vcmp(v, newest) >= 0 : null), lite = !!A.lite, nm = appName();
@@ -472,7 +487,7 @@ function apps(A, site) {
   const updTable = `<div class="wrap" style="margin-top:10px"><table><tr><th>Update check answers (PCs per day, added up)</th><th class="n">Today</th><th class="n">7 days</th><th class="n">30 days</th></tr>${updRows}</table></div>`;
   return `
     <h2>${esc(nm)} apps</h2>
-    <p class="sub" style="margin:-6px 0 10px">${lite ? esc(A.note || "") : "PCs with Echo: copies that checked for updates, each PC once a day (UTC day, starts at 1:00 in Denmark). Told apart by internet address + system, so roughly one per PC."}</p>
+    <p class="sub" style="margin:-6px 0 10px">${lite ? esc(A.note || "") : "PCs with Echo: copies that checked for updates, each PC once a day (" + dayStart() + "). Told apart by internet address + system, so roughly one per PC."}</p>
     <div class="grid">
       ${stat("Apps today", tot(today), `${per[today].win} Windows · ${per[today].lin} Linux`, days.map(tot))}
       ${tile("Yesterday", tot(yest), `${per[yest].win} Windows · ${per[yest].lin} Linux`)}
@@ -664,14 +679,15 @@ function draw(j) {
   const SK = (j.site && j.site.keys) || {}, sk = (n) => SK[n] || [0, 0, 0];
   const dls = Object.keys(SK).filter((x) => x.startsWith("dl:")).reduce((t, x) => t.map((v, i) => v + SK[x][i]), [0, 0, 0]);
   $("#app").innerHTML = `
-    <div class="top">${switcher()}<span class="sub" id="upd" data-at="${j.at}" title="${esc(new Date(j.at * 1000).toLocaleString())}">updated just now</span><span class="sp"></span>
+    <div class="top">${switcher()}<span class="sub" id="upd" data-at="${j.at}" title="${esc(when(j.at))}">updated just now</span><span class="sp"></span>
+      <select id="tz" title="Time zone for the times and dates on this page" aria-label="Time zone">${TZS.map(([z, n]) => `<option value="${z}"${z === TZ ? " selected" : ""}>${n}</option>`).join("")}</select>
       <span class="sub keys" title="keyboard: 1-${VIS.length} switch tabs, R refreshes">keys 1–${VIS.length} · R</span><button id="re">Refresh</button><button id="out">Sign out</button></div>
     <nav class="tabs">${VIS.map(([t, n]) => `<a href="#${t}" data-tab="${t}">${n}${t === "mod" ? '<span class="cnt" id="modcnt" hidden></span>' : ""}</a>`).join("")}</nav>
 
     ${sec("overview", `
     ${attention(j, A)}
     ${funnel(j, I, sk("visitors"), dls)}
-    <h2>Today <span class="sub" style="font-weight:400;font-size:13px">UTC day, since 1:00 in Denmark · arrows compare full days</span></h2>
+    <h2>Today <span class="sub" style="font-weight:400;font-size:13px">${dayStart()} · arrows compare full days</span></h2>
     <div class="grid">
       ${A ? stat(`PCs with ${esc(appName())} today`, at.win + at.lin, `${at.win} Windows · ${at.lin} Linux · ${ay.win + ay.lin} yesterday`, A.days.map((d) => A.per[d].win + A.per[d].lin)) : ""}
       ${A && !lite ? stat("Returning today", at.ret || 0, `also checked in yesterday · ${ay.ret || 0} returned yesterday`, A.days.map((d) => A.per[d].ret || 0)) : ""}
@@ -762,6 +778,7 @@ function draw(j) {
       "Came from" only lists other websites (Discord, Reddit, Google…); direct visits aren't listed.</details>`}`;
   showTab(curTab());
   $("#re").onclick = () => load(true);
+  $("#tz").onchange = (e) => { TZ = e.target.value; try { localStorage.setItem("sonela_admin_tz", TZ); } catch { } draw(j); };
   perfPick();
   if (perfSt !== "all") { const b = document.querySelector(`.pstb[data-st="${perfSt}"]`); if (b) b.click(); }
   tickUpdated();

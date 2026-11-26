@@ -65,7 +65,7 @@ fn plural(n: usize) -> &'static str {
 }
 
 /// after a clip was replaced: the library, Home and sidebar follow (sizes, thumbnails)
-fn lib_changed(a: &AppWindow) {
+pub(crate) fn lib_changed(a: &AppWindow) {
     if let Some(l) = crate::LIB.with(|l| l.borrow().clone()) {
         l.refresh();
         crate::home_fill(a, &l);
@@ -218,6 +218,15 @@ fn next_job(a: &AppWindow) {
                 }
                 j.running.take()
             });
+            // 26 Nov 2026 (2.0.26, a player's 352 MB -> 96 MB AV1): the card kept showing 352.1 MB - the file is
+            // replaced in place, so read its size / date again (like the player's Replace)
+            if res.is_ok() {
+                if let (Some(p), Some(l)) = (p.as_ref(), crate::LIB.with(|l| l.borrow().clone())) {
+                    if let Some(i) = l.index_of_path(p) {
+                        l.reload(i, &l.root());
+                    }
+                }
+            }
             match res {
                 Ok(_) if av1 => {
                     if let Some(p) = p {

@@ -1213,8 +1213,16 @@ fn background_loops() {
         #[cfg(target_os = "linux")]
         let idle = echo_core::linuxutil::idle_seconds;
         let calm = || idle() >= 300 && recorder::detect_game().is_none() && rec.session_secs().is_none();
-        if c.shrink_old && calm() {
-            rec.shrink_old_clips(c.shrink_days, calm);
+        if c.shrink_old && calm() && rec.shrink_old_clips(c.shrink_days, calm) > 0 {
+            // the cards show the new, smaller sizes (26 Nov 2026: they kept the old ones)
+            let _ = slint::invoke_from_event_loop(|| {
+                let lib = crate::LIB.with(|l| l.borrow().clone());
+                if let (Some(a), Some(l)) = (crate::UI.with(|u| u.borrow().as_ref().and_then(|w| w.upgrade())), lib) {
+                    if l.restat() > 0 {
+                        crate::lib_cards::lib_changed(&a);
+                    }
+                }
+            });
         }
         // faster-share-links: once a day while idle - Echo Cloud files that are still the clip itself get its smaller copy
         if calm() && rec.heal_due() {

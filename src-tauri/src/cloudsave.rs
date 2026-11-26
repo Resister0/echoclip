@@ -688,6 +688,10 @@ fn backend_copies(acc: &crate::settings::CloudAccount) -> bool {
 /// Clips at least this long (seconds) are shared first and made smaller afterwards. The copy's encode time follows
 /// the clip's length (frames), not its size: 2 min = about 15-25 s of encoding on an RX 9070 XT (step 1 table).
 pub(super) const SHARE_FIRST_SECS: f64 = 120.0;
+/// 26 Nov 2026: Discord reads a link's preview once, when it's posted - and plays videos only up to about 100 MB
+/// (users' reports, not documented; a 465 MB share-first original got no preview at all). A bigger original waits
+/// for its smaller copy: a slower link, but one that plays in Discord.
+pub(super) const SHARE_FIRST_MAX: u64 = 95_000_000;
 /// the server's last /upload/check said it can do share first
 static SHARE_FIRST_OK: AtomicBool = AtomicBool::new(false);
 /// when run_swaps has something to do (unix s; 0 = look at swaps.json, u64::MAX = nothing waiting)
@@ -757,6 +761,10 @@ impl Recorder {
         let sm = fs::metadata(path).ok()?;
         let dur = self.thumb(path).map(|t| t.duration).unwrap_or(0.0);
         if sm.len() < 3_000_000 || dur < SHARE_FIRST_SECS { return None; }
+        if sm.len() > SHARE_FIRST_MAX {
+            log_line(&format!("echo cloud: {rel}: smaller copy first - the clip itself ({:.0} MB) is too big for a Discord preview", sm.len() as f64 / 1e6));
+            return None;
+        }
         // the original is about 3x the smaller copy: on a slow line sending it takes longer than making the copy and
         // sending that (with this PC's measured speeds; not measured yet = share first)
         let sp = self.speeds();

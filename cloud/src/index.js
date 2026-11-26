@@ -2066,8 +2066,12 @@ async function shareViews(req, user, env) {
   }
   return json({ views });
 }
+/// 26 Nov 2026: Discord plays a link's video only up to about 100 MB (users' reports, not documented) - over it a
+/// 465 MB share-first original got NO preview at all. Bigger files: a picture card (title + thumbnail) instead.
+const SHARE_EMBED_MAX = 100e6;
 /// orig (faster-share-links): the link plays a share-first original right now - the player keeps asking for that one
-function sharePage(req, row, id, prof, orig = false) {
+/// size (bytes, link previews only): over SHARE_EMBED_MAX the preview has no video (see there)
+function sharePage(req, row, id, prof, orig = false, size = 0) {
   const u = new URL(req.url), base = `${u.origin}/s/${id}`;
   const vid = `${base}.mp4${orig ? "?v=o" : ""}`;
   const name = (row.title || row.key.split("/").pop().replace(/\.mp4$/i, "")).trim() || "Echo clip";
@@ -2085,7 +2089,12 @@ function sharePage(req, row, id, prof, orig = false) {
 <meta property="og:site_name" content="Echo">
 <meta property="og:title" content="${esc(name)}">
 <meta property="og:description" content="${esc(desc)}">
-<meta property="og:type" content="video.other">
+${size > SHARE_EMBED_MAX ? `<meta property="og:type" content="website">
+<meta property="og:url" content="${base}">
+<meta property="og:image" content="${img}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${esc(name)}">
+<meta name="twitter:image" content="${img}">` : `<meta property="og:type" content="video.other">
 <meta property="og:url" content="${base}">
 <meta property="og:image" content="${img}">
 <meta property="og:video" content="${vid}">
@@ -2099,7 +2108,7 @@ function sharePage(req, row, id, prof, orig = false) {
 <meta name="twitter:image" content="${img}">
 <meta name="twitter:player" content="${vid}">
 <meta name="twitter:player:width" content="${w}">
-<meta name="twitter:player:height" content="${h}">
+<meta name="twitter:player:height" content="${h}">`}
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
 <link rel="alternate" type="application/json+oembed" href="${u.origin}/oembed/${id}" title="${esc(name)}">
 <style>
@@ -3014,7 +3023,10 @@ async function serveShare(req, env, id, ext, ctx) {
     const ua = req.headers.get("user-agent") || "", acc = req.headers.get("accept") || "";
     // stats page (chat 28): a link pasted into Discord & co = the chat app fetching its preview
     if (BOTS.test(ua)) { try { await bump(env, /discordbot/i.test(ua) ? "sembed:discord" : "sembed:other"); } catch { /* ignore */ } }
-    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) return sharePage(req, row, id, await profileOf(env, row.user_id), key !== row.key);
+    if (BOTS.test(ua) || (acc.includes("text/html") && !req.headers.has("range"))) {
+      const size = BOTS.test(ua) ? ((await env.BUCKET.head(key)) || {}).size || 0 : 0;
+      return sharePage(req, row, id, await profileOf(env, row.user_id), key !== row.key, size);
+    }
   }
   const name = row.key.split("/").pop();
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
